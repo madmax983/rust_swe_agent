@@ -188,7 +188,10 @@ async fn codex_driver_produces_valid_trajectory() {
                 .any(|v| v.as_str() == Some("echo 'line two' >> a.txt"))
         })
     });
-    assert!(shell_action, "expected the shell command recorded as an action");
+    assert!(
+        shell_action,
+        "expected the shell command recorded as an action"
+    );
 
     // The shell output surfaces as a user observation with synthesized run_result.
     let obs = msgs
@@ -200,13 +203,13 @@ async fn codex_driver_produces_valid_trajectory() {
     assert_eq!(rr["timed_out"], false);
 
     // info.toolset reflects the Codex shell tool.
-    let tool_names: Vec<&str> = traj["info"]["toolset"]["tools"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|t| t["name"].as_str().unwrap())
-        .collect();
-    assert!(tool_names.contains(&"shell"));
+    assert!(
+        traj["info"]["toolset"]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|t| t["name"].as_str() == Some("shell"))
+    );
 
     // The driver ran `codex` in the repo, so the real edit landed.
     let contents = std::fs::read_to_string(repo.path().join("a.txt")).unwrap();
@@ -223,7 +226,10 @@ async fn codex_driver_rejects_docker_env() {
     args.driver = RunDriver::Codex;
 
     let err = run(args).await.expect_err("docker should be rejected");
-    assert!(err.to_string().contains("local environment"), "unexpected error: {err}");
+    assert!(
+        err.to_string().contains("local environment"),
+        "unexpected error: {err}"
+    );
 }
 
 /// `--driver codex` is rejected with `--read-only`.
@@ -234,7 +240,10 @@ async fn codex_driver_rejects_read_only() {
     args.read_only = true;
 
     let err = run(args).await.expect_err("read-only should be rejected");
-    assert!(err.to_string().contains("read-only"), "unexpected error: {err}");
+    assert!(
+        err.to_string().contains("read-only"),
+        "unexpected error: {err}"
+    );
 }
 
 /// `--driver codex` is rejected with interactive confirmation modes.
@@ -245,7 +254,10 @@ async fn codex_driver_rejects_interactive_confirmation() {
     args.interactive_mode = InteractiveMode::StderrPrompt;
 
     let err = run(args).await.expect_err("interactive should be rejected");
-    assert!(err.to_string().contains("interactive"), "unexpected error: {err}");
+    assert!(
+        err.to_string().contains("interactive"),
+        "unexpected error: {err}"
+    );
 }
 
 /// `--driver codex` is rejected with a non-yolo policy profile.
@@ -256,7 +268,10 @@ async fn codex_driver_rejects_non_yolo_policy() {
     args.config.root.policy.profile = "safe".into();
 
     let err = run(args).await.expect_err("safe policy should be rejected");
-    assert!(err.to_string().contains("policy"), "unexpected error: {err}");
+    assert!(
+        err.to_string().contains("policy"),
+        "unexpected error: {err}"
+    );
 }
 
 /// `--driver codex` is rejected when a custom command policy is set.
@@ -266,8 +281,13 @@ async fn codex_driver_rejects_custom_policy() {
     let mut args = base_args(out.path(), out.path(), "cx-policy");
     args.config.root.policy.extra_deny_patterns = vec!["rm -rf".into()];
 
-    let err = run(args).await.expect_err("custom policy should be rejected");
-    assert!(err.to_string().contains("policy"), "unexpected error: {err}");
+    let err = run(args)
+        .await
+        .expect_err("custom policy should be rejected");
+    assert!(
+        err.to_string().contains("policy"),
+        "unexpected error: {err}"
+    );
 }
 
 /// `--driver codex` is rejected when `--resume` is used.
@@ -303,8 +323,13 @@ async fn codex_driver_rejects_stagnation_detection() {
     let mut args = base_args(out.path(), out.path(), "cx-stagnation");
     args.config.root.agent.detect_stagnation = true;
 
-    let err = run(args).await.expect_err("stagnation detection should be rejected");
-    assert!(err.to_string().contains("stagnation"), "unexpected error: {err}");
+    let err = run(args)
+        .await
+        .expect_err("stagnation detection should be rejected");
+    assert!(
+        err.to_string().contains("stagnation"),
+        "unexpected error: {err}"
+    );
 }
 
 /// `--driver codex` is rejected when MCP servers are configured.
@@ -332,8 +357,13 @@ async fn codex_driver_rejects_non_default_cmd_timeout() {
     let mut args = base_args(out.path(), out.path(), "cx-cmd-timeout");
     args.config.root.environment.timeout_secs = 30;
 
-    let err = run(args).await.expect_err("non-default command timeout should be rejected");
-    assert!(err.to_string().contains("timeout"), "unexpected error: {err}");
+    let err = run(args)
+        .await
+        .expect_err("non-default command timeout should be rejected");
+    assert!(
+        err.to_string().contains("timeout"),
+        "unexpected error: {err}"
+    );
 }
 
 /// `--driver codex` is rejected when budget-visibility is enabled.
@@ -344,8 +374,13 @@ async fn codex_driver_rejects_budget_visibility() {
     args.config.root.agent.per_task_budget_usd = Some(1.0);
     args.config.root.agent.hide_budget_from_agent = false;
 
-    let err = run(args).await.expect_err("budget visibility should be rejected");
-    assert!(err.to_string().contains("budget"), "unexpected error: {err}");
+    let err = run(args)
+        .await
+        .expect_err("budget visibility should be rejected");
+    assert!(
+        err.to_string().contains("budget"),
+        "unexpected error: {err}"
+    );
 }
 
 /// `--driver codex` is rejected when `agent.tools` defines custom command tools.
@@ -361,7 +396,9 @@ async fn codex_driver_rejects_configured_tools() {
         timeout_secs: None,
     }];
 
-    let err = run(args).await.expect_err("configured tools should be rejected");
+    let err = run(args)
+        .await
+        .expect_err("configured tools should be rejected");
     assert!(err.to_string().contains("tools"), "unexpected error: {err}");
 }
 

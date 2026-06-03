@@ -105,6 +105,7 @@ struct CompletedMsg {
 ///
 /// `workdir` is the directory `codex` runs in (and where edits land). When
 /// `None`, the current process directory is used.
+#[allow(clippy::too_many_lines)]
 pub async fn drive(
     agent: &mut DefaultAgent,
     task: String,
@@ -159,9 +160,7 @@ pub async fn drive(
     );
 
     let mut child = cmd.spawn().map_err(|e| {
-        Error::Trajectory(format!(
-            "failed to spawn `{bin}` for --driver codex: {e}"
-        ))
+        Error::Trajectory(format!("failed to spawn `{bin}` for --driver codex: {e}"))
     })?;
 
     // Drain stderr concurrently so a chatty child can never deadlock us.
@@ -240,7 +239,9 @@ pub async fn drive(
     {
         status.code()
     } else {
+        // Timed out or error during wait; kill and reap to avoid a zombie.
         let _ = child.start_kill();
+        let _ = child.wait().await;
         None
     };
 
@@ -320,7 +321,12 @@ async fn process_stream(
                 maybe_checkpoint(agent, parsed.steps);
             }
             Some("message") => handle_message(agent, &mut parsed, &msg),
-            Some("completed") => parsed.result = Some(parse_completed(&msg)),
+            Some("completed") => {
+                parsed.result = Some(parse_completed(&msg));
+                // Terminal event: stop reading; the process will close stdout
+                // shortly and waiting indefinitely risks a hang.
+                break;
+            }
             _ => {}
         }
     }
@@ -421,9 +427,7 @@ fn handle_local_shell_call(
     };
     // Propagate model if we have it.
     if let Some(m) = parsed.model.clone() {
-        extra
-            .other
-            .insert("model".into(), Value::String(m));
+        extra.other.insert("model".into(), Value::String(m));
     }
     agent
         .trajectory
@@ -449,7 +453,8 @@ fn handle_local_shell_call_output(agent: &mut DefaultAgent, parsed: &mut Parsed,
     let exit_code = output_obj
         .and_then(|o| o.get("exit_code"))
         .and_then(Value::as_i64)
-        .unwrap_or(0) as i32;
+        .and_then(|n| i32::try_from(n).ok())
+        .unwrap_or(0);
 
     // Pair with any pending test command.
     if !id.is_empty() {
@@ -537,7 +542,7 @@ fn handle_message(agent: &mut DefaultAgent, parsed: &mut Parsed, msg: &Value) {
         .redactor
         .redact_text(&text, surface::MODEL_OBSERVATION)
         .text;
-    parsed.last_assistant_text = redacted.clone();
+    parsed.last_assistant_text.clone_from(&redacted);
 
     let ts = chrono::Utc::now().to_rfc3339();
     let extra = MessageExtra {
@@ -574,10 +579,7 @@ fn parse_completed(msg: &Value) -> CompletedMsg {
             .and_then(Value::as_str)
             .unwrap_or("")
             .to_owned(),
-        cost_usd: msg
-            .get("cost_usd")
-            .and_then(Value::as_f64)
-            .unwrap_or(0.0),
+        cost_usd: msg.get("cost_usd").and_then(Value::as_f64).unwrap_or(0.0),
         input_tokens: u("input_tokens"),
         output_tokens: u("output_tokens"),
     }
@@ -608,7 +610,14 @@ fn finalize(
         .other
         .insert("codex_driver".into(), Value::Object(driver_meta));
 
-    let Some(result) = parsed.result else {
+    let Some(CompletedMsg {
+        exit_reason,
+        result: result_text,
+        cost_usd,
+        input_tokens,
+        output_tokens,
+    }) = parsed.result
+    else {
         let snippet = agent
             .redactor
             .redact_text(stderr_text.trim(), surface::TRAJECTORY)
@@ -621,51 +630,51 @@ fn finalize(
     };
 
     agent.steps = parsed.steps;
-    agent.total_cost_usd = result.cost_usd;
+    agent.total_cost_usd = cost_usd;
     agent.actual_cost_source = Some(CostSource::ProviderReported);
-    agent.prompt_tokens = result.input_tokens;
-    agent.completion_tokens = result.output_tokens;
+    agent.prompt_tokens = input_tokens;
+    agent.completion_tokens = output_tokens;
 
     agent.trajectory.info.steps = Some(parsed.steps);
-    agent.trajectory.info.total_cost_usd = Some(result.cost_usd);
+    agent.trajectory.info.total_cost_usd = Some(cost_usd);
     agent.trajectory.info.ended_at = Some(chrono::Utc::now().to_rfc3339());
     agent.trajectory.info.token_usage = Some(TokenUsage {
-        prompt_tokens: result.input_tokens,
+        prompt_tokens: input_tokens,
         cache_read_tokens: 0,
         cache_creation_tokens: 0,
-        completion_tokens: result.output_tokens,
+        completion_tokens: output_tokens,
     });
 
     let ran_tests = !parsed.test_invocations.is_empty();
     let last_tests_passed = parsed.test_invocations.last().map(|t| t.exit_code == 0);
     agent.trajectory.info.test_invocations = std::mem::take(&mut parsed.test_invocations);
 
-    let is_max_turns = result.exit_reason == "max_turns";
-    let is_success = matches!(result.exit_reason.as_str(), "done" | "success");
+    let is_max_turns = exit_reason == "max_turns";
+    let is_success = matches!(exit_reason.as_str(), "done" | "success");
 
     let cost_limit_exceeded = agent
         .config
         .root
         .agent
         .cost_limit_usd
-        .is_some_and(|cap| result.cost_usd >= cap);
+        .is_some_and(|cap| cost_usd >= cap);
     let budget_exhausted = !cost_limit_exceeded
         && agent
             .config
             .root
             .agent
             .per_task_budget_usd
-            .is_some_and(|cap| result.cost_usd >= cap);
+            .is_some_and(|cap| cost_usd >= cap);
 
     let step_overflow = parsed.steps > step_limit;
 
     if is_success && !cost_limit_exceeded && !budget_exhausted && !step_overflow {
         // Use the `result` field from `completed` as final output; fall back
         // to the last assistant text turn if the field is empty.
-        let raw_final = if result.result.is_empty() {
-            parsed.last_assistant_text.clone()
+        let raw_final = if result_text.is_empty() {
+            parsed.last_assistant_text
         } else {
-            result.result.clone()
+            result_text
         };
         let final_output = agent
             .redactor
@@ -689,7 +698,7 @@ fn finalize(
         emit_ended(agent, "cost_limit", Some(FailureCategory::CostLimit), None);
         Ok(ExitReason::CostLimit {
             limit_usd,
-            spent_usd: result.cost_usd,
+            spent_usd: cost_usd,
         })
     } else if budget_exhausted {
         let limit_usd = agent.config.root.agent.per_task_budget_usd.unwrap_or(0.0);
@@ -704,7 +713,7 @@ fn finalize(
         );
         Ok(ExitReason::BudgetExhausted {
             limit_usd,
-            spent_usd: result.cost_usd,
+            spent_usd: cost_usd,
         })
     } else if is_max_turns || step_overflow {
         agent.trajectory.info.exit_reason = Some("step_limit".into());
@@ -721,12 +730,11 @@ fn finalize(
             .get_or_insert(FailureCategory::AgentInternal);
         agent.trajectory.info.other.insert(
             "codex_exit_reason".into(),
-            Value::String(result.exit_reason.clone()),
+            Value::String(exit_reason.clone()),
         );
         agent.finalize_run_metadata(outcome::ERROR);
         Err(Error::Trajectory(format!(
-            "codex driver ended with non-success exit_reason: {}",
-            result.exit_reason
+            "codex driver ended with non-success exit_reason: {exit_reason}"
         )))
     }
 }
