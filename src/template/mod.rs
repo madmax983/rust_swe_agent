@@ -12,6 +12,25 @@ use std::sync::Arc;
 
 use crate::error::Error;
 
+/// A lightweight template rendering engine built on top of `minijinja`.
+///
+/// While `minijinja` provides a comprehensive HTML-first templating experience, `Renderer`
+/// is specifically tuned for shell commands and system prompts. It disables HTML auto-escaping
+/// to ensure scripts and shell operators (like `&&` or `>`) are preserved exactly as written.
+/// Furthermore, it automatically exposes process environment variables under the `env` global object,
+/// allowing templates to naturally refer to `$USER` or `$PATH` via `{{ env.USER }}`.
+///
+/// ## Examples
+///
+/// ```
+/// use std::collections::BTreeMap;
+/// use minijinja::context;
+/// use maxwells_daemon::template::Renderer;
+///
+/// let renderer = Renderer::new();
+/// let rendered = renderer.render_with("echo 'Hello, {{ name }}!'", context!(name => "World")).unwrap();
+/// assert_eq!(rendered, "echo 'Hello, World!'");
+/// ```
 pub struct Renderer {
     env: Environment<'static>,
 }
@@ -23,6 +42,19 @@ impl Default for Renderer {
 }
 
 impl Renderer {
+    /// Instantiates a new template renderer configured for system prompts.
+    ///
+    /// This disables the default HTML escaping mechanism and pre-populates an `env` dictionary
+    /// containing all environment variables available to the current process. This ensures templates
+    /// have immediate access to context like paths and credentials without explicit injection.
+    ///
+    /// ## Examples
+    ///
+    /// ```
+    /// use maxwells_daemon::template::Renderer;
+    ///
+    /// let renderer = Renderer::new();
+    /// ```
     pub fn new() -> Self {
         let mut env = Environment::new();
         env.set_auto_escape_callback(|_| minijinja::AutoEscape::None);
@@ -43,6 +75,23 @@ impl Renderer {
             .map_err(Into::into)
     }
 
+    /// Processes a template string against a complex nested structure.
+    ///
+    /// Unlike `render_str` which requires a struct implementing `Serialize`, `render_with`
+    /// accepts a raw `minijinja::Value`. This is incredibly useful for ad-hoc context building
+    /// where you don't want to define a throwaway struct. We heavily recommend using the
+    /// `context!` macro to dynamically construct the data passed into this function.
+    ///
+    /// ## Examples
+    ///
+    /// ```
+    /// use maxwells_daemon::template::Renderer;
+    /// use minijinja::context;
+    ///
+    /// let renderer = Renderer::new();
+    /// let result = renderer.render_with("User: {{ user.name }}", context!(user => context!(name => "Alice"))).unwrap();
+    /// assert_eq!(result, "User: Alice");
+    /// ```
     pub fn render_with(&self, tmpl: &str, ctx: Value) -> Result<String, Error> {
         self.env.render_str(tmpl, ctx).map_err(Into::into)
     }

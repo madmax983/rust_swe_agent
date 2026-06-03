@@ -219,6 +219,27 @@ pub struct WebhookSinkHandle {
 }
 
 impl WebhookSinkHandle {
+    /// Binds a generic `WebhookSink` to a specific run execution ID.
+    ///
+    /// By abstracting the core POST and buffer logic into `WebhookSink`, a single physical network sink
+    /// can be shared across multiple agent threads. Wrapping it in a `WebhookSinkHandle` associates each
+    /// emitted event with the `run_id` context, ensuring that traces and metrics correctly correlate
+    /// actions to the exact run they belong to without requiring the agent loop to know about the sink.
+    ///
+    /// ## Examples
+    ///
+    /// ```
+    /// use std::sync::Arc;
+    /// use maxwells_daemon::stream::webhook::{WebhookSink, WebhookSinkHandle};
+    ///
+    /// # let rt = tokio::runtime::Runtime::new().unwrap();
+    /// # let _guard = rt.enter();
+    /// // A shared sink managing the actual HTTP connection.
+    /// let sink = Arc::new(WebhookSink::new("http://127.0.0.1/".to_string(), &[]).unwrap());
+    ///
+    /// // An execution-specific handle used by the agent during a single run.
+    /// let handle = WebhookSinkHandle::new(sink, "unique-run-id-123".to_string());
+    /// ```
     pub fn new(inner: Arc<WebhookSink>, run_id: String) -> Self {
         Self { inner, run_id }
     }

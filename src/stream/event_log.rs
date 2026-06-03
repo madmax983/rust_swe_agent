@@ -10,6 +10,26 @@ use serde_json::{Map, Value};
 use super::{StreamEvent, StreamSink};
 
 #[derive(Clone)]
+/// An append-only sink recording the chronological history of an agent's stream.
+///
+/// While `Trajectory` captures the final, structured "result" of an agent's run, `EventLogSink`
+/// continuously writes every intermediate state transition, tool call, and generated thought directly
+/// to disk as JSON Lines (`.ndjson`). This design provides critical forensic evidence; if an agent
+/// crashes or the process is killed midway, the event log accurately reproduces the exact state sequence
+/// leading up to the failure without relying on in-memory trajectory structures.
+///
+/// ## Examples
+///
+/// ```
+/// use maxwells_daemon::stream::event_log::EventLogSink;
+/// use std::path::Path;
+///
+/// let log_path = Path::new("/tmp/agent_execution.ndjson");
+/// // Handled gracefully, avoiding unwraps in production!
+/// if let Ok(sink) = EventLogSink::new(log_path, "run-42".to_string()) {
+///     // Sink is ready to record agent lifecycle events.
+/// }
+/// ```
 pub struct EventLogSink {
     writer: Arc<Mutex<Box<dyn Write + Send>>>,
     path: PathBuf,

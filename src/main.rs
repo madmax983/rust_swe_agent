@@ -1,3 +1,6 @@
+//! The main entry point for the Maxwell's Daemon binary.
+//! This provides the CLI interface.
+
 use maxwells_daemon::exit_code::ExitCode;
 
 #[tokio::main]
