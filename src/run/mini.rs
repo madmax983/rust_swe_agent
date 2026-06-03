@@ -121,6 +121,7 @@ pub enum RunDriver {
     ClaudeCode,
 }
 
+#[allow(clippy::struct_excessive_bools)]
 pub struct MiniArgs {
     pub task: String,
     pub extra_context: Option<String>,
@@ -130,6 +131,11 @@ pub struct MiniArgs {
     /// to the Claude Code CLI and translates its stream into the same
     /// trajectory artifact. See `docs/spec-claude-driver.md`.
     pub driver: RunDriver,
+    /// When `true` and `driver == ClaudeCode`, forward the rendered operator
+    /// system prompt to the CLI via `--append-system-prompt`. Default `false`
+    /// because the built-in default template contains harness bash-protocol
+    /// text; only enable with a CC-compatible custom `[prompts].system` override.
+    pub driver_append_system_prompt: bool,
     pub output_dir: PathBuf,
     pub trajectory_name: String,
     pub deterministic_responses: Option<Vec<String>>,
@@ -425,6 +431,21 @@ pub async fn run(args: MiniArgs) -> Result<(), Error> {
                     .into(),
             )));
         }
+        if args.config.root.policy.profile != "yolo" {
+            // The built-in policy deny corpus is enforced inside
+            // DefaultAgent::step before every bash command. Claude Code
+            // executes tools itself, so safe/ask deny rules would never fire;
+            // a "safe" trajectory would be a false promise. Operators must
+            // explicitly set `policy.profile = "yolo"` to acknowledge that
+            // the external CLI owns tool execution.
+            return Err(Error::Config(ConfigError::Invalid(format!(
+                "--driver claude-code cannot enforce the built-in policy deny \
+                 corpus (profile={:?}); the CLI runs tools itself. \
+                 Set policy.profile = \"yolo\" in config to acknowledge this, \
+                 or switch to --driver builtin",
+                args.config.root.policy.profile
+            ))));
+        }
         if !args.config.root.policy.extra_deny_patterns.is_empty()
             || !args.config.root.policy.extra_allow_patterns.is_empty()
         {
@@ -434,6 +455,17 @@ pub async fn run(args: MiniArgs) -> Result<(), Error> {
                 "--driver claude-code cannot enforce custom command policy \
                  (policy.extra_deny_patterns/extra_allow_patterns); the CLI \
                  runs tools itself"
+                    .into(),
+            )));
+        }
+        if args.resume_from.is_some() || args.continue_from.is_some() {
+            // Claude Code is spawned with only the new task prompt; there is
+            // no mechanism to seed the external CLI with prior message history,
+            // so --resume/--continue would silently lose the prior context
+            // while the trajectory claims it was continued.
+            return Err(Error::Config(ConfigError::Invalid(
+                "--driver claude-code does not support --resume or --continue; \
+                 the external CLI cannot be seeded with prior message history"
                     .into(),
             )));
         }
@@ -905,12 +937,26 @@ pub async fn run(args: MiniArgs) -> Result<(), Error> {
             run_agent_with_optional_timeout(&mut agent, args.task_timeout_secs).await
         }
         RunDriver::ClaudeCode => {
+            // When the caller opted in, extract the rendered system prompt from
+            // the trajectory's first message (seeded by DefaultAgentBuilder)
+            // and forward it to the CLI as `--append-system-prompt`.
+            let system_prompt = if args.driver_append_system_prompt {
+                agent
+                    .trajectory
+                    .messages
+                    .first()
+                    .filter(|m| m.role == "system")
+                    .map(|m| m.content.clone())
+            } else {
+                None
+            };
             crate::run::claude_driver::drive(
                 &mut agent,
                 args.task.clone(),
                 resolved_skills.merged_extra_context.as_deref(),
                 args.local_workdir.as_deref(),
                 args.task_timeout_secs,
+                system_prompt.as_deref(),
             )
             .await
         }
@@ -2560,6 +2606,7 @@ index 8a1218a..24c5735 100644\n\
         // Resume args: one deterministic response (the submit) for the 4th step.
         let args = MiniArgs {
             driver: crate::run::mini::RunDriver::Builtin,
+            driver_append_system_prompt: false,
             task: partial.info.task.clone().unwrap(),
             extra_context: None,
             config: cfg,
@@ -2730,6 +2777,7 @@ index 8a1218a..24c5735 100644\n\
         // terminal trajectory.
         let parent_args = MiniArgs {
             driver: crate::run::mini::RunDriver::Builtin,
+            driver_append_system_prompt: false,
             task: "fix the original bug".into(),
             extra_context: None,
             config: cfg.clone(),
@@ -2788,6 +2836,7 @@ index 8a1218a..24c5735 100644\n\
         // Step 3: Run the continuation — one deterministic submit response.
         let child_args = MiniArgs {
             driver: crate::run::mini::RunDriver::Builtin,
+            driver_append_system_prompt: false,
             task: "also fix the edge case".into(),
             extra_context: None,
             config: cfg,
@@ -2900,6 +2949,7 @@ index 8a1218a..24c5735 100644\n\
 
         let args = MiniArgs {
             driver: crate::run::mini::RunDriver::Builtin,
+            driver_append_system_prompt: false,
             task: "do nothing".into(),
             extra_context: None,
             config: cfg,
@@ -2999,6 +3049,7 @@ index 8a1218a..24c5735 100644\n\
 
         let args = MiniArgs {
             driver: crate::run::mini::RunDriver::Builtin,
+            driver_append_system_prompt: false,
             task: "edit then submit".into(),
             extra_context: None,
             config: cfg,
@@ -3093,6 +3144,7 @@ index 8a1218a..24c5735 100644\n\
         cfg.root.agent.step_limit = 10;
         let args = MiniArgs {
             driver: crate::run::mini::RunDriver::Builtin,
+            driver_append_system_prompt: false,
             task: "say hello".into(),
             extra_context: None,
             config: cfg,
@@ -3162,6 +3214,7 @@ index 8a1218a..24c5735 100644\n\
         cfg.root.agent.step_limit = 10;
         let args = MiniArgs {
             driver: crate::run::mini::RunDriver::Builtin,
+            driver_append_system_prompt: false,
             task: "say hello".into(),
             extra_context: None,
             config: cfg,
@@ -3232,6 +3285,7 @@ index 8a1218a..24c5735 100644\n\
 
         let args = MiniArgs {
             driver: crate::run::mini::RunDriver::Builtin,
+            driver_append_system_prompt: false,
             task: "say hello".into(),
             extra_context: None,
             config: cfg,
@@ -3352,6 +3406,7 @@ index 8a1218a..24c5735 100644\n\
     ) -> MiniArgs {
         MiniArgs {
             driver: crate::run::mini::RunDriver::Builtin,
+            driver_append_system_prompt: false,
             task: "test-manifest-task".into(),
             extra_context: None,
             config: crate::config::Config::defaults().unwrap(),

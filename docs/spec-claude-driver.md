@@ -40,7 +40,8 @@ backends. As a result the Claude-Code path produces the same artifacts:
    claude -p "<task>" \
      --output-format stream-json --verbose \
      --max-turns <step_limit> \
-     --allowedTools "Bash Edit MultiEdit Write Read Glob Grep NotebookEdit"
+     --allowedTools "Bash Edit MultiEdit Write Read Glob Grep NotebookEdit" \
+     [--append-system-prompt "<rendered system prompt>"]  # when --driver-append-system-prompt
    ```
 
    with the child's working directory set to `--workdir` (or the process cwd).
@@ -53,6 +54,31 @@ backends. As a result the Claude-Code path produces the same artifacts:
 4. Patch capture then runs exactly as for the built-in loop: because Claude Code
    edits the real working tree, `git diff` sees the change regardless of whether
    the edit came from `Bash`, `Edit`, or `Write`.
+
+## System prompt forwarding
+
+By default the driver does NOT forward the harness's operator system prompt to
+Claude Code. The built-in default `[prompts].system` template contains
+bash-block-protocol instructions (`COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT`, etc.)
+that Claude Code's own loop already handles differently, so forwarding the
+default verbatim would add confusing noise.
+
+Use `--driver-append-system-prompt` to opt in:
+
+```
+max mini --driver claude-code --driver-append-system-prompt \
+  --config my_cc_config.toml --task "..."
+```
+
+When set, the rendered operator system prompt (with any `[prompts].system`
+override applied) is forwarded to `claude --append-system-prompt`. This is the
+CORE use-case for teams that have Claude Code enterprise access but no direct
+API keys: measuring system prompt / skills / tools changes while still getting
+the harness's full trajectory artifact.
+
+Pair this with a CC-compatible `[prompts].system` override in your config. The
+built-in default contains harness-specific protocol text; an override intended
+for Claude Code should omit or replace that.
 
 ## Outcome mapping
 
@@ -77,12 +103,20 @@ enforces the harness's safety contracts at the boundaries instead:
 - **Interactive confirmation** (`--interactive` / `--ui`) is rejected — the
   per-action operator confirmer lives inside `DefaultAgent` and cannot gate
   Claude's tool calls.
+- **Policy profile** must be `yolo`. The built-in `safe`/`ask` deny corpus is
+  enforced inside `DefaultAgent::step` and never fires when the external CLI
+  owns tool execution. Operators must explicitly set `policy.profile = "yolo"`
+  in config to acknowledge this. Custom `extra_deny_patterns` /
+  `extra_allow_patterns` are also rejected for the same reason.
 - **Cost caps** (`agent.cost_limit_usd` / `--per-task-budget-usd`) are forwarded
-  to Claude Code's `--max-budget-usd`, and re-checked post-hoc: an over-budget
-  run is recorded as `budget_exhausted`, never `submitted`.
+  to Claude Code's `--max-budget-usd`, and re-checked post-hoc: `cost_limit_usd`
+  records `CostLimit` (matching the built-in loop's priority); `per_task_budget_usd`
+  records `BudgetExhausted`. Either prevents a `submitted` outcome.
 - **Cancellation** (sweep Ctrl-C via the run's cancellation token) is raced
   against the stream; when it fires the child is killed and the run is finalized
   as an interrupt, matching the built-in loop.
+- **`--resume` / `--continue`** are rejected — the external CLI cannot be seeded
+  with prior message history; those paths stay on the built-in loop.
 - **Merged `--extra-context` / active-skill guidance** is appended to the prompt
   Claude Code receives, so the backend actually sees the context the trajectory
   records.
@@ -113,22 +147,13 @@ enforces the harness's safety contracts at the boundaries instead:
   `num_turns`, and the harness does not hard-stop the run when the tool-use
   count crosses `step_limit` (Claude Code's `--max-turns` is the active bound).
 
-### Deferred (not yet at built-in parity)
-
-These built-in behaviors are not yet mirrored by the driver and remain open:
-
-- **Pre-submit test telemetry** (`tests_run_before_submit`, `last_tests_passed`)
-  — the built-in loop matches test-command patterns and records a
-  `TestInvocation` per run; the driver only records the action label.
-- **Per-step partial checkpoints** — the built-in loop writes a resumable
-  partial trajectory after each step; the driver appends in memory and writes
-  once at the end, so an interrupted long run loses streamed progress.
-
 ## Testing
 
 The `claude` binary path is overridable via the `MAXWELLS_CLAUDE_BIN`
 environment variable. `tests/claude_driver.rs` points it at a fixture shell
 script that makes a real edit and emits a canned `stream-json` transcript
 (shapes captured from a real `claude` v2.1 run), exercising the full
-spawn → parse → finalize → trajectory path deterministically at $0, plus the
-docker-rejection guard.
+spawn → parse → finalize → trajectory path deterministically at $0. The test
+suite covers: trajectory validity, docker/read-only/interactive/policy/chaos
+rejection guards, pre-submit test telemetry, budget downgrade, non-yolo policy
+rejection, and resume rejection.

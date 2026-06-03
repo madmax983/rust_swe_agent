@@ -19,6 +19,7 @@ pub async fn main(output_dir: PathBuf, config_path: Option<&Path>) -> Result<(),
         extra_context: None,
         config: cfg,
         driver: super::mini::RunDriver::Builtin,
+        driver_append_system_prompt: false,
         output_dir: output_dir.clone(),
         trajectory_name: "hello-world".into(),
         deterministic_responses: Some(vec![

@@ -514,6 +514,7 @@ pub async fn run(args: SuiteArgs) -> Result<ExitCode, Error> {
             extra_context: task.extra_context.clone(),
             config: task_cfg,
             driver: crate::run::mini::RunDriver::Builtin,
+            driver_append_system_prompt: false,
             output_dir: suite_dir.clone(),
             trajectory_name: trajectory_name.clone(),
             deterministic_responses: None,

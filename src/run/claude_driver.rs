@@ -76,6 +76,11 @@ const CLAUDE_BIN_ENV: &str = "MAXWELLS_CLAUDE_BIN";
 /// `workdir` is the directory `claude` runs in (and where edits land). When
 /// `None`, the current process directory is used — matching the built-in
 /// local environment's behavior.
+///
+/// `append_system_prompt` is passed verbatim to `claude --append-system-prompt`
+/// when `Some`. Callers should supply the rendered operator system prompt only
+/// when it has been authored for Claude Code (the built-in default contains
+/// harness-protocol text that Claude Code doesn't use).
 #[allow(clippy::too_many_lines)]
 pub async fn drive(
     agent: &mut DefaultAgent,
@@ -83,6 +88,7 @@ pub async fn drive(
     extra_context: Option<&str>,
     workdir: Option<&Path>,
     timeout_secs: Option<u64>,
+    append_system_prompt: Option<&str>,
 ) -> Result<ExitReason, Error> {
     let bin = std::env::var(CLAUDE_BIN_ENV).unwrap_or_else(|_| "claude".to_owned());
     let cwd = match workdir {
@@ -137,12 +143,21 @@ pub async fn drive(
     if let Some(cap) = cost_cap {
         cmd.arg("--max-budget-usd").arg(format!("{cap}"));
     }
+    if let Some(prompt) = append_system_prompt {
+        cmd.arg("--append-system-prompt").arg(prompt);
+    }
     cmd.current_dir(&cwd)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
 
-    tracing::info!(bin = %bin, cwd = %cwd.display(), max_turns = step_limit, "spawning Claude Code driver");
+    tracing::info!(
+        bin = %bin,
+        cwd = %cwd.display(),
+        max_turns = step_limit,
+        append_system_prompt = append_system_prompt.is_some(),
+        "spawning Claude Code driver"
+    );
 
     let mut child = cmd.spawn().map_err(|e| {
         Error::Trajectory(format!(
@@ -150,21 +165,31 @@ pub async fn drive(
         ))
     })?;
 
-    // Drain stderr concurrently so a chatty child can never deadlock us. Keep
-    // reading to EOF (so the child never hits SIGPIPE on a closed read end) but
-    // retain only the first ~1 MiB so a runaway child can't exhaust memory.
+    // Drain stderr concurrently so a chatty child can never deadlock us. Read
+    // in fixed-size chunks so a single very-long line (no newline) cannot
+    // allocate beyond the cap before the loop body runs. Keep reading to EOF
+    // even after the cap to avoid SIGPIPE on a closed read end.
     let stderr_handle = child.stderr.take().map(|stderr| {
         tokio::spawn(async move {
+            use tokio::io::AsyncReadExt;
             const CAP: usize = 1024 * 1024;
-            let mut buf = String::new();
-            let mut lines = BufReader::new(stderr).lines();
-            while let Ok(Some(line)) = lines.next_line().await {
-                if buf.len() < CAP {
-                    buf.push_str(&line);
-                    buf.push('\n');
+            let mut retained: Vec<u8> = Vec::new();
+            let mut tmp = [0u8; 8192];
+            let mut stderr = stderr;
+            loop {
+                match stderr.read(&mut tmp).await {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => {
+                        if retained.len() < CAP {
+                            let take = (CAP - retained.len()).min(n);
+                            retained.extend_from_slice(&tmp[..take]);
+                        }
+                        // Continue reading (and discarding) past the cap so
+                        // the child's write end is never blocked.
+                    }
                 }
             }
-            buf
+            String::from_utf8_lossy(&retained).into_owned()
         })
     });
 
@@ -537,18 +562,20 @@ fn handle_user(agent: &mut DefaultAgent, parsed: &mut Parsed, msg: &Value) {
     if parts.is_empty() {
         return;
     }
-    // Apply the configured observation cap (head/tail truncation) before
-    // recording, matching the built-in loop — a command can dump a huge file.
-    let combined = truncate_observation_text(
-        &parts.join("\n\n"),
+    // Redact the full combined text before truncating so that configured
+    // literals spanning the head/tail boundary are not split and missed.
+    // Matches the built-in loop's redact-then-truncate order.
+    let raw = parts.join("\n\n");
+    let redacted_raw = agent
+        .redactor
+        .redact_text(&raw, surface::MODEL_OBSERVATION)
+        .text;
+    let redacted = truncate_observation_text(
+        &redacted_raw,
         agent.config.root.agent.observation_max_bytes,
         agent.config.root.agent.observation_head_ratio,
     )
     .text;
-    let redacted = agent
-        .redactor
-        .redact_text(&combined, surface::MODEL_OBSERVATION)
-        .text;
     let mut extra = MessageExtra {
         timestamp: Some(chrono::Utc::now().to_rfc3339()),
         ..Default::default()
@@ -682,20 +709,28 @@ fn finalize(
 
     let is_max_turns = result.subtype.contains("max_turns");
 
-    // The configured spend cap is forwarded to Claude Code as
-    // `--max-budget-usd`, but enforce it post-hoc too: an over-budget run is
-    // recorded as `budget_exhausted`, never `submitted`, so spend controls
-    // hold even if the CLI overshoots the cap on its final turn.
-    let cost_cap = [
-        agent.config.root.agent.cost_limit_usd,
-        agent.config.root.agent.per_task_budget_usd,
-    ]
-    .into_iter()
-    .flatten()
-    .min_by(f64::total_cmp);
-    let over_budget = cost_cap.is_some_and(|cap| result.total_cost_usd >= cap);
+    // The configured spend caps are forwarded to Claude Code as
+    // `--max-budget-usd`, but enforce them post-hoc too so spend controls
+    // hold even if the CLI overshoots on its final turn.
+    //
+    // Mirror the built-in loop's priority order: `cost_limit_usd` fires first
+    // (records `CostLimit`); `per_task_budget_usd` fires only when
+    // `cost_limit_usd` is unset or not yet reached (records `BudgetExhausted`).
+    let cost_limit_exceeded = agent
+        .config
+        .root
+        .agent
+        .cost_limit_usd
+        .is_some_and(|cap| result.total_cost_usd >= cap);
+    let budget_exhausted = !cost_limit_exceeded
+        && agent
+            .config
+            .root
+            .agent
+            .per_task_budget_usd
+            .is_some_and(|cap| result.total_cost_usd >= cap);
 
-    if result.subtype == "success" && !result.is_error && !over_budget {
+    if result.subtype == "success" && !result.is_error && !cost_limit_exceeded && !budget_exhausted {
         let final_output = agent
             .redactor
             .redact_text(&result.final_text, surface::TRAJECTORY)
@@ -712,8 +747,19 @@ fn finalize(
         }
         emit_ended(agent, "submitted", None, Some(final_output.clone()));
         Ok(ExitReason::Submitted { final_output })
-    } else if over_budget {
-        let limit_usd = cost_cap.unwrap_or(0.0);
+    } else if cost_limit_exceeded {
+        let limit_usd = agent.config.root.agent.cost_limit_usd.unwrap_or(0.0);
+        agent.trajectory.info.exit_reason = Some("cost_limit".into());
+        agent.trajectory.info.failure_category = Some(FailureCategory::CostLimit);
+        // cost_limit maps to the same coarse outcome as step_limit per the spec.
+        agent.finalize_run_metadata(outcome::STEP_LIMIT_REACHED);
+        emit_ended(agent, "cost_limit", Some(FailureCategory::CostLimit), None);
+        Ok(ExitReason::CostLimit {
+            limit_usd,
+            spent_usd: result.total_cost_usd,
+        })
+    } else if budget_exhausted {
+        let limit_usd = agent.config.root.agent.per_task_budget_usd.unwrap_or(0.0);
         agent.trajectory.info.exit_reason = Some("budget_exhausted".into());
         agent.trajectory.info.failure_category = Some(FailureCategory::BudgetExhausted);
         agent.finalize_run_metadata(outcome::BUDGET_EXHAUSTED);

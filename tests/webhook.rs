@@ -123,6 +123,7 @@ fn make_mini_args(
     cfg.root.agent.step_limit = 5;
     MiniArgs {
         driver: maxwells_daemon::run::mini::RunDriver::Builtin,
+        driver_append_system_prompt: false,
         task: "webhook test task".into(),
         extra_context: None,
         config: cfg,
@@ -518,6 +519,7 @@ async fn webhook_redacts_secrets_before_post() {
 
     let args = MiniArgs {
         driver: maxwells_daemon::run::mini::RunDriver::Builtin,
+        driver_append_system_prompt: false,
         task: "redaction test".into(),
         extra_context: None,
         config: cfg,

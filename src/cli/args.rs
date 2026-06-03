@@ -469,6 +469,13 @@ pub struct MiniCmd {
     #[arg(long, value_enum, default_value_t = crate::run::mini::RunDriver::Builtin)]
     pub driver: crate::run::mini::RunDriver,
 
+    /// Forward the rendered operator system prompt to `claude --append-system-prompt`
+    /// when using `--driver claude-code`. Disabled by default because the built-in
+    /// default template contains harness bash-protocol text; only enable with a
+    /// CC-compatible custom `[prompts].system` override.
+    #[arg(long, default_value_t = false, requires = "driver")]
+    pub driver_append_system_prompt: bool,
+
     /// Model name (e.g. `claude-opus-4-7`).
     #[arg(long, default_value = "claude-opus-4-7")]
     pub model: String,

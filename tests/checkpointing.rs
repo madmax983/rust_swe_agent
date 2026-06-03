@@ -552,6 +552,7 @@ async fn mini_run_writes_partial_checkpoint_after_each_step() {
 
     let args = MiniArgs {
         driver: maxwells_daemon::run::mini::RunDriver::Builtin,
+        driver_append_system_prompt: false,
         task: "test checkpoint".into(),
         extra_context: None,
         config: cfg,

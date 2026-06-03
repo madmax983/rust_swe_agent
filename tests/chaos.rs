@@ -23,6 +23,7 @@ fn chaos_args(cfg: Config, output: std::path::PathBuf, name: &str) -> MiniArgs {
     ];
     MiniArgs {
         driver: maxwells_daemon::run::mini::RunDriver::Builtin,
+        driver_append_system_prompt: false,
         task: "exercise chaos".into(),
         extra_context: None,
         config: cfg,
