@@ -372,7 +372,9 @@ pub async fn run(args: BestOfArgs) -> Result<ExitCode, Error> {
 
         let trajectory_name = format!("run_{run_index:02}");
         let traj_path = best_of_dir.join(format!("{trajectory_name}.traj.json"));
+        let run_patch_path = best_of_dir.join(format!("{trajectory_name}.patch"));
         let _ = std::fs::remove_file(&traj_path);
+        let _ = std::fs::remove_file(&run_patch_path);
 
         // ── Build and execute mini run ────────────────────────────────────────
         let mut run_cfg = args.config.clone();
@@ -382,6 +384,34 @@ pub async fn run(args: BestOfArgs) -> Result<ExitCode, Error> {
         if let Some(v) = args.per_task_budget_usd {
             run_cfg.root.agent.per_task_budget_usd = Some(v);
         }
+
+        let is_docker = matches!(
+            run_cfg.root.environment.kind,
+            crate::config::EnvKind::Docker
+        );
+
+        // For Docker, `git diff` runs inside the container so the workdir must
+        // be the container path. For local, use the host CWD.
+        let patch_workdir = if is_docker {
+            PathBuf::from(&run_cfg.root.environment.workdir)
+        } else {
+            std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
+        };
+
+        // Snapshot HEAD before the run so agents that commit don't produce an
+        // empty diff (local env only; Docker HEAD is snapshotted inside the
+        // container where we can't reach it cheaply here).
+        let base_commit = if is_docker {
+            None
+        } else {
+            std::process::Command::new("git")
+                .args(["rev-parse", "HEAD"])
+                .current_dir(&patch_workdir)
+                .output()
+                .ok()
+                .filter(|o| o.status.success())
+                .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_owned())
+        };
 
         let mini_args = crate::run::mini::MiniArgs {
             task: args.task.clone(),
@@ -398,9 +428,9 @@ pub async fn run(args: BestOfArgs) -> Result<ExitCode, Error> {
             cancellation: None,
             stream_addr: None,
             patch_capture: Some(crate::run::mini::PatchCaptureSpec {
-                base_commit: None,
-                workdir: std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
-                patch_path: best_of_dir.join(format!("{trajectory_name}.patch")),
+                base_commit,
+                workdir: patch_workdir,
+                patch_path: run_patch_path,
                 skip_patch_validation: false,
             }),
             verification_checks: verification_checks.clone(),
