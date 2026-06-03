@@ -101,11 +101,7 @@ fn test_catalog_filtering() {
     }
 }
 
-fn collect_executable_paths(
-    cmd: &clap::Command,
-    current_path: &[String],
-    paths: &mut Vec<String>,
-) {
+fn collect_executable_paths(cmd: &clap::Command, current_path: &[String], paths: &mut Vec<String>) {
     if cmd.is_hide_set() {
         return;
     }
