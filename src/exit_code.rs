@@ -150,6 +150,15 @@ pub enum ExitCode {
     GithubIssueNotFound = 35,
     /// 36 — GitHub API rate limited during issue ingestion.
     GithubIssueRateLimited = 36,
+    /// 37 — `agent injection-audit` found at least one hit at or above the
+    /// configured `--fail-on` severity threshold. The audit completed; the
+    /// non-zero exit is the CI publish gate. Distinct from `internal_error` (1)
+    /// so automation can route "injection signals found" separately from a crash.
+    InjectionAuditHits = 37,
+    /// 38 — `agent injection-audit` could not read the sweep directory or one
+    /// or more trajectory files (missing path, unreadable file). The scan is
+    /// incomplete, so a "clean" verdict cannot be trusted.
+    InjectionAuditScanError = 38,
     /// 130 — user interruption (graceful SIGINT / Ctrl-C; 128 + SIGINT(2)).
     Interrupted = 130,
     /// 137 — forced kill (SIGKILL escalation after graceful-cancel deadline; 128 + SIGKILL(9)).
@@ -207,6 +216,8 @@ impl ExitCode {
             Self::GithubIssueMissingToken => "github_issue_missing_token",
             Self::GithubIssueNotFound => "github_issue_not_found",
             Self::GithubIssueRateLimited => "github_issue_rate_limited",
+            Self::InjectionAuditHits => "injection_audit_hits",
+            Self::InjectionAuditScanError => "injection_audit_scan_error",
             Self::Interrupted => "interrupted",
             Self::Killed => "killed",
         }

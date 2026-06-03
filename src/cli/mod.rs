@@ -135,6 +135,7 @@ pub async fn run() -> Result<(), Error> {
             args::AgentCmd::SkillsPreview(s) => agent_skills_preview_cmd(&s),
             args::AgentCmd::RedactCheck(r) => agent_redact_check_cmd(&r),
             args::AgentCmd::RedactAudit(a) => agent_redact_audit_cmd(&a),
+            args::AgentCmd::InjectionAudit(a) => agent_injection_audit_cmd(&a),
             args::AgentCmd::Env {
                 cmd: args::AgentEnvCmd::Preview(ref p),
             } => agent_env_preview_cmd(p),
@@ -345,6 +346,97 @@ fn agent_redact_audit_cmd(a: &args::RedactAuditCmd) -> Result<(), Error> {
     match format {
         AuditFormat::Json => println!("{json}"),
         AuditFormat::Human => print!("{}", format_human(&report)),
+    }
+
+    if exit_code != ExitCode::Success {
+        exit_with_outcome(exit_code, exit_code.outcome_class());
+    }
+    Ok(())
+}
+
+fn agent_injection_audit_cmd(a: &args::InjectionAuditCmd) -> Result<(), Error> {
+    use crate::run::injection_audit::{
+        AuditFormat, AuditOpts, format_json, format_jsonl, format_text, parse_fail_on,
+        parse_format, run_injection_audit,
+    };
+
+    let format = parse_format(a.format.as_str()).map_err(Error::Config)?;
+    let fail_on = parse_fail_on(a.fail_on.as_str()).map_err(Error::Config)?;
+
+    // Guard: --output must not overwrite a trajectory artifact.
+    if let Some(ref out_path) = a.output {
+        if out_path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .is_some_and(|n| n.ends_with(".traj.json"))
+        {
+            return Err(Error::Config(crate::error::ConfigError::Invalid(
+                "--output path must not be a .traj.json file".to_owned(),
+            )));
+        }
+    }
+
+    let opts = AuditOpts {
+        sweep_dir: a.sweep.clone(),
+        extra_signatures: a.signatures.clone(),
+        format,
+        fail_on,
+    };
+
+    let report = match run_injection_audit(&opts) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("injection-audit: {e}");
+            // Config errors (bad --signatures file, invalid regex) → usage_error (2).
+            // I/O errors (unreadable sweep dir, bad trajectory) → scan_error (35).
+            let code = if matches!(e, Error::Config(_)) {
+                ExitCode::UsageError
+            } else {
+                ExitCode::InjectionAuditScanError
+            };
+            exit_with_outcome(code, code.outcome_class());
+        }
+    };
+
+    let exit_code = report.exit_code(fail_on);
+
+    // Render the report content.
+    let report_content: String = match format {
+        AuditFormat::Json => {
+            let json = format_json(&report).map_err(Error::Json)?;
+            serde_json::to_string_pretty(&json).map_err(Error::Json)?
+        }
+        AuditFormat::Jsonl => format_jsonl(&report),
+        AuditFormat::Text => format_text(&report),
+    };
+
+    // Write to --output if requested.  Write failures are logged but do NOT
+    // override the audit exit code — a flaky output path must not hide the
+    // scan result that CI gates on.
+    if let Some(ref out_path) = a.output {
+        if let Some(parent) = out_path.parent() {
+            if !parent.as_os_str().is_empty() {
+                if let Err(e) = std::fs::create_dir_all(parent) {
+                    eprintln!("injection-audit: failed to create output directory: {e}");
+                }
+            }
+        }
+        if let Err(e) = std::fs::write(out_path, &report_content) {
+            eprintln!("injection-audit: failed to write output file: {e}");
+            // If the scan already found hits or scan errors, those exit codes
+            // take priority.  But if the audit was otherwise clean, a write
+            // failure means the requested artifact was not produced — surface
+            // that as an error rather than silently exiting 0.
+            if exit_code == ExitCode::Success {
+                return Err(Error::Io(e));
+            }
+        }
+    }
+
+    // Print to stdout.
+    match format {
+        AuditFormat::Json | AuditFormat::Text => println!("{report_content}"),
+        AuditFormat::Jsonl => print!("{report_content}"),
     }
 
     if exit_code != ExitCode::Success {

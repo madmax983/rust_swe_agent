@@ -33,6 +33,7 @@ pub mod github_pr;
 pub mod grep;
 pub mod hello_world;
 pub mod import;
+pub mod injection_audit;
 pub mod inspect;
 pub mod instance_history;
 pub mod ladder;
