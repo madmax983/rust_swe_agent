@@ -159,8 +159,12 @@ pub enum ExitCode {
     /// or more trajectory files (missing path, unreadable file). The scan is
     /// incomplete, so a "clean" verdict cannot be trusted.
     InjectionAuditScanError = 38,
-    /// 39 — `bench dataset-verify` detected a mismatch between the candidate dataset and the canonical reference.
-    DatasetVerifyMismatch = 39,
+    /// 39 — `agent stability --fail-under <F>` found `pass_at_k < F`. All
+    /// runs completed; the gate is wired correctly but the measured pass rate
+    /// did not meet the declared threshold.
+    StabilityGateFailure = 39,
+    /// 40 — `bench dataset-verify` detected a mismatch between the candidate dataset and the canonical reference.
+    DatasetVerifyMismatch = 40,
     /// 130 — user interruption (graceful SIGINT / Ctrl-C; 128 + SIGINT(2)).
     Interrupted = 130,
     /// 137 — forced kill (SIGKILL escalation after graceful-cancel deadline; 128 + SIGKILL(9)).
@@ -220,6 +224,7 @@ impl ExitCode {
             Self::GithubIssueRateLimited => "github_issue_rate_limited",
             Self::InjectionAuditHits => "injection_audit_hits",
             Self::InjectionAuditScanError => "injection_audit_scan_error",
+            Self::StabilityGateFailure => "stability_gate_failure",
             Self::DatasetVerifyMismatch => "dataset_verify_mismatch",
             Self::Interrupted => "interrupted",
             Self::Killed => "killed",

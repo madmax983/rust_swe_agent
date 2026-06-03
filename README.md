@@ -216,6 +216,32 @@ the "same miss, more spend" regression pattern before it reaches the full sweep.
 See `docs/spec-agent-suite.md` for the full flag reference, file schema, and
 exit-code matrix.
 
+### 7. Is My Change Signal or Noise?
+
+After tweaking a prompt, config, or toolset, use `agent stability` to run one
+task N times and measure pass@k — the fraction of runs that actually succeed.
+This tells you whether a behaviour change is a real improvement or just sampling
+noise before you commit to it.
+
+```bash
+# Run the same task 5 times; fail CI if fewer than 80% of runs pass
+cargo run --quiet -- --log error agent stability \
+    --task "Fix the null dereference in src/handler.rs line 42" \
+    --runs 5 \
+    --verify "tests:cargo test handler" \
+    --fail-under 0.8 \
+    --model claude-haiku-4-5-20251001 \
+    --output ./stability-runs
+```
+
+Results are written to `stability-runs/<task-slug>/stability-results.json` with
+`pass_at_k`, cost/step statistics, and a `patch_identical_rate` showing how
+reproducible the agent's output is. Use `--format json` to print the artifact
+to stdout for CI capture.
+
+See `docs/spec-agent-stability.md` for the full flag reference, schema,
+exit-code matrix, and pass-predicate semantics.
+
 ### 8. Optional Preflight Before SWE-bench
 
 Use `bench dataset-stats` to preview the composition, token distributions (computed completely offline using `litellm-rs`'s `TokenCounter`), expected tests count, languages present, representative slice skewness (warns if unique repos < 50% or median token length difference > 25% compared to the full dataset), and historical resolved rates matching current dataset hash before running a sweep:
