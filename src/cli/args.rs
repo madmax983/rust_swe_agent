@@ -422,6 +422,14 @@ pub struct MiniCmd {
     #[arg(long)]
     pub task_file: Option<String>,
 
+    /// Seed the task prompt directly from a GitHub issue reference or URL.
+    #[arg(long = "from-issue", value_name = "ISSUE_REF")]
+    pub from_issue: Option<String>,
+
+    /// Seed the task prompt from a local GitHub issue JSON snapshot file.
+    #[arg(long = "from-issue-file", value_name = "PATH")]
+    pub from_issue_file: Option<PathBuf>,
+
     /// Resume from a partial (in-progress) trajectory file instead of starting a new run.
     /// The trajectory is the sole source of truth for task, model, env, and budget settings.
     /// Mutually exclusive with `--task`, `--task-file`, `--render-only`, `--trajectory-name`,

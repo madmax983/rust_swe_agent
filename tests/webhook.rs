@@ -149,6 +149,7 @@ fn make_mini_args(
         no_step_persist: false,
         parent_sweep_run_id: None,
         continue_from: None,
+        issue_provenance: None,
     }
 }
 
@@ -543,6 +544,7 @@ async fn webhook_redacts_secrets_before_post() {
         no_step_persist: false,
         parent_sweep_run_id: None,
         continue_from: None,
+        issue_provenance: None,
     };
 
     let (run_result, bodies) =

@@ -49,6 +49,7 @@ fn mini_args(work: &tempfile::TempDir, name: &str, checks: Vec<VerificationCheck
         no_step_persist: false,
         parent_sweep_run_id: None,
         continue_from: None,
+        issue_provenance: None,
     }
 }
 

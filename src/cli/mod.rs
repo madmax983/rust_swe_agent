@@ -482,22 +482,49 @@ fn agent_apply_cmd(a: &args::AgentApplyCmd) -> Result<(), Error> {
 
 #[allow(clippy::too_many_lines)]
 async fn mini_cmd(m: args::MiniCmd) -> Result<(), Error> {
-    let task = if m.resume_from.is_some() {
+    let mut issue_provenance = None;
+    let sources_count = [
+        m.task.is_some(),
+        m.task_file.is_some(),
+        m.resume_from.is_some(),
+        m.from_issue.is_some(),
+        m.from_issue_file.is_some(),
+    ]
+    .iter()
+    .filter(|&&b| b)
+    .count();
+
+    if sources_count > 1 {
+        let mut provided = Vec::new();
         if m.task.is_some() {
-            return Err(Error::Config(crate::error::ConfigError::Invalid(
-                "both --task and --resume were provided".into(),
-            )));
+            provided.push("--task");
         }
         if m.task_file.is_some() {
-            return Err(Error::Config(crate::error::ConfigError::Invalid(
-                "both --task-file and --resume were provided".into(),
-            )));
+            provided.push("--task-file");
         }
+        if m.resume_from.is_some() {
+            provided.push("--resume");
+        }
+        if m.from_issue.is_some() {
+            provided.push("--from-issue");
+        }
+        if m.from_issue_file.is_some() {
+            provided.push("--from-issue-file");
+        }
+        return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+            "multiple task sources provided ({}); only one may be used",
+            provided.join(", ")
+        ))));
+    }
+
+    let task = if m.resume_from.is_some() {
         String::new()
     } else if m.continue_from.is_some() {
-        // --continue REQUIRES --task (or --task-file) — the follow-up instruction.
-        // Clap enforces that --task is present when --continue is set; if the task is
-        // empty we catch it here the same way the normal path does below.
+        if m.from_issue.is_some() || m.from_issue_file.is_some() {
+            return Err(Error::Config(crate::error::ConfigError::Invalid(
+                "cannot use --from-issue or --from-issue-file with --continue".into(),
+            )));
+        }
         match (&m.task, &m.task_file) {
             (Some(_), Some(_)) => {
                 return Err(Error::Config(crate::error::ConfigError::Invalid(
@@ -551,6 +578,15 @@ async fn mini_cmd(m: args::MiniCmd) -> Result<(), Error> {
                 raw_content
             }
         }
+    } else if m.from_issue.is_some() || m.from_issue_file.is_some() {
+        let (t, prov) = crate::run::github_issue::resolve_issue_task_async(
+            m.from_issue.clone(),
+            m.from_issue_file.clone(),
+            &m.github_pr.github_token_env,
+        )
+        .await?;
+        issue_provenance = Some(prov);
+        t
     } else {
         match (&m.task, &m.task_file) {
             (Some(_), Some(_)) => {
@@ -560,7 +596,8 @@ async fn mini_cmd(m: args::MiniCmd) -> Result<(), Error> {
             }
             (None, None) => {
                 return Err(Error::Config(crate::error::ConfigError::Invalid(
-                    "either --task or --task-file must be provided".into(),
+                    "either --task, --task-file, --from-issue, or --from-issue-file must be provided"
+                        .into(),
                 )));
             }
             (Some(t), None) => {
@@ -743,6 +780,7 @@ async fn mini_cmd(m: args::MiniCmd) -> Result<(), Error> {
         no_step_persist: m.no_step_persist,
         parent_sweep_run_id: None,
         continue_from: None,
+        issue_provenance,
     };
     let run_result = crate::run::mini::run(args).await;
     // Only publish when the run succeeded or failed at verification — those are
@@ -1146,6 +1184,7 @@ async fn mini_resume_cmd(
         no_step_persist: m.no_step_persist,
         parent_sweep_run_id: None,
         continue_from: None,
+        issue_provenance: None,
     };
     crate::run::mini::run(args).await
 }
@@ -1411,6 +1450,7 @@ async fn mini_continue_cmd(
         rehearsal_gold_patch: None,
         no_step_persist: m.no_step_persist,
         parent_sweep_run_id: None,
+        issue_provenance: None,
     };
     crate::run::mini::run(args).await
 }
@@ -6038,6 +6078,8 @@ mod tests {
         args::MiniCmd {
             task: Some("Fix it".into()),
             task_file: None,
+            from_issue: None,
+            from_issue_file: None,
             resume_from: None,
             resume_allow_step_bump: false,
             continue_from: None,
@@ -6304,5 +6346,17 @@ mod tests {
             }
             assert_eq!(path, PathBuf::from(expected));
         }
+    }
+
+    #[tokio::test]
+    async fn test_mini_cmd_mutual_exclusivity() {
+        let mut cmd = mini_cmd(false, false);
+        cmd.task = Some("Fix it".into());
+        cmd.from_issue = Some("owner/repo#123".into());
+
+        let res = super::mini_cmd(cmd).await;
+        assert!(res.is_err());
+        let err_str = res.unwrap_err().to_string();
+        assert!(err_str.contains("multiple task sources provided"));
     }
 }
