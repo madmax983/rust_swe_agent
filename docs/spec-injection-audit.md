@@ -160,7 +160,7 @@ Each hit record (in `--format json` hits array or `--format jsonl` lines):
 ## `--fail-on` Severity Threshold
 
 The `--fail-on <SEVERITY>` flag configures the minimum severity that triggers
-exit code 34:
+exit code 37:
 
 | `--fail-on` value | Exit 37 when … |
 |-------------------|----------------|

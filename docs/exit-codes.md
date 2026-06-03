@@ -42,6 +42,8 @@ parsing human-oriented output.
 | 34   | `github_issue_missing_token` | The `GITHUB_TOKEN` environment variable was empty or missing. |
 | 35   | `github_issue_not_found` | The API returned `404 Not Found` (or a `403` indicating a private/unauthorized repository). |
 | 36   | `github_issue_rate_limited` | The GitHub API returned a `403 Rate Limit Exceeded` status. |
+| 37   | `injection_audit_hits` | `agent injection-audit` found at least one hit at or above the configured `--fail-on` severity threshold. The audit completed; use as a publish gate (`injection-audit <dir> && publish`). Distinct from `internal_error` (1) so CI can route "injection signals found" separately from a crash. |
+| 38   | `injection_audit_scan_error` | `agent injection-audit` could not read the sweep directory, a trajectory file, or a subdirectory of the sweep (missing path, unreadable file, mid-stream walk failure). The scan is incomplete so a clean verdict cannot be trusted. Hits take precedence: exit 37 is returned instead when any actionable hit is also present. |
 | 130  | `interrupted`            | Graceful SIGINT / Ctrl-C cancellation (POSIX convention: 128 + SIGINT(2)). |
 | 137  | `killed`                 | SIGKILL escalation after the graceful-cancel deadline expired (128 + SIGKILL(9)). |
 
