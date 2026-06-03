@@ -139,6 +139,7 @@ pub async fn run() -> Result<(), Error> {
             args::AgentCmd::Env {
                 cmd: args::AgentEnvCmd::Preview(ref p),
             } => agent_env_preview_cmd(p),
+            args::AgentCmd::Stability(s) => Box::pin(agent_stability_cmd(*s)).await,
             args::AgentCmd::Suite(s) => Box::pin(agent_suite_cmd(*s)).await,
             args::AgentCmd::PolicyCheck(p) => agent_policy_check_cmd(&p),
             args::AgentCmd::Apply(a) => agent_apply_cmd(&a),
@@ -5909,6 +5910,130 @@ pub fn compare_rehearsals(
 }
 
 // ── agent suite ───────────────────────────────────────────────────────────────
+
+async fn agent_stability_cmd(s: args::StabilityCmd) -> Result<(), Error> {
+    // ── Validate --runs ───────────────────────────────────────────────────────
+    if let Err(msg) = crate::run::stability::validate_runs(s.runs) {
+        return Err(Error::Config(crate::error::ConfigError::Invalid(msg)));
+    }
+
+    // ── Resolve task text ─────────────────────────────────────────────────────
+    let task = match (&s.task, &s.task_file) {
+        (Some(t), _) => t.clone(),
+        (None, Some(path)) => {
+            if path == std::path::Path::new("-") {
+                use std::io::Read as _;
+                let mut buf = String::new();
+                std::io::stdin()
+                    .read_to_string(&mut buf)
+                    .map_err(Error::Io)?;
+                buf.trim().to_owned()
+            } else {
+                std::fs::read_to_string(path).map_err(|e| {
+                    Error::Config(crate::error::ConfigError::Invalid(format!(
+                        "cannot read task file '{}': {e}",
+                        path.display()
+                    )))
+                })?
+                .trim()
+                .to_owned()
+            }
+        }
+        (None, None) => {
+            return Err(Error::Config(crate::error::ConfigError::Invalid(
+                "one of --task or --task-file is required".into(),
+            )));
+        }
+    };
+
+    if task.is_empty() {
+        return Err(Error::Config(crate::error::ConfigError::Invalid(
+            "task must not be empty".into(),
+        )));
+    }
+
+    // ── Load config and apply CLI overrides ───────────────────────────────────
+    let mut cfg = match &s.config {
+        Some(p) => Config::load(p)?,
+        None => Config::defaults()?,
+    };
+
+    cfg.root.model.name.clone_from(&s.model);
+
+    if let Some(v) = s.step_limit {
+        cfg.root.agent.step_limit = v;
+    }
+    if let Some(v) = s.per_task_budget_usd {
+        cfg.root.agent.per_task_budget_usd = Some(v);
+    }
+    if let Some(kind) = &s.env {
+        cfg.root.environment.kind = parse_env_kind(kind.as_str())?;
+    }
+    if let Some(img) = s.docker_image.clone() {
+        cfg.root.environment.docker_image = Some(img);
+    }
+    if let Some(v) = s.detect_stagnation {
+        cfg.root.agent.detect_stagnation = v;
+    }
+    if let Some(v) = s.history_max_input_tokens {
+        cfg.root.agent.history_max_input_tokens = Some(v);
+    }
+    if let Some(v) = s.history_keep_last_observations {
+        cfg.root.agent.history_keep_last_observations = Some(v);
+    }
+    apply_mcp_server_overrides(&mut cfg, &s.mcp_servers)?;
+
+    // ── Derive stability name from task slug when not supplied ────────────────
+    let stability_name = s.stability_name.clone().unwrap_or_else(|| {
+        let slug: String = task
+            .chars()
+            .take(40)
+            .map(|c| if c.is_alphanumeric() { c } else { '-' })
+            .collect::<String>()
+            .trim_matches('-')
+            .to_owned();
+        if slug.is_empty() {
+            "stability".to_owned()
+        } else {
+            slug
+        }
+    });
+
+    let output_dir = s.output.clone();
+    let stability_name_for_json = stability_name.clone();
+    let stability_args = crate::run::stability::StabilityArgs {
+        task,
+        runs: s.runs,
+        config: cfg,
+        output_dir,
+        stability_name,
+        verify: s.verify,
+        verify_timeout_secs: s.verify_timeout_secs,
+        fail_under: s.fail_under,
+        cost_limit_usd: s.cost_limit_usd,
+        task_timeout_secs: s.task_timeout_secs,
+        step_limit: s.step_limit,
+        per_task_budget_usd: s.per_task_budget_usd,
+        deterministic_responses: None,
+        deterministic_usage_per_call: None,
+    };
+
+    let exit_code = crate::run::stability::run(stability_args).await?;
+
+    // ── --format json: print artifact to stdout ───────────────────────────────
+    if s.format.as_deref() == Some("json") {
+        let result_dir = s.output.join(&stability_name_for_json);
+        let result_path = result_dir.join("stability-results.json");
+        if let Ok(json_text) = std::fs::read_to_string(&result_path) {
+            println!("{json_text}");
+        }
+    }
+
+    if exit_code != ExitCode::Success {
+        exit_with_outcome(exit_code, exit_code.outcome_class());
+    }
+    Ok(())
+}
 
 async fn agent_suite_cmd(s: args::SuiteCmd) -> Result<(), Error> {
     let mut cfg = match &s.config {

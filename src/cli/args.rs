@@ -61,6 +61,98 @@ pub enum AgentEnvCmd {
     Preview(EnvPreviewCmd),
 }
 
+/// `agent stability` — measure single-task run-to-run variance (issue #475).
+#[derive(Debug, Args)]
+pub struct StabilityCmd {
+    /// Task description to run repeatedly. Mutually exclusive with `--task-file`.
+    #[arg(long, value_name = "TASK", conflicts_with = "task_file")]
+    pub task: Option<String>,
+
+    /// Path to a file containing the task description (use `-` for stdin).
+    /// Mutually exclusive with `--task`.
+    #[arg(long = "task-file", value_name = "PATH", conflicts_with = "task")]
+    pub task_file: Option<PathBuf>,
+
+    /// Number of times to run the task (1..=10).
+    #[arg(long, value_name = "N")]
+    pub runs: u32,
+
+    /// Model name (e.g. `claude-haiku-4-5-20251001`).
+    #[arg(long, default_value = "claude-opus-4-7")]
+    pub model: String,
+
+    /// Optional path to a TOML config file (overlays defaults).
+    #[arg(long)]
+    pub config: Option<PathBuf>,
+
+    /// Verify check in `NAME:COMMAND` format (repeatable). Without `--verify`,
+    /// the pass predicate falls back to `outcome == submitted`.
+    #[arg(long = "verify", value_name = "NAME:COMMAND")]
+    pub verify: Vec<String>,
+
+    /// Per-check timeout in seconds for `--verify` checks. Default: 60.
+    #[arg(long = "verify-timeout-secs", default_value_t = 60)]
+    pub verify_timeout_secs: u64,
+
+    /// Root output directory. Artifacts land in `<output>/<stability-name>/`.
+    #[arg(long, default_value = "./runs")]
+    pub output: PathBuf,
+
+    /// Output format: `text` (default, human-readable) or `json` (prints
+    /// `stability-results.json` to stdout for CI capture).
+    #[arg(long, value_name = "FORMAT")]
+    pub format: Option<String>,
+
+    /// Exit with code 39 (`stability_gate_failure`) when `pass_at_k < FLOAT`.
+    #[arg(long = "fail-under", value_name = "FLOAT")]
+    pub fail_under: Option<f64>,
+
+    /// Per-run USD ceiling enforced inside the agent loop.
+    #[arg(long)]
+    pub per_task_budget_usd: Option<f64>,
+
+    /// Total USD ceiling. Remaining runs are recorded as skipped when exceeded.
+    #[arg(long = "cost-limit-usd")]
+    pub cost_limit_usd: Option<f64>,
+
+    /// Max agent steps per run.
+    #[arg(long)]
+    pub step_limit: Option<u32>,
+
+    /// Per-run wallclock timeout in seconds.
+    #[arg(long)]
+    pub task_timeout_secs: Option<u64>,
+
+    /// Environment: `local` or `docker`.
+    #[arg(long)]
+    pub env: Option<String>,
+
+    /// Docker image, if `--env docker`.
+    #[arg(long)]
+    pub docker_image: Option<String>,
+
+    /// Register an invocation-time MCP stdio server command (repeatable).
+    #[arg(long = "mcp-server", value_name = "COMMAND")]
+    pub mcp_servers: Vec<String>,
+
+    /// Enable or disable in-loop stagnation detection.
+    #[arg(long = "detect-stagnation", num_args = 0..=1, default_missing_value = "true")]
+    pub detect_stagnation: Option<bool>,
+
+    /// Token budget for the model-visible prompt.
+    #[arg(long)]
+    pub history_max_input_tokens: Option<u64>,
+
+    /// Keep only the last N tool observations in the model-visible prompt.
+    #[arg(long)]
+    pub history_keep_last_observations: Option<usize>,
+
+    /// Name for this stability run (used as the output subdirectory name and
+    /// in `stability-results.json`). Defaults to a slug of the task text.
+    #[arg(long = "stability-name", value_name = "NAME")]
+    pub stability_name: Option<String>,
+}
+
 /// `agent suite` — run an operator-defined personal eval task pack (issue #322).
 #[derive(Debug, Args)]
 #[allow(clippy::struct_excessive_bools)]
@@ -374,6 +466,8 @@ pub enum AgentCmd {
     InjectionAudit(InjectionAuditCmd),
     /// Preview which skills will activate for one or more tasks (zero-cost, no model call).
     SkillsPreview(SkillsPreviewCmd),
+    /// Measure single-task run-to-run variance and produce stability-results.json.
+    Stability(Box<StabilityCmd>),
     /// Run an operator-defined personal eval task pack and produce suite-results.json.
     Suite(Box<SuiteCmd>),
     /// Check a command corpus against the policy config (zero-cost, no model call).
