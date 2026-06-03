@@ -76,7 +76,9 @@ fn neither_specified_fails() {
     assert!(!status.success());
     assert_eq!(status.code(), Some(2));
     assert!(
-        stderr.contains("either --task, --task-file, --from-issue, or --from-issue-file must be provided"),
+        stderr.contains(
+            "either --task, --task-file, --from-issue, or --from-issue-file must be provided"
+        ),
         "stderr must report missing task argument: {stderr}"
     );
     assert!(

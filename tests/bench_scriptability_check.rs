@@ -177,7 +177,11 @@ async fn report_artifact_kind_serialises_to_scriptability_check() {
 
 #[tokio::test]
 async fn passing_pre_tool_use_hook_results_in_ok() {
-    let cmd = if cfg!(windows) { "cmd /c exit 0" } else { "true" };
+    let cmd = if cfg!(windows) {
+        "cmd /c exit 0"
+    } else {
+        "true"
+    };
     let toml = format!(
         r#"
 [[agent.hooks.pre_tool_use]]
@@ -207,7 +211,11 @@ command = "{cmd}"
 
 #[tokio::test]
 async fn failing_pre_tool_use_hook_makes_all_ok_false() {
-    let cmd = if cfg!(windows) { "cmd /c exit 1" } else { "false" };
+    let cmd = if cfg!(windows) {
+        "cmd /c exit 1"
+    } else {
+        "false"
+    };
     let toml = format!(
         r#"
 [[agent.hooks.pre_tool_use]]
@@ -367,7 +375,11 @@ async fn render_text_shows_pass_fail_table() {
 
 #[tokio::test]
 async fn render_text_shows_ok_for_passing_hook() {
-    let cmd = if cfg!(windows) { "cmd /c exit 0" } else { "true" };
+    let cmd = if cfg!(windows) {
+        "cmd /c exit 0"
+    } else {
+        "true"
+    };
     let toml = format!(
         r#"
 [[agent.hooks.pre_tool_use]]
