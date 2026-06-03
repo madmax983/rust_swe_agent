@@ -23,6 +23,9 @@ pub enum Error {
     #[error("github pr: {0}")]
     Github(String),
 
+    #[error("github issue: {0}")]
+    GithubIssue(#[from] GithubIssueError),
+
     #[error(transparent)]
     Io(#[from] std::io::Error),
 
@@ -237,4 +240,19 @@ impl From<toml::de::Error> for ConfigError {
     fn from(e: toml::de::Error) -> Self {
         Self::Toml(e.to_string())
     }
+}
+
+#[derive(Debug, Error)]
+pub enum GithubIssueError {
+    #[error("missing GitHub token: set `{0}` to a PAT or GitHub App installation token")]
+    MissingToken(String),
+
+    #[error("GitHub issue or repo not found: {0}")]
+    NotFound(String),
+
+    #[error("GitHub API rate limited: {0}")]
+    RateLimited(String),
+
+    #[error("GitHub API request failed: {0}")]
+    RequestFailed(String),
 }

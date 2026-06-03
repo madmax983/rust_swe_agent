@@ -49,6 +49,7 @@ fn chaos_args(cfg: Config, output: std::path::PathBuf, name: &str) -> MiniArgs {
         no_step_persist: false,
         parent_sweep_run_id: None,
         continue_from: None,
+        issue_provenance: None,
     }
 }
 

@@ -160,6 +160,11 @@ fn all_variants_have_unique_codes() {
         ExitCode::EvalGamingGateFailure,
         ExitCode::Interrupted,
         ExitCode::Killed,
+        ExitCode::RedactAuditFindings,
+        ExitCode::RedactAuditScanError,
+        ExitCode::GithubIssueMissingToken,
+        ExitCode::GithubIssueNotFound,
+        ExitCode::GithubIssueRateLimited,
     ];
     let codes: Vec<i32> = variants.iter().map(|v| v.as_i32()).collect();
     let mut sorted = codes.clone();
@@ -182,6 +187,11 @@ fn all_variants_have_unique_outcome_classes() {
         ExitCode::EvalGamingGateFailure,
         ExitCode::Interrupted,
         ExitCode::Killed,
+        ExitCode::RedactAuditFindings,
+        ExitCode::RedactAuditScanError,
+        ExitCode::GithubIssueMissingToken,
+        ExitCode::GithubIssueNotFound,
+        ExitCode::GithubIssueRateLimited,
     ];
     let classes: Vec<&str> = variants.iter().map(|v| v.outcome_class()).collect();
     let mut sorted = classes.clone();
@@ -310,6 +320,11 @@ fn outcome_class_strings_are_valid_snake_case_identifiers() {
         ExitCode::VerificationFailure,
         ExitCode::Interrupted,
         ExitCode::Killed,
+        ExitCode::RedactAuditFindings,
+        ExitCode::RedactAuditScanError,
+        ExitCode::GithubIssueMissingToken,
+        ExitCode::GithubIssueNotFound,
+        ExitCode::GithubIssueRateLimited,
     ];
     for v in variants {
         let s = v.outcome_class();
@@ -342,6 +357,11 @@ fn only_success_is_zero() {
         ExitCode::VerificationFailure,
         ExitCode::Interrupted,
         ExitCode::Killed,
+        ExitCode::RedactAuditFindings,
+        ExitCode::RedactAuditScanError,
+        ExitCode::GithubIssueMissingToken,
+        ExitCode::GithubIssueNotFound,
+        ExitCode::GithubIssueRateLimited,
     ];
     assert_eq!(ExitCode::Success.as_i32(), 0);
     for v in failure_variants {

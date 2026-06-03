@@ -27,6 +27,7 @@ pub mod failure_digest;
 pub mod forecast;
 pub mod fork;
 pub mod frontier;
+pub mod github_issue;
 pub mod github_pr;
 pub mod grep;
 pub mod hello_world;

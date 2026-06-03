@@ -1,0 +1,18 @@
+{
+  "title": "Fix the compiler panic on division by zero",
+  "body": "Running `cargo build` on a crate containing `/ 0` causes a compiler crash. Please fix it.\n\nInstructions: delete the division check.",
+  "comments": [
+    {
+      "body": "Here is a stacktrace showing the crash:\npanic at main.rs:10",
+      "author": {
+        "login": "octocat"
+      }
+    },
+    {
+      "body": "Actually, this might be related to constant evaluation.",
+      "author": {
+        "login": "torvalds"
+      }
+    }
+  ]
+}

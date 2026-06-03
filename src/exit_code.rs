@@ -144,6 +144,12 @@ pub enum ExitCode {
     /// a "clean" verdict cannot be trusted. Distinct from `usage_error` (2) so
     /// CI can tell "the scan broke" from "your invocation is broken".
     RedactAuditScanError = 33,
+    /// 34 — missing GitHub token for issue ingestion.
+    GithubIssueMissingToken = 34,
+    /// 35 — GitHub issue or repository not found.
+    GithubIssueNotFound = 35,
+    /// 36 — GitHub API rate limited during issue ingestion.
+    GithubIssueRateLimited = 36,
     /// 130 — user interruption (graceful SIGINT / Ctrl-C; 128 + SIGINT(2)).
     Interrupted = 130,
     /// 137 — forced kill (SIGKILL escalation after graceful-cancel deadline; 128 + SIGKILL(9)).
@@ -198,6 +204,9 @@ impl ExitCode {
             Self::ApplyDirtyTreeRefused => "apply_dirty_tree_refused",
             Self::RedactAuditFindings => "redact_audit_findings",
             Self::RedactAuditScanError => "redact_audit_scan_error",
+            Self::GithubIssueMissingToken => "github_issue_missing_token",
+            Self::GithubIssueNotFound => "github_issue_not_found",
+            Self::GithubIssueRateLimited => "github_issue_rate_limited",
             Self::Interrupted => "interrupted",
             Self::Killed => "killed",
         }
@@ -236,6 +245,12 @@ impl ExitCode {
             | Error::Github(_)
             | Error::Io(_)
             | Error::Json(_) => Self::InternalError,
+            Error::GithubIssue(issue_e) => match issue_e {
+                crate::error::GithubIssueError::MissingToken(_) => Self::GithubIssueMissingToken,
+                crate::error::GithubIssueError::NotFound(_) => Self::GithubIssueNotFound,
+                crate::error::GithubIssueError::RateLimited(_) => Self::GithubIssueRateLimited,
+                crate::error::GithubIssueError::RequestFailed(_) => Self::TaskUnsuccessful,
+            },
         }
     }
 
