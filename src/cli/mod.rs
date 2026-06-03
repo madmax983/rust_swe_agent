@@ -6022,13 +6022,13 @@ async fn agent_stability_cmd(s: args::StabilityCmd) -> Result<(), Error> {
         per_task_budget_usd: s.per_task_budget_usd,
         deterministic_responses: None,
         deterministic_usage_per_call: None,
-        print_summary: s.format.as_deref() != Some("json"),
+        print_summary: s.format != Some(args::StabilityFormatArg::Json),
     };
 
     let exit_code = crate::run::stability::run(stability_args).await?;
 
     // ── --format json: print artifact to stdout ───────────────────────────────
-    if s.format.as_deref() == Some("json") {
+    if s.format == Some(args::StabilityFormatArg::Json) {
         let result_dir = s.output.join(&stability_name_for_json);
         let result_path = result_dir.join("stability-results.json");
         if let Ok(json_text) = std::fs::read_to_string(&result_path) {

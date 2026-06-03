@@ -284,6 +284,17 @@ pub fn compute_stats(values: &[f64]) -> StatsResult {
 /// is set and `pass_at_k < fail_under`.
 #[allow(clippy::too_many_lines)]
 pub async fn run(args: StabilityArgs) -> Result<ExitCode, Error> {
+    // ── Validate stability name (no path traversal) ───────────────────────────
+    if args.stability_name.contains('/')
+        || args.stability_name.contains('\\')
+        || args.stability_name.contains("..")
+    {
+        return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+            "stability name '{}' must not contain path separators or '..'",
+            args.stability_name
+        ))));
+    }
+
     // ── Prepare output directory ──────────────────────────────────────────────
     let stability_dir = args.output_dir.join(&args.stability_name);
     std::fs::create_dir_all(&stability_dir).map_err(Error::Io)?;
@@ -368,7 +379,11 @@ pub async fn run(args: StabilityArgs) -> Result<ExitCode, Error> {
         };
 
         if let Err(e) = crate::run::mini::run(mini_args).await {
-            if !matches!(e, Error::VerificationFailed(..)) {
+            // Only propagate errors that prevented the trajectory from being
+            // written (preflight, Docker setup, config errors). Post-start
+            // errors (timeouts, stagnation, verification failures) still write
+            // a trajectory, so we fall through and read it below.
+            if !traj_path.exists() {
                 return Err(e);
             }
         }

@@ -61,6 +61,13 @@ pub enum AgentEnvCmd {
     Preview(EnvPreviewCmd),
 }
 
+/// Output-format selector for `agent stability`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum StabilityFormatArg {
+    Text,
+    Json,
+}
+
 /// `agent stability` — measure single-task run-to-run variance (issue #475).
 #[derive(Debug, Args)]
 pub struct StabilityCmd {
@@ -100,8 +107,8 @@ pub struct StabilityCmd {
 
     /// Output format: `text` (default, human-readable) or `json` (prints
     /// `stability-results.json` to stdout for CI capture).
-    #[arg(long, value_name = "FORMAT")]
-    pub format: Option<String>,
+    #[arg(long, value_enum)]
+    pub format: Option<StabilityFormatArg>,
 
     /// Exit with code 39 (`stability_gate_failure`) when `pass_at_k < FLOAT`.
     #[arg(long = "fail-under", value_name = "FLOAT")]
