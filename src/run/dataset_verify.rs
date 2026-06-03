@@ -54,29 +54,32 @@ pub fn normalize_json_list(val: &serde_json::Value) -> Vec<String> {
     }
 }
 
+fn update_scalar(hasher: &mut sha2::Sha256, field_name: &str, val: &str) {
+    use sha2::Digest as _;
+    hasher.update(field_name.as_bytes());
+    hasher.update(b":");
+    let len_str = val.len().to_string();
+    hasher.update(len_str.as_bytes());
+    hasher.update(b":");
+    hasher.update(val.as_bytes());
+    hasher.update(b"\n");
+}
+
 pub fn compute_instance_hash(inst: &SweBenchInstance) -> String {
     use sha2::{Digest, Sha256};
     let mut hasher = Sha256::new();
 
     let problem_statement = inst.problem_statement.as_deref().unwrap_or("");
-    hasher.update(b"problem_statement:");
-    hasher.update(problem_statement.as_bytes());
-    hasher.update(b"\n");
+    update_scalar(&mut hasher, "problem_statement", problem_statement);
 
     let repo = inst.repo.as_deref().unwrap_or("");
-    hasher.update(b"repo:");
-    hasher.update(repo.as_bytes());
-    hasher.update(b"\n");
+    update_scalar(&mut hasher, "repo", repo);
 
     let base_commit = inst.base_commit.as_deref().unwrap_or("");
-    hasher.update(b"base_commit:");
-    hasher.update(base_commit.as_bytes());
-    hasher.update(b"\n");
+    update_scalar(&mut hasher, "base_commit", base_commit);
 
     let image = inst.image.as_deref().unwrap_or("");
-    hasher.update(b"image:");
-    hasher.update(image.as_bytes());
-    hasher.update(b"\n");
+    update_scalar(&mut hasher, "image", image);
 
     let get_other_str = |key: &str| -> String {
         inst.other
@@ -94,14 +97,10 @@ pub fn compute_instance_hash(inst: &SweBenchInstance) -> String {
     };
 
     let patch = get_other_str("patch");
-    hasher.update(b"patch:");
-    hasher.update(patch.as_bytes());
-    hasher.update(b"\n");
+    update_scalar(&mut hasher, "patch", &patch);
 
     let test_patch = get_other_str("test_patch");
-    hasher.update(b"test_patch:");
-    hasher.update(test_patch.as_bytes());
-    hasher.update(b"\n");
+    update_scalar(&mut hasher, "test_patch", &test_patch);
 
     let fail_to_pass = inst
         .other
@@ -134,9 +133,7 @@ pub fn compute_instance_hash(inst: &SweBenchInstance) -> String {
     hasher.update(b"\n");
 
     let env_commit = get_other_str("environment_setup_commit");
-    hasher.update(b"environment_setup_commit:");
-    hasher.update(env_commit.as_bytes());
-    hasher.update(b"\n");
+    update_scalar(&mut hasher, "environment_setup_commit", &env_commit);
 
     format!("{:x}", hasher.finalize())
 }
@@ -638,6 +635,32 @@ mod tests {
             assert_ne!(
                 compute_instance_hash(&inst_list_a),
                 compute_instance_hash(&inst_list_b)
+            );
+        }
+
+        // 5. Verify that injecting field headers in scalar values does not cause hash collisions
+        {
+            let inst_ref = SweBenchInstance {
+                instance_id: "test-1".to_string(),
+                repo: Some("y".to_string()),
+                base_commit: Some("commit-a".to_string()),
+                problem_statement: Some("fix\nrepo:x".to_string()),
+                image: Some("image-a".to_string()),
+                other: serde_json::Map::new(),
+            };
+
+            let inst_cand = SweBenchInstance {
+                instance_id: "test-1".to_string(),
+                repo: Some("x\nrepo:y".to_string()),
+                base_commit: Some("commit-a".to_string()),
+                problem_statement: Some("fix".to_string()),
+                image: Some("image-a".to_string()),
+                other: serde_json::Map::new(),
+            };
+
+            assert_ne!(
+                compute_instance_hash(&inst_ref),
+                compute_instance_hash(&inst_cand)
             );
         }
     }
