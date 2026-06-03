@@ -43,6 +43,7 @@ pub mod policy_check;
 pub mod policy_impact;
 pub mod power;
 pub mod rate_limit;
+pub mod redact_audit;
 pub mod redact_check;
 pub mod render_only;
 pub mod replay;

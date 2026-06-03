@@ -118,7 +118,7 @@ If issue ingestion fails before the agent loop starts, Maxwell's Daemon exits wi
 
 | Condition | Exit Code | Outcome Class | Description |
 | :--- | :---: | :--- | :--- |
-| **Missing Github Token** | `32` | `github_issue_missing_token` | The `GITHUB_TOKEN` environment variable was empty or missing. |
-| **Issue or Repo Not Found** | `33` | `github_issue_not_found` | The API returned `404 Not Found` (or a `403` indicating a private/unauthorized repository). |
-| **Rate Limited** | `34` | `github_issue_rate_limited` | The GitHub API returned a `403 Rate Limit Exceeded` status. |
+| **Missing Github Token** | `34` | `github_issue_missing_token` | The `GITHUB_TOKEN` environment variable was empty or missing. |
+| **Issue or Repo Not Found** | `35` | `github_issue_not_found` | The API returned `404 Not Found` (or a `403` indicating a private/unauthorized repository). |
+| **Rate Limited** | `36` | `github_issue_rate_limited` | The GitHub API returned a `403 Rate Limit Exceeded` status. |
 | **Validation Violations** | `2` | `usage_error` | Multiple task sources specified or empty issue content parsed. |
