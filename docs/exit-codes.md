@@ -37,6 +37,8 @@ parsing human-oriented output.
 | 29   | `apply_check_failed`     | `agent apply` ran `git apply --check` and the patch cannot be applied cleanly to the current tree. The working tree is left unchanged. |
 | 30   | `apply_redacted_refused` | `agent apply` detected `[REDACTED:…]` markers in the patch content or the source trajectory recorded patch-submission redaction. Pass `--allow-redacted` to override. |
 | 31   | `apply_dirty_tree_refused` | `agent apply` found uncommitted changes in the target working tree. Pass `--allow-dirty` to override. |
+| 32   | `redact_audit_findings` | `agent redact-audit` found at least one new finding at `medium` or higher severity. Suitable as a publish gate (`redact-audit <dir> && publish`). Distinct from a scan error so CI can route a leak vs. an incomplete scan. |
+| 33   | `redact_audit_scan_error` | `agent redact-audit` could not read or extract an artifact (unreadable file/subtree, corrupt bundle member), so the scan is incomplete and a clean verdict cannot be trusted. Findings take precedence: exit 32 is returned instead when any new finding is also present. |
 | 130  | `interrupted`            | Graceful SIGINT / Ctrl-C cancellation (POSIX convention: 128 + SIGINT(2)). |
 | 137  | `killed`                 | SIGKILL escalation after the graceful-cancel deadline expired (128 + SIGKILL(9)). |
 
@@ -88,6 +90,7 @@ coarse sweep-level result.
 | `agent skills-preview`          | `success`, `usage_error`, `skills_preview_warning`, `internal_error` |
 | `bench scriptability-check`     | `success`, `usage_error`, `scriptability_check_failure`, `internal_error` |
 | `agent redact-check`            | `success`, `usage_error`, `redact_check_stale_literals`, `redact_check_strict_fail`, `internal_error` |
+| `agent redact-audit`            | `success`, `usage_error`, `redact_audit_findings`, `redact_audit_scan_error`, `internal_error` |
 | `bench assert`                  | `success`, `usage_error`, `slo_rule_failure`, `internal_error` |
 | `agent apply`                   | `success`, `usage_error`, `apply_check_failed`, `apply_redacted_refused`, `apply_dirty_tree_refused`, `internal_error` |
 

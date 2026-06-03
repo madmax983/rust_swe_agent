@@ -134,6 +134,7 @@ pub async fn run() -> Result<(), Error> {
         Command::Agent { cmd } => match *cmd {
             args::AgentCmd::SkillsPreview(s) => agent_skills_preview_cmd(&s),
             args::AgentCmd::RedactCheck(r) => agent_redact_check_cmd(&r),
+            args::AgentCmd::RedactAudit(a) => agent_redact_audit_cmd(&a),
             args::AgentCmd::Env {
                 cmd: args::AgentEnvCmd::Preview(ref p),
             } => agent_env_preview_cmd(p),
@@ -251,6 +252,99 @@ fn agent_redact_check_cmd(r: &args::RedactCheckCmd) -> Result<(), Error> {
         RedactCheckFormat::Human => {
             print!("{}", format_human(&output));
         }
+    }
+
+    if exit_code != ExitCode::Success {
+        exit_with_outcome(exit_code, exit_code.outcome_class());
+    }
+    Ok(())
+}
+
+fn agent_redact_audit_cmd(a: &args::RedactAuditCmd) -> Result<(), Error> {
+    use crate::run::redact_audit::{
+        AuditFormat, AuditOpts, format_human, format_json, is_audited_file, mask_report_path,
+        output_aliases_scanned_artifact, parse_format, run_redact_audit,
+    };
+
+    let cfg = match &a.config {
+        Some(path) => Config::load(path)?,
+        None => Config::defaults()?,
+    };
+
+    let format = parse_format(a.json, a.format.as_str())?;
+
+    // Resolve the report path up front and refuse to overwrite a scanned source
+    // artifact: `redact-audit` is detector-only and must never mutate the sweep
+    // it audits. The default `redact_audit.json` is never itself audited, so it
+    // is always allowed; any other path that resolves to an existing audited
+    // artifact *inside the scanned directory* (e.g. `<dir>/results.json`, an
+    // instance `trajectory.json`) is rejected before the scan runs so the
+    // completed sweep cannot be corrupted. A path outside the scanned tree (e.g.
+    // `--output /tmp/results.json`) is never a scanned source artifact and is
+    // allowed even if its name looks audited. Two checks catch a write that
+    // would mutate a scanned artifact: (1) the canonical target resolves inside
+    // the scanned tree under an audited name (covers a symlink such as
+    // `report -> <dir>/results.json`); (2) the output shares an on-disk inode
+    // with a scanned artifact (covers a hard link whose own name is not
+    // allowlisted), since `std::fs::write` would truncate the shared inode.
+    let out_path = a
+        .output
+        .clone()
+        .unwrap_or_else(|| a.dir.join("redact_audit.json"));
+    let resolved_out = std::fs::canonicalize(&out_path).unwrap_or_else(|_| out_path.clone());
+    let canonical_dir = std::fs::canonicalize(&a.dir).unwrap_or_else(|_| a.dir.clone());
+    let inside_scan = resolved_out.starts_with(&canonical_dir);
+    if out_path.exists()
+        && ((inside_scan && (is_audited_file(&out_path) || is_audited_file(&resolved_out)))
+            || output_aliases_scanned_artifact(&a.dir, &out_path))
+    {
+        return Err(Error::Config(crate::error::ConfigError::Usage(format!(
+            "redact-audit: --output '{}' would overwrite an audited source artifact; \
+             choose a different path (the report is detector-only and must not mutate the sweep)",
+            // The rejected path may itself embed a secret; mask it like other
+            // path-shaped report fields before it reaches stderr.
+            mask_report_path(&cfg, &out_path.display().to_string())
+        ))));
+    }
+
+    let opts = AuditOpts {
+        dir: a.dir.clone(),
+        detectors: a.detectors.clone(),
+        disable_entropy: a.disable_entropy,
+        baseline: a.baseline.clone(),
+    };
+
+    let report = run_redact_audit(&cfg, &opts)?;
+
+    let json = format_json(&report).map_err(Error::Json)?;
+    let exit_code = report.exit_code();
+
+    // Persist the report. If any filesystem step (creating the output parent or
+    // writing the file) fails *after* a scan that already found leaks or scan
+    // errors, surface the audit's own exit code (32/33) rather than letting the
+    // I/O error collapse to a generic internal_error (1) — CI gates route on the
+    // documented outcome class, and the result is known.
+    let write_result = (|| -> std::io::Result<()> {
+        if let Some(parent) = out_path.parent() {
+            if !parent.as_os_str().is_empty() {
+                std::fs::create_dir_all(parent)?;
+            }
+        }
+        std::fs::write(&out_path, &json)
+    })();
+    if let Err(e) = write_result {
+        if exit_code == ExitCode::Success {
+            return Err(Error::Io(e));
+        }
+        eprintln!(
+            "warning: redact-audit could not write report to {}: {e}",
+            mask_report_path(&cfg, &out_path.display().to_string())
+        );
+    }
+
+    match format {
+        AuditFormat::Json => println!("{json}"),
+        AuditFormat::Human => print!("{}", format_human(&report)),
     }
 
     if exit_code != ExitCode::Success {

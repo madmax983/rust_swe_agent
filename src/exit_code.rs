@@ -133,6 +133,17 @@ pub enum ExitCode {
     /// 31 — `agent apply` refused because the target working tree has
     /// uncommitted changes. Pass `--allow-dirty` to override.
     ApplyDirtyTreeRefused = 31,
+    /// 32 — `agent redact-audit` found at least one new finding at `medium`+
+    /// severity in the scanned sweep artifacts. The audit completed and wrote
+    /// its report; the non-zero exit is the CI publish gate. Distinct from
+    /// `internal_error` (1) so automation can route "a secret leaked into the
+    /// artifacts" separately from an unexpected crash.
+    RedactAuditFindings = 32,
+    /// 33 — `agent redact-audit` could not read or extract one or more
+    /// artifacts (unreadable file, corrupt bundle). The scan is incomplete, so
+    /// a "clean" verdict cannot be trusted. Distinct from `usage_error` (2) so
+    /// CI can tell "the scan broke" from "your invocation is broken".
+    RedactAuditScanError = 33,
     /// 130 — user interruption (graceful SIGINT / Ctrl-C; 128 + SIGINT(2)).
     Interrupted = 130,
     /// 137 — forced kill (SIGKILL escalation after graceful-cancel deadline; 128 + SIGKILL(9)).
@@ -185,6 +196,8 @@ impl ExitCode {
             Self::ApplyCheckFailed => "apply_check_failed",
             Self::ApplyRedactedRefused => "apply_redacted_refused",
             Self::ApplyDirtyTreeRefused => "apply_dirty_tree_refused",
+            Self::RedactAuditFindings => "redact_audit_findings",
+            Self::RedactAuditScanError => "redact_audit_scan_error",
             Self::Interrupted => "interrupted",
             Self::Killed => "killed",
         }
@@ -443,6 +456,24 @@ mod tests {
         assert_eq!(
             ExitCode::ContinueNonTerminal.outcome_class(),
             "continue_non_terminal"
+        );
+    }
+
+    #[test]
+    fn redact_audit_findings_exit_code_is_32() {
+        assert_eq!(ExitCode::RedactAuditFindings.as_i32(), 32);
+        assert_eq!(
+            ExitCode::RedactAuditFindings.outcome_class(),
+            "redact_audit_findings"
+        );
+    }
+
+    #[test]
+    fn redact_audit_scan_error_exit_code_is_33() {
+        assert_eq!(ExitCode::RedactAuditScanError.as_i32(), 33);
+        assert_eq!(
+            ExitCode::RedactAuditScanError.outcome_class(),
+            "redact_audit_scan_error"
         );
     }
 }

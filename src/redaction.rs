@@ -870,6 +870,15 @@ fn env_secret_kind(name: &str) -> &'static str {
     }
 }
 
+/// Classify a JSON/object key as sensitive, mirroring the runtime structural
+/// redaction in [`Redactor::redact_json_value`]. Exposed so `agent redact-audit`
+/// applies the *same* sensitive-key rule when walking JSON artifacts. Returns
+/// the value-kind label (e.g. `"env_password"`) or `None` for a benign key.
+#[must_use]
+pub fn sensitive_json_key_kind(key: &str) -> Option<&'static str> {
+    sensitive_key_kind(key)
+}
+
 fn sensitive_key_kind(key: &str) -> Option<&'static str> {
     let lower = key.to_ascii_lowercase();
     if lower.contains("token") {
