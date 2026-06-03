@@ -22,6 +22,7 @@ fn mini_args(work: &tempfile::TempDir, name: &str, checks: Vec<VerificationCheck
     MiniArgs {
         driver: maxwells_daemon::run::mini::RunDriver::Builtin,
         driver_append_system_prompt: false,
+        driver_isolated: false,
         task: "test task".into(),
         extra_context: None,
         config: cfg,

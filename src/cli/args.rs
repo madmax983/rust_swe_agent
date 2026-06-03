@@ -476,6 +476,14 @@ pub struct MiniCmd {
     #[arg(long, default_value_t = false, requires = "driver")]
     pub driver_append_system_prompt: bool,
 
+    /// Run `--driver claude-code` in an isolated, reproducible posture: pass
+    /// `--bare` (skip ambient `.claude` discovery), `--tools` (restrict the
+    /// toolset), and `--no-session-persistence`. Default (off) is fidelity mode,
+    /// which runs with ambient config + OAuth and records the discovered config
+    /// for audit. Note: `--bare` forces API-key-only auth (no OAuth/keychain).
+    #[arg(long, default_value_t = false, requires = "driver")]
+    pub driver_isolated: bool,
+
     /// Model name (e.g. `claude-opus-4-7`).
     #[arg(long, default_value = "claude-opus-4-7")]
     pub model: String,

@@ -29,11 +29,12 @@
 //!   parser can be exercised deterministically at $0 with a fixture script.
 
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::{Duration, Instant};
 
 use serde_json::Value;
+use sha2::{Digest as _, Sha256};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 
@@ -74,6 +75,195 @@ const CLAUDE_BIN_ENV: &str = "MAXWELLS_CLAUDE_BIN";
 /// cleanup; exceeded → kill and continue with whatever was parsed.
 const WAIT_GRACE_SECS: Duration = Duration::from_secs(30);
 
+/// Per-file cap on recorded config content; a pathological file is truncated
+/// (with a `truncated` flag) rather than bloating the trajectory.
+const CONFIG_MAX_FILE_BYTES: usize = 256 * 1024;
+/// Cap on the number of discovered config files recorded, across all scopes.
+const CONFIG_MAX_FILES: usize = 200;
+
+/// One Claude Code config file the harness found in play for this run.
+struct DiscoveredFile {
+    /// Filesystem path, for display/audit.
+    display_path: String,
+    /// `"project"` (under the workdir) or `"user"` (under `~/.claude`).
+    scope: &'static str,
+    /// `"CLAUDE.md"`, `"AGENTS.md"`, `"settings"`, `"agent"`, `"skill"`, `"mcp"`.
+    kind: &'static str,
+    /// SHA-256 of the *raw* on-disk bytes — a tamper-evident fingerprint that is
+    /// independent of the redaction applied to the recorded `content`.
+    sha256: String,
+    /// Raw byte length of the on-disk file (pre-truncation).
+    bytes: usize,
+    /// File content (raw, possibly truncated); redacted before it is recorded.
+    content: String,
+    /// True when `content` was truncated at [`CONFIG_MAX_FILE_BYTES`].
+    truncated: bool,
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    use std::fmt::Write as _;
+    let digest = Sha256::digest(bytes);
+    let mut hex = String::with_capacity(digest.len() * 2);
+    for byte in digest {
+        let _ = write!(hex, "{byte:02x}");
+    }
+    hex
+}
+
+/// Read one config file into a [`DiscoveredFile`], or `None` if unreadable.
+fn read_config_file(
+    path: &Path,
+    scope: &'static str,
+    kind: &'static str,
+) -> Option<DiscoveredFile> {
+    let raw = std::fs::read(path).ok()?;
+    let bytes = raw.len();
+    let sha256 = sha256_hex(&raw);
+    let truncated = raw.len() > CONFIG_MAX_FILE_BYTES;
+    let slice = if truncated {
+        &raw[..CONFIG_MAX_FILE_BYTES]
+    } else {
+        &raw[..]
+    };
+    Some(DiscoveredFile {
+        display_path: path.display().to_string(),
+        scope,
+        kind,
+        sha256,
+        bytes,
+        content: String::from_utf8_lossy(slice).into_owned(),
+        truncated,
+    })
+}
+
+/// Recursively collect files under `dir` (best-effort), honoring the global cap.
+fn collect_config_dir(
+    dir: &Path,
+    scope: &'static str,
+    kind: &'static str,
+    out: &mut Vec<DiscoveredFile>,
+) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        if out.len() >= CONFIG_MAX_FILES {
+            return;
+        }
+        let path = entry.path();
+        if path.is_dir() {
+            collect_config_dir(&path, scope, kind, out);
+        } else if let Some(f) = read_config_file(&path, scope, kind) {
+            out.push(f);
+        }
+    }
+}
+
+/// Discover the Claude Code configuration that Claude Code will auto-discover at
+/// `cwd` (project scope) and under `~/.claude` (user scope). This mirrors what
+/// the CLI loads in fidelity mode so the audit record reflects what was in play.
+fn discover_claude_config(cwd: &Path) -> Vec<DiscoveredFile> {
+    let mut out = Vec::new();
+
+    // Project scope: singleton files at the workdir root, then agent/skill dirs.
+    let project_files: &[(&str, &'static str)] = &[
+        ("CLAUDE.md", "CLAUDE.md"),
+        ("CLAUDE.local.md", "CLAUDE.md"),
+        ("AGENTS.md", "AGENTS.md"),
+        (".claude/settings.json", "settings"),
+        (".claude/settings.local.json", "settings"),
+        (".mcp.json", "mcp"),
+    ];
+    for (rel, kind) in project_files {
+        let p = cwd.join(rel);
+        if p.is_file() {
+            if let Some(f) = read_config_file(&p, "project", kind) {
+                out.push(f);
+            }
+        }
+    }
+    collect_config_dir(&cwd.join(".claude/agents"), "project", "agent", &mut out);
+    collect_config_dir(&cwd.join(".claude/skills"), "project", "skill", &mut out);
+
+    // User scope: ~/.claude singletons plus agent/skill dirs.
+    if let Some(home) = std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME")) {
+        let claude = PathBuf::from(home).join(".claude");
+        let user_files: &[(&str, &'static str)] =
+            &[("CLAUDE.md", "CLAUDE.md"), ("settings.json", "settings")];
+        for (rel, kind) in user_files {
+            let p = claude.join(rel);
+            if p.is_file() {
+                if let Some(f) = read_config_file(&p, "user", kind) {
+                    out.push(f);
+                }
+            }
+        }
+        collect_config_dir(&claude.join("agents"), "user", "agent", &mut out);
+        collect_config_dir(&claude.join("skills"), "user", "skill", &mut out);
+    }
+    out
+}
+
+/// Record, under `info.other["claude_code_config"]`, the Claude Code config that
+/// shaped this run. In fidelity mode the ambient config is live, so its files
+/// (path + scope + kind + raw-bytes hash + redacted content) are captured for
+/// audit. In isolated mode `--bare` bypasses discovery, so only a marker is
+/// recorded. Content is redacted with the `TRAJECTORY` surface before storage;
+/// the hash is of the raw bytes so tampering is still detectable.
+fn record_claude_config(agent: &mut DefaultAgent, cwd: &Path, isolated: bool) {
+    let mut meta = serde_json::Map::new();
+    meta.insert("isolated".into(), Value::Bool(isolated));
+    if isolated {
+        meta.insert(
+            "discovery".into(),
+            Value::String("bypassed (--bare strips ambient .claude config)".into()),
+        );
+        agent
+            .trajectory
+            .info
+            .other
+            .insert("claude_code_config".into(), Value::Object(meta));
+        return;
+    }
+
+    let mut files = Vec::new();
+    let mut truncated_any = false;
+    for f in discover_claude_config(cwd)
+        .into_iter()
+        .take(CONFIG_MAX_FILES)
+    {
+        let redacted = agent
+            .redactor
+            .redact_text(&f.content, surface::TRAJECTORY)
+            .text;
+        let mut obj = serde_json::Map::new();
+        obj.insert("path".into(), Value::String(f.display_path));
+        obj.insert("scope".into(), Value::String(f.scope.into()));
+        obj.insert("kind".into(), Value::String(f.kind.into()));
+        obj.insert("sha256".into(), Value::String(f.sha256));
+        obj.insert("bytes".into(), Value::Number((f.bytes as u64).into()));
+        if f.truncated {
+            obj.insert("truncated".into(), Value::Bool(true));
+            truncated_any = true;
+        }
+        obj.insert("content".into(), Value::String(redacted));
+        files.push(Value::Object(obj));
+    }
+    meta.insert(
+        "file_count".into(),
+        Value::Number((files.len() as u64).into()),
+    );
+    if truncated_any {
+        meta.insert("truncated".into(), Value::Bool(true));
+    }
+    meta.insert("files".into(), Value::Array(files));
+    agent
+        .trajectory
+        .info
+        .other
+        .insert("claude_code_config".into(), Value::Object(meta));
+}
+
 /// Drive a single run through the Claude Code CLI, filling `agent.trajectory`
 /// and returning the terminal [`ExitReason`].
 ///
@@ -85,6 +275,17 @@ const WAIT_GRACE_SECS: Duration = Duration::from_secs(30);
 /// when `Some`. Callers should supply the rendered operator system prompt only
 /// when it has been authored for Claude Code (the built-in default contains
 /// harness-protocol text that Claude Code doesn't use).
+/// `isolated` selects the spawn posture:
+/// - `false` (default — *fidelity*): run Claude Code as the team really does —
+///   OAuth/keychain auth, ambient `.claude` discovery (hooks, skills, plugins,
+///   MCP, memory, `CLAUDE.md`), native session persistence, and the team's own
+///   permission settings. The harness *records* the discovered config (see
+///   [`discover_claude_config`]) into the trajectory so the run is auditable
+///   without being sterilized. This is the enterprise-auditing case.
+/// - `true` (*isolation*): pass `--bare` (skip ambient discovery), `--tools`
+///   (restrict to [`ALLOWED_TOOLS`]), and `--no-session-persistence` for a
+///   reproducible measurement run. Note: `--bare` forces API-key-only auth, so
+///   OAuth/keychain logins do not apply in this mode.
 #[allow(clippy::too_many_lines)]
 pub async fn drive(
     agent: &mut DefaultAgent,
@@ -93,6 +294,7 @@ pub async fn drive(
     workdir: Option<&Path>,
     timeout_secs: Option<u64>,
     append_system_prompt: Option<&str>,
+    isolated: bool,
 ) -> Result<ExitReason, Error> {
     let bin = std::env::var(CLAUDE_BIN_ENV).unwrap_or_else(|_| "claude".to_owned());
     let cwd = match workdir {
@@ -133,6 +335,12 @@ pub async fn drive(
     // race it against the child without holding a borrow on `agent`.
     let mut cancel = agent.cancellation.clone();
 
+    // Audit the Claude Code configuration that will actually shape this run.
+    // In fidelity mode ambient `.claude` config is live, so discover and record
+    // it (paths + hashes + redacted content). In isolated mode `--bare` strips
+    // it, so record only the marker that discovery was bypassed.
+    record_claude_config(agent, &cwd, isolated);
+
     let mut cmd = Command::new(&bin);
     cmd.kill_on_drop(true)
         .arg("-p")
@@ -144,6 +352,16 @@ pub async fn drive(
         .arg(step_limit.to_string())
         .arg("--allowedTools")
         .args(ALLOWED_TOOLS);
+    if isolated {
+        // Reproducible measurement: strip ambient `.claude` discovery, restrict
+        // the available toolset (not just auto-approval), and keep prompts out
+        // of Claude Code's on-disk session history. `--bare` makes auth strictly
+        // ANTHROPIC_API_KEY/apiKeyHelper (no OAuth/keychain).
+        cmd.arg("--bare")
+            .arg("--no-session-persistence")
+            .arg("--tools")
+            .args(ALLOWED_TOOLS);
+    }
     if let Some(cap) = cost_cap {
         cmd.arg("--max-budget-usd").arg(format!("{cap}"));
     }
@@ -160,6 +378,7 @@ pub async fn drive(
         cwd = %cwd.display(),
         max_turns = step_limit,
         append_system_prompt = append_system_prompt.is_some(),
+        isolated,
         "spawning Claude Code driver"
     );
 

@@ -110,6 +110,7 @@ fn base_args(repo: &Path, out: &Path, name: &str) -> MiniArgs {
     MiniArgs {
         driver: RunDriver::ClaudeCode,
         driver_append_system_prompt: false,
+        driver_isolated: false,
         task: "Append a line saying 'line two' to a.txt".into(),
         extra_context: None,
         config: cfg,
@@ -435,4 +436,76 @@ async fn claude_driver_rejects_budget_visibility() {
         err.to_string().contains("budget"),
         "unexpected error: {err}"
     );
+}
+
+/// Fidelity mode (default) records the ambient Claude Code config that shaped
+/// the run — path, scope, raw-bytes hash, and (redacted) content — into
+/// `info.claude_code_config`, so the run is auditable without being sterilized.
+#[tokio::test]
+#[cfg(unix)]
+async fn claude_driver_records_ambient_config_for_audit() {
+    let repo = tempfile::tempdir().unwrap();
+    let out = tempfile::tempdir().unwrap();
+    init_repo(repo.path());
+    ensure_fake_claude();
+
+    // Ambient config a team would actually have checked in.
+    std::fs::write(
+        repo.path().join("CLAUDE.md"),
+        "# Project rules\nBe concise.\n",
+    )
+    .unwrap();
+    std::fs::create_dir_all(repo.path().join(".claude")).unwrap();
+    std::fs::write(
+        repo.path().join(".claude/settings.json"),
+        r#"{"permissions":{"allow":["Bash"]}}"#,
+    )
+    .unwrap();
+
+    run(base_args(repo.path(), out.path(), "cc-cfg"))
+        .await
+        .expect("run should succeed");
+    let traj = read_traj(out.path(), "cc-cfg");
+
+    let cfg = &traj["info"]["claude_code_config"];
+    assert_eq!(cfg["isolated"], false);
+    let files = cfg["files"].as_array().expect("files array recorded");
+
+    let claude_md = files
+        .iter()
+        .find(|f| f["kind"] == "CLAUDE.md" && f["scope"] == "project")
+        .expect("project CLAUDE.md recorded");
+    assert!(
+        claude_md["content"]
+            .as_str()
+            .unwrap()
+            .contains("Be concise")
+    );
+    // Hash is of the raw bytes: 64 hex chars.
+    assert_eq!(claude_md["sha256"].as_str().unwrap().len(), 64);
+    assert!(files.iter().any(|f| f["kind"] == "settings"));
+}
+
+/// Isolated mode passes `--bare`, which strips ambient `.claude` discovery, so
+/// the harness records only a marker noting discovery was bypassed (nothing was
+/// in play to audit).
+#[tokio::test]
+#[cfg(unix)]
+async fn claude_driver_isolated_bypasses_ambient_config() {
+    let repo = tempfile::tempdir().unwrap();
+    let out = tempfile::tempdir().unwrap();
+    init_repo(repo.path());
+    ensure_fake_claude();
+    std::fs::write(repo.path().join("CLAUDE.md"), "# rules\n").unwrap();
+
+    let mut args = base_args(repo.path(), out.path(), "cc-iso");
+    args.driver_isolated = true;
+    run(args).await.expect("isolated run should succeed");
+    let traj = read_traj(out.path(), "cc-iso");
+
+    let cfg = &traj["info"]["claude_code_config"];
+    assert_eq!(cfg["isolated"], true);
+    // --bare bypasses discovery: no files recorded, just the marker.
+    assert!(cfg["files"].is_null());
+    assert!(cfg["discovery"].as_str().unwrap().contains("bypassed"));
 }

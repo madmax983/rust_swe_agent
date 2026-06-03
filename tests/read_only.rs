@@ -52,6 +52,7 @@ async fn read_only_blocks_bash_and_preserves_git_status() {
     let result = run(MiniArgs {
         driver: maxwells_daemon::run::mini::RunDriver::Builtin,
         driver_append_system_prompt: false,
+        driver_isolated: false,
         task: "readonly".into(),
         extra_context: None,
         config: cfg,

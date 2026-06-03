@@ -42,6 +42,7 @@ backends. As a result the Claude-Code path produces the same artifacts:
      --max-turns <step_limit> \
      --allowedTools "Bash Edit MultiEdit Write Read Glob Grep NotebookEdit" \
      [--append-system-prompt "<rendered system prompt>"]  # when --driver-append-system-prompt
+     [--bare --no-session-persistence --tools "<set>"]    # when --driver-isolated
    ```
 
    with the child's working directory set to `--workdir` (or the process cwd).
@@ -79,6 +80,48 @@ the harness's full trajectory artifact.
 Pair this with a CC-compatible `[prompts].system` override in your config. The
 built-in default contains harness-specific protocol text; an override intended
 for Claude Code should omit or replace that.
+
+## Fidelity vs. isolation
+
+The driver has two postures, because it serves two different jobs:
+
+- **Fidelity (default).** Run Claude Code as the team really runs it: OAuth /
+  keychain auth, ambient `.claude` auto-discovery (hooks, skills, plugins, MCP,
+  memory, `CLAUDE.md`), native session persistence, and the team's own
+  permission settings. This is the enterprise-auditing case — teams with
+  enterprise Claude Code access who need an inspectable, redacted receipt of
+  what their agent actually did. Nothing is stripped; instead the harness
+  *records* the config that shaped the run (see **Config discovery** below).
+
+- **Isolation (`--driver-isolated`).** A reproducible measurement sandbox. Adds
+  `--bare` (skip ambient `.claude` discovery), `--tools "<ALLOWED_TOOLS>"`
+  (restrict the *available* toolset, not just auto-approval), and
+  `--no-session-persistence` (keep prompts/transcripts out of Claude Code's
+  on-disk history). Use this to vary one thing — system prompt, skills, tools —
+  and hold everything else fixed.
+
+  **Auth caveat:** `--bare` forces auth to be strictly `ANTHROPIC_API_KEY` /
+  `apiKeyHelper`; OAuth and keychain logins are never read. Isolated runs
+  therefore require an API key. (This is why isolation is opt-in, not the
+  default — the primary audience uses enterprise OAuth.)
+
+## Config discovery
+
+In fidelity mode, ambient configuration influences the run, so the harness
+discovers and records it into `info.other["claude_code_config"]` for audit:
+
+- **Project scope** (workdir): `CLAUDE.md`, `CLAUDE.local.md`, `AGENTS.md`,
+  `.claude/settings.json`, `.claude/settings.local.json`, `.mcp.json`, and every
+  file under `.claude/agents/` and `.claude/skills/`.
+- **User scope** (`~/.claude`): `CLAUDE.md`, `settings.json`, and the `agents/`
+  and `skills/` trees.
+
+Each entry records `{path, scope, kind, sha256, bytes, content[, truncated]}`.
+The `sha256` is over the *raw* on-disk bytes (a tamper-evident fingerprint);
+`content` is the file body **redacted** with the `TRAJECTORY` surface before
+storage, truncated at 256 KiB per file (max 200 files). In isolated mode
+`--bare` bypasses discovery, so only `{isolated: true, discovery: "bypassed…"}`
+is recorded — nothing ambient was in play to audit.
 
 ## Outcome mapping
 

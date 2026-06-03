@@ -4592,6 +4592,7 @@ async fn run_one(inst: SweBenchInstance, run_index: u32, params: RunOneParams) -
             config: cfg.clone(),
             driver: crate::run::mini::RunDriver::Builtin,
             driver_append_system_prompt: false,
+            driver_isolated: false,
             output_dir: run_output_dir.clone(),
             trajectory_name: trajectory_name.clone(),
             deterministic_responses: det_for_attempt,

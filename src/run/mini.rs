@@ -139,6 +139,13 @@ pub struct MiniArgs {
     /// because the built-in default template contains harness bash-protocol
     /// text; only enable with a CC-compatible custom `[prompts].system` override.
     pub driver_append_system_prompt: bool,
+    /// When `true` and `driver == ClaudeCode`, spawn the CLI in an isolated,
+    /// reproducible posture: `--bare` (skip ambient `.claude` discovery),
+    /// `--tools` (restrict the toolset), and `--no-session-persistence`. Default
+    /// `false` runs in fidelity mode (ambient config + OAuth live, recorded for
+    /// audit). Note: `--bare` forces API-key-only auth — OAuth/keychain logins
+    /// do not apply in isolated mode.
+    pub driver_isolated: bool,
     pub output_dir: PathBuf,
     pub trajectory_name: String,
     pub deterministic_responses: Option<Vec<String>>,
@@ -1011,6 +1018,7 @@ pub async fn run(args: MiniArgs) -> Result<(), Error> {
                 args.local_workdir.as_deref(),
                 args.task_timeout_secs,
                 system_prompt.as_deref(),
+                args.driver_isolated,
             )
             .await
         }
@@ -2662,6 +2670,7 @@ index 8a1218a..24c5735 100644\n\
         let args = MiniArgs {
             driver: crate::run::mini::RunDriver::Builtin,
             driver_append_system_prompt: false,
+            driver_isolated: false,
             task: partial.info.task.clone().unwrap(),
             extra_context: None,
             config: cfg,
@@ -2833,6 +2842,7 @@ index 8a1218a..24c5735 100644\n\
         let parent_args = MiniArgs {
             driver: crate::run::mini::RunDriver::Builtin,
             driver_append_system_prompt: false,
+            driver_isolated: false,
             task: "fix the original bug".into(),
             extra_context: None,
             config: cfg.clone(),
@@ -2892,6 +2902,7 @@ index 8a1218a..24c5735 100644\n\
         let child_args = MiniArgs {
             driver: crate::run::mini::RunDriver::Builtin,
             driver_append_system_prompt: false,
+            driver_isolated: false,
             task: "also fix the edge case".into(),
             extra_context: None,
             config: cfg,
@@ -3005,6 +3016,7 @@ index 8a1218a..24c5735 100644\n\
         let args = MiniArgs {
             driver: crate::run::mini::RunDriver::Builtin,
             driver_append_system_prompt: false,
+            driver_isolated: false,
             task: "do nothing".into(),
             extra_context: None,
             config: cfg,
@@ -3105,6 +3117,7 @@ index 8a1218a..24c5735 100644\n\
         let args = MiniArgs {
             driver: crate::run::mini::RunDriver::Builtin,
             driver_append_system_prompt: false,
+            driver_isolated: false,
             task: "edit then submit".into(),
             extra_context: None,
             config: cfg,
@@ -3200,6 +3213,7 @@ index 8a1218a..24c5735 100644\n\
         let args = MiniArgs {
             driver: crate::run::mini::RunDriver::Builtin,
             driver_append_system_prompt: false,
+            driver_isolated: false,
             task: "say hello".into(),
             extra_context: None,
             config: cfg,
@@ -3270,6 +3284,7 @@ index 8a1218a..24c5735 100644\n\
         let args = MiniArgs {
             driver: crate::run::mini::RunDriver::Builtin,
             driver_append_system_prompt: false,
+            driver_isolated: false,
             task: "say hello".into(),
             extra_context: None,
             config: cfg,
@@ -3341,6 +3356,7 @@ index 8a1218a..24c5735 100644\n\
         let args = MiniArgs {
             driver: crate::run::mini::RunDriver::Builtin,
             driver_append_system_prompt: false,
+            driver_isolated: false,
             task: "say hello".into(),
             extra_context: None,
             config: cfg,
@@ -3462,6 +3478,7 @@ index 8a1218a..24c5735 100644\n\
         MiniArgs {
             driver: crate::run::mini::RunDriver::Builtin,
             driver_append_system_prompt: false,
+            driver_isolated: false,
             task: "test-manifest-task".into(),
             extra_context: None,
             config: crate::config::Config::defaults().unwrap(),

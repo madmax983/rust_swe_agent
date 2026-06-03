@@ -437,6 +437,7 @@ paths = ["{skill_path}"]
     maxwells_daemon::run::mini::run(maxwells_daemon::run::mini::MiniArgs {
         driver: maxwells_daemon::run::mini::RunDriver::Builtin,
         driver_append_system_prompt: false,
+        driver_isolated: false,
         task: "Please perform a security review.".to_owned(),
         extra_context: None,
         config: cfg,
@@ -521,6 +522,7 @@ secret_literals = ["TOP_SECRET_VALUE", "TOP_SECRET_ROOT"]
     maxwells_daemon::run::mini::run(maxwells_daemon::run::mini::MiniArgs {
         driver: maxwells_daemon::run::mini::RunDriver::Builtin,
         driver_append_system_prompt: false,
+        driver_isolated: false,
         task: "Please perform a security review.".to_owned(),
         extra_context: None,
         config: cfg,
