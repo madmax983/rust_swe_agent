@@ -384,6 +384,17 @@ pub async fn run(args: BestOfArgs) -> Result<ExitCode, Error> {
         if let Some(v) = args.per_task_budget_usd {
             run_cfg.root.agent.per_task_budget_usd = Some(v);
         }
+        // Clamp per-run budget to the remaining global budget so the last
+        // allowed run cannot overrun the total ceiling by a full candidate.
+        if let Some(limit) = args.cost_limit_usd {
+            let remaining = (limit - cumulative_cost).max(0.0);
+            let clamped = run_cfg
+                .root
+                .agent
+                .per_task_budget_usd
+                .map_or(remaining, |p| p.min(remaining));
+            run_cfg.root.agent.per_task_budget_usd = Some(clamped);
+        }
 
         let is_docker = matches!(
             run_cfg.root.environment.kind,
