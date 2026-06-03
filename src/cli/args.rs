@@ -641,9 +641,11 @@ pub struct MiniCmd {
     pub extra_context: Option<String>,
 
     /// Agent backend that drives the loop. `builtin` (default) is the
-    /// bash-first loop that calls the model directly; `claude-code` shells
-    /// out to the Claude Code CLI and translates its stream into the same
-    /// trajectory artifact (local env only). See `docs/spec-claude-driver.md`.
+    /// bash-first loop that calls the model directly; `claude-code` shells out
+    /// to the Claude Code CLI and translates its stream into the same trajectory
+    /// artifact (local env only); `codex` shells out to the OpenAI Codex CLI in
+    /// `--full-auto --json` mode (local env only). See `docs/spec-claude-driver.md`
+    /// and `docs/spec-codex-driver.md`.
     #[arg(long, value_enum, default_value_t = crate::run::mini::RunDriver::Builtin)]
     pub driver: crate::run::mini::RunDriver,
 
@@ -3137,6 +3139,21 @@ pub struct NearMissCmd {
     pub top: usize,
 
     /// Output format: `text` (default) or `json`.
+    #[arg(long, default_value = "text", value_parser = ["text", "json"])]
+    pub format: String,
+}
+/// `catalog` — self-describing command catalog for operator discoverability.
+#[derive(Debug, Args, Clone)]
+pub struct CatalogCmd {
+    /// Filter entries by stage: preflight, run, inspect, analyze, publish.
+    #[arg(long, value_parser = ["preflight", "run", "inspect", "analyze", "publish"])]
+    pub stage: Option<String>,
+
+    /// Filter to free-only (no model calls) commands.
+    #[arg(long = "free-only", default_value_t = false)]
+    pub free_only: bool,
+
+    /// Output format: `text` or `json`.
     #[arg(long, default_value = "text", value_parser = ["text", "json"])]
     pub format: String,
 }

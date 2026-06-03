@@ -16,6 +16,7 @@ use crate::error::Error;
 use crate::exit_code::ExitCode;
 
 pub mod args;
+pub mod catalog;
 
 #[derive(Debug, Parser)]
 #[command(
@@ -53,6 +54,8 @@ pub enum Command {
     },
     /// Serve a read-only local sweep browser (requires the `ui-server` feature).
     Ui(args::UiCmd),
+    /// Self-describing command catalog for operator discoverability.
+    Catalog(args::CatalogCmd),
     /// Reap leftover Maxwell's Daemon containers, including legacy labels.
     Cleanup,
 }
@@ -144,6 +147,7 @@ pub async fn run() -> Result<(), Error> {
             args::AgentCmd::PolicyCheck(p) => agent_policy_check_cmd(&p),
             args::AgentCmd::Apply(a) => agent_apply_cmd(&a),
         },
+        Command::Catalog(c) => catalog::run_catalog(c),
         Command::Ui(u) => ui_cmd(u).await,
         #[cfg(feature = "docker")]
         Command::Cleanup => cleanup_cmd().await,
