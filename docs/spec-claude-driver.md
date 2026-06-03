@@ -50,8 +50,19 @@ backends. As a result the Claude-Code path produces the same artifacts:
    - `assistant` turns → assistant messages, with `tool_use` calls captured in
      `extra.actions` (bash command verbatim; other tools as `Name(target)`),
      and thinking folded into `extra.thinking`.
-   - `tool_result` (delivered as a `user` message) → observation messages.
+   - `tool_result` (delivered as a `user` message) → observation messages,
+     each carrying a synthesized `extra.run_result` (`exit_code` from the
+     result's `is_error`, output as `stdout`) so consumers that key off it
+     (`bench inspect`, command stats, telemetry) treat driver runs like
+     built-in ones.
    - the terminal `result` message → cost, tokens, outcome.
+
+   `info.toolset` is overwritten with the tools actually exposed to Claude Code
+   (`ALLOWED_TOOLS`, `source: claude_code`) so tool-coverage/drift reports don't
+   mistake `Edit`/`Write`/`Read` for unavailable. The step cap is also enforced
+   by parsed tool-use count: `--max-turns` bounds agentic turns, but if the
+   tool-use total exceeds `agent.step_limit` the outcome is downgraded to
+   `step_limit` rather than reported as `submitted`.
 4. Patch capture then runs exactly as for the built-in loop: because Claude Code
    edits the real working tree, `git diff` sees the change regardless of whether
    the edit came from `Bash`, `Edit`, or `Write`.
@@ -75,7 +86,10 @@ When set, the rendered operator system prompt (with any `[prompts].system`
 override applied) is forwarded to `claude --append-system-prompt`. This is the
 CORE use-case for teams that have Claude Code enterprise access but no direct
 API keys: measuring system prompt / skills / tools changes while still getting
-the harness's full trajectory artifact.
+the harness's full trajectory artifact. The prompt is taken from the agent's
+*raw* history (the text sent to the model), not the redacted trajectory copy, so
+a configured secret literal in a custom prompt reaches Claude Code intact rather
+than as a `[REDACTED:…]` marker.
 
 Pair this with a CC-compatible `[prompts].system` override in your config. The
 built-in default contains harness-specific protocol text; an override intended

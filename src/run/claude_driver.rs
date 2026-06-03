@@ -205,6 +205,14 @@ fn collect_config_dir(
     }
 }
 
+/// True only for a *regular* file that is not itself a symlink. Uses
+/// `symlink_metadata` so a singleton config path (e.g. `.claude/CLAUDE.md`)
+/// that an untrusted worktree points outside the repo is not followed and
+/// recorded — matching the symlink-skipping recursive walk.
+fn is_regular_file(path: &Path) -> bool {
+    std::fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_file())
+}
+
 /// Discover the Claude Code configuration that Claude Code will auto-discover at
 /// `cwd` (project scope) and under `~/.claude` (user scope). This mirrors what
 /// the CLI loads in fidelity mode so the audit record reflects what was in play.
@@ -225,7 +233,7 @@ fn discover_claude_config(cwd: &Path) -> Vec<DiscoveredFile> {
     ];
     for (rel, kind) in project_files {
         let p = cwd.join(rel);
-        if p.is_file() {
+        if is_regular_file(&p) {
             if let Some(f) = read_config_file(&p, "project", kind) {
                 out.push(f);
             }
@@ -245,7 +253,7 @@ fn discover_claude_config(cwd: &Path) -> Vec<DiscoveredFile> {
         }
         for name in ["CLAUDE.md", "CLAUDE.local.md"] {
             let p = dir.join(name);
-            if p.is_file() {
+            if is_regular_file(&p) {
                 if let Some(f) = read_config_file(&p, "ancestor", "CLAUDE.md") {
                     out.push(f);
                 }
@@ -261,7 +269,7 @@ fn discover_claude_config(cwd: &Path) -> Vec<DiscoveredFile> {
             &[("CLAUDE.md", "CLAUDE.md"), ("settings.json", "settings")];
         for (rel, kind) in user_files {
             let p = claude.join(rel);
-            if p.is_file() {
+            if is_regular_file(&p) {
                 if let Some(f) = read_config_file(&p, "user", kind) {
                     out.push(f);
                 }
@@ -271,6 +279,30 @@ fn discover_claude_config(cwd: &Path) -> Vec<DiscoveredFile> {
         collect_config_dir(&claude.join("skills"), "user", "skill", &mut out);
     }
     out
+}
+
+/// Overwrite `info.other["toolset"]` with the toolset actually exposed to Claude
+/// Code. `DefaultAgentBuilder` stamps the harness `ToolRegistry` manifest (just
+/// `bash` once the driver's rejection guards run), which misrepresents what the
+/// CLI could call — so tool-coverage/drift reports would treat `Edit`/`Write`/
+/// `Read`/etc. as unavailable. Record `ALLOWED_TOOLS` with a `claude_code`
+/// source instead, matching the manifest shape `tool_coverage` consumes.
+fn record_driver_toolset(agent: &mut DefaultAgent) {
+    let tools: Vec<Value> = ALLOWED_TOOLS
+        .iter()
+        .map(|name| {
+            serde_json::json!({
+                "name": name,
+                "description": "Claude Code CLI tool",
+                "source": "claude_code",
+            })
+        })
+        .collect();
+    agent
+        .trajectory
+        .info
+        .other
+        .insert("toolset".into(), serde_json::json!({ "tools": tools }));
 }
 
 /// Record, under `info.other["claude_code_config"]`, the Claude Code config that
@@ -421,6 +453,7 @@ pub async fn drive(
     // it (paths + hashes + redacted content). In isolated mode `--bare` strips
     // it, so record only the marker that discovery was bypassed.
     record_claude_config(agent, &cwd, isolated);
+    record_driver_toolset(agent);
 
     let mut cmd = Command::new(&bin);
     cmd.kill_on_drop(true)
@@ -906,6 +939,20 @@ fn handle_user(agent: &mut DefaultAgent, parsed: &mut Parsed, msg: &Value) {
     if has_error {
         extra.other.insert("tool_error".into(), Value::Bool(true));
     }
+    // Synthesize the `run_result` object the built-in loop writes for every
+    // command, so consumers that key off it (`bench inspect`, command stats,
+    // output-byte telemetry) treat driver observations the same. The exit code
+    // is derived from the tool_result's `is_error`; output is the redacted text.
+    let run_result = crate::env::RunResult {
+        stdout: redacted_raw,
+        stderr: String::new(),
+        exit_code: i32::from(has_error),
+        timed_out: false,
+    };
+    extra.other.insert(
+        "run_result".into(),
+        serde_json::to_value(&run_result).unwrap_or(Value::Null),
+    );
     agent
         .trajectory
         .record_with_extra(&Message::user(redacted), extra);

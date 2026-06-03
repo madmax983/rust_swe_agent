@@ -1011,15 +1011,17 @@ pub async fn run(args: MiniArgs) -> Result<(), Error> {
             run_agent_with_optional_timeout(&mut agent, args.task_timeout_secs).await
         }
         RunDriver::ClaudeCode => {
-            // When the caller opted in, extract the rendered system prompt from
-            // the trajectory's first message (seeded by DefaultAgentBuilder)
-            // and forward it to the CLI as `--append-system-prompt`.
+            // When the caller opted in, forward the rendered system prompt to the
+            // CLI as `--append-system-prompt`. Pull it from `agent.history` (the
+            // RAW messages sent to the model), NOT `trajectory.messages` — the
+            // latter is redacted before storage, so a configured secret literal
+            // in a custom prompt would reach Claude Code as `[REDACTED:...]` and
+            // the run would no longer measure the real prompt.
             let system_prompt = if args.driver_append_system_prompt {
                 agent
-                    .trajectory
-                    .messages
+                    .history
                     .first()
-                    .filter(|m| m.role == "system")
+                    .filter(|m| m.role == crate::model::Role::System)
                     .map(|m| m.content.clone())
             } else {
                 None

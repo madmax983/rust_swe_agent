@@ -198,11 +198,28 @@ async fn claude_driver_produces_valid_trajectory() {
         bash_action,
         "expected the bash command recorded as an action"
     );
-    // The tool_result surfaces as a user observation.
+    // The tool_result surfaces as a user observation, carrying the synthesized
+    // run_result the built-in loop also writes (so bench inspect / stats work).
     let obs = msgs
         .iter()
-        .any(|m| m["content"].as_str() == Some("(Bash completed with no output)"));
-    assert!(obs, "expected the tool_result recorded as an observation");
+        .find(|m| m["content"].as_str() == Some("(Bash completed with no output)"))
+        .expect("expected the tool_result recorded as an observation");
+    let rr = &obs["extra"]["run_result"];
+    assert_eq!(rr["exit_code"], 0);
+    assert_eq!(rr["timed_out"], false);
+    assert!(rr["stdout"].is_string());
+
+    // info.toolset reflects the tools Claude Code was given, not the harness
+    // registry, so tool-coverage reports see Edit/Write/Read as available.
+    let tool_names: Vec<&str> = traj["info"]["toolset"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["name"].as_str().unwrap())
+        .collect();
+    assert!(tool_names.contains(&"Bash"));
+    assert!(tool_names.contains(&"Edit"));
+    assert!(tool_names.contains(&"Write"));
 
     // The driver ran `claude` in the repo, so the real edit landed.
     let contents = std::fs::read_to_string(repo.path().join("a.txt")).unwrap();
