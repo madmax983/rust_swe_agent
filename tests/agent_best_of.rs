@@ -9,9 +9,7 @@
 
 use maxwells_daemon::artifact::{ArtifactKind, ArtifactSchemaVersion};
 use maxwells_daemon::exit_code::ExitCode;
-use maxwells_daemon::run::best_of::{
-    BestOfRunDetail, BestOfResults, select_winner, validate_runs,
-};
+use maxwells_daemon::run::best_of::{BestOfResults, BestOfRunDetail, select_winner, validate_runs};
 
 // ── Exit code unit tests ──────────────────────────────────────────────────────
 
@@ -228,7 +226,10 @@ fn select_winner_all_failed_still_picks_best_scoring() {
         make_run(1, 1, 2, 0.005, 10, "patch-b"),
     ];
     let (idx, _rationale, _tie_break) = select_winner(&runs);
-    assert_eq!(idx, 1, "run with more passing checks wins even when all fail");
+    assert_eq!(
+        idx, 1,
+        "run with more passing checks wins even when all fail"
+    );
 }
 
 #[test]
@@ -383,10 +384,18 @@ mod integration {
         // We test the validation at the CLI args level via a separate check.
         // The run function itself should still complete (it uses verify for scoring).
         let tmp = tempfile::tempdir().unwrap();
-        let args = make_args(tmp.path(), 2, vec![], vec![submit_response(), submit_response()]);
+        let args = make_args(
+            tmp.path(),
+            2,
+            vec![],
+            vec![submit_response(), submit_response()],
+        );
         // With empty verify, the run still completes but uses fallback scoring
         let result = run(args).await;
-        assert!(result.is_ok(), "run should complete even without verify checks");
+        assert!(
+            result.is_ok(),
+            "run should complete even without verify checks"
+        );
     }
 
     #[tokio::test]
@@ -401,11 +410,11 @@ mod integration {
         let exit_code = run(args).await.unwrap();
         assert_eq!(exit_code, ExitCode::Success);
 
-        let results_path = tmp
-            .path()
-            .join("test-best-of")
-            .join("best-of-results.json");
-        assert!(results_path.exists(), "best-of-results.json must be written");
+        let results_path = tmp.path().join("test-best-of").join("best-of-results.json");
+        assert!(
+            results_path.exists(),
+            "best-of-results.json must be written"
+        );
 
         let json: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&results_path).unwrap()).unwrap();
@@ -479,10 +488,7 @@ mod integration {
             "--allow-no-pass should downgrade all-failed to exit 0"
         );
 
-        let results_path = tmp
-            .path()
-            .join("test-best-of")
-            .join("best-of-results.json");
+        let results_path = tmp.path().join("test-best-of").join("best-of-results.json");
         let json: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&results_path).unwrap()).unwrap();
         assert_eq!(
@@ -558,10 +564,7 @@ mod integration {
         };
         run(args).await.unwrap();
 
-        let results_path = tmp
-            .path()
-            .join("test-best-of")
-            .join("best-of-results.json");
+        let results_path = tmp.path().join("test-best-of").join("best-of-results.json");
         let json: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&results_path).unwrap()).unwrap();
         let detail = json["runs_detail"].as_array().unwrap();

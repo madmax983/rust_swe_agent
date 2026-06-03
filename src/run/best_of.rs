@@ -74,11 +74,7 @@ impl BestOfResults {
         use std::fmt::Write as _;
         let mut out = String::new();
 
-        let non_skipped = self
-            .runs_detail
-            .iter()
-            .filter(|d| !d.skipped)
-            .count();
+        let non_skipped = self.runs_detail.iter().filter(|d| !d.skipped).count();
 
         let _ = writeln!(
             &mut out,
@@ -120,9 +116,7 @@ impl BestOfResults {
             let steps = d
                 .step_count
                 .map_or_else(|| "-".to_owned(), |s| s.to_string());
-            let winner_marker = self
-                .winner_run_index
-                .is_some_and(|w| w == d.run_index);
+            let winner_marker = self.winner_run_index.is_some_and(|w| w == d.run_index);
             let pass_label = if d.skipped {
                 "skip"
             } else if d.passed {
@@ -192,7 +186,11 @@ pub fn select_winner(runs: &[BestOfRunDetail]) -> (u32, String, bool) {
         .collect();
 
     if tier1.len() == 1 {
-        return (tier1[0].run_index, "most_verify_checks_passed".into(), false);
+        return (
+            tier1[0].run_index,
+            "most_verify_checks_passed".into(),
+            false,
+        );
     }
 
     // Tie-break 1: lowest cost
@@ -205,15 +203,13 @@ pub fn select_winner(runs: &[BestOfRunDetail]) -> (u32, String, bool) {
     let tier2: Vec<&BestOfRunDetail> = tier1
         .iter()
         .copied()
-        .filter(|d| d.total_cost_usd.unwrap_or(f64::MAX).total_cmp(&min_cost) == std::cmp::Ordering::Equal)
+        .filter(|d| {
+            d.total_cost_usd.unwrap_or(f64::MAX).total_cmp(&min_cost) == std::cmp::Ordering::Equal
+        })
         .collect();
 
     if tier2.len() == 1 {
-        return (
-            tier2[0].run_index,
-            "tie_break:lowest_cost_usd".into(),
-            true,
-        );
+        return (tier2[0].run_index, "tie_break:lowest_cost_usd".into(), true);
     }
 
     // Tie-break 2: fewest steps
@@ -230,11 +226,7 @@ pub fn select_winner(runs: &[BestOfRunDetail]) -> (u32, String, bool) {
         .collect();
 
     if tier3.len() == 1 {
-        return (
-            tier3[0].run_index,
-            "tie_break:fewest_steps".into(),
-            true,
-        );
+        return (tier3[0].run_index, "tie_break:fewest_steps".into(), true);
     }
 
     // Tie-break 3: smallest patch byte length
@@ -270,11 +262,7 @@ pub fn select_winner(runs: &[BestOfRunDetail]) -> (u32, String, bool) {
         })
         .unwrap_or(tier4[0]);
 
-    (
-        best.run_index,
-        "tie_break:patch_sha256_lex".into(),
-        true,
-    )
+    (best.run_index, "tie_break:patch_sha256_lex".into(), true)
 }
 
 // ── Runner arguments ──────────────────────────────────────────────────────────
@@ -411,8 +399,7 @@ pub async fn run(args: BestOfArgs) -> Result<ExitCode, Error> {
             stream_addr: None,
             patch_capture: Some(crate::run::mini::PatchCaptureSpec {
                 base_commit: None,
-                workdir: std::env::current_dir()
-                    .unwrap_or_else(|_| std::path::PathBuf::from(".")),
+                workdir: std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
                 patch_path: best_of_dir.join(format!("{trajectory_name}.patch")),
                 skip_patch_validation: false,
             }),
@@ -455,13 +442,10 @@ pub async fn run(args: BestOfArgs) -> Result<ExitCode, Error> {
 
             cumulative_cost += cost.unwrap_or(0.0);
 
-            let (checks_passed, checks_total) =
-                count_verify_results(&traj, &verification_checks);
+            let (checks_passed, checks_total) = count_verify_results(&traj, &verification_checks);
 
             let passed = checks_total > 0 && checks_passed == checks_total;
-            let patch_byte_len = patch_text
-                .as_deref()
-                .map(|p| p.len() as u64);
+            let patch_byte_len = patch_text.as_deref().map(|p| p.len() as u64);
             let patch_sha = patch_text.as_deref().map(sha256_hex);
 
             BestOfRunDetail {
@@ -500,13 +484,10 @@ pub async fn run(args: BestOfArgs) -> Result<ExitCode, Error> {
     let finished_at = Utc::now().to_rfc3339();
 
     // ── Select winner ─────────────────────────────────────────────────────────
-    let passing_run_count = u32::try_from(
-        runs_detail.iter().filter(|d| d.passed).count(),
-    )
-    .unwrap_or(u32::MAX);
+    let passing_run_count =
+        u32::try_from(runs_detail.iter().filter(|d| d.passed).count()).unwrap_or(u32::MAX);
 
-    let all_failed = passing_run_count == 0
-        && runs_detail.iter().any(|d| !d.skipped);
+    let all_failed = passing_run_count == 0 && runs_detail.iter().any(|d| !d.skipped);
 
     let (winner_run_index, selection_rationale, tie_break_applied) =
         if runs_detail.iter().any(|d| !d.skipped) {
@@ -629,8 +610,7 @@ fn count_verify_results(
 ) -> (u32, u32) {
     if checks.is_empty() {
         // Fallback: treat outcome==submitted as 1/1
-        let passed = traj.info.outcome.as_deref()
-            == Some(crate::trajectory::outcome::SUBMITTED);
+        let passed = traj.info.outcome.as_deref() == Some(crate::trajectory::outcome::SUBMITTED);
         return (u32::from(passed), 1);
     }
 
@@ -639,7 +619,8 @@ fn count_verify_results(
     // Count passed checks from verification_results if available
     if !traj.info.verification_results.is_empty() {
         let passed = u32::try_from(
-            traj.info.verification_results
+            traj.info
+                .verification_results
                 .iter()
                 .filter(|r| r.passed)
                 .count(),
