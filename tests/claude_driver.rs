@@ -317,7 +317,9 @@ async fn claude_driver_downgrades_over_budget_run() {
 
     let mut args = base_args(repo.path(), out.path(), "cc-budget");
     // Fixture reports total_cost_usd = 0.0123; set a cap well below that.
+    // hide_budget_from_agent must be true: the driver can't append budget blocks.
     args.config.root.agent.per_task_budget_usd = Some(0.001);
+    args.config.root.agent.hide_budget_from_agent = true;
 
     run(args).await.expect("run should complete");
     let traj = read_traj(out.path(), "cc-budget");
