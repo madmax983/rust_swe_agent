@@ -431,7 +431,10 @@ pub async fn run(args: BestOfArgs) -> Result<ExitCode, Error> {
                 base_commit,
                 workdir: patch_workdir,
                 patch_path: run_patch_path,
-                skip_patch_validation: false,
+                // best-of's oracle is --verify, not patch non-emptiness; skipping
+                // the SWE-bench "empty diff = error" rule prevents the outcome from
+                // being downgraded when the scripted model or a no-op agent submits.
+                skip_patch_validation: true,
             }),
             verification_checks: verification_checks.clone(),
             verification_timeout_secs: args.verify_timeout_secs,
