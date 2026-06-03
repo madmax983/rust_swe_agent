@@ -144,6 +144,15 @@ pub enum ExitCode {
     /// a "clean" verdict cannot be trusted. Distinct from `usage_error` (2) so
     /// CI can tell "the scan broke" from "your invocation is broken".
     RedactAuditScanError = 33,
+    /// 34 — `agent injection-audit` found at least one hit at or above the
+    /// configured `--fail-on` severity threshold. The audit completed; the
+    /// non-zero exit is the CI publish gate. Distinct from `internal_error` (1)
+    /// so automation can route "injection signals found" separately from a crash.
+    InjectionAuditHits = 34,
+    /// 35 — `agent injection-audit` could not read the sweep directory or one
+    /// or more trajectory files (missing path, unreadable file). The scan is
+    /// incomplete, so a "clean" verdict cannot be trusted.
+    InjectionAuditScanError = 35,
     /// 130 — user interruption (graceful SIGINT / Ctrl-C; 128 + SIGINT(2)).
     Interrupted = 130,
     /// 137 — forced kill (SIGKILL escalation after graceful-cancel deadline; 128 + SIGKILL(9)).
@@ -198,6 +207,8 @@ impl ExitCode {
             Self::ApplyDirtyTreeRefused => "apply_dirty_tree_refused",
             Self::RedactAuditFindings => "redact_audit_findings",
             Self::RedactAuditScanError => "redact_audit_scan_error",
+            Self::InjectionAuditHits => "injection_audit_hits",
+            Self::InjectionAuditScanError => "injection_audit_scan_error",
             Self::Interrupted => "interrupted",
             Self::Killed => "killed",
         }

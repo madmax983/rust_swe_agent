@@ -5,6 +5,7 @@ pub mod annotate;
 pub mod apply;
 pub mod assert;
 pub mod audit;
+pub mod injection_audit;
 pub mod behavior;
 pub mod bisect;
 pub mod budget_fit;

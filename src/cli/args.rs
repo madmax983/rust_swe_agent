@@ -326,6 +326,38 @@ pub struct RedactAuditCmd {
     pub baseline: Option<PathBuf>,
 }
 
+/// `agent injection-audit` — post-hoc audit for prompt-injection signals in sweep trajectories (issue #343).
+///
+/// Scans every `*.traj.json` in the sweep directory for known prompt-injection
+/// signatures inside untrusted XML envelopes only. Zero-cost: read-only,
+/// no model calls, no network.
+#[derive(Debug, Args)]
+pub struct InjectionAuditCmd {
+    /// Sweep directory to scan (must contain `*.traj.json` files).
+    #[arg(long = "sweep", value_name = "DIR")]
+    pub sweep: PathBuf,
+
+    /// Path to a YAML or JSON file with custom signature entries.
+    /// Format: `[{name, pattern, kind, severity}]`.
+    /// Supplements (does not replace) the built-in pack.
+    #[arg(long, value_name = "PATH")]
+    pub signatures: Option<PathBuf>,
+
+    /// Output format: `text` (default, human-readable), `json` (machine-readable),
+    /// or `jsonl` (one hit record per line).
+    #[arg(long, default_value = "text")]
+    pub format: String,
+
+    /// Minimum severity level that triggers exit code 34.
+    /// One of `low`, `medium` (default), or `high`.
+    #[arg(long, default_value = "medium", value_name = "SEVERITY")]
+    pub fail_on: String,
+
+    /// Write the JSON/JSONL report to this file in addition to stdout.
+    #[arg(long, value_name = "PATH")]
+    pub output: Option<PathBuf>,
+}
+
 /// `agent` subcommands.
 #[derive(Debug, Subcommand)]
 pub enum AgentCmd {
@@ -338,6 +370,8 @@ pub enum AgentCmd {
     RedactCheck(RedactCheckCmd),
     /// Audit a finished sweep tree for secret leaks in stored artifacts (issue #342).
     RedactAudit(RedactAuditCmd),
+    /// Audit sweep trajectories for prompt-injection signals (issue #343).
+    InjectionAudit(InjectionAuditCmd),
     /// Preview which skills will activate for one or more tasks (zero-cost, no model call).
     SkillsPreview(SkillsPreviewCmd),
     /// Run an operator-defined personal eval task pack and produce suite-results.json.

@@ -135,6 +135,7 @@ pub async fn run() -> Result<(), Error> {
             args::AgentCmd::SkillsPreview(s) => agent_skills_preview_cmd(&s),
             args::AgentCmd::RedactCheck(r) => agent_redact_check_cmd(&r),
             args::AgentCmd::RedactAudit(a) => agent_redact_audit_cmd(&a),
+            args::AgentCmd::InjectionAudit(a) => agent_injection_audit_cmd(&a),
             args::AgentCmd::Env {
                 cmd: args::AgentEnvCmd::Preview(ref p),
             } => agent_env_preview_cmd(p),
@@ -345,6 +346,81 @@ fn agent_redact_audit_cmd(a: &args::RedactAuditCmd) -> Result<(), Error> {
     match format {
         AuditFormat::Json => println!("{json}"),
         AuditFormat::Human => print!("{}", format_human(&report)),
+    }
+
+    if exit_code != ExitCode::Success {
+        exit_with_outcome(exit_code, exit_code.outcome_class());
+    }
+    Ok(())
+}
+
+fn agent_injection_audit_cmd(a: &args::InjectionAuditCmd) -> Result<(), Error> {
+    use crate::run::injection_audit::{
+        AuditOpts, format_json, format_jsonl, format_text, parse_fail_on, parse_format,
+        run_injection_audit, AuditFormat,
+    };
+
+    let format = parse_format(a.format.as_str()).map_err(Error::Config)?;
+    let fail_on = parse_fail_on(a.fail_on.as_str()).map_err(Error::Config)?;
+
+    let opts = AuditOpts {
+        sweep_dir: a.sweep.clone(),
+        extra_signatures: a.signatures.clone(),
+        format,
+        fail_on,
+    };
+
+    let report = match run_injection_audit(&opts) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("injection-audit: scan failed: {e}");
+            exit_with_outcome(
+                ExitCode::InjectionAuditScanError,
+                ExitCode::InjectionAuditScanError.outcome_class(),
+            );
+        }
+    };
+
+    let exit_code = report.exit_code(fail_on, &report.hits.clone());
+
+    match format {
+        AuditFormat::Json => {
+            let json = format_json(&report).map_err(Error::Json)?;
+            let pretty = serde_json::to_string_pretty(&json).map_err(Error::Json)?;
+            if let Some(ref out_path) = a.output {
+                if let Some(parent) = out_path.parent() {
+                    if !parent.as_os_str().is_empty() {
+                        std::fs::create_dir_all(parent).map_err(Error::Io)?;
+                    }
+                }
+                std::fs::write(out_path, &pretty).map_err(Error::Io)?;
+            }
+            println!("{pretty}");
+        }
+        AuditFormat::Jsonl => {
+            let jsonl = format_jsonl(&report);
+            if let Some(ref out_path) = a.output {
+                if let Some(parent) = out_path.parent() {
+                    if !parent.as_os_str().is_empty() {
+                        std::fs::create_dir_all(parent).map_err(Error::Io)?;
+                    }
+                }
+                std::fs::write(out_path, &jsonl).map_err(Error::Io)?;
+            }
+            print!("{jsonl}");
+        }
+        AuditFormat::Text => {
+            let text = format_text(&report);
+            if let Some(ref out_path) = a.output {
+                if let Some(parent) = out_path.parent() {
+                    if !parent.as_os_str().is_empty() {
+                        std::fs::create_dir_all(parent).map_err(Error::Io)?;
+                    }
+                }
+                std::fs::write(out_path, &text).map_err(Error::Io)?;
+            }
+            print!("{text}");
+        }
     }
 
     if exit_code != ExitCode::Success {
