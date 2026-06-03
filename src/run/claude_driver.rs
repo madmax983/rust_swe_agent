@@ -75,34 +75,56 @@ const CLAUDE_BIN_ENV: &str = "MAXWELLS_CLAUDE_BIN";
 /// cleanup; exceeded → kill and continue with whatever was parsed.
 const WAIT_GRACE_SECS: Duration = Duration::from_secs(30);
 
-/// Per-file cap on recorded config content; a pathological file is truncated
-/// (with a `truncated` flag) rather than bloating the trajectory.
+/// Storage cap: recorded config `content` is truncated to this many bytes in
+/// the trajectory (a pathological file is flagged `truncated` rather than
+/// bloating the artifact).
 const CONFIG_MAX_FILE_BYTES: usize = 256 * 1024;
+/// Hard cap on bytes read into memory per file. Bounds memory even for a
+/// multi-GB asset dropped under `.claude/` — the hash is still computed over the
+/// *whole* file by streaming, so the fingerprint stays faithful, but only this
+/// much is buffered for content/redaction.
+const CONFIG_MAX_READ_BYTES: usize = 1024 * 1024;
 /// Cap on the number of discovered config files recorded, across all scopes.
 const CONFIG_MAX_FILES: usize = 200;
 
 /// One Claude Code config file the harness found in play for this run.
 struct DiscoveredFile {
-    /// Filesystem path, for display/audit.
+    /// Filesystem path, for display/audit (redacted before it is recorded).
     display_path: String,
-    /// `"project"` (under the workdir) or `"user"` (under `~/.claude`).
+    /// `"project"`, `"ancestor"` (a `CLAUDE.md` above the workdir), or `"user"`.
     scope: &'static str,
-    /// `"CLAUDE.md"`, `"AGENTS.md"`, `"settings"`, `"agent"`, `"skill"`, `"mcp"`.
+    /// `"CLAUDE.md"`, `"AGENTS.md"`, `"settings"`, `"agent"`, `"skill"`,
+    /// `"rule"`, or `"mcp"`.
     kind: &'static str,
-    /// SHA-256 of the *raw* on-disk bytes — a tamper-evident fingerprint that is
-    /// independent of the redaction applied to the recorded `content`.
+    /// SHA-256 of the *whole* on-disk file (streamed) — a tamper-evident
+    /// fingerprint independent of the read window or redaction below.
     sha256: String,
-    /// Raw byte length of the on-disk file (pre-truncation).
-    bytes: usize,
-    /// File content (raw, possibly truncated); redacted before it is recorded.
+    /// Full byte length of the on-disk file.
+    bytes: u64,
+    /// Up to [`CONFIG_MAX_READ_BYTES`] of raw content; redacted then truncated
+    /// to [`CONFIG_MAX_FILE_BYTES`] before it is recorded.
     content: String,
-    /// True when `content` was truncated at [`CONFIG_MAX_FILE_BYTES`].
+    /// True when the file is larger than [`CONFIG_MAX_FILE_BYTES`] (the recorded
+    /// content is a prefix, not the whole file).
     truncated: bool,
 }
 
-fn sha256_hex(bytes: &[u8]) -> String {
+/// Truncate `s` to at most `max` bytes on a UTF-8 char boundary, returning the
+/// (possibly shorter) string and whether it was cut.
+fn truncate_to_bytes(s: &str, max: usize) -> (String, bool) {
+    if s.len() <= max {
+        return (s.to_owned(), false);
+    }
+    let mut end = max;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    (s[..end].to_owned(), true)
+}
+
+fn sha256_finish_hex(hasher: Sha256) -> String {
     use std::fmt::Write as _;
-    let digest = Sha256::digest(bytes);
+    let digest = hasher.finalize();
     let mut hex = String::with_capacity(digest.len() * 2);
     for byte in digest {
         let _ = write!(hex, "{byte:02x}");
@@ -111,32 +133,48 @@ fn sha256_hex(bytes: &[u8]) -> String {
 }
 
 /// Read one config file into a [`DiscoveredFile`], or `None` if unreadable.
+///
+/// Reads in fixed chunks: the hash covers the whole file (constant memory),
+/// while only the first [`CONFIG_MAX_READ_BYTES`] are retained for content so a
+/// huge/symlinked asset can't allocate unbounded memory.
 fn read_config_file(
     path: &Path,
     scope: &'static str,
     kind: &'static str,
 ) -> Option<DiscoveredFile> {
-    let raw = std::fs::read(path).ok()?;
-    let bytes = raw.len();
-    let sha256 = sha256_hex(&raw);
-    let truncated = raw.len() > CONFIG_MAX_FILE_BYTES;
-    let slice = if truncated {
-        &raw[..CONFIG_MAX_FILE_BYTES]
-    } else {
-        &raw[..]
-    };
+    use std::io::Read as _;
+    let file = std::fs::File::open(path).ok()?;
+    let mut reader = std::io::BufReader::new(file);
+    let mut hasher = Sha256::new();
+    let mut buf = [0u8; 8192];
+    let mut total: u64 = 0;
+    let mut content_bytes: Vec<u8> = Vec::new();
+    loop {
+        let n = reader.read(&mut buf).ok()?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+        total += n as u64;
+        if content_bytes.len() < CONFIG_MAX_READ_BYTES {
+            let take = (CONFIG_MAX_READ_BYTES - content_bytes.len()).min(n);
+            content_bytes.extend_from_slice(&buf[..take]);
+        }
+    }
     Some(DiscoveredFile {
         display_path: path.display().to_string(),
         scope,
         kind,
-        sha256,
-        bytes,
-        content: String::from_utf8_lossy(slice).into_owned(),
-        truncated,
+        sha256: sha256_finish_hex(hasher),
+        bytes: total,
+        content: String::from_utf8_lossy(&content_bytes).into_owned(),
+        truncated: total > CONFIG_MAX_FILE_BYTES as u64,
     })
 }
 
 /// Recursively collect files under `dir` (best-effort), honoring the global cap.
+/// Symlinks are skipped (via `DirEntry::file_type`, which does not follow them)
+/// so a symlinked entry can't redirect the walk outside the worktree.
 fn collect_config_dir(
     dir: &Path,
     scope: &'static str,
@@ -150,11 +188,19 @@ fn collect_config_dir(
         if out.len() >= CONFIG_MAX_FILES {
             return;
         }
+        let Ok(ft) = entry.file_type() else {
+            continue;
+        };
+        if ft.is_symlink() {
+            continue;
+        }
         let path = entry.path();
-        if path.is_dir() {
+        if ft.is_dir() {
             collect_config_dir(&path, scope, kind, out);
-        } else if let Some(f) = read_config_file(&path, scope, kind) {
-            out.push(f);
+        } else if ft.is_file() {
+            if let Some(f) = read_config_file(&path, scope, kind) {
+                out.push(f);
+            }
         }
     }
 }
@@ -165,10 +211,13 @@ fn collect_config_dir(
 fn discover_claude_config(cwd: &Path) -> Vec<DiscoveredFile> {
     let mut out = Vec::new();
 
-    // Project scope: singleton files at the workdir root, then agent/skill dirs.
+    // Project scope: singleton files at the workdir root and under `.claude/`,
+    // then the agent/skill/rule dirs. Mirrors what Claude Code loads as project
+    // memory + config (https://code.claude.com/docs/en/memory).
     let project_files: &[(&str, &'static str)] = &[
         ("CLAUDE.md", "CLAUDE.md"),
         ("CLAUDE.local.md", "CLAUDE.md"),
+        (".claude/CLAUDE.md", "CLAUDE.md"),
         ("AGENTS.md", "AGENTS.md"),
         (".claude/settings.json", "settings"),
         (".claude/settings.local.json", "settings"),
@@ -184,6 +233,26 @@ fn discover_claude_config(cwd: &Path) -> Vec<DiscoveredFile> {
     }
     collect_config_dir(&cwd.join(".claude/agents"), "project", "agent", &mut out);
     collect_config_dir(&cwd.join(".claude/skills"), "project", "skill", &mut out);
+    collect_config_dir(&cwd.join(".claude/rules"), "project", "rule", &mut out);
+
+    // Ancestor scope: Claude Code loads `CLAUDE.md`/`CLAUDE.local.md` from the
+    // directory hierarchy above the workdir, so record those too (the global cap
+    // bounds a deep tree).
+    let mut ancestor = cwd.parent();
+    while let Some(dir) = ancestor {
+        if out.len() >= CONFIG_MAX_FILES {
+            break;
+        }
+        for name in ["CLAUDE.md", "CLAUDE.local.md"] {
+            let p = dir.join(name);
+            if p.is_file() {
+                if let Some(f) = read_config_file(&p, "ancestor", "CLAUDE.md") {
+                    out.push(f);
+                }
+            }
+        }
+        ancestor = dir.parent();
+    }
 
     // User scope: ~/.claude singletons plus agent/skill dirs.
     if let Some(home) = std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME")) {
@@ -232,21 +301,33 @@ fn record_claude_config(agent: &mut DefaultAgent, cwd: &Path, isolated: bool) {
         .into_iter()
         .take(CONFIG_MAX_FILES)
     {
+        // Redact path and content on the TRAJECTORY surface — a workdir, $HOME,
+        // or filename segment can itself contain a configured secret literal.
+        let path = agent
+            .redactor
+            .redact_text(&f.display_path, surface::TRAJECTORY)
+            .text;
+        // Redact the *full* read window before applying the storage cap, so a
+        // secret straddling the truncation boundary is still redacted (matching
+        // the observation path's redact-then-truncate order).
         let redacted = agent
             .redactor
             .redact_text(&f.content, surface::TRAJECTORY)
             .text;
+        let (content, content_truncated) = truncate_to_bytes(&redacted, CONFIG_MAX_FILE_BYTES);
+        let truncated = f.truncated || content_truncated;
+
         let mut obj = serde_json::Map::new();
-        obj.insert("path".into(), Value::String(f.display_path));
+        obj.insert("path".into(), Value::String(path));
         obj.insert("scope".into(), Value::String(f.scope.into()));
         obj.insert("kind".into(), Value::String(f.kind.into()));
         obj.insert("sha256".into(), Value::String(f.sha256));
-        obj.insert("bytes".into(), Value::Number((f.bytes as u64).into()));
-        if f.truncated {
+        obj.insert("bytes".into(), Value::Number(f.bytes.into()));
+        if truncated {
             obj.insert("truncated".into(), Value::Bool(true));
             truncated_any = true;
         }
-        obj.insert("content".into(), Value::String(redacted));
+        obj.insert("content".into(), Value::String(content));
         files.push(Value::Object(obj));
     }
     meta.insert(

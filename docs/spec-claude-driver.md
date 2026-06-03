@@ -110,18 +110,26 @@ The driver has two postures, because it serves two different jobs:
 In fidelity mode, ambient configuration influences the run, so the harness
 discovers and records it into `info.other["claude_code_config"]` for audit:
 
-- **Project scope** (workdir): `CLAUDE.md`, `CLAUDE.local.md`, `AGENTS.md`,
-  `.claude/settings.json`, `.claude/settings.local.json`, `.mcp.json`, and every
-  file under `.claude/agents/` and `.claude/skills/`.
+- **Project scope** (workdir): `CLAUDE.md`, `CLAUDE.local.md`, `.claude/CLAUDE.md`,
+  `AGENTS.md`, `.claude/settings.json`, `.claude/settings.local.json`,
+  `.mcp.json`, and every file under `.claude/agents/`, `.claude/skills/`, and
+  `.claude/rules/`.
+- **Ancestor scope**: `CLAUDE.md`/`CLAUDE.local.md` in directories above the
+  workdir (Claude Code loads project memory up the hierarchy).
 - **User scope** (`~/.claude`): `CLAUDE.md`, `settings.json`, and the `agents/`
   and `skills/` trees.
 
 Each entry records `{path, scope, kind, sha256, bytes, content[, truncated]}`.
-The `sha256` is over the *raw* on-disk bytes (a tamper-evident fingerprint);
-`content` is the file body **redacted** with the `TRAJECTORY` surface before
-storage, truncated at 256 KiB per file (max 200 files). In isolated mode
-`--bare` bypasses discovery, so only `{isolated: true, discovery: "bypassed…"}`
-is recorded — nothing ambient was in play to audit.
+The `sha256` is streamed over the *whole* on-disk file (a tamper-evident
+fingerprint, constant memory); `content` is the file body **redacted** with the
+`TRAJECTORY` surface and then truncated at 256 KiB (redact-before-truncate, so a
+secret straddling the cap is still caught). `path` is redacted too — a workdir or
+`$HOME` segment can itself be a configured secret. To stay memory-safe against a
+large or symlinked asset under `.claude/`, at most 1 MiB is buffered per file for
+content/redaction (the hash still covers the whole file), symlinked directory
+entries are skipped (no traversal outside the worktree), and at most 200 files
+are recorded. In isolated mode `--bare` bypasses discovery, so only
+`{isolated: true, discovery: "bypassed…"}` is recorded.
 
 ## Outcome mapping
 

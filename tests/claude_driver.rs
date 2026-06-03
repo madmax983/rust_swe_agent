@@ -449,20 +449,35 @@ async fn claude_driver_records_ambient_config_for_audit() {
     init_repo(repo.path());
     ensure_fake_claude();
 
-    // Ambient config a team would actually have checked in.
+    // Ambient config a team would actually have checked in, exercising every
+    // discovered kind: CLAUDE.md, AGENTS.md, settings, .mcp.json, and the
+    // recursively-walked agents/ and skills/ trees.
+    let root = repo.path();
+    std::fs::write(root.join("CLAUDE.md"), "# Project rules\nBe concise.\n").unwrap();
+    std::fs::write(root.join("AGENTS.md"), "# Agents\nUse the reviewer.\n").unwrap();
+    std::fs::write(root.join(".mcp.json"), r#"{"mcpServers":{}}"#).unwrap();
+    std::fs::create_dir_all(root.join(".claude/agents")).unwrap();
+    std::fs::create_dir_all(root.join(".claude/skills/deploy")).unwrap();
     std::fs::write(
-        repo.path().join("CLAUDE.md"),
-        "# Project rules\nBe concise.\n",
-    )
-    .unwrap();
-    std::fs::create_dir_all(repo.path().join(".claude")).unwrap();
-    std::fs::write(
-        repo.path().join(".claude/settings.json"),
+        root.join(".claude/settings.json"),
         r#"{"permissions":{"allow":["Bash"]}}"#,
     )
     .unwrap();
+    std::fs::write(
+        root.join(".claude/agents/reviewer.md"),
+        "---\nname: reviewer\n---\nReview code.\n",
+    )
+    .unwrap();
+    // Nested skill file (exercises the recursive directory walk).
+    std::fs::write(
+        root.join(".claude/skills/deploy/SKILL.md"),
+        "# Deploy skill\n",
+    )
+    .unwrap();
+    // A file larger than the 256 KiB cap, to exercise the truncation path.
+    std::fs::write(root.join("CLAUDE.local.md"), "x".repeat(300 * 1024)).unwrap();
 
-    run(base_args(repo.path(), out.path(), "cc-cfg"))
+    run(base_args(root, out.path(), "cc-cfg"))
         .await
         .expect("run should succeed");
     let traj = read_traj(out.path(), "cc-cfg");
@@ -471,10 +486,13 @@ async fn claude_driver_records_ambient_config_for_audit() {
     assert_eq!(cfg["isolated"], false);
     let files = cfg["files"].as_array().expect("files array recorded");
 
-    let claude_md = files
-        .iter()
-        .find(|f| f["kind"] == "CLAUDE.md" && f["scope"] == "project")
-        .expect("project CLAUDE.md recorded");
+    let by_kind = |kind: &str| {
+        files
+            .iter()
+            .find(|f| f["kind"] == kind && f["scope"] == "project")
+    };
+
+    let claude_md = by_kind("CLAUDE.md").expect("project CLAUDE.md recorded");
     assert!(
         claude_md["content"]
             .as_str()
@@ -483,7 +501,21 @@ async fn claude_driver_records_ambient_config_for_audit() {
     );
     // Hash is of the raw bytes: 64 hex chars.
     assert_eq!(claude_md["sha256"].as_str().unwrap().len(), 64);
-    assert!(files.iter().any(|f| f["kind"] == "settings"));
+
+    assert!(by_kind("AGENTS.md").is_some(), "AGENTS.md recorded");
+    assert!(by_kind("settings").is_some(), "settings recorded");
+    assert!(by_kind("mcp").is_some(), ".mcp.json recorded");
+    assert!(by_kind("agent").is_some(), "nested agent recorded");
+    assert!(by_kind("skill").is_some(), "nested skill recorded");
+
+    // The oversized file is recorded but flagged + size-capped in content.
+    let big = files
+        .iter()
+        .find(|f| f["truncated"] == true)
+        .expect("oversized file truncated");
+    assert!(big["bytes"].as_u64().unwrap() >= 300 * 1024);
+    assert!(big["content"].as_str().unwrap().len() <= 256 * 1024);
+    assert_eq!(cfg["truncated"], true);
 }
 
 /// Isolated mode passes `--bare`, which strips ambient `.claude` discovery, so
