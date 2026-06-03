@@ -70,6 +70,7 @@ pub enum ArtifactKind {
     NearMissReport,
     ApplyReport,
     StabilityResults,
+    BestOfResults,
 }
 
 impl ArtifactKind {
@@ -97,6 +98,7 @@ impl ArtifactKind {
             Self::NearMissReport => "near_miss_report",
             Self::ApplyReport => "apply_report",
             Self::StabilityResults => "stability_results",
+            Self::BestOfResults => "best_of_results",
         }
     }
 }

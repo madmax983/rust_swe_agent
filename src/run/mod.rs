@@ -3,6 +3,7 @@
 
 pub mod annotate;
 pub mod apply;
+pub mod best_of;
 pub mod assert;
 pub mod audit;
 pub mod behavior;

@@ -146,6 +146,7 @@ pub async fn run() -> Result<(), Error> {
             args::AgentCmd::Suite(s) => Box::pin(agent_suite_cmd(*s)).await,
             args::AgentCmd::PolicyCheck(p) => agent_policy_check_cmd(&p),
             args::AgentCmd::Apply(a) => agent_apply_cmd(&a),
+            args::AgentCmd::BestOf(b) => Box::pin(agent_best_of_cmd(*b)).await,
         },
         Command::Catalog(c) => catalog::run_catalog(c),
         Command::Ui(u) => ui_cmd(u).await,
@@ -6031,6 +6032,145 @@ async fn agent_stability_cmd(s: args::StabilityCmd) -> Result<(), Error> {
     if s.format == Some(args::StabilityFormatArg::Json) {
         let result_dir = s.output.join(&stability_name_for_json);
         let result_path = result_dir.join("stability-results.json");
+        if let Ok(json_text) = std::fs::read_to_string(&result_path) {
+            println!("{json_text}");
+        }
+    }
+
+    if exit_code != ExitCode::Success {
+        exit_with_outcome(exit_code, exit_code.outcome_class());
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_lines)]
+async fn agent_best_of_cmd(b: args::BestOfCmd) -> Result<(), Error> {
+    // ── Validate --runs ───────────────────────────────────────────────────────
+    if let Err(msg) = crate::run::best_of::validate_runs(b.runs) {
+        return Err(Error::Config(crate::error::ConfigError::Invalid(msg)));
+    }
+
+    // ── Require --verify ──────────────────────────────────────────────────────
+    if b.verify.is_empty() {
+        return Err(Error::Config(crate::error::ConfigError::Usage(
+            "--verify is required for `agent best-of`; it is the oracle that drives \
+             selection. Without it there is no way to score runs against each other. \
+             Use `mini` if you just want to run a single task."
+                .into(),
+        )));
+    }
+
+    // ── Resolve task text ─────────────────────────────────────────────────────
+    let task = match (&b.task, &b.task_file) {
+        (Some(t), _) => t.clone(),
+        (None, Some(path)) => {
+            if path == std::path::Path::new("-") {
+                use std::io::Read as _;
+                let mut buf = String::new();
+                std::io::stdin()
+                    .read_to_string(&mut buf)
+                    .map_err(Error::Io)?;
+                buf.trim().to_owned()
+            } else {
+                std::fs::read_to_string(path)
+                    .map_err(|e| {
+                        Error::Config(crate::error::ConfigError::Invalid(format!(
+                            "cannot read task file '{}': {e}",
+                            path.display()
+                        )))
+                    })?
+                    .trim()
+                    .to_owned()
+            }
+        }
+        (None, None) => {
+            return Err(Error::Config(crate::error::ConfigError::Invalid(
+                "one of --task or --task-file is required".into(),
+            )));
+        }
+    };
+
+    if task.is_empty() {
+        return Err(Error::Config(crate::error::ConfigError::Invalid(
+            "task must not be empty".into(),
+        )));
+    }
+
+    // ── Load config and apply CLI overrides ───────────────────────────────────
+    let mut cfg = match &b.config {
+        Some(p) => Config::load(p)?,
+        None => Config::defaults()?,
+    };
+
+    cfg.root.model.name.clone_from(&b.model);
+
+    if let Some(v) = b.step_limit {
+        cfg.root.agent.step_limit = v;
+    }
+    if let Some(v) = b.per_task_budget_usd {
+        cfg.root.agent.per_task_budget_usd = Some(v);
+    }
+    if let Some(kind) = &b.env {
+        cfg.root.environment.kind = parse_env_kind(kind.as_str())?;
+    }
+    if let Some(img) = b.docker_image.clone() {
+        cfg.root.environment.docker_image = Some(img);
+    }
+    if let Some(v) = b.detect_stagnation {
+        cfg.root.agent.detect_stagnation = v;
+    }
+    if let Some(v) = b.history_max_input_tokens {
+        cfg.root.agent.history_max_input_tokens = Some(v);
+    }
+    if let Some(v) = b.history_keep_last_observations {
+        cfg.root.agent.history_keep_last_observations = Some(v);
+    }
+    apply_mcp_server_overrides(&mut cfg, &b.mcp_servers)?;
+
+    // ── Derive best-of name from task slug when not supplied ──────────────────
+    let best_of_name = b.best_of_name.clone().unwrap_or_else(|| {
+        let slug: String = task
+            .chars()
+            .take(40)
+            .map(|c| if c.is_alphanumeric() { c } else { '-' })
+            .collect::<String>()
+            .trim_matches('-')
+            .to_owned();
+        if slug.is_empty() {
+            "best-of".to_owned()
+        } else {
+            slug
+        }
+    });
+
+    let output_dir = b.output.clone();
+    let best_of_name_for_json = best_of_name.clone();
+
+    let best_of_args = crate::run::best_of::BestOfArgs {
+        task,
+        runs: b.runs,
+        config: cfg,
+        output_dir,
+        best_of_name,
+        verify: b.verify,
+        verify_timeout_secs: b.verify_timeout_secs,
+        cost_limit_usd: b.cost_limit_usd,
+        task_timeout_secs: b.task_timeout_secs,
+        step_limit: b.step_limit,
+        per_task_budget_usd: b.per_task_budget_usd,
+        output_patch: b.output_patch,
+        allow_no_pass: b.allow_no_pass,
+        deterministic_responses: None,
+        deterministic_usage_per_call: None,
+        print_summary: b.format != Some(args::BestOfFormatArg::Json),
+    };
+
+    let exit_code = crate::run::best_of::run(best_of_args).await?;
+
+    // ── --format json: print artifact to stdout ───────────────────────────────
+    if b.format == Some(args::BestOfFormatArg::Json) {
+        let result_dir = b.output.join(&best_of_name_for_json);
+        let result_path = result_dir.join("best-of-results.json");
         if let Ok(json_text) = std::fs::read_to_string(&result_path) {
             println!("{json_text}");
         }

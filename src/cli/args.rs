@@ -457,6 +457,112 @@ pub struct InjectionAuditCmd {
     pub output: Option<PathBuf>,
 }
 
+/// Output-format selector for `agent best-of`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum BestOfFormatArg {
+    Text,
+    Json,
+}
+
+/// `agent best-of` — sample N runs and emit the best patch (issue #485).
+#[derive(Debug, Args)]
+pub struct BestOfCmd {
+    /// Task description to run N times. Mutually exclusive with `--task-file`.
+    #[arg(long, value_name = "TASK", conflicts_with = "task_file")]
+    pub task: Option<String>,
+
+    /// Path to a file containing the task description (use `-` for stdin).
+    /// Mutually exclusive with `--task`.
+    #[arg(long = "task-file", value_name = "PATH", conflicts_with = "task")]
+    pub task_file: Option<PathBuf>,
+
+    /// Number of times to run the task (2..=10). Best-of-1 is equivalent to `mini`.
+    #[arg(long, value_name = "N")]
+    pub runs: u32,
+
+    /// Model name (e.g. `claude-opus-4-7`).
+    #[arg(long, default_value = "claude-opus-4-7")]
+    pub model: String,
+
+    /// Optional path to a TOML config file (overlays defaults).
+    #[arg(long)]
+    pub config: Option<PathBuf>,
+
+    /// Verify check in `NAME:COMMAND` format (repeatable, required).
+    /// Without `--verify`, there is no oracle to drive selection.
+    #[arg(long = "verify", value_name = "NAME:COMMAND")]
+    pub verify: Vec<String>,
+
+    /// Per-check timeout in seconds for `--verify` checks. Default: 60.
+    #[arg(long = "verify-timeout-secs", default_value_t = 60)]
+    pub verify_timeout_secs: u64,
+
+    /// Root output directory. Artifacts land in `<output>/<best-of-name>/`.
+    #[arg(long, default_value = "./runs")]
+    pub output: PathBuf,
+
+    /// Where to write the winner's patch file.
+    /// Default: `<output>/<best-of-name>/best.patch`.
+    #[arg(long = "output-patch", value_name = "PATH")]
+    pub output_patch: Option<PathBuf>,
+
+    /// When all runs fail verify checks, exit 0 instead of exit 40.
+    /// `all_failed: true` is still set in `best-of-results.json`.
+    #[arg(long, default_value_t = false)]
+    pub allow_no_pass: bool,
+
+    /// Total USD ceiling across all runs. Remaining runs are recorded as
+    /// `skipped` rather than overrunning the budget.
+    #[arg(long = "cost-limit-usd")]
+    pub cost_limit_usd: Option<f64>,
+
+    /// Per-run USD ceiling enforced inside the agent loop.
+    #[arg(long)]
+    pub per_task_budget_usd: Option<f64>,
+
+    /// Max agent steps per run.
+    #[arg(long)]
+    pub step_limit: Option<u32>,
+
+    /// Per-run wallclock timeout in seconds.
+    #[arg(long)]
+    pub task_timeout_secs: Option<u64>,
+
+    /// Environment: `local` or `docker`.
+    #[arg(long)]
+    pub env: Option<String>,
+
+    /// Docker image, if `--env docker`.
+    #[arg(long)]
+    pub docker_image: Option<String>,
+
+    /// Register an invocation-time MCP stdio server command (repeatable).
+    #[arg(long = "mcp-server", value_name = "COMMAND")]
+    pub mcp_servers: Vec<String>,
+
+    /// Enable or disable in-loop stagnation detection.
+    #[arg(long = "detect-stagnation", num_args = 0..=1, default_missing_value = "true")]
+    pub detect_stagnation: Option<bool>,
+
+    /// Token budget for the model-visible prompt.
+    #[arg(long)]
+    pub history_max_input_tokens: Option<u64>,
+
+    /// Keep only the last N tool observations in the model-visible prompt.
+    #[arg(long)]
+    pub history_keep_last_observations: Option<usize>,
+
+    /// Name for this best-of run (used as the output subdirectory name and in
+    /// `best-of-results.json`). Defaults to a slug of the task text.
+    #[arg(long = "best-of-name", value_name = "NAME")]
+    pub best_of_name: Option<String>,
+
+    /// Output format: `text` (default, human-readable) or `json` (prints
+    /// `best-of-results.json` to stdout for CI capture).
+    #[arg(long, value_enum)]
+    pub format: Option<BestOfFormatArg>,
+}
+
 /// `agent` subcommands.
 #[derive(Debug, Subcommand)]
 pub enum AgentCmd {
@@ -481,6 +587,8 @@ pub enum AgentCmd {
     PolicyCheck(PolicyCheckCmd),
     /// Apply a captured patch artifact to a working tree (issue #473).
     Apply(AgentApplyCmd),
+    /// Sample N runs and emit the best patch by --verify oracle (issue #485).
+    BestOf(Box<BestOfCmd>),
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
