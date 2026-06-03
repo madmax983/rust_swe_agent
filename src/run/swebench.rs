@@ -8000,6 +8000,10 @@ instance = "inst"
     /// every payload carries the schema-version envelope (AC #8 from #315).
     #[cfg(feature = "webhook")]
     #[tokio::test]
+    #[allow(clippy::too_many_lines)]
+    #[allow(clippy::while_let_loop)]
+    #[allow(clippy::manual_let_else)]
+    #[allow(clippy::expect_used)]
     async fn notify_webhook_posts_events_in_order_with_schema_envelope() {
         use std::sync::{Arc, Mutex};
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
