@@ -63,6 +63,21 @@ pub fn compute_instance_hash(inst: &SweBenchInstance) -> String {
     hasher.update(problem_statement.as_bytes());
     hasher.update(b"\n");
 
+    let repo = inst.repo.as_deref().unwrap_or("");
+    hasher.update(b"repo:");
+    hasher.update(repo.as_bytes());
+    hasher.update(b"\n");
+
+    let base_commit = inst.base_commit.as_deref().unwrap_or("");
+    hasher.update(b"base_commit:");
+    hasher.update(base_commit.as_bytes());
+    hasher.update(b"\n");
+
+    let image = inst.image.as_deref().unwrap_or("");
+    hasher.update(b"image:");
+    hasher.update(image.as_bytes());
+    hasher.update(b"\n");
+
     let get_other_str = |key: &str| -> String {
         inst.other
             .get(key)
@@ -95,8 +110,11 @@ pub fn compute_instance_hash(inst: &SweBenchInstance) -> String {
         .unwrap_or_default();
     hasher.update(b"FAIL_TO_PASS:");
     for item in &fail_to_pass {
+        let len_str = item.len().to_string();
+        hasher.update(len_str.as_bytes());
+        hasher.update(b":");
         hasher.update(item.as_bytes());
-        hasher.update(b",");
+        hasher.update(b"\n");
     }
     hasher.update(b"\n");
 
@@ -107,8 +125,11 @@ pub fn compute_instance_hash(inst: &SweBenchInstance) -> String {
         .unwrap_or_default();
     hasher.update(b"PASS_TO_PASS:");
     for item in &pass_to_pass {
+        let len_str = item.len().to_string();
+        hasher.update(len_str.as_bytes());
+        hasher.update(b":");
         hasher.update(item.as_bytes());
-        hasher.update(b",");
+        hasher.update(b"\n");
     }
     hasher.update(b"\n");
 
@@ -124,29 +145,61 @@ pub fn verify_dataset(
     candidate_instances: &[SweBenchInstance],
     reference_instances: &[SweBenchInstance],
 ) -> Result<DatasetVerifyReport, Error> {
+    let mut cand_counts = HashMap::new();
     let mut cand_hashes = HashMap::new();
     for inst in candidate_instances {
         let hash = compute_instance_hash(inst);
         cand_hashes.insert(inst.instance_id.clone(), hash);
+        *cand_counts.entry(inst.instance_id.clone()).or_insert(0) += 1;
     }
 
+    let mut ref_counts = HashMap::new();
     let mut ref_hashes = HashMap::new();
     for inst in reference_instances {
         let hash = compute_instance_hash(inst);
         ref_hashes.insert(inst.instance_id.clone(), hash);
+        *ref_counts.entry(inst.instance_id.clone()).or_insert(0) += 1;
     }
 
     let mut missing = Vec::new();
     let mut mutated = Vec::new();
     for (id, ref_hash) in &ref_hashes {
+        let ref_cnt = ref_counts.get(id).copied().unwrap_or(0);
+        let cand_cnt = cand_counts.get(id).copied().unwrap_or(0);
+
         match cand_hashes.get(id) {
             None => {
                 missing.push(id.clone());
             }
             Some(cand_hash) => {
-                if cand_hash != ref_hash {
+                if cand_hash != ref_hash || cand_cnt != ref_cnt || cand_cnt > 1 || ref_cnt > 1 {
                     mutated.push(id.clone());
                 }
+            }
+        }
+    }
+
+    // Preserve order validation:
+    // Extract candidate IDs present in reference, and reference IDs present in candidate.
+    // Pairwise alignment comparison ensures any transposition is flagged as mutated.
+    let ref_common: Vec<&String> = reference_instances
+        .iter()
+        .map(|i| &i.instance_id)
+        .filter(|id| cand_hashes.contains_key(*id))
+        .collect();
+    let cand_common: Vec<&String> = candidate_instances
+        .iter()
+        .map(|i| &i.instance_id)
+        .filter(|id| ref_hashes.contains_key(*id))
+        .collect();
+
+    for (r, c) in ref_common.iter().zip(cand_common.iter()) {
+        if r != c {
+            if !mutated.contains(*r) {
+                mutated.push((*r).clone());
+            }
+            if !mutated.contains(*c) {
+                mutated.push((*c).clone());
             }
         }
     }
@@ -486,5 +539,106 @@ mod tests {
             compute_instance_hash(&inst_lists_clean),
             compute_instance_hash(&inst_lists_with_nulls)
         );
+    }
+
+    #[test]
+    fn test_verify_codex_feedback_cases() {
+        let inst_base = SweBenchInstance {
+            instance_id: "test-1".to_string(),
+            repo: Some("repo-a".to_string()),
+            base_commit: Some("commit-a".to_string()),
+            problem_statement: Some("fix it".to_string()),
+            image: Some("image-a".to_string()),
+            other: serde_json::Map::new(),
+        };
+
+        // 1. Verify mutation of top-level execution fields (repo, base_commit, image) is detected
+        {
+            let mut inst_repo = inst_base.clone();
+            inst_repo.repo = Some("repo-b".to_string());
+            assert_ne!(
+                compute_instance_hash(&inst_base),
+                compute_instance_hash(&inst_repo)
+            );
+
+            let mut inst_commit = inst_base.clone();
+            inst_commit.base_commit = Some("commit-b".to_string());
+            assert_ne!(
+                compute_instance_hash(&inst_base),
+                compute_instance_hash(&inst_commit)
+            );
+
+            let mut inst_image = inst_base.clone();
+            inst_image.image = Some("image-b".to_string());
+            assert_ne!(
+                compute_instance_hash(&inst_base),
+                compute_instance_hash(&inst_image)
+            );
+        }
+
+        // 2. Verify duplicate instance IDs are detected as mismatches
+        {
+            let inst2 = SweBenchInstance {
+                instance_id: "test-2".to_string(),
+                repo: Some("repo-a".to_string()),
+                base_commit: Some("commit-a".to_string()),
+                problem_statement: Some("fix it 2".to_string()),
+                image: Some("image-a".to_string()),
+                other: serde_json::Map::new(),
+            };
+
+            let reference = vec![inst_base.clone(), inst2];
+            // Candidate has duplicates of inst_base
+            let candidate = vec![inst_base.clone(), inst_base.clone()];
+
+            let result = verify_dataset(&candidate, &reference).unwrap();
+            assert_eq!(result.verdict, "mismatch");
+            assert!(result.mutated.contains(&"test-1".to_string()));
+        }
+
+        // 3. Verify order mismatches are detected
+        {
+            let inst2 = SweBenchInstance {
+                instance_id: "test-2".to_string(),
+                repo: Some("repo-a".to_string()),
+                base_commit: Some("commit-a".to_string()),
+                problem_statement: Some("fix it 2".to_string()),
+                image: Some("image-a".to_string()),
+                other: serde_json::Map::new(),
+            };
+
+            let reference = vec![inst_base.clone(), inst2.clone()];
+            let candidate = vec![inst2, inst_base.clone()];
+
+            let result = verify_dataset(&candidate, &reference).unwrap();
+            assert_eq!(result.verdict, "mismatch");
+            // The two out-of-order IDs should be reported as mutated
+            assert!(result.mutated.contains(&"test-1".to_string()));
+            assert!(result.mutated.contains(&"test-2".to_string()));
+        }
+
+        // 4. Verify list serialization with commas is unambiguous
+        {
+            let mut inst_list_a = inst_base.clone();
+            inst_list_a.other.insert(
+                "FAIL_TO_PASS".to_string(),
+                serde_json::Value::Array(vec![serde_json::Value::String("test[a,b]".to_string())]),
+            );
+
+            let mut inst_list_b = inst_base;
+            inst_list_b.other.insert(
+                "FAIL_TO_PASS".to_string(),
+                serde_json::Value::Array(vec![
+                    serde_json::Value::String("test[a".to_string()),
+                    serde_json::Value::String("b]".to_string()),
+                ]),
+            );
+
+            // These should hash differently because the list structures are fundamentally different
+            assert_ne!(
+                compute_instance_hash(&inst_list_a),
+                compute_instance_hash(&inst_list_b)
+            );
+        }
     }
 }
