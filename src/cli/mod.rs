@@ -423,6 +423,13 @@ fn agent_injection_audit_cmd(a: &args::InjectionAuditCmd) -> Result<(), Error> {
         }
         if let Err(e) = std::fs::write(out_path, &report_content) {
             eprintln!("injection-audit: failed to write output file: {e}");
+            // If the scan already found hits or scan errors, those exit codes
+            // take priority.  But if the audit was otherwise clean, a write
+            // failure means the requested artifact was not produced — surface
+            // that as an error rather than silently exiting 0.
+            if exit_code == ExitCode::Success {
+                return Err(Error::Io(e));
+            }
         }
     }
 

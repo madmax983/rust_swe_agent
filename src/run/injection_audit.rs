@@ -524,7 +524,15 @@ fn derive_instance_id(path: &Path) -> String {
 
 /// Load custom signatures from a YAML or JSON file.
 fn load_custom_signatures(path: &Path) -> Result<Vec<RawSignature>, Error> {
-    let content = std::fs::read_to_string(path).map_err(Error::Io)?;
+    // Map I/O errors to Config so the CLI routes them to exit 2 (usage_error)
+    // rather than exit 35 (scan_error): an unreadable --signatures path is a
+    // broken invocation, not an incomplete sweep.
+    let content = std::fs::read_to_string(path).map_err(|e| {
+        Error::Config(crate::error::ConfigError::Invalid(format!(
+            "cannot read --signatures file '{}': {e}",
+            path.display()
+        )))
+    })?;
     let ext = path
         .extension()
         .and_then(|e| e.to_str())
