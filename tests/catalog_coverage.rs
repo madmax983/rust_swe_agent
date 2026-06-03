@@ -51,10 +51,8 @@ fn test_catalog_subcommand_coverage() {
 fn test_catalog_entry_metadata_validity() {
     let entries = catalog::entries();
     for entry in entries {
-        // Valid stages: preflight, run, inspect, analyze, publish
-        let valid_stages = ["preflight", "run", "inspect", "analyze", "publish"];
         assert!(
-            valid_stages.contains(&entry.stage),
+            catalog::STAGES.contains(&entry.stage),
             "Invalid stage '{}' for command '{}'",
             entry.stage,
             entry.path
@@ -94,8 +92,8 @@ fn test_catalog_filtering() {
     assert!(has_paid, "Catalog must contain at least one paid command");
 
     // Verify we have all stages represented
-    for stage in ["preflight", "run", "inspect", "analyze", "publish"] {
-        let has_stage = entries.iter().any(|e| e.stage == stage);
+    for stage in catalog::STAGES {
+        let has_stage = entries.iter().any(|e| e.stage == *stage);
         assert!(
             has_stage,
             "Catalog must contain at least one command in stage '{stage}'"
@@ -108,6 +106,9 @@ fn collect_executable_paths(
     current_path: &[String],
     paths: &mut Vec<String>,
 ) {
+    if cmd.is_hide_set() {
+        return;
+    }
     // If this command is not the root and has no subcommands, it is a leaf executable command.
     // If it HAS subcommands, it acts as a namespace (e.g. `bench`, `agent`, `agent env`).
     // In our CLI, the namespaces themselves are not directly runnable (they require a subcommand).

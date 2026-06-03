@@ -3,12 +3,14 @@ use crate::error::Error;
 use comfy_table::{Table, modifiers::UTF8_ROUND_CORNERS, presets::UTF8_FULL};
 use serde::Serialize;
 
+pub const STAGES: &[&str] = &["preflight", "run", "inspect", "analyze", "publish"];
+
 #[derive(Clone, Serialize)]
 pub struct CatalogEntry {
     pub path: &'static str,
     pub summary: &'static str,
     pub cost_tier: &'static str, // "free" or "paid"
-    pub stage: &'static str,     // "preflight", "run", "inspect", "analyze", "publish"
+    pub stage: &'static str,
 }
 
 #[derive(Serialize)]
@@ -436,11 +438,10 @@ pub fn run_catalog(cmd: CatalogCmd) -> Result<(), Error> {
         println!("{json_str}");
     } else {
         // Text grouped by stage
-        let stages_in_order = ["preflight", "run", "inspect", "analyze", "publish"];
         let mut first = true;
-        for stage in stages_in_order {
+        for stage in STAGES {
             let stage_entries: Vec<&CatalogEntry> =
-                filtered.iter().filter(|e| e.stage == stage).collect();
+                filtered.iter().filter(|e| e.stage == *stage).collect();
             if stage_entries.is_empty() {
                 continue;
             }

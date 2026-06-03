@@ -3050,7 +3050,7 @@ pub struct NearMissCmd {
 #[derive(Debug, Args, Clone)]
 pub struct CatalogCmd {
     /// Filter entries by stage: preflight, run, inspect, analyze, publish.
-    #[arg(long)]
+    #[arg(long, value_parser = ["preflight", "run", "inspect", "analyze", "publish"])]
     pub stage: Option<String>,
 
     /// Filter to free-only (no model calls) commands.
