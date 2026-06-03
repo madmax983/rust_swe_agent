@@ -142,7 +142,7 @@ fn builtin_specs() -> Vec<BuiltinSpec> {
         ),
         (
             "base64_api_key_exfil",
-            r"(?i)\$(?:AWS_[A-Z_]+|ANTHROPIC_API_KEY|OPENAI_API_KEY)[^\n\r]{0,80}\bbase64\b",
+            r"(?i)\$\{?(?:AWS_[A-Z_]+|ANTHROPIC_API_KEY|OPENAI_API_KEY)\}?[^\n\r]{0,80}\bbase64\b",
             HitSeverity::High,
         ),
         (
@@ -432,7 +432,16 @@ fn collect_traj_files_recursive(dir: &Path, out: &mut Vec<PathBuf>, errors: &mut
             return;
         }
     };
-    for entry in entries.flatten() {
+    for entry_result in entries {
+        let entry = match entry_result {
+            Ok(e) => e,
+            // Record mid-stream readdir failures (e.g. network mount errors)
+            // rather than silently skipping entries that could not be read.
+            Err(e) => {
+                errors.push(format!("{}: {e}", dir.display()));
+                continue;
+            }
+        };
         // Use file_type() to avoid a follow-symlink stat call and prevent
         // infinite recursion on symlink cycles.
         let Ok(ft) = entry.file_type() else {
