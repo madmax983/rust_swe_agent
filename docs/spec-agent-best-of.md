@@ -177,7 +177,7 @@ All artifacts land in `<output>/<best-of-name>/`:
 | 0 | `success` | `--allow-no-pass` given, even when all runs failed |
 | 2 | `usage_error` | `--verify` omitted; `--runs` outside 2–10; bad flags |
 | 5 | `budget_halt` | At least one run was skipped due to `--cost-limit-usd` |
-| 40 | `best_of_all_failed` | No run passed all verify checks (no `--allow-no-pass`) |
+| 41 | `best_of_all_failed` | No run passed all verify checks (no `--allow-no-pass`) |
 
 ## `--runs` Range
 
@@ -198,7 +198,7 @@ When no run passes all verify checks:
 - `all_failed: true` is set in `best-of-results.json`
 - The best-scoring run (most checks passed, then tie-breaks) is still selected
   and its patch is written to `--output-patch`
-- Exit code 40 (`best_of_all_failed`) unless `--allow-no-pass` is given
+- Exit code 41 (`best_of_all_failed`) unless `--allow-no-pass` is given
 
 ## Determinism on the Scripted-Model Path
 

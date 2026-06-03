@@ -163,11 +163,13 @@ pub enum ExitCode {
     /// runs completed; the gate is wired correctly but the measured pass rate
     /// did not meet the declared threshold.
     StabilityGateFailure = 39,
-    /// 40 — `agent best-of` completed all runs and no run passed all verify
+    /// 40 — `bench dataset-verify` detected a mismatch between the candidate dataset and the canonical reference.
+    DatasetVerifyMismatch = 40,
+    /// 41 — `agent best-of` completed all runs and no run passed all verify
     /// checks. The best-scoring run was still selected and its patch emitted;
     /// `all_failed: true` is set in `best-of-results.json`. Pass
     /// `--allow-no-pass` to downgrade to exit 0 while keeping `all_failed: true`.
-    BestOfAllFailed = 40,
+    BestOfAllFailed = 41,
     /// 130 — user interruption (graceful SIGINT / Ctrl-C; 128 + SIGINT(2)).
     Interrupted = 130,
     /// 137 — forced kill (SIGKILL escalation after graceful-cancel deadline; 128 + SIGKILL(9)).
@@ -228,6 +230,7 @@ impl ExitCode {
             Self::InjectionAuditHits => "injection_audit_hits",
             Self::InjectionAuditScanError => "injection_audit_scan_error",
             Self::StabilityGateFailure => "stability_gate_failure",
+            Self::DatasetVerifyMismatch => "dataset_verify_mismatch",
             Self::BestOfAllFailed => "best_of_all_failed",
             Self::Interrupted => "interrupted",
             Self::Killed => "killed",

@@ -218,6 +218,12 @@ pub fn entries() -> &'static [CatalogEntry] {
             stage: "preflight",
         },
         CatalogEntry {
+            path: "bench dataset-verify",
+            summary: "Verify candidate datasets offline against canonical official releases",
+            cost_tier: "free",
+            stage: "preflight",
+        },
+        CatalogEntry {
             path: "bench diff-config",
             summary: "Diff two completed sweep manifests to analyze configuration drift",
             cost_tier: "free",

@@ -15,7 +15,7 @@ use maxwells_daemon::run::best_of::{BestOfResults, BestOfRunDetail, select_winne
 
 #[test]
 fn best_of_all_failed_exit_code_is_40() {
-    assert_eq!(ExitCode::BestOfAllFailed.as_i32(), 40);
+    assert_eq!(ExitCode::BestOfAllFailed.as_i32(), 41);
     assert_eq!(
         ExitCode::BestOfAllFailed.outcome_class(),
         "best_of_all_failed"
