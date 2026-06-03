@@ -13,6 +13,7 @@ pub mod cache_stats;
 pub mod calibrate;
 pub mod cascade;
 pub mod claude_driver;
+pub mod codex_driver;
 pub mod command_stats;
 pub mod compare;
 pub mod contamination_check;

@@ -122,6 +122,10 @@ pub enum RunDriver {
     /// as the agent, translating its message stream into the harness
     /// trajectory. Local environment only.
     ClaudeCode,
+    /// Drive the `codex` CLI (OpenAI Codex) in `--full-auto --json` mode as
+    /// the agent, translating its NDJSON event stream into the harness
+    /// trajectory. Local environment only.
+    Codex,
 }
 
 #[allow(clippy::struct_excessive_bools)]
@@ -575,6 +579,122 @@ pub async fn run(args: MiniArgs) -> Result<(), Error> {
             // run would be recorded as having capabilities Claude cannot call.
             return Err(Error::Config(ConfigError::Invalid(
                 "--driver claude-code cannot bridge configured command tools \
+                 (agent.tools); the CLI manages its own toolset outside the \
+                 harness registry. Remove agent.tools or switch to --driver builtin"
+                    .into(),
+            )));
+        }
+    }
+
+    // The Codex driver shells out to the host `codex` binary and edits the
+    // host working tree directly. It shares the same safety-contract
+    // limitations as the Claude Code driver: it cannot honor in-process
+    // guards, hooks, or analysis-only postures.
+    if args.driver == RunDriver::Codex {
+        if matches!(args.config.root.environment.kind, EnvKind::Docker) {
+            return Err(Error::Config(ConfigError::Invalid(
+                "--driver codex is only supported with the local environment, \
+                 not --env docker"
+                    .into(),
+            )));
+        }
+        if args.read_only {
+            return Err(Error::Config(ConfigError::Invalid(
+                "--driver codex cannot honor --read-only (it auto-allows \
+                 mutation tools); drop one of the two flags"
+                    .into(),
+            )));
+        }
+        if matches!(
+            args.interactive_mode,
+            InteractiveMode::StderrPrompt | InteractiveMode::Ratatui
+        ) {
+            return Err(Error::Config(ConfigError::Invalid(
+                "--driver codex cannot honor interactive confirmation \
+                 (--interactive/--ui); tool calls would run unattended"
+                    .into(),
+            )));
+        }
+        if args.config.root.policy.profile != "yolo" {
+            return Err(Error::Config(ConfigError::Invalid(format!(
+                "--driver codex cannot enforce the built-in policy deny \
+                 corpus (profile={:?}); the CLI runs tools itself. \
+                 Set policy.profile = \"yolo\" in config to acknowledge this, \
+                 or switch to --driver builtin",
+                args.config.root.policy.profile
+            ))));
+        }
+        if !args.config.root.policy.extra_deny_patterns.is_empty()
+            || !args.config.root.policy.extra_allow_patterns.is_empty()
+        {
+            return Err(Error::Config(ConfigError::Invalid(
+                "--driver codex cannot enforce custom command policy \
+                 (policy.extra_deny_patterns/extra_allow_patterns); the CLI \
+                 runs tools itself"
+                    .into(),
+            )));
+        }
+        if args.resume_from.is_some() || args.continue_from.is_some() {
+            return Err(Error::Config(ConfigError::Invalid(
+                "--driver codex does not support --resume or --continue; \
+                 the external CLI cannot be seeded with prior message history"
+                    .into(),
+            )));
+        }
+        if !args.config.root.agent.hooks.pre_tool_use.is_empty()
+            || !args.config.root.agent.hooks.post_tool_use.is_empty()
+        {
+            return Err(Error::Config(ConfigError::Invalid(
+                "--driver codex cannot run pre/post_tool_use hooks; the \
+                 CLI executes tools outside the harness loop"
+                    .into(),
+            )));
+        }
+        if args.config.root.environment.chaos_fail_every > 0 {
+            return Err(Error::Config(ConfigError::Invalid(
+                "--driver codex cannot inject chaos faults \
+                 (environment.chaos_fail_every); it bypasses the wrapped \
+                 environment"
+                    .into(),
+            )));
+        }
+        if !args.config.root.agent.mcp_servers.is_empty() {
+            return Err(Error::Config(ConfigError::Invalid(
+                "--driver codex cannot bridge MCP server configs; \
+                 the CLI manages its own tool routing outside the harness. \
+                 Remove agent.mcp_servers or switch to --driver builtin"
+                    .into(),
+            )));
+        }
+        if args.config.root.agent.detect_stagnation {
+            return Err(Error::Config(ConfigError::Invalid(
+                "--driver codex cannot enforce stagnation detection; \
+                 set agent.detect_stagnation = false in config, or switch \
+                 to --driver builtin"
+                    .into(),
+            )));
+        }
+        if args.config.root.environment.timeout_secs != DEFAULT_ENV_TIMEOUT_SECS {
+            return Err(Error::Config(ConfigError::Invalid(format!(
+                "--driver codex cannot enforce per-command timeout \
+                 (environment.timeout_secs={}); the CLI runs tools itself. \
+                 Remove the override or switch to --driver builtin",
+                args.config.root.environment.timeout_secs
+            ))));
+        }
+        if args.config.root.agent.per_task_budget_usd.is_some()
+            && !args.config.root.agent.hide_budget_from_agent
+        {
+            return Err(Error::Config(ConfigError::Invalid(
+                "--driver codex cannot append budget-visibility blocks \
+                 (agent.hide_budget_from_agent = false with per_task_budget_usd); \
+                 set hide_budget_from_agent = true or switch to --driver builtin"
+                    .into(),
+            )));
+        }
+        if !args.config.root.agent.tools.is_empty() {
+            return Err(Error::Config(ConfigError::Invalid(
+                "--driver codex cannot bridge configured command tools \
                  (agent.tools); the CLI manages its own toolset outside the \
                  harness registry. Remove agent.tools or switch to --driver builtin"
                     .into(),
@@ -1050,6 +1170,16 @@ pub async fn run(args: MiniArgs) -> Result<(), Error> {
                 args.task_timeout_secs,
                 system_prompt.as_deref(),
                 args.driver_isolated,
+            )
+            .await
+        }
+        RunDriver::Codex => {
+            crate::run::codex_driver::drive(
+                &mut agent,
+                args.task.clone(),
+                resolved_skills.merged_extra_context.as_deref(),
+                args.local_workdir.as_deref(),
+                args.task_timeout_secs,
             )
             .await
         }
