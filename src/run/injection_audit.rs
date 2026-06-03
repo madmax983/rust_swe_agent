@@ -9,7 +9,6 @@
 //! model output) are never inspected.
 //!
 //! Zero-cost: read-only over trajectory files, no model calls, no network.
-#![allow(clippy::cast_possible_truncation)]
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -167,17 +166,24 @@ fn compile_builtins() -> Vec<CompiledSignature> {
         .collect()
 }
 
-fn compile_custom(raw: &[RawSignature]) -> Vec<CompiledSignature> {
-    raw.iter()
-        .filter_map(|r| {
-            let severity = HitSeverity::from_str(&r.severity).unwrap_or(HitSeverity::Medium);
-            Regex::new(&r.pattern).ok().map(|regex| CompiledSignature {
-                name: r.name.clone(),
-                severity,
-                regex,
-            })
-        })
-        .collect()
+/// Compile custom signatures, propagating any invalid regex error to the caller.
+fn compile_custom(raw: &[RawSignature]) -> Result<Vec<CompiledSignature>, Error> {
+    let mut compiled = Vec::with_capacity(raw.len());
+    for r in raw {
+        let severity = HitSeverity::from_str(&r.severity).unwrap_or(HitSeverity::Medium);
+        let regex = Regex::new(&r.pattern).map_err(|e| {
+            Error::Config(crate::error::ConfigError::Invalid(format!(
+                "invalid regex pattern '{}' in custom signature '{}': {e}",
+                r.pattern, r.name
+            )))
+        })?;
+        compiled.push(CompiledSignature {
+            name: r.name.clone(),
+            severity,
+            regex,
+        });
+    }
+    Ok(compiled)
 }
 
 // ── Envelope extraction ───────────────────────────────────────────────────────
@@ -191,13 +197,13 @@ const ENVELOPE_KINDS: &[&str] = &[
     "repo_content",
 ];
 
-/// Extract all `(kind, content, start_byte_in_message)` envelope segments
-/// from a single message content string.
+/// Extract all `(kind, content)` envelope segments from a message, borrowing
+/// slices from the input to avoid allocations.
 ///
 /// Only content that appears between `<untrusted_*>` and `</untrusted_*>` tags
 /// is returned; the rest of the message (operator instructions, model output)
 /// is silently ignored.
-fn extract_envelopes(content: &str) -> Vec<(String, String)> {
+fn extract_envelopes(content: &str) -> Vec<(&'static str, &str)> {
     let mut out = Vec::new();
     for kind in ENVELOPE_KINDS {
         let open = format!("<untrusted_{kind}>");
@@ -215,7 +221,7 @@ fn extract_envelopes(content: &str) -> Vec<(String, String)> {
                 let envelope_content = envelope_content
                     .strip_suffix('\n')
                     .unwrap_or(envelope_content);
-                out.push(((*kind).to_owned(), envelope_content.to_owned()));
+                out.push((*kind, envelope_content));
                 search_from = abs_start + end_rel + close.len();
             } else {
                 break;
@@ -249,15 +255,20 @@ pub struct HitRecord {
 /// but the window is character-bounded so it cannot carry large raw payloads.
 fn build_context(content: &str, byte_start: usize, byte_end: usize) -> String {
     let half = CONTEXT_WINDOW_CHARS / 2;
-    let char_start = content[..byte_start].chars().count();
-    let char_end = content[..byte_end].chars().count();
-
-    let ctx_char_start = char_start.saturating_sub(half);
-    let ctx_char_end = (char_end + half).min(content.chars().count());
-
-    let chars: Vec<char> = content.chars().collect();
-    let window: String = chars[ctx_char_start..ctx_char_end].iter().collect();
-
+    // Collect chars before the match in reverse, take nearest `half`, reverse back.
+    let before: String = content[..byte_start]
+        .chars()
+        .rev()
+        .take(half)
+        .collect::<String>()
+        .chars()
+        .rev()
+        .collect();
+    let after: String = content[byte_end..].chars().take(half).collect();
+    let matched = &content[byte_start..byte_end];
+    let mut window = before;
+    window.push_str(matched);
+    window.push_str(&after);
     // Truncate to CONTEXT_WINDOW_CHARS in case the match itself is wide
     window.chars().take(CONTEXT_WINDOW_CHARS).collect()
 }
@@ -280,17 +291,19 @@ pub struct InjectionAuditReport {
 
 impl InjectionAuditReport {
     /// Compute the process exit code for this report.
+    ///
+    /// Any scan error signals an incomplete scan — even if some trajectories
+    /// were processed, the clean verdict cannot be fully trusted, so we return
+    /// `InjectionAuditScanError` when no actionable hit is present.
     pub fn exit_code(&self, fail_on: HitSeverity) -> ExitCode {
-        if !self.scan_errors.is_empty() && self.trajectories_scanned == 0 {
-            return ExitCode::InjectionAuditScanError;
-        }
-        let has_actionable = self.hits.iter().any(|h| {
-            HitSeverity::from_str(&h.severity)
-                .map(|s| s >= fail_on)
-                .unwrap_or(false)
-        });
+        let has_actionable = self
+            .hits
+            .iter()
+            .any(|h| HitSeverity::from_str(&h.severity).is_some_and(|s| s >= fail_on));
         if has_actionable {
             ExitCode::InjectionAuditHits
+        } else if !self.scan_errors.is_empty() {
+            ExitCode::InjectionAuditScanError
         } else {
             ExitCode::Success
         }
@@ -353,7 +366,7 @@ pub fn run_injection_audit(opts: &AuditOpts) -> Result<InjectionAuditReport, Err
     let mut signatures = compile_builtins();
     if let Some(ref path) = opts.extra_signatures {
         let raw = load_custom_signatures(path)?;
-        signatures.extend(compile_custom(&raw));
+        signatures.extend(compile_custom(&raw)?);
     }
 
     // Collect .traj.json files
@@ -405,18 +418,34 @@ fn collect_traj_files_recursive(dir: &Path, out: &mut Vec<PathBuf>) {
         return;
     };
     for entry in entries.flatten() {
+        // Use file_type() to avoid a follow-symlink stat call and prevent
+        // infinite recursion on symlink cycles.
+        let Ok(ft) = entry.file_type() else {
+            continue;
+        };
         let path = entry.path();
-        if path.is_dir() {
+        if ft.is_dir() {
             collect_traj_files_recursive(&path, out);
         } else if path
             .file_name()
             .and_then(|n| n.to_str())
-            .map(|n| n.ends_with(".traj.json"))
-            .unwrap_or(false)
+            .is_some_and(|n| n.ends_with(".traj.json"))
         {
             out.push(path);
         }
     }
+}
+
+// Lightweight deserialization target — we only need `messages[].{role,content}`.
+#[derive(Deserialize)]
+struct TrajectoryMessages {
+    messages: Option<Vec<TrajectoryMessage>>,
+}
+
+#[derive(Deserialize)]
+struct TrajectoryMessage {
+    role: Option<String>,
+    content: Option<String>,
 }
 
 /// Parse a single trajectory file and return all hits.
@@ -425,8 +454,8 @@ fn scan_trajectory(
     signatures: &[CompiledSignature],
     sweep_dir: &Path,
 ) -> Result<Vec<HitRecord>, std::io::Error> {
-    let content = std::fs::read_to_string(path)?;
-    let traj: serde_json::Value = serde_json::from_str(&content)
+    let file_content = std::fs::read_to_string(path)?;
+    let traj: TrajectoryMessages = serde_json::from_str(&file_content)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
 
     let instance_id = derive_instance_id(path);
@@ -436,9 +465,8 @@ fn scan_trajectory(
         .display()
         .to_string();
 
-    let messages = match traj.get("messages").and_then(|m| m.as_array()) {
-        Some(m) => m,
-        None => return Ok(Vec::new()),
+    let Some(messages) = traj.messages else {
+        return Ok(Vec::new());
     };
 
     let mut hits = Vec::new();
@@ -446,30 +474,29 @@ fn scan_trajectory(
     for (step_index, msg) in messages.iter().enumerate() {
         // Only scan user-role messages — they carry the untrusted envelopes.
         // System messages are operator-authored; assistant messages are model output.
-        let role = msg.get("role").and_then(|r| r.as_str()).unwrap_or("");
+        let role = msg.role.as_deref().unwrap_or("");
         if role != "user" {
             continue;
         }
 
-        let msg_content = match msg.get("content").and_then(|c| c.as_str()) {
-            Some(c) => c,
-            None => continue,
+        let Some(msg_content) = msg.content.as_deref() else {
+            continue;
         };
 
         for (kind, envelope_content) in extract_envelopes(msg_content) {
             for sig in signatures {
-                for mat in sig.regex.find_iter(&envelope_content) {
-                    let context = build_context(&envelope_content, mat.start(), mat.end());
+                for mat in sig.regex.find_iter(envelope_content) {
+                    let hit_ctx = build_context(envelope_content, mat.start(), mat.end());
                     hits.push(HitRecord {
                         instance_id: instance_id.clone(),
                         trajectory_path: trajectory_path.clone(),
                         step_index,
-                        envelope_kind: kind.clone(),
+                        envelope_kind: kind.to_owned(),
                         signature_name: sig.name.clone(),
                         severity: sig.severity.as_str().to_owned(),
                         byte_offset_start: mat.start(),
                         byte_offset_end: mat.end(),
-                        context,
+                        context: hit_ctx,
                     });
                 }
             }
@@ -481,16 +508,10 @@ fn scan_trajectory(
 
 /// Derive the instance_id from the trajectory filename (stem without `.traj.json`).
 fn derive_instance_id(path: &Path) -> String {
-    path.file_name()
-        .and_then(|n| n.to_str())
-        .map(|n| {
-            if let Some(stem) = n.strip_suffix(".traj.json") {
-                stem.to_owned()
-            } else {
-                n.to_owned()
-            }
-        })
-        .unwrap_or_else(|| path.display().to_string())
+    path.file_name().and_then(|n| n.to_str()).map_or_else(
+        || path.display().to_string(),
+        |n| n.strip_suffix(".traj.json").unwrap_or(n).to_owned(),
+    )
 }
 
 /// Load custom signatures from a YAML or JSON file.
