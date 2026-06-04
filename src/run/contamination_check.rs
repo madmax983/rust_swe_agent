@@ -226,18 +226,25 @@ pub struct ContaminationReport {
 ///
 /// Returns the fraction of `edits` whose path was never in `reads_before_edit`.
 /// Returns `0.0` when `edits` is empty (no suspicion if no edits).
-pub fn compute_edit_before_read_ratio<S: std::hash::BuildHasher>(
+pub fn compute_edit_before_read_ratio<'a, S, I, T>(
     reads_before_edit: &HashSet<String, S>,
-    edits: &[String],
-) -> f64 {
-    if edits.is_empty() {
+    edits: I,
+) -> f64
+where
+    S: std::hash::BuildHasher,
+    I: IntoIterator<Item = &'a T>,
+    I::IntoIter: ExactSizeIterator,
+    T: AsRef<str> + 'a + ?Sized,
+{
+    let edits_iter = edits.into_iter();
+    let len = edits_iter.len();
+    if len == 0 {
         return 0.0;
     }
-    let unread_edits = edits
-        .iter()
-        .filter(|p| !reads_before_edit.contains(*p))
+    let unread_edits = edits_iter
+        .filter(|p| !reads_before_edit.contains(p.as_ref()))
         .count();
-    unread_edits as f64 / edits.len() as f64
+    unread_edits as f64 / len as f64
 }
 
 /// Compute the time-to-first-edit suspicion signal.
@@ -619,17 +626,11 @@ fn compute_ebr_ordered(messages: &[TrajMessage]) -> f64 {
         }
     }
 
-    compute_edit_before_read_ratio(
-        &{
-            let reads_before_edit: HashSet<String> = edited_all
-                .iter()
-                .filter(|p| !edited_unread.contains(*p))
-                .cloned()
-                .collect();
-            reads_before_edit
-        },
-        &edited_all.into_iter().collect::<Vec<_>>(),
-    )
+    if edited_all.is_empty() {
+        0.0
+    } else {
+        edited_unread.len() as f64 / edited_all.len() as f64
+    }
 }
 
 /// Weighted sum of signal values, clamped to `[0.0, 1.0]`.
