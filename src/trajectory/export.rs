@@ -53,6 +53,9 @@ pub struct MermaidExporter;
 #[cfg(feature = "html-export")]
 pub struct HtmlExporter;
 
+#[cfg(feature = "yaml-export")]
+pub struct YamlExporter;
+
 use std::fmt::Write;
 
 #[cfg(feature = "csv-export")]
@@ -191,6 +194,13 @@ impl TrajectoryExporter for HtmlExporter {
 
         html.push_str("</body>\n</html>");
         html
+    }
+}
+
+#[cfg(feature = "yaml-export")]
+impl TrajectoryExporter for YamlExporter {
+    fn export(trajectory: &Trajectory) -> String {
+        serde_yml::to_string(trajectory).unwrap_or_else(|e| format!("Error exporting to YAML: {e}"))
     }
 }
 
@@ -339,5 +349,24 @@ mod tests {
         assert!(html.contains("submitted"));
         assert!(html.contains("Hello agent"));
         assert!(html.contains("Hello user"));
+    }
+
+    #[cfg(feature = "yaml-export")]
+    #[test]
+    fn test_yaml_export_format() {
+        let mut t = Trajectory::new();
+        t.info.task = Some("Add a feature".to_string());
+        t.info.outcome = Some(outcome::SUBMITTED.to_string());
+
+        t.record_message(&Message::system("System prompt"));
+        t.record_message(&Message::user("Hello agent"));
+        t.record_message(&Message::assistant("Hello user"));
+
+        let yaml = YamlExporter::export(&t);
+
+        assert!(yaml.contains("task: Add a feature"));
+        assert!(yaml.contains("outcome: submitted"));
+        assert!(yaml.contains("role: system"));
+        assert!(yaml.contains("content: System prompt"));
     }
 }

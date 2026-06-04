@@ -88,6 +88,7 @@ markdown-export = []
 html-export = []
 webhook = []
 csv-export = []
+yaml-export = []
 mermaid-export = []
 # Enables the `max ui` local sweep browser. Requires `html-export` for rendering.
 ui-server = ["html-export"]
