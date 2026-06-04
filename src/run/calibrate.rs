@@ -583,7 +583,7 @@ fn build_mismatches(
 }
 
 fn sorted_join(values: BTreeSet<&str>) -> String {
-    values.into_iter().collect::<Vec<_>>().join(",")
+    values.iter().enumerate().fold(String::with_capacity(values.iter().map(|s| s.len() + 1).sum()), |mut acc, (i, s)| { if i > 0 { acc.push(','); } acc.push_str(s); acc })
 }
 
 fn compare_field(

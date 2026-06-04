@@ -5037,7 +5037,7 @@ pub fn apply_subset(
         if !unknown.is_empty() {
             return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
                 "--instance-ids references unknown id(s): {}",
-                unknown.into_iter().collect::<Vec<_>>().join(", ")
+                unknown.iter().enumerate().fold(String::with_capacity(unknown.iter().map(|s| s.len() + 2).sum()), |mut acc, (i, s)| { if i > 0 { acc.push_str(", "); } acc.push_str(s); acc })
             ))));
         }
         let include: HashSet<&str> = ids.iter().map(String::as_str).collect();
@@ -8024,11 +8024,7 @@ instance = "inst"
                 };
                 let mut buf = Vec::new();
                 let mut chunk = [0u8; 8192];
-                loop {
-                    let n = match socket.read(&mut chunk).await {
-                        Ok(n) => n,
-                        Err(_) => break,
-                    };
+                while let Ok(n) = socket.read(&mut chunk).await {
                     if n == 0 {
                         break;
                     }
