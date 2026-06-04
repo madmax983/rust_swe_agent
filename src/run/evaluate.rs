@@ -2041,16 +2041,6 @@ pub fn cost_missing_count<S: std::hash::BuildHasher>(
         .count()
 }
 
-pub(crate) fn cost_missing_count_for_run_slots<S: std::hash::BuildHasher>(
-    sweep_dir: &Path,
-    results: &HashMap<String, InstanceResult, S>,
-) -> Result<usize, Error> {
-    Ok(load_run_slots(sweep_dir, results)?
-        .into_iter()
-        .filter(|slot| slot.result.cost_usd.is_none())
-        .count())
-}
-
 #[cfg(test)]
 fn build_cost_attribution<S: std::hash::BuildHasher>(
     evals: &[InstanceEvaluation],

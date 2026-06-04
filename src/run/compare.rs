@@ -3300,6 +3300,16 @@ fn build_cost_attribution_delta<S: std::hash::BuildHasher>(
     build_cost_attribution_delta_from_rows(&baseline_rows, &candidate_rows, min_delta_usd)
 }
 
+pub(crate) fn cost_missing_count_for_run_slots<S: std::hash::BuildHasher>(
+    sweep_dir: &Path,
+    results: &HashMap<String, InstanceResult, S>,
+) -> Result<usize, Error> {
+    Ok(load_run_slots(sweep_dir, results)?
+        .into_iter()
+        .filter(|slot| slot.result.cost_usd.is_none())
+        .count())
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used)]

@@ -3117,7 +3117,7 @@ fn bench_evaluate(e: args::EvaluateCmd) -> Result<(), Error> {
         );
     }
     if !eval.cost_attribution.is_empty() {
-        let missing_cost_count = crate::run::evaluate::cost_missing_count_for_run_slots(
+        let missing_cost_count = crate::run::compare::cost_missing_count_for_run_slots(
             &e.sweep,
             &loaded_sweep.instances,
         )?;
