@@ -245,4 +245,34 @@ mod tests {
         let s = "no secrets here";
         assert_eq!(normalize_redaction_markers(s), s);
     }
+
+    #[test]
+    fn cap_canonical_does_not_truncate_if_within_capacity() {
+        let (s, truncated) = cap_canonical("hello world", 20);
+        assert_eq!(s, "hello world");
+        assert!(!truncated);
+    }
+
+    #[test]
+    fn cap_canonical_truncates_and_appends_marker_if_exceeds_capacity() {
+        let (s, truncated) = cap_canonical("hello world", 5);
+        assert_eq!(s, "hello[truncated]");
+        assert!(truncated);
+    }
+
+    #[test]
+    fn cap_canonical_handles_char_boundaries_correctly() {
+        // '🦀' is 4 bytes long
+        let input = "a🦀b";
+
+        // If we cap at 3, it should cut before the crab
+        let (s1, truncated1) = cap_canonical(input, 3);
+        assert_eq!(s1, "a[truncated]");
+        assert!(truncated1);
+
+        // If we cap at 5, it should include the crab
+        let (s2, truncated2) = cap_canonical(input, 5);
+        assert_eq!(s2, "a🦀[truncated]");
+        assert!(truncated2);
+    }
 }
