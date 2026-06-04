@@ -3834,16 +3834,18 @@ index 8a1218a..24c5735 100644\n\
         // Inject a fake secret as an environment variable that the redactor picks up.
         // We use a value that looks like a real API key pattern so the redactor fires.
         let fake_secret = "sk-ant-fake-secret-value-for-test-0123456789abcdef";
-        // SAFETY: test-only; single-threaded context for secret injection.
-        unsafe { std::env::set_var("TEST_MANIFEST_API_KEY", fake_secret) };
 
-        let args = make_mini_args_for_manifest_test(tmp.path().to_path_buf(), "secret-test");
-        run(args).await.unwrap();
-
-        // Clean up env var
-        unsafe { std::env::remove_var("TEST_MANIFEST_API_KEY") };
-
-        let traj_path = tmp.path().join("secret-test.traj.json");
+        #[allow(clippy::large_futures)]
+        let traj_path = temp_env::async_with_vars(
+            [("TEST_MANIFEST_API_KEY", Some(fake_secret))],
+            Box::pin(async {
+                let args =
+                    make_mini_args_for_manifest_test(tmp.path().to_path_buf(), "secret-test");
+                run(args).await.unwrap();
+                tmp.path().join("secret-test.traj.json")
+            }),
+        )
+        .await;
         let content = std::fs::read_to_string(&traj_path).unwrap();
 
         assert!(
