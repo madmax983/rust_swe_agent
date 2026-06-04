@@ -626,7 +626,7 @@ mod tests {
         match tokio::time::timeout(TEST_IO_TIMEOUT, listener.accept()).await {
             Ok(Ok((s, _))) => s,
             Ok(Err(e)) => panic!("accept error: {e}"),
-            Err(_) => panic!("accept timed out"),
+            Err(e) => panic!("accept timed out: {e}"),
         }
     }
 
@@ -637,7 +637,7 @@ mod tests {
             let n = match tokio::time::timeout(TEST_IO_TIMEOUT, socket.read(&mut chunk)).await {
                 Ok(Ok(n)) => n,
                 Ok(Err(e)) => panic!("read error: {e}"),
-                Err(_) => panic!("read timed out"),
+                Err(e) => panic!("read timed out: {e}"),
             };
             if n == 0 {
                 break;
@@ -654,7 +654,7 @@ mod tests {
     }
 
     fn body_of(req: &str) -> &str {
-        req.split_once("\r\n\r\n").map(|(_, b)| b).unwrap_or("")
+        req.split_once("\r\n\r\n").map_or("", |(_, b)| b)
     }
 
     fn is_complete_http(buf: &[u8]) -> bool {

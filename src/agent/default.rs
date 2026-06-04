@@ -775,50 +775,8 @@ impl Agent for DefaultAgent {
         }
 
         // 1. Limit checks.
-        if self.steps >= self.config.root.agent.step_limit {
-            self.trajectory.info.exit_reason = Some("step_limit".into());
-            self.trajectory.info.failure_category = Some(FailureCategory::StepLimit);
-            self.trajectory.info.steps = Some(self.steps);
-            self.finalize_run_metadata(outcome::STEP_LIMIT_REACHED);
-            self.emit_run_ended("step_limit", Some(FailureCategory::StepLimit), None);
-            return Ok(StepOutcome::Terminate(ExitReason::StepLimit {
-                limit: self.config.root.agent.step_limit,
-            }));
-        }
-        if let Some(limit) = self.config.root.agent.cost_limit_usd {
-            if self.total_cost_usd >= limit {
-                self.trajectory.info.exit_reason = Some("cost_limit".into());
-                self.trajectory.info.failure_category = Some(FailureCategory::CostLimit);
-                self.trajectory.info.steps = Some(self.steps);
-                self.trajectory.info.total_cost_usd = Some(self.total_cost_usd);
-                // Cost limit is also a resource limit; map to the same
-                // coarse outcome as step limit per the three-value spec.
-                self.finalize_run_metadata(outcome::STEP_LIMIT_REACHED);
-                self.emit_run_ended("cost_limit", Some(FailureCategory::CostLimit), None);
-                return Ok(StepOutcome::Terminate(ExitReason::CostLimit {
-                    limit_usd: limit,
-                    spent_usd: self.total_cost_usd,
-                }));
-            }
-        }
-        if let Some(limit) = self.config.root.agent.per_task_budget_usd {
-            if self.total_cost_usd >= limit {
-                self.trajectory.info.exit_reason = Some("budget_exhausted".into());
-                self.trajectory.info.failure_category = Some(FailureCategory::BudgetExhausted);
-                self.trajectory.info.steps = Some(self.steps);
-                self.trajectory.info.total_cost_usd = Some(self.total_cost_usd);
-                self.trajectory.info.ended_at = Some(chrono::Utc::now().to_rfc3339());
-                self.finalize_run_metadata(outcome::BUDGET_EXHAUSTED);
-                self.emit_run_ended(
-                    "budget_exhausted",
-                    Some(FailureCategory::BudgetExhausted),
-                    None,
-                );
-                return Ok(StepOutcome::Terminate(ExitReason::BudgetExhausted {
-                    limit_usd: limit,
-                    spent_usd: self.total_cost_usd,
-                }));
-            }
+        if let Some(outcome) = self.check_limits() {
+            return Ok(outcome);
         }
         self.maybe_warn_wallclock_deadline();
 
@@ -1122,118 +1080,11 @@ impl Agent for DefaultAgent {
         let tool_name = tool_call.name;
         let tool_input = tool_call.input;
         let is_bash = tool_name == BASH_TOOL_NAME;
-        if self.read_only {
-            self.history.push(Message::assistant(
-                self.redactor
-                    .redact_text(&assistant_content, surface::MODEL_OBSERVATION)
-                    .text,
-            ));
-            record_redacted_message(
-                &mut self.trajectory,
-                &asst,
-                asst.extra.clone(),
-                &self.redactor,
-            );
-            let rejection = format!(
-                "Exit code: 1\nOutput:\nRead-only mode blocks tool execution (`{tool_name}`)."
-            );
-            let obs_msg = Message::user(rejection.clone());
-            self.history.push(obs_msg.clone());
-            let mut obs_extra = crate::model::MessageExtra {
-                harness_overhead_ms: Some(elapsed_ms_since(self.last_measurement_end)),
-                ..crate::model::MessageExtra::default()
-            };
-            obs_extra
-                .other
-                .insert("read_only_blocked".into(), serde_json::Value::Bool(true));
-            obs_extra.other.insert(
-                "blocked_tool".into(),
-                serde_json::Value::String(tool_name.clone()),
-            );
-            record_redacted_message(&mut self.trajectory, &obs_msg, obs_extra, &self.redactor);
-            self.trajectory.info.exit_reason = Some("error".into());
-            self.trajectory.info.failure_category = Some(FailureCategory::ReadOnlyViolation);
-            self.finalize_run_metadata(crate::trajectory::outcome::ERROR);
-            return Err(crate::error::Error::Trajectory(rejection));
-        }
-        if !self.tool_registry.contains(&tool_name) {
-            unreachable!("Submit and None handled above");
-        }
 
-        // Record the assistant proposal in history & trajectory before any
-        // gating decision so blocked attempts are still audited.
-        self.history.push(Message::assistant(
-            self.redactor
-                .redact_text(&assistant_content, surface::MODEL_OBSERVATION)
-                .text,
-        ));
-        record_redacted_message(
-            &mut self.trajectory,
-            &asst,
-            asst.extra.clone(),
-            &self.redactor,
-        );
-
-        let policy_command = if is_bash {
-            Some(tool_input.clone())
-        } else if let Some(tool) = self.tool_registry.command_tool(&tool_name) {
-            let context = self.command_tool_context(tool, &tool_input);
-            Some(self.renderer.render_str(&tool.command, &context)?)
-        } else {
-            None
-        };
-
-        if let Some(policy_command) = policy_command.as_deref() {
-            // `DefaultAgent` is the unattended runner (sweeps, CI), so per the
-            // spec for issue #90 we use the non-interactive resolver: any `Ask`
-            // decision fails closed before a child process is launched. This
-            // applies to bash and command-adapter tools because both execute
-            // shell commands.
-            let policy_decision = self
-                .policy_engine
-                .check_command_non_interactive(policy_command);
-            if let PolicyDecision::Deny { ref label } = policy_decision {
-                self.trajectory.info.policy_counts.record(&policy_decision);
-                let rejection = format!(
-                    "Exit code: 1\nOutput:\nCommand blocked by policy rule '{label}'. \
-                     The command was not executed. Please attempt a safer alternative.",
-                );
-                let obs_msg = Message::user(rejection.clone());
-                self.history.push(obs_msg.clone());
-                let mut obs_extra = crate::model::MessageExtra {
-                    harness_overhead_ms: Some(elapsed_ms_since(self.last_measurement_end)),
-                    ..crate::model::MessageExtra::default()
-                };
-                obs_extra
-                    .other
-                    .insert("policy_blocked".into(), serde_json::Value::Bool(true));
-                obs_extra.other.insert(
-                    "policy_rule".into(),
-                    serde_json::Value::String(label.clone()),
-                );
-                obs_extra.other.insert(
-                    "blocked_command".into(),
-                    serde_json::Value::String(
-                        self.redactor
-                            .redact_text(policy_command, surface::TRAJECTORY)
-                            .text,
-                    ),
-                );
-                record_redacted_message(&mut self.trajectory, &obs_msg, obs_extra, &self.redactor);
-                self.stream.emit(StreamEvent::Observation {
-                    step: self.steps,
-                    content: rejection,
-                    timestamp: chrono::Utc::now().to_rfc3339(),
-                });
-                self.last_measurement_end = Instant::now();
-                self.steps += 1;
-                return Ok(StepOutcome::Continue);
-            }
-            if *self.policy_engine.profile() == PolicyProfile::Yolo {
-                self.trajectory.info.policy_counts.record_yolo_bypass();
-            } else {
-                self.trajectory.info.policy_counts.record(&policy_decision);
-            }
+        if let Some(outcome) =
+            self.check_policy_gate(&tool_name, &tool_input, is_bash, &assistant_content, &asst)?
+        {
+            return Ok(outcome);
         }
 
         // 5c. PreToolUse hooks, then tool execution if not blocked.
@@ -1538,6 +1389,178 @@ impl Agent for DefaultAgent {
 }
 
 impl DefaultAgent {
+    #[allow(clippy::too_many_lines)]
+    fn check_policy_gate(
+        &mut self,
+        tool_name: &str,
+        tool_input: &str,
+        is_bash: bool,
+        assistant_content: &str,
+        asst: &Message,
+    ) -> Result<Option<StepOutcome>, Error> {
+        if self.read_only {
+            self.history.push(Message::assistant(
+                self.redactor
+                    .redact_text(assistant_content, surface::MODEL_OBSERVATION)
+                    .text,
+            ));
+            record_redacted_message(
+                &mut self.trajectory,
+                asst,
+                asst.extra.clone(),
+                &self.redactor,
+            );
+            let rejection = format!(
+                "Exit code: 1\nOutput:\nRead-only mode blocks tool execution (`{tool_name}`)."
+            );
+            let obs_msg = Message::user(rejection.clone());
+            self.history.push(obs_msg.clone());
+            let mut obs_extra = crate::model::MessageExtra {
+                harness_overhead_ms: Some(elapsed_ms_since(self.last_measurement_end)),
+                ..crate::model::MessageExtra::default()
+            };
+            obs_extra
+                .other
+                .insert("read_only_blocked".into(), serde_json::Value::Bool(true));
+            obs_extra.other.insert(
+                "blocked_tool".into(),
+                serde_json::Value::String(tool_name.to_owned()),
+            );
+            record_redacted_message(&mut self.trajectory, &obs_msg, obs_extra, &self.redactor);
+            self.trajectory.info.exit_reason = Some("error".into());
+            self.trajectory.info.failure_category = Some(FailureCategory::ReadOnlyViolation);
+            self.finalize_run_metadata(crate::trajectory::outcome::ERROR);
+            return Err(crate::error::Error::Trajectory(rejection));
+        }
+        if !self.tool_registry.contains(tool_name) {
+            unreachable!("Submit and None handled above");
+        }
+
+        // Record the assistant proposal in history & trajectory before any
+        // gating decision so blocked attempts are still audited.
+        self.history.push(Message::assistant(
+            self.redactor
+                .redact_text(assistant_content, surface::MODEL_OBSERVATION)
+                .text,
+        ));
+        record_redacted_message(
+            &mut self.trajectory,
+            asst,
+            asst.extra.clone(),
+            &self.redactor,
+        );
+
+        let policy_command = if is_bash {
+            Some(tool_input.to_owned())
+        } else if let Some(tool) = self.tool_registry.command_tool(tool_name) {
+            let context = self.command_tool_context(tool, tool_input);
+            Some(self.renderer.render_str(&tool.command, &context)?)
+        } else {
+            None
+        };
+
+        if let Some(policy_command) = policy_command.as_deref() {
+            // `DefaultAgent` is the unattended runner (sweeps, CI), so per the
+            // spec for issue #90 we use the non-interactive resolver: any `Ask`
+            // decision fails closed before a child process is launched. This
+            // applies to bash and command-adapter tools because both execute
+            // shell commands.
+            let policy_decision = self
+                .policy_engine
+                .check_command_non_interactive(policy_command);
+            if let PolicyDecision::Deny { ref label } = policy_decision {
+                self.trajectory.info.policy_counts.record(&policy_decision);
+                let rejection = format!(
+                    "Exit code: 1\nOutput:\nCommand blocked by policy rule '{label}'. \
+                     The command was not executed. Please attempt a safer alternative.",
+                );
+                let obs_msg = Message::user(rejection.clone());
+                self.history.push(obs_msg.clone());
+                let mut obs_extra = crate::model::MessageExtra {
+                    harness_overhead_ms: Some(elapsed_ms_since(self.last_measurement_end)),
+                    ..crate::model::MessageExtra::default()
+                };
+                obs_extra
+                    .other
+                    .insert("policy_blocked".into(), serde_json::Value::Bool(true));
+                obs_extra.other.insert(
+                    "policy_rule".into(),
+                    serde_json::Value::String(label.clone()),
+                );
+                obs_extra.other.insert(
+                    "blocked_command".into(),
+                    serde_json::Value::String(
+                        self.redactor
+                            .redact_text(policy_command, surface::TRAJECTORY)
+                            .text,
+                    ),
+                );
+                record_redacted_message(&mut self.trajectory, &obs_msg, obs_extra, &self.redactor);
+                self.stream.emit(StreamEvent::Observation {
+                    step: self.steps,
+                    content: rejection,
+                    timestamp: chrono::Utc::now().to_rfc3339(),
+                });
+                self.last_measurement_end = Instant::now();
+                self.steps += 1;
+                return Ok(Some(StepOutcome::Continue));
+            }
+            if *self.policy_engine.profile() == PolicyProfile::Yolo {
+                self.trajectory.info.policy_counts.record_yolo_bypass();
+            } else {
+                self.trajectory.info.policy_counts.record(&policy_decision);
+            }
+        }
+        Ok(None)
+    }
+    fn check_limits(&mut self) -> Option<StepOutcome> {
+        if self.steps >= self.config.root.agent.step_limit {
+            self.trajectory.info.exit_reason = Some("step_limit".into());
+            self.trajectory.info.failure_category = Some(FailureCategory::StepLimit);
+            self.trajectory.info.steps = Some(self.steps);
+            self.finalize_run_metadata(outcome::STEP_LIMIT_REACHED);
+            self.emit_run_ended("step_limit", Some(FailureCategory::StepLimit), None);
+            return Some(StepOutcome::Terminate(ExitReason::StepLimit {
+                limit: self.config.root.agent.step_limit,
+            }));
+        }
+        if let Some(limit) = self.config.root.agent.cost_limit_usd {
+            if self.total_cost_usd >= limit {
+                self.trajectory.info.exit_reason = Some("cost_limit".into());
+                self.trajectory.info.failure_category = Some(FailureCategory::CostLimit);
+                self.trajectory.info.steps = Some(self.steps);
+                self.trajectory.info.total_cost_usd = Some(self.total_cost_usd);
+                // Cost limit is also a resource limit; map to the same
+                // coarse outcome as step limit per the three-value spec.
+                self.finalize_run_metadata(outcome::STEP_LIMIT_REACHED);
+                self.emit_run_ended("cost_limit", Some(FailureCategory::CostLimit), None);
+                return Some(StepOutcome::Terminate(ExitReason::CostLimit {
+                    limit_usd: limit,
+                    spent_usd: self.total_cost_usd,
+                }));
+            }
+        }
+        if let Some(limit) = self.config.root.agent.per_task_budget_usd {
+            if self.total_cost_usd >= limit {
+                self.trajectory.info.exit_reason = Some("budget_exhausted".into());
+                self.trajectory.info.failure_category = Some(FailureCategory::BudgetExhausted);
+                self.trajectory.info.steps = Some(self.steps);
+                self.trajectory.info.total_cost_usd = Some(self.total_cost_usd);
+                self.trajectory.info.ended_at = Some(chrono::Utc::now().to_rfc3339());
+                self.finalize_run_metadata(outcome::BUDGET_EXHAUSTED);
+                self.emit_run_ended(
+                    "budget_exhausted",
+                    Some(FailureCategory::BudgetExhausted),
+                    None,
+                );
+                return Some(StepOutcome::Terminate(ExitReason::BudgetExhausted {
+                    limit_usd: limit,
+                    spent_usd: self.total_cost_usd,
+                }));
+            }
+        }
+        None
+    }
     pub fn set_wallclock_deadline(&mut self, timeout: Duration) {
         self.wallclock_deadline = Some(WallclockDeadline {
             deadline: Instant::now() + timeout,
