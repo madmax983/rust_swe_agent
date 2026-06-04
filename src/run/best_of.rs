@@ -7,6 +7,7 @@
 use std::path::{Path, PathBuf};
 
 use chrono::Utc;
+use comfy_table::{Table, modifiers::UTF8_ROUND_CORNERS, presets::UTF8_FULL};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -103,12 +104,21 @@ impl BestOfResults {
             self.selection_rationale
         );
         let _ = writeln!(&mut out);
-        let _ = writeln!(
-            &mut out,
-            "  {:<4}  {:<22}  {:<5}  {:>6}/{:<6}  {:>8}  {:>6}",
-            "RUN", "OUTCOME", "PASS", "PASS", "TOTAL", "COST($)", "STEPS"
-        );
-        let _ = writeln!(&mut out, "  {}", "-".repeat(62));
+
+        let mut table = Table::new();
+        table
+            .load_preset(UTF8_FULL)
+            .apply_modifier(UTF8_ROUND_CORNERS)
+            .set_header(vec![
+                "Winner",
+                "Run",
+                "Outcome",
+                "Pass",
+                "Pass/Total",
+                "Cost($)",
+                "Steps",
+            ]);
+
         for d in &self.runs_detail {
             let cost = d
                 .total_cost_usd
@@ -125,19 +135,18 @@ impl BestOfResults {
                 "no"
             };
             let winner_str = if winner_marker { "*" } else { " " };
-            let _ = writeln!(
-                &mut out,
-                "{} {:<4}  {:<22}  {:<5}  {:>6}/{:<6}  {:>8}  {:>6}",
-                winner_str,
-                d.run_index,
+            table.add_row(vec![
+                winner_str.to_string(),
+                d.run_index.to_string(),
                 truncate(&d.outcome, 22),
-                pass_label,
-                d.verify_checks_passed,
-                d.verify_checks_total,
+                pass_label.to_string(),
+                format!("{}/{}", d.verify_checks_passed, d.verify_checks_total),
                 cost,
                 steps,
-            );
+            ]);
         }
+        let _ = writeln!(&mut out, "{table}");
+
         out
     }
 }
