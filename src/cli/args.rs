@@ -2531,7 +2531,7 @@ pub struct InspectCmd {
     pub format: String,
 
     /// Write output to a file instead of stdout. Supported with `markdown`,
-    /// `html`, `csv`, and `mermaid` formats in instance mode.
+    /// `html`, `csv`, `mermaid`, and `json-export` formats in instance mode.
     #[arg(long, value_name = "PATH")]
     pub output: Option<PathBuf>,
 

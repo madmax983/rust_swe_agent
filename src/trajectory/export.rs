@@ -50,6 +50,26 @@ pub struct CsvExporter;
 #[cfg(feature = "mermaid-export")]
 pub struct MermaidExporter;
 
+/// Transforms a [`Trajectory`] into a JSON formatted string containing the task, outcome, and all messages.
+///
+/// ## Examples
+///
+/// ```rust
+/// use maxwells_daemon::trajectory::Trajectory;
+/// use maxwells_daemon::model::Message;
+/// use maxwells_daemon::trajectory::export::{TrajectoryExporter, JsonExporter};
+///
+/// let mut traj = Trajectory::new();
+/// traj.info.task = Some("Fix tests".to_string());
+/// traj.record_message(&Message::user("Hello agent"));
+///
+/// let json = JsonExporter::export(&traj);
+/// assert!(json.contains("Fix tests"));
+/// assert!(json.contains("Hello agent"));
+/// ```
+#[cfg(feature = "json-export")]
+pub struct JsonExporter;
+
 #[cfg(feature = "html-export")]
 pub struct HtmlExporter;
 
@@ -245,6 +265,13 @@ impl TrajectoryExporter for MermaidExporter {
     }
 }
 
+#[cfg(feature = "json-export")]
+impl TrajectoryExporter for JsonExporter {
+    fn export(trajectory: &Trajectory) -> String {
+        serde_json::to_string_pretty(&trajectory).unwrap_or_else(|_| "{}".to_string())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -339,5 +366,23 @@ mod tests {
         assert!(html.contains("submitted"));
         assert!(html.contains("Hello agent"));
         assert!(html.contains("Hello user"));
+    }
+
+    #[cfg(feature = "json-export")]
+    #[test]
+    fn test_json_export_format() {
+        let mut t = Trajectory::new();
+        t.info.task = Some("Add a feature".to_string());
+        t.info.outcome = Some("submitted".to_string());
+
+        t.record_message(&Message::user("Hello agent"));
+        t.record_message(&Message::user("Hello user"));
+
+        let json_str = JsonExporter::export(&t);
+
+        assert!(json_str.contains("Add a feature"));
+        assert!(json_str.contains("submitted"));
+        assert!(json_str.contains("Hello agent"));
+        assert!(json_str.contains("Hello user"));
     }
 }
