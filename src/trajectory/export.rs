@@ -50,6 +50,9 @@ pub struct CsvExporter;
 #[cfg(feature = "mermaid-export")]
 pub struct MermaidExporter;
 
+#[cfg(feature = "finetune-export")]
+pub struct FineTuneExporter;
+
 #[cfg(feature = "html-export")]
 pub struct HtmlExporter;
 
@@ -245,6 +248,33 @@ impl TrajectoryExporter for MermaidExporter {
     }
 }
 
+
+#[cfg(feature = "finetune-export")]
+impl TrajectoryExporter for FineTuneExporter {
+    fn export(trajectory: &Trajectory) -> String {
+        let redactor = Redactor::default_enabled();
+        let mut messages = Vec::new();
+
+        for msg in &trajectory.messages {
+            // Omit tool outputs as they are usually too large for simple fine-tuning
+            // or we just map them nicely. The OpenAI schema expects system, user, assistant.
+            // We map tool to user or assistant, but wait, usually tool outputs are just user or tool role.
+            // Let's just use the roles as is, mapping "tool" to "tool" or "user".
+            let content = redactor.redact_text(&msg.content, surface::EXPORT).text;
+            messages.push(serde_json::json!({
+                "role": msg.role,
+                "content": content
+            }));
+        }
+
+        let out = serde_json::json!({
+            "messages": messages
+        });
+
+        serde_json::to_string(&out).unwrap_or_else(|_| "{}".to_string())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -339,5 +369,30 @@ mod tests {
         assert!(html.contains("submitted"));
         assert!(html.contains("Hello agent"));
         assert!(html.contains("Hello user"));
+    }
+
+    #[cfg(feature = "finetune-export")]
+    #[test]
+    #[allow(clippy::unwrap_used, clippy::expect_used)]
+    fn test_finetune_export_format() {
+        let mut t = Trajectory::new();
+        t.info.task = Some("Add a feature".to_string());
+        t.info.outcome = Some(outcome::SUBMITTED.to_string());
+
+        t.record_message(&Message::system("System prompt"));
+        t.record_message(&Message::user("Hello agent"));
+        t.record_message(&Message::assistant("Hello user"));
+
+        let jsonl = FineTuneExporter::export(&t);
+        let parsed: serde_json::Value = serde_json::from_str(&jsonl).expect("Must be valid JSON");
+
+        let messages = parsed.get("messages").expect("Must have messages array").as_array().expect("Messages must be an array");
+        assert_eq!(messages.len(), 3);
+        assert_eq!(messages[0].get("role").unwrap().as_str().unwrap(), "system");
+        assert_eq!(messages[0].get("content").unwrap().as_str().unwrap(), "System prompt");
+        assert_eq!(messages[1].get("role").unwrap().as_str().unwrap(), "user");
+        assert_eq!(messages[1].get("content").unwrap().as_str().unwrap(), "Hello agent");
+        assert_eq!(messages[2].get("role").unwrap().as_str().unwrap(), "assistant");
+        assert_eq!(messages[2].get("content").unwrap().as_str().unwrap(), "Hello user");
     }
 }
