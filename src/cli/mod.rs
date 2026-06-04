@@ -5551,12 +5551,12 @@ fn bench_subset(s: args::SubsetCmd) -> Result<(), Error> {
         (Some(_), Some(_)) => {
             return Err(Error::Config(crate::error::ConfigError::Invalid(
                 "--dataset-path and --dataset are mutually exclusive; provide only one".into(),
-            )))
+            )));
         }
         (None, None) => {
             return Err(Error::Config(crate::error::ConfigError::Invalid(
                 "one of --dataset-path or --dataset is required".into(),
-            )))
+            )));
         }
         (Some(path), None) => DatasetSource::LocalPath(path.clone()),
         (None, Some(alias_str)) => {
@@ -5571,8 +5571,7 @@ fn bench_subset(s: args::SubsetCmd) -> Result<(), Error> {
         }
     };
 
-    let (dataset_bytes, meta) =
-        crate::run::dataset::resolve_dataset(&dataset_source, &cache_dir)?;
+    let (dataset_bytes, meta) = crate::run::dataset::resolve_dataset(&dataset_source, &cache_dir)?;
     let all_instances = crate::run::swebench::load_dataset_from_bytes_pub(&dataset_bytes)?;
 
     let stratify_by = s.stratify_by.map(|v| match v {
@@ -5625,8 +5624,7 @@ fn bench_subset(s: args::SubsetCmd) -> Result<(), Error> {
         }
     }
 
-    let (instances, filter_spec) =
-        crate::run::swebench::apply_subset(all_instances, &params)?;
+    let (instances, filter_spec) = crate::run::swebench::apply_subset(all_instances, &params)?;
 
     let alias_str = match &dataset_source {
         DatasetSource::Named { alias, .. } => Some(alias.to_string()),
@@ -5639,7 +5637,7 @@ fn bench_subset(s: args::SubsetCmd) -> Result<(), Error> {
 
     let manifest = run_subset(SubsetArgs {
         instances,
-        source_sha256: meta.sha256.clone(),
+        source_sha256: meta.sha256,
         alias: alias_str,
         split: split_str,
         filter_spec,
@@ -7241,7 +7239,10 @@ mod tests {
         let res = super::bench_subset(cmd);
         assert!(res.is_err());
         let msg = res.unwrap_err().to_string();
-        assert!(msg.contains("one of --dataset-path or --dataset is required"), "{msg}");
+        assert!(
+            msg.contains("one of --dataset-path or --dataset is required"),
+            "{msg}"
+        );
     }
 
     #[test]
@@ -7296,10 +7297,17 @@ mod tests {
 
         // Sidecar manifest exists and round-trips
         let manifest_path = crate::run::subset::manifest_path_for(&output);
-        assert!(manifest_path.exists(), "manifest not found at {}", manifest_path.display());
+        assert!(
+            manifest_path.exists(),
+            "manifest not found at {}",
+            manifest_path.display()
+        );
         let raw = std::fs::read_to_string(&manifest_path).unwrap();
         let manifest: crate::run::subset::SubsetManifest = serde_json::from_str(&raw).unwrap();
-        assert_eq!(manifest.schema_version, crate::run::subset::MANIFEST_SCHEMA_VERSION);
+        assert_eq!(
+            manifest.schema_version,
+            crate::run::subset::MANIFEST_SCHEMA_VERSION
+        );
         assert_eq!(manifest.instance_count, 3);
     }
 

@@ -169,10 +169,7 @@ mod tests {
         // Manifest fields
         assert_eq!(manifest.schema_version, MANIFEST_SCHEMA_VERSION);
         assert_eq!(manifest.instance_count, 2);
-        assert_eq!(
-            manifest.resolved_instance_ids,
-            vec!["repo__1", "repo__2"]
-        );
+        assert_eq!(manifest.resolved_instance_ids, vec!["repo__1", "repo__2"]);
         assert!(manifest.per_stratum_counts.is_none());
         assert_eq!(manifest.source_dataset_sha256, "abcdef1234");
     }
