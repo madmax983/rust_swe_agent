@@ -134,6 +134,7 @@ pub async fn run() -> Result<(), Error> {
             args::BenchCmd::ScriptabilityCheck(s) => Box::pin(bench_scriptability_check(s)).await,
             args::BenchCmd::NearMiss(n) => bench_near_miss(n),
             args::BenchCmd::Assert(a) => bench_assert(a),
+            args::BenchCmd::Subset(s) => bench_subset(s),
         },
         Command::Agent { cmd } => match *cmd {
             args::AgentCmd::SkillsPreview(s) => agent_skills_preview_cmd(&s),
@@ -5536,6 +5537,129 @@ fn bench_dataset_stats(s: args::DatasetStatsCmd) -> Result<(), Error> {
 }
 
 #[allow(clippy::needless_pass_by_value)]
+fn bench_subset(s: args::SubsetCmd) -> Result<(), Error> {
+    use crate::run::dataset::DatasetSource;
+    use crate::run::subset::{SubsetArgs, manifest_path_for, run_subset};
+
+    // Resolve dataset source (same mutual-exclusion logic as dataset-stats)
+    let cache_dir = s
+        .dataset_cache_dir
+        .clone()
+        .unwrap_or_else(crate::run::dataset::default_cache_dir);
+
+    let dataset_source = match (&s.dataset_path, &s.dataset) {
+        (Some(_), Some(_)) => {
+            return Err(Error::Config(crate::error::ConfigError::Invalid(
+                "--dataset-path and --dataset are mutually exclusive; provide only one".into(),
+            )))
+        }
+        (None, None) => {
+            return Err(Error::Config(crate::error::ConfigError::Invalid(
+                "one of --dataset-path or --dataset is required".into(),
+            )))
+        }
+        (Some(path), None) => DatasetSource::LocalPath(path.clone()),
+        (None, Some(alias_str)) => {
+            let alias = alias_str
+                .parse::<crate::run::dataset::SwebenchAlias>()
+                .map_err(|e| Error::Config(crate::error::ConfigError::Invalid(e)))?;
+            let split_str = s.split.as_deref().unwrap_or("test");
+            let split = split_str
+                .parse::<crate::run::dataset::SwebenchSplit>()
+                .map_err(|e| Error::Config(crate::error::ConfigError::Invalid(e)))?;
+            DatasetSource::Named { alias, split }
+        }
+    };
+
+    let (dataset_bytes, meta) =
+        crate::run::dataset::resolve_dataset(&dataset_source, &cache_dir)?;
+    let all_instances = crate::run::swebench::load_dataset_from_bytes_pub(&dataset_bytes)?;
+
+    let stratify_by = s.stratify_by.map(|v| match v {
+        args::StratifyByArg::Repo => crate::run::swebench::StratifyBy::Repo,
+    });
+    let stratify_mode = match s
+        .stratify_mode
+        .unwrap_or(args::StratifyModeArg::Proportional)
+    {
+        args::StratifyModeArg::Proportional => crate::run::swebench::StratifyMode::Proportional,
+        args::StratifyModeArg::Balanced => crate::run::swebench::StratifyMode::Balanced,
+    };
+
+    let params = crate::run::swebench::ApplySubsetParams {
+        instance_ids_arg: s.instance_ids.as_deref(),
+        limit: s.limit,
+        sample: s.sample,
+        seed: s.seed,
+        stratify_by,
+        stratify_mode,
+    };
+
+    // Validate --sample is not larger than the available post-filter count.
+    // apply_subset silently keeps all instances when sample >= len; bench subset
+    // treats this as a configuration error to surface unintentional over-sampling.
+    if let Some(n) = s.sample {
+        // Determine the pool size *after* any --instance-ids filter but before
+        // sampling, so the error message reflects the true available count.
+        let available = if let Some(ids_arg) = s.instance_ids.as_deref() {
+            let no_sample_params = crate::run::swebench::ApplySubsetParams {
+                instance_ids_arg: Some(ids_arg),
+                limit: None,
+                sample: None,
+                seed: None,
+                stratify_by: None,
+                stratify_mode: crate::run::swebench::StratifyMode::default(),
+            };
+            match crate::run::swebench::apply_subset(all_instances.clone(), &no_sample_params) {
+                Ok((filtered, _)) => filtered.len(),
+                Err(_) => all_instances.len(),
+            }
+        } else {
+            all_instances.len()
+        };
+        if n > available {
+            return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+                "--sample {n} is larger than the available instance count ({available}); \
+                 reduce --sample or omit it to use all instances"
+            ))));
+        }
+    }
+
+    let (instances, filter_spec) =
+        crate::run::swebench::apply_subset(all_instances, &params)?;
+
+    let alias_str = match &dataset_source {
+        DatasetSource::Named { alias, .. } => Some(alias.to_string()),
+        DatasetSource::LocalPath(_) => None,
+    };
+    let split_str = match &dataset_source {
+        DatasetSource::Named { split, .. } => Some(split.to_string()),
+        DatasetSource::LocalPath(_) => None,
+    };
+
+    let manifest = run_subset(SubsetArgs {
+        instances,
+        source_sha256: meta.sha256.clone(),
+        alias: alias_str,
+        split: split_str,
+        filter_spec,
+        output: &s.output,
+    })?;
+
+    eprintln!(
+        "bench subset: wrote {} instances to {}",
+        manifest.instance_count,
+        s.output.display()
+    );
+    eprintln!(
+        "bench subset: sidecar manifest → {}",
+        manifest_path_for(&s.output).display()
+    );
+
+    Ok(())
+}
+
+#[allow(clippy::needless_pass_by_value)]
 fn bench_dataset_verify(s: args::DatasetVerifyCmd) -> Result<(), Error> {
     use crate::run::dataset::DatasetSource;
 
@@ -7075,5 +7199,161 @@ mod tests {
 
         let res = super::bench_dataset_verify(cmd);
         assert!(res.is_ok());
+    }
+
+    // ── bench_subset CLI tests ────────────────────────────────────────────────
+
+    fn make_subset_dataset(temp: &tempfile::TempDir, rows: usize) -> std::path::PathBuf {
+        let path = temp.path().join("dataset.jsonl");
+        let mut content = String::new();
+        for i in 0..rows {
+            let inst = crate::run::swebench::SweBenchInstance {
+                instance_id: format!("repo__{i}"),
+                repo: Some("owner/repo".to_string()),
+                base_commit: None,
+                problem_statement: Some(format!("Fix {i}")),
+                image: None,
+                other: serde_json::Map::new(),
+            };
+            content.push_str(&serde_json::to_string(&inst).unwrap());
+            content.push('\n');
+        }
+        std::fs::write(&path, content).unwrap();
+        path
+    }
+
+    #[test]
+    fn bench_subset_requires_dataset_source() {
+        let temp = tempfile::tempdir().unwrap();
+        let cmd = args::SubsetCmd {
+            dataset_path: None,
+            dataset: None,
+            split: Some("test".to_owned()),
+            dataset_cache_dir: None,
+            instance_ids: None,
+            limit: None,
+            sample: None,
+            seed: None,
+            stratify_by: None,
+            stratify_mode: None,
+            output: temp.path().join("out.jsonl"),
+        };
+        let res = super::bench_subset(cmd);
+        assert!(res.is_err());
+        let msg = res.unwrap_err().to_string();
+        assert!(msg.contains("one of --dataset-path or --dataset is required"), "{msg}");
+    }
+
+    #[test]
+    fn bench_subset_rejects_mutually_exclusive_sources() {
+        let temp = tempfile::tempdir().unwrap();
+        let dataset_path = make_subset_dataset(&temp, 3);
+        let cmd = args::SubsetCmd {
+            dataset_path: Some(dataset_path),
+            dataset: Some("lite".to_owned()),
+            split: Some("test".to_owned()),
+            dataset_cache_dir: None,
+            instance_ids: None,
+            limit: None,
+            sample: None,
+            seed: None,
+            stratify_by: None,
+            stratify_mode: None,
+            output: temp.path().join("out.jsonl"),
+        };
+        let res = super::bench_subset(cmd);
+        assert!(res.is_err());
+        let msg = res.unwrap_err().to_string();
+        assert!(msg.contains("mutually exclusive"), "{msg}");
+    }
+
+    #[test]
+    fn bench_subset_writes_jsonl_and_manifest() {
+        let temp = tempfile::tempdir().unwrap();
+        let dataset_path = make_subset_dataset(&temp, 5);
+        let output = temp.path().join("slice.jsonl");
+        let cmd = args::SubsetCmd {
+            dataset_path: Some(dataset_path),
+            dataset: None,
+            split: None,
+            dataset_cache_dir: None,
+            instance_ids: None,
+            limit: Some(3),
+            sample: None,
+            seed: None,
+            stratify_by: None,
+            stratify_mode: None,
+            output: output.clone(),
+        };
+        let res = super::bench_subset(cmd);
+        assert!(res.is_ok(), "expected ok, got: {:?}", res.unwrap_err());
+
+        // JSONL written and parseable
+        assert!(output.exists());
+        let bytes = std::fs::read(&output).unwrap();
+        let loaded = crate::run::swebench::load_dataset_from_bytes_pub(&bytes).unwrap();
+        assert_eq!(loaded.len(), 3);
+
+        // Sidecar manifest exists and round-trips
+        let manifest_path = crate::run::subset::manifest_path_for(&output);
+        assert!(manifest_path.exists(), "manifest not found at {}", manifest_path.display());
+        let raw = std::fs::read_to_string(&manifest_path).unwrap();
+        let manifest: crate::run::subset::SubsetManifest = serde_json::from_str(&raw).unwrap();
+        assert_eq!(manifest.schema_version, crate::run::subset::MANIFEST_SCHEMA_VERSION);
+        assert_eq!(manifest.instance_count, 3);
+    }
+
+    #[test]
+    fn bench_subset_sample_larger_than_available_is_error() {
+        let temp = tempfile::tempdir().unwrap();
+        let dataset_path = make_subset_dataset(&temp, 3);
+        let cmd = args::SubsetCmd {
+            dataset_path: Some(dataset_path),
+            dataset: None,
+            split: None,
+            dataset_cache_dir: None,
+            instance_ids: None,
+            limit: None,
+            sample: Some(10), // larger than the 3 available instances
+            seed: Some(42),
+            stratify_by: None,
+            stratify_mode: None,
+            output: temp.path().join("out.jsonl"),
+        };
+        let res = super::bench_subset(cmd);
+        assert!(res.is_err());
+        let msg = res.unwrap_err().to_string();
+        assert!(
+            msg.contains("larger than the available instance count"),
+            "expected 'larger than' message, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn bench_subset_zero_rows_is_error() {
+        let temp = tempfile::tempdir().unwrap();
+        let dataset_path = make_subset_dataset(&temp, 3);
+        // Request an instance ID that doesn't exist → zero rows
+        let cmd = args::SubsetCmd {
+            dataset_path: Some(dataset_path),
+            dataset: None,
+            split: None,
+            dataset_cache_dir: None,
+            instance_ids: Some("nonexistent__999".to_owned()),
+            limit: None,
+            sample: None,
+            seed: None,
+            stratify_by: None,
+            stratify_mode: None,
+            output: temp.path().join("out.jsonl"),
+        };
+        let res = super::bench_subset(cmd);
+        assert!(res.is_err());
+        let msg = res.unwrap_err().to_string();
+        // apply_subset rejects unknown IDs
+        assert!(
+            msg.contains("unknown id") || msg.contains("zero instances"),
+            "unexpected error: {msg}"
+        );
     }
 }
