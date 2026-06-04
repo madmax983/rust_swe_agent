@@ -242,7 +242,31 @@ to stdout for CI capture.
 See `docs/spec-agent-stability.md` for the full flag reference, schema,
 exit-code matrix, and pass-predicate semantics.
 
-### 8. Optional Preflight Before SWE-bench
+### 8. Get the Best of N Tries on a Real Task
+
+LLM outputs are stochastic — the same task run twice may succeed or fail
+depending on sampling. Use `agent best-of` to run a task N times and keep only
+the patch that passes the most of your `--verify` checks:
+
+```bash
+cargo run --quiet -- --log error agent best-of \
+    --task "Fix the null dereference in src/foo.rs" \
+    --runs 3 \
+    --verify "tests:cargo test" \
+    --verify "lint:cargo clippy -- -D warnings" \
+    --model claude-opus-4-7 \
+    --output ./runs
+```
+
+The winner is selected by a deterministic policy: most checks passed → lowest
+cost → fewest steps → smallest patch → lexicographically smallest SHA-256.
+Results land in `runs/<task-slug>/best-of-results.json` and the winning patch in
+`runs/<task-slug>/best.patch`, ready for `agent apply`.
+
+See `docs/spec-agent-best-of.md` for the full flag reference, selection policy,
+JSON schema, and exit-code matrix.
+
+### 9. Optional Preflight Before SWE-bench
 
 Use `bench dataset-stats` to preview the composition, token distributions (computed completely offline using `litellm-rs`'s `TokenCounter`), expected tests count, languages present, representative slice skewness (warns if unique repos < 50% or median token length difference > 25% compared to the full dataset), and historical resolved rates matching current dataset hash before running a sweep:
 
@@ -273,7 +297,7 @@ budget, run `forecast` before a full sweep:
 cargo run --quiet -- --log info bench forecast --dataset-path ./data/swebench.jsonl --output runs/forecast --limit 5 --calibration-n 2 --sweep-cost-limit-usd 1.00 --format json > runs/forecast.json
 ```
 
-### 9. Close The Calibration Loop
+### 10. Close The Calibration Loop
 
 For paid sweeps, treat the operator loop as `doctor` -> `forecast` ->
 `swebench` -> `calibrate`. The forecast keeps the first spend bounded; the
