@@ -76,6 +76,7 @@ fn base_args(dataset_source: DatasetSource, output_dir: PathBuf) -> SwebenchArgs
         systemic_failure_min_samples: 5,
         systemic_failure_share_pct: 80,
         otlp_endpoint: None,
+        otlp_metrics_interval_secs: None,
         rehearse: false,
         skip_evaluator: false,
         eval_backend: "rehearsal".to_string(),

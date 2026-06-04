@@ -2570,6 +2570,7 @@ fn swebench_args_from_cmd(
         systemic_failure_min_samples: s.systemic_failure_min_samples,
         systemic_failure_share_pct: s.systemic_failure_share_pct,
         otlp_endpoint: s.otlp_endpoint,
+        otlp_metrics_interval_secs: s.otlp_metrics_interval_secs,
         rehearse: s.rehearse,
         skip_evaluator: s.skip_evaluator,
         eval_backend: s.eval_backend,
@@ -3500,6 +3501,7 @@ fn reproduce_swebench_args(
             .as_ref()
             .map_or(80, |cb| cb.share_pct),
         otlp_endpoint: None,
+        otlp_metrics_interval_secs: None,
         rehearse: false,
         skip_evaluator: false,
         eval_backend: "rehearsal".to_string(),
@@ -5264,6 +5266,7 @@ fn retry_swebench_args(
         systemic_failure_min_samples: 5,
         systemic_failure_share_pct: 80,
         otlp_endpoint: None,
+        otlp_metrics_interval_secs: None,
         rehearse: false,
         skip_evaluator: false,
         eval_backend: "rehearsal".to_string(),

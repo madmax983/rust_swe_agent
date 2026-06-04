@@ -1355,6 +1355,7 @@ pub struct SwebenchArgs {
     /// consulted.  When both are absent, OTLP export is disabled and no
     /// sockets are opened.
     pub otlp_endpoint: Option<String>,
+    pub otlp_metrics_interval_secs: Option<u64>,
     pub rehearse: bool,
     pub skip_evaluator: bool,
     pub eval_backend: String,
@@ -5446,6 +5447,7 @@ mod tests {
             systemic_failure_min_samples: 5,
             systemic_failure_share_pct: 80,
             otlp_endpoint: None,
+            otlp_metrics_interval_secs: None,
             rehearse: false,
             skip_evaluator: false,
             eval_backend: "rehearsal".to_string(),
@@ -6341,6 +6343,7 @@ mod tests {
             systemic_failure_share_pct: 80,
 
             otlp_endpoint: None,
+            otlp_metrics_interval_secs: None,
             rehearse: false,
             skip_evaluator: false,
             eval_backend: "rehearsal".to_string(),
@@ -6426,6 +6429,7 @@ mod tests {
             systemic_failure_share_pct: 80,
 
             otlp_endpoint: None,
+            otlp_metrics_interval_secs: None,
             rehearse: false,
             skip_evaluator: false,
             eval_backend: "rehearsal".to_string(),
@@ -6522,6 +6526,7 @@ instance = "inst"
             systemic_failure_share_pct: 80,
 
             otlp_endpoint: None,
+            otlp_metrics_interval_secs: None,
             rehearse: false,
             skip_evaluator: false,
             eval_backend: "rehearsal".to_string(),
@@ -6658,6 +6663,7 @@ instance = "inst"
             systemic_failure_share_pct: 80,
 
             otlp_endpoint: None,
+            otlp_metrics_interval_secs: None,
             rehearse: false,
             skip_evaluator: false,
             eval_backend: "rehearsal".to_string(),
@@ -7343,6 +7349,7 @@ instance = "inst"
             systemic_failure_share_pct: 80,
 
             otlp_endpoint: None,
+            otlp_metrics_interval_secs: None,
             rehearse: false,
             skip_evaluator: false,
             eval_backend: "rehearsal".to_string(),
@@ -8116,6 +8123,7 @@ instance = "inst"
             systemic_failure_min_samples: 5,
             systemic_failure_share_pct: 80,
             otlp_endpoint: None,
+            otlp_metrics_interval_secs: None,
             rehearse: false,
             skip_evaluator: false,
             eval_backend: "rehearsal".to_string(),
