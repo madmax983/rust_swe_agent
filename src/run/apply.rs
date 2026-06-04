@@ -29,8 +29,8 @@ fn canonicalize<P: AsRef<Path>>(path: P) -> std::io::Result<PathBuf> {
     #[cfg(windows)]
     {
         let s = p.to_string_lossy();
-        if s.starts_with(r"\\?\") {
-            return Ok(PathBuf::from(&s[4..]));
+        if let Some(stripped) = s.strip_prefix(r"\\?\") {
+            return Ok(PathBuf::from(stripped));
         }
     }
     Ok(p)
