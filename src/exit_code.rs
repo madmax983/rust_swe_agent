@@ -271,10 +271,10 @@ impl ExitCode {
             | Error::Io(_)
             | Error::Json(_) => Self::InternalError,
             Error::GithubIssue(issue_e) => match issue_e {
-                crate::error::GithubIssueError::MissingToken(_) => Self::GithubIssueMissingToken,
-                crate::error::GithubIssueError::NotFound(_) => Self::GithubIssueNotFound,
-                crate::error::GithubIssueError::RateLimited(_) => Self::GithubIssueRateLimited,
-                crate::error::GithubIssueError::RequestFailed(_) => Self::TaskUnsuccessful,
+                crate::run::github_issue::GithubIssueError::MissingToken(_) => Self::GithubIssueMissingToken,
+                crate::run::github_issue::GithubIssueError::NotFound(_) => Self::GithubIssueNotFound,
+                crate::run::github_issue::GithubIssueError::RateLimited(_) => Self::GithubIssueRateLimited,
+                crate::run::github_issue::GithubIssueError::RequestFailed(_) => Self::TaskUnsuccessful,
             },
         }
     }

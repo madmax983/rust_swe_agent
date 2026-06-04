@@ -1,4 +1,4 @@
-use crate::error::{Error, GithubIssueError};
+use crate::error::Error;
 use crate::prompt_guard::{PromptGuard, UntrustedKind};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -421,4 +421,21 @@ mod tests {
             _ => panic!("expected RequestFailed, got {err:?}"),
         }
     }
+}
+
+use thiserror::Error;
+
+#[derive(Debug, Error)]
+pub enum GithubIssueError {
+    #[error("missing GitHub token: set `{0}` to a PAT or GitHub App installation token")]
+    MissingToken(String),
+
+    #[error("GitHub issue or repo not found: {0}")]
+    NotFound(String),
+
+    #[error("GitHub API rate limited: {0}")]
+    RateLimited(String),
+
+    #[error("GitHub API request failed: {0}")]
+    RequestFailed(String),
 }
