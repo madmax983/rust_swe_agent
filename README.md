@@ -513,6 +513,11 @@ a valid trajectory in hand:
   two-proportion z-tests.
 - [`bench dataset-stats`](docs/spec-dataset-stats.md): zero-cost preflight to
   preview and analyze dataset composition offline before running a sweep.
+- [`bench subset`](docs/spec-subset.md): export a sampled dataset slice as a
+  committable JSONL artifact plus a self-describing provenance manifest
+  (`subset-manifest-v1`), so you can `git add` and pin an exact eval set in CI
+  and reproduce it without re-deriving the sample or depending on a live dataset
+  fetch.
 - [`bench eval-flake`](docs/spec-eval-flake.md): quantify evaluator-side verdict
   noise by replaying the evaluator N times per patch on a completed sweep.
   Produces `eval-flake.json`; pair with `bench compare --flake-report` to

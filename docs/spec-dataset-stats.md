@@ -87,3 +87,9 @@ Languages Present: Python
 --- Historical Sweep Resolved Rates ---
   Min: 0.0000  |  P50: 0.5000  |  Max: 1.0000
 ```
+
+---
+
+## Related Commands
+
+- [`bench subset`](spec-subset.md): Materialise a sampled slice as a pinned JSONL artifact and provenance manifest, suitable for `git add` and CI pinning.
