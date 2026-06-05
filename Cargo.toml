@@ -23,7 +23,7 @@ async-trait = "0.1"
 # Serialization
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-serde_yml = "0.0.12"
+serde_yaml = "0.9"
 toml = "0.8"
 regex = "1"
 
@@ -43,7 +43,7 @@ indicatif = "0.18.4"
 # `mini --interactive` confirmation prompt: single-key reads on a TTY plus
 # a ratatui dashboard when `--ui ratatui` is selected (issue #312).
 crossterm = { version = "0.28", features = ["event-stream"] }
-ratatui = "0.29"
+ratatui = "0.30"
 
 # HTTP fallback (used inside `LitellmBackend` for headers, and as a thin
 # escape hatch if any backend needs raw HTTP).
@@ -76,6 +76,7 @@ proptest = "1"
 insta = { version = "1", features = ["json"] }
 pretty_assertions = "1"
 tokio = { version = "1", features = ["full", "test-util"] }
+temp-env = { version = "0.3.6", features = ["async_closure"] }
 
 [features]
 default = ["webhook"]

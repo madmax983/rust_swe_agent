@@ -355,6 +355,7 @@ mod tests {
     #![allow(clippy::unwrap_used)]
     use super::*;
     use std::time::Duration;
+    use temp_env::async_with_vars;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
 
@@ -455,28 +456,30 @@ mod tests {
         // Synthetic env var picked up automatically by from_config_lossy.
         let unique_val = format!("sk-deadbeef-sweep-wh-{}", addr.port());
         let env_name = format!("FAKE_API_KEY_SWH_{}", addr.port());
-        // SAFETY: single-threaded test context; no concurrent env reads.
-        unsafe { std::env::set_var(&env_name, &unique_val) };
-        let redactor = Redactor::default_enabled();
 
-        let sink = SweepWebhookSink::new(url, &[], redactor, "sweep-redact".to_owned()).unwrap();
-        sink.emit(SweepNotificationEvent::InstanceCompleted {
-            instance_id: unique_val.clone(),
-            resolved: false,
-            failure_category: None,
-            cost_usd: None,
-            duration_secs: None,
-        });
+        let unique_val_clone = unique_val.clone();
+        async_with_vars([(&env_name, Some(unique_val_clone.as_str()))], async {
+            let redactor = Redactor::default_enabled();
 
-        let socket = accept(&listener).await;
-        let req = read_http(socket).await;
-        // SAFETY: single-threaded test context; no concurrent env reads.
-        unsafe { std::env::remove_var(&env_name) };
+            let sink =
+                SweepWebhookSink::new(url, &[], redactor, "sweep-redact".to_owned()).unwrap();
+            sink.emit(SweepNotificationEvent::InstanceCompleted {
+                instance_id: unique_val.clone(),
+                resolved: false,
+                failure_category: None,
+                cost_usd: None,
+                duration_secs: None,
+            });
 
-        assert!(
-            !req.contains(&unique_val),
-            "sensitive env var value must not appear verbatim in posted payload"
-        );
+            let socket = accept(&listener).await;
+            let req = read_http(socket).await;
+
+            assert!(
+                !req.contains(&unique_val),
+                "sensitive env var value must not appear verbatim in posted payload"
+            );
+        })
+        .await;
     }
 
     // ── RED: drop counting ─────────────────────────────────────────────────
@@ -626,7 +629,7 @@ mod tests {
         match tokio::time::timeout(TEST_IO_TIMEOUT, listener.accept()).await {
             Ok(Ok((s, _))) => s,
             Ok(Err(e)) => panic!("accept error: {e}"),
-            Err(_) => panic!("accept timed out"),
+            Err(e) => panic!("accept timed out: {e}"),
         }
     }
 
@@ -637,7 +640,7 @@ mod tests {
             let n = match tokio::time::timeout(TEST_IO_TIMEOUT, socket.read(&mut chunk)).await {
                 Ok(Ok(n)) => n,
                 Ok(Err(e)) => panic!("read error: {e}"),
-                Err(_) => panic!("read timed out"),
+                Err(e) => panic!("read timed out: {e}"),
             };
             if n == 0 {
                 break;
@@ -654,7 +657,7 @@ mod tests {
     }
 
     fn body_of(req: &str) -> &str {
-        req.split_once("\r\n\r\n").map(|(_, b)| b).unwrap_or("")
+        req.split_once("\r\n\r\n").map_or("", |(_, b)| b)
     }
 
     fn is_complete_http(buf: &[u8]) -> bool {

@@ -2113,6 +2113,7 @@ pub fn slugify(task: &str) -> String {
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used)]
+    use temp_env::async_with_vars;
 
     use super::*;
     use async_trait::async_trait;
@@ -3834,14 +3835,16 @@ index 8a1218a..24c5735 100644\n\
         // Inject a fake secret as an environment variable that the redactor picks up.
         // We use a value that looks like a real API key pattern so the redactor fires.
         let fake_secret = "sk-ant-fake-secret-value-for-test-0123456789abcdef";
-        // SAFETY: test-only; single-threaded context for secret injection.
-        unsafe { std::env::set_var("TEST_MANIFEST_API_KEY", fake_secret) };
 
+        let fake_secret_clone = fake_secret.to_owned();
         let args = make_mini_args_for_manifest_test(tmp.path().to_path_buf(), "secret-test");
-        run(args).await.unwrap();
-
-        // Clean up env var
-        unsafe { std::env::remove_var("TEST_MANIFEST_API_KEY") };
+        async_with_vars(
+            [("TEST_MANIFEST_API_KEY", Some(fake_secret_clone.as_str()))],
+            async {
+                run(args).await.unwrap();
+            },
+        )
+        .await;
 
         let traj_path = tmp.path().join("secret-test.traj.json");
         let content = std::fs::read_to_string(&traj_path).unwrap();
