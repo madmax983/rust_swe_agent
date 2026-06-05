@@ -149,7 +149,7 @@ impl ModelError {
                 let digits: &str = msg[pos + prefix.len()..]
                     .split(|c: char| !c.is_ascii_digit())
                     .next()
-                    .unwrap_or("");
+                    .unwrap_or_default();
                 if let Ok(n) = digits.parse::<u64>() {
                     return Some(n);
                 }
@@ -191,6 +191,12 @@ mod tests {
     fn retry_after_secs_handles_space_variant() {
         let e = ModelError::RateLimited("retry after: 90".into());
         assert_eq!(e.retry_after_secs(), Some(90));
+    }
+
+    #[test]
+    fn retry_after_secs_handles_empty_digits() {
+        let e = ModelError::RateLimited("retry after: tomorrow".into());
+        assert_eq!(e.retry_after_secs(), None);
     }
 }
 
