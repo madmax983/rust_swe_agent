@@ -3612,7 +3612,10 @@ fn bench_inspect(i: args::InspectCmd) -> Result<(), Error> {
         return Ok(());
     }
 
-    if matches!(i.format.as_str(), "markdown" | "html" | "csv" | "mermaid") {
+    if matches!(
+        i.format.as_str(),
+        "markdown" | "html" | "csv" | "mermaid" | "yaml"
+    ) {
         return bench_inspect_export(i);
     }
 
@@ -3628,7 +3631,7 @@ fn bench_inspect(i: args::InspectCmd) -> Result<(), Error> {
         "json" => crate::run::inspect::InspectFormat::Json,
         other => {
             return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
-                "unknown --format `{other}` (expected `text`, `json`, `markdown`, `html`, `csv`, or `mermaid`)"
+                "unknown --format `{other}` (expected `text`, `json`, `markdown`, `html`, `csv`, `mermaid`, or `yaml`)"
             ))));
         }
     };
@@ -3670,7 +3673,8 @@ fn bench_inspect_export(i: args::InspectCmd) -> Result<(), Error> {
     })?;
     let instance_id = i.instance.as_deref().ok_or_else(|| {
         Error::Config(crate::error::ConfigError::Invalid(
-            "inspect: --instance is required for export formats (markdown/html/csv/mermaid)".into(),
+            "inspect: --instance is required for export formats (markdown/html/csv/mermaid/yaml)"
+                .into(),
         ))
     })?;
     let traj_path =
@@ -3692,6 +3696,7 @@ fn bench_inspect_export(i: args::InspectCmd) -> Result<(), Error> {
         "html" => inspect_export_html(&traj)?,
         "csv" => inspect_export_csv(&traj)?,
         "mermaid" => inspect_export_mermaid(&traj)?,
+        "yaml" => inspect_export_yaml(&traj)?,
         _ => unreachable!("dispatch guarded by caller"),
     };
 
@@ -3745,6 +3750,22 @@ fn inspect_export_html(_traj: &crate::trajectory::Trajectory) -> Result<String, 
     Err(Error::Config(crate::error::ConfigError::Invalid(
         "format_unavailable: --format html requires the `html-export` Cargo feature; \
          rebuild with `--features html-export`"
+            .into(),
+    )))
+}
+
+#[cfg(feature = "yaml-export")]
+#[allow(clippy::unnecessary_wraps)]
+fn inspect_export_yaml(traj: &crate::trajectory::Trajectory) -> Result<String, Error> {
+    use crate::trajectory::export::{TrajectoryExporter, YamlExporter};
+    Ok(YamlExporter::export(traj))
+}
+
+#[cfg(not(feature = "yaml-export"))]
+fn inspect_export_yaml(_traj: &crate::trajectory::Trajectory) -> Result<String, Error> {
+    Err(Error::Config(crate::error::ConfigError::Invalid(
+        "format_unavailable: --format yaml requires the `yaml-export` Cargo feature; \
+         rebuild with `--features yaml-export`"
             .into(),
     )))
 }
