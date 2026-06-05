@@ -145,6 +145,20 @@ struct RedactionMatch {
 }
 
 impl Redactor {
+    /// Create a [`Redactor`] directly from a given [`RedactionCfg`].
+    ///
+    /// Evaluates all configured literals, custom patterns, and structured data matchers.
+    /// If a custom regex pattern is invalid, it returns a [`regex::Error`].
+    ///
+    /// ## Examples
+    ///
+    /// ```
+    /// use maxwells_daemon::config::RedactionCfg;
+    /// use maxwells_daemon::redaction::Redactor;
+    ///
+    /// let cfg = RedactionCfg::default();
+    /// let redactor = Redactor::from_config(&cfg).unwrap();
+    /// ```
     pub fn from_config(cfg: &RedactionCfg) -> Result<Self, regex::Error> {
         let mut rules = Vec::new();
         let mut blocking_literals = Vec::new();
@@ -239,14 +253,52 @@ impl Redactor {
         })
     }
 
+    /// Create a [`Redactor`] from a given [`RedactionCfg`], falling back to a disabled
+    /// redactor if any custom regex pattern fails to compile.
+    ///
+    /// ## Examples
+    ///
+    /// ```
+    /// use maxwells_daemon::config::RedactionCfg;
+    /// use maxwells_daemon::redaction::Redactor;
+    ///
+    /// let cfg = RedactionCfg::default();
+    /// let redactor = Redactor::from_config_lossy(&cfg);
+    /// ```
     pub fn from_config_lossy(cfg: &RedactionCfg) -> Self {
         Self::from_config(cfg).unwrap_or_else(|_| Self::disabled())
     }
 
+    /// Create a fully enabled [`Redactor`] using the default [`RedactionCfg`].
+    ///
+    /// This is the standard initialization method for production runs.
+    ///
+    /// ## Examples
+    ///
+    /// ```
+    /// use maxwells_daemon::redaction::Redactor;
+    ///
+    /// let redactor = Redactor::default_enabled();
+    /// ```
     pub fn default_enabled() -> Self {
         Self::from_config_lossy(&RedactionCfg::default())
     }
 
+    /// Create a disabled [`Redactor`] that passes all text through unmodified.
+    ///
+    /// This is primarily used when redaction is explicitly turned off or when
+    /// falling back from an invalid configuration.
+    ///
+    /// ## Examples
+    ///
+    /// ```
+    /// use maxwells_daemon::redaction::Redactor;
+    ///
+    /// let redactor = Redactor::disabled();
+    /// let text = "my_secret_token_123";
+    /// let outcome = redactor.redact_text(text, "test_surface");
+    /// assert_eq!(outcome.text, text);
+    /// ```
     pub fn disabled() -> Self {
         Self {
             inner: Arc::new(RedactorInner {
@@ -324,6 +376,21 @@ impl Redactor {
         filtered
     }
 
+    /// Recursively apply redaction to all string values within a `serde_json::Value`.
+    ///
+    /// Updates telemetry counts for the provided `surface` label when redactions occur.
+    ///
+    /// ## Examples
+    ///
+    /// ```
+    /// use serde_json::json;
+    /// use maxwells_daemon::redaction::Redactor;
+    ///
+    /// let redactor = Redactor::default_enabled();
+    /// let mut doc = json!({"token": "sk-ant-api03-12345"});
+    /// let did_redact = redactor.redact_json_value(&mut doc, "test_surface");
+    /// assert!(did_redact);
+    /// ```
     pub fn redact_json_value(&self, value: &mut serde_json::Value, surface: &str) -> bool {
         if !self.inner.enabled {
             return false;
@@ -360,6 +427,18 @@ impl Redactor {
         }
     }
 
+    /// Detect if the given `text` contains any of the explicitly configured literal secrets.
+    ///
+    /// Returns `Some(SecretLeak)` if a configured literal is found in the text, indicating a leak.
+    ///
+    /// ## Examples
+    ///
+    /// ```
+    /// use maxwells_daemon::redaction::Redactor;
+    ///
+    /// let redactor = Redactor::disabled();
+    /// assert!(redactor.configured_literal_leak("some safe text").is_none());
+    /// ```
     #[must_use]
     pub fn configured_literal_leak(&self, text: &str) -> Option<SecretLeak> {
         if !self.inner.enabled || self.inner.unsafe_allow_secret_leaks {
@@ -375,11 +454,36 @@ impl Redactor {
             })
     }
 
+    /// Check if the redactor configuration allows unredacted secrets to pass through.
+    ///
+    /// When this returns `true`, the system may still redact text for telemetry but will not block
+    /// the operation if a configured literal is leaked.
+    ///
+    /// ## Examples
+    ///
+    /// ```
+    /// use maxwells_daemon::redaction::Redactor;
+    ///
+    /// let redactor = Redactor::disabled();
+    /// assert_eq!(redactor.unsafe_allow_secret_leaks(), false);
+    /// ```
     #[must_use]
     pub fn unsafe_allow_secret_leaks(&self) -> bool {
         self.inner.unsafe_allow_secret_leaks
     }
 
+    /// Generate a summary of all redaction operations performed by this `Redactor`.
+    ///
+    /// The summary includes total redaction counts per kind across different surfaces.
+    ///
+    /// ## Examples
+    ///
+    /// ```
+    /// use maxwells_daemon::redaction::Redactor;
+    ///
+    /// let redactor = Redactor::default_enabled();
+    /// let summary = redactor.summary();
+    /// ```
     #[must_use]
     pub fn summary(&self) -> RedactionSummary {
         let mut rows = {
@@ -449,7 +553,7 @@ impl Redactor {
 
     /// Run redaction and return per-match annotations for operator verification.
     ///
-    /// Unlike [`redact_text`], this method does not update surface-level telemetry
+    /// Unlike [`Redactor::redact_text`], this method does not update surface-level telemetry
     /// counts and does not require a surface label. It is designed for the
     /// `agent redact-check` preflight command.
     #[must_use]
@@ -600,6 +704,21 @@ pub struct RedactingSink {
 }
 
 impl RedactingSink {
+    /// Wrap an existing `StreamSink` with a `Redactor` to redact sensitive data from events.
+    ///
+    /// Each streamed event will pass through the redactor before being emitted to the inner sink.
+    ///
+    /// ## Examples
+    ///
+    /// ```ignore
+    /// use std::sync::Arc;
+    /// use maxwells_daemon::redaction::{RedactingSink, Redactor};
+    /// use maxwells_daemon::stream::NullSink;
+    ///
+    /// let sink = Arc::new(NullSink);
+    /// let redactor = Redactor::default_enabled();
+    /// let redacting_sink = RedactingSink::new(sink, redactor);
+    /// ```
     pub fn new(inner: Arc<dyn StreamSink>, redactor: Redactor) -> Self {
         Self { inner, redactor }
     }
@@ -611,6 +730,21 @@ impl StreamSink for RedactingSink {
     }
 }
 
+/// Apply redaction directly to a `StreamEvent`, producing a new redacted event.
+///
+/// Modifies any text fields within the event (like task descriptions, assistant messages,
+/// or bash output) using the provided `Redactor`.
+///
+/// ## Examples
+///
+/// ```
+/// use maxwells_daemon::redaction::{redact_stream_event, Redactor};
+/// use maxwells_daemon::stream::StreamEvent;
+///
+/// let redactor = Redactor::default_enabled();
+/// let event = StreamEvent::RunEnded { exit_reason: "test".into(), failure_category: None, final_output: None, steps: 0, total_cost_usd: 0.0, ended_at: "".into() };
+/// let redacted = redact_stream_event(&event, &redactor);
+/// ```
 pub fn redact_stream_event(event: &StreamEvent, redactor: &Redactor) -> StreamEvent {
     match event {
         StreamEvent::RunStarted {
@@ -875,6 +1009,19 @@ fn env_secret_kind(name: &str) -> &'static str {
 /// applies the *same* sensitive-key rule when walking JSON artifacts. Returns
 /// the value-kind label (e.g. `"env_password"`) or `None` for a benign key.
 #[must_use]
+/// Detect if a given JSON key name suggests it holds a sensitive value.
+///
+/// Returns `Some(kind)` with a label like `"password"` or `"api_key"` if the key contains
+/// terms implying it's a secret. Returns `None` if the key appears safe.
+///
+/// ## Examples
+///
+/// ```
+/// use maxwells_daemon::redaction::sensitive_json_key_kind;
+///
+/// assert!(sensitive_json_key_kind("github_token").is_some());
+/// assert!(sensitive_json_key_kind("user_name").is_none());
+/// ```
 pub fn sensitive_json_key_kind(key: &str) -> Option<&'static str> {
     sensitive_key_kind(key)
 }
