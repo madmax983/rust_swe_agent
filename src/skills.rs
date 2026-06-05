@@ -540,16 +540,27 @@ fn searchable_tokens(name: &str, description: &str) -> BTreeSet<String> {
         .collect()
 }
 
+/// Normalizes search text by converting it to lowercase, filtering out unallowed symbols,
+/// and collapsing multiple spaces into a single space.
+///
+/// Performance optimization:
+/// Constructs the final string directly in a single pass to eliminate intermediate
+/// collections (`Vec`) and allocations (`.join(" ")`).
 fn normalize_search_text(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
+    let mut in_word = false;
     for ch in text.chars() {
         if ch.is_ascii_alphanumeric() || ch == '$' || ch == '@' || ch == '/' {
+            if !in_word && !out.is_empty() {
+                out.push(' ');
+            }
             out.push(ch.to_ascii_lowercase());
+            in_word = true;
         } else {
-            out.push(' ');
+            in_word = false;
         }
     }
-    out.split_whitespace().collect::<Vec<_>>().join(" ")
+    out
 }
 
 fn is_stopword(token: &str) -> bool {
@@ -623,4 +634,22 @@ fn expand_skill_path(path: &String) -> PathBuf {
         }
     }
     PathBuf::from(path)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_normalize_search_text() {
+        assert_eq!(normalize_search_text("Hello World!"), "hello world");
+        assert_eq!(
+            normalize_search_text("  multiple   spaces  "),
+            "multiple spaces"
+        );
+        assert_eq!(
+            normalize_search_text("symbols &*() kept $/"),
+            "symbols kept $/"
+        );
+    }
 }
