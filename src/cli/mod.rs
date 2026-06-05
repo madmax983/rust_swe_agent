@@ -5536,7 +5536,7 @@ fn bench_dataset_stats(s: args::DatasetStatsCmd) -> Result<(), Error> {
     Ok(())
 }
 
-#[allow(clippy::needless_pass_by_value)]
+#[allow(clippy::needless_pass_by_value, clippy::too_many_lines)]
 fn bench_subset(s: args::SubsetCmd) -> Result<(), Error> {
     use crate::run::dataset::DatasetSource;
     use crate::run::subset::{SubsetArgs, manifest_path_for, run_subset};
