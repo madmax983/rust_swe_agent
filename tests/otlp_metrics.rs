@@ -227,23 +227,16 @@ async fn no_otlp_metrics_traffic_when_endpoint_unset() {
     }
 }
 
-#[tokio::test]
-async fn otlp_metrics_periodic_and_final_flush() {
-    let work = tempfile::tempdir().unwrap();
-    let repo = work.path().join("repo");
-    std::fs::create_dir_all(&repo).unwrap();
-    init_repo(&repo);
-    let dataset = work.path().join("dataset.jsonl");
-    let output = work.path().join("runs");
-    std::fs::create_dir_all(&output).unwrap();
-    write_dataset(&dataset, &["repo__B__1"]);
-
-    // Start a simple mock TCP server to capture OTLP metrics payloads.
+async fn start_mock_otlp_server() -> (
+    String,
+    tokio::task::JoinHandle<()>,
+    tokio::sync::mpsc::UnboundedReceiver<(String, String)>,
+) {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let endpoint = format!("http://{addr}");
 
-    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<(String, String)>();
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<(String, String)>();
     let server_handle = tokio::spawn(async move {
         while let Ok((mut stream, _)) = listener.accept().await {
             let tx = tx.clone();
@@ -292,6 +285,22 @@ async fn otlp_metrics_periodic_and_final_flush() {
             });
         }
     });
+
+    (endpoint, server_handle, rx)
+}
+
+#[tokio::test]
+async fn otlp_metrics_periodic_and_final_flush() {
+    let work = tempfile::tempdir().unwrap();
+    let repo = work.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    init_repo(&repo);
+    let dataset = work.path().join("dataset.jsonl");
+    let output = work.path().join("runs");
+    std::fs::create_dir_all(&output).unwrap();
+    write_dataset(&dataset, &["repo__B__1"]);
+
+    let (endpoint, server_handle, mut rx) = start_mock_otlp_server().await;
 
     let cfg = config_with_workdir(&repo);
     let args = SwebenchArgs {
@@ -435,4 +444,321 @@ async fn otlp_metrics_periodic_and_final_flush() {
     assert_eq!(get_gauge_int("instances_in_flight"), 0);
     assert_eq!(get_gauge_double("resolved_rate"), 1.0);
     assert_eq!(get_gauge_double("error_rate"), 0.0);
+}
+
+#[tokio::test]
+async fn metrics_enabled_independently_of_traces_via_env() {
+    let work = tempfile::tempdir().unwrap();
+    let repo = work.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    init_repo(&repo);
+    let dataset = work.path().join("dataset.jsonl");
+    let output = work.path().join("runs");
+    std::fs::create_dir_all(&output).unwrap();
+    write_dataset(&dataset, &["repo__D__1"]);
+
+    let (endpoint, server_handle, mut rx) = start_mock_otlp_server().await;
+
+    let cfg = config_with_workdir(&repo);
+    let args = SwebenchArgs {
+        dataset_source: maxwells_daemon::run::dataset::DatasetSource::LocalPath(dataset),
+        dataset_cache_dir: work.path().to_path_buf(),
+        output_dir: output,
+        parallel: 1,
+        config: cfg,
+        reruns: 1,
+        resume: false,
+        cost_limit_usd: None,
+        task_timeout_secs: None,
+        instance_ids: None,
+        limit: None,
+        sample: None,
+        seed: None,
+        stratify_by: None,
+        stratify_mode: maxwells_daemon::run::swebench::StratifyMode::Proportional,
+        max_retries: 0,
+        retry_on: None,
+        retry_backoff_base_ms: 1000,
+        retry_backoff_cap_s: 60,
+        retry_on_resume: false,
+        deterministic_responses: Some(vec![
+            "COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT\n```\ntest\n```".into(),
+        ]),
+        deterministic_usage_per_call: None,
+        config_overlay_paths: vec![],
+        dry_run: false,
+        skip_preflight: true,
+        preflight_format: "text".into(),
+        skip_model_probe: true,
+        preflight_check_timeout_s: 10,
+        preflight_total_timeout_s: 60,
+        preflight_mode: "swebench".into(),
+        skip_patch_validation: true,
+        event_log: None,
+        max_rpm: None,
+        max_input_tpm: None,
+        cancel_deadline_secs: 30,
+        install_os_signal_handlers: false,
+        cancellation_signals: None,
+        github_pr: None,
+        reproduced_from: None,
+        abort_on_systemic_failure: false,
+        systemic_failure_min_samples: 5,
+        systemic_failure_share_pct: 80,
+        otlp_endpoint: None, // Unset
+        otlp_metrics_interval_secs: Some(1),
+        rehearse: false,
+        skip_evaluator: false,
+        eval_backend: "rehearsal".to_string(),
+        sb_subset: None,
+        sb_split: None,
+        eval_timeout_secs: None,
+        notify_webhook_url: None,
+        notify_webhook_headers: vec![],
+    };
+
+    let _guard = env_var_lock();
+    unsafe {
+        std::env::set_var(
+            "OTEL_EXPORTER_OTLP_METRICS_ENDPOINT",
+            format!("{endpoint}/v1/metrics"),
+        );
+        std::env::remove_var("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT");
+        std::env::remove_var("OTEL_EXPORTER_OTLP_ENDPOINT");
+    }
+
+    let results = run(args).await.unwrap();
+
+    unsafe {
+        std::env::remove_var("OTEL_EXPORTER_OTLP_METRICS_ENDPOINT");
+    }
+    server_handle.abort();
+
+    // Tracing should be disabled, so instance result must NOT have a trace_id.
+    for inst in &results.instances {
+        assert!(
+            inst.trace_id.is_none(),
+            "expected no trace_id when only metrics OTLP enabled"
+        );
+    }
+
+    // We should have received metrics payloads.
+    let mut payloads = vec![];
+    while let Ok(payload) = rx.try_recv() {
+        payloads.push(payload);
+    }
+    let has_metrics = payloads.iter().any(|(path, _)| path == "/v1/metrics");
+    assert!(has_metrics, "expected some metrics payloads");
+}
+
+#[tokio::test]
+async fn traces_enabled_independently_of_metrics_via_env() {
+    let work = tempfile::tempdir().unwrap();
+    let repo = work.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    init_repo(&repo);
+    let dataset = work.path().join("dataset.jsonl");
+    let output = work.path().join("runs");
+    std::fs::create_dir_all(&output).unwrap();
+    write_dataset(&dataset, &["repo__E__1"]);
+
+    let (endpoint, server_handle, mut rx) = start_mock_otlp_server().await;
+
+    let cfg = config_with_workdir(&repo);
+    let args = SwebenchArgs {
+        dataset_source: maxwells_daemon::run::dataset::DatasetSource::LocalPath(dataset),
+        dataset_cache_dir: work.path().to_path_buf(),
+        output_dir: output,
+        parallel: 1,
+        config: cfg,
+        reruns: 1,
+        resume: false,
+        cost_limit_usd: None,
+        task_timeout_secs: None,
+        instance_ids: None,
+        limit: None,
+        sample: None,
+        seed: None,
+        stratify_by: None,
+        stratify_mode: maxwells_daemon::run::swebench::StratifyMode::Proportional,
+        max_retries: 0,
+        retry_on: None,
+        retry_backoff_base_ms: 1000,
+        retry_backoff_cap_s: 60,
+        retry_on_resume: false,
+        deterministic_responses: Some(vec![
+            "COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT\n```\ntest\n```".into(),
+        ]),
+        deterministic_usage_per_call: None,
+        config_overlay_paths: vec![],
+        dry_run: false,
+        skip_preflight: true,
+        preflight_format: "text".into(),
+        skip_model_probe: true,
+        preflight_check_timeout_s: 10,
+        preflight_total_timeout_s: 60,
+        preflight_mode: "swebench".into(),
+        skip_patch_validation: true,
+        event_log: None,
+        max_rpm: None,
+        max_input_tpm: None,
+        cancel_deadline_secs: 30,
+        install_os_signal_handlers: false,
+        cancellation_signals: None,
+        github_pr: None,
+        reproduced_from: None,
+        abort_on_systemic_failure: false,
+        systemic_failure_min_samples: 5,
+        systemic_failure_share_pct: 80,
+        otlp_endpoint: None, // Unset
+        otlp_metrics_interval_secs: None,
+        rehearse: false,
+        skip_evaluator: false,
+        eval_backend: "rehearsal".to_string(),
+        sb_subset: None,
+        sb_split: None,
+        eval_timeout_secs: None,
+        notify_webhook_url: None,
+        notify_webhook_headers: vec![],
+    };
+
+    let _guard = env_var_lock();
+    unsafe {
+        std::env::set_var(
+            "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
+            format!("{endpoint}/v1/traces"),
+        );
+        std::env::remove_var("OTEL_EXPORTER_OTLP_METRICS_ENDPOINT");
+        std::env::remove_var("OTEL_EXPORTER_OTLP_ENDPOINT");
+    }
+
+    let results = run(args).await.unwrap();
+
+    unsafe {
+        std::env::remove_var("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT");
+    }
+    server_handle.abort();
+
+    // Tracing is enabled, so instance results must have trace_ids.
+    for inst in &results.instances {
+        assert!(
+            inst.trace_id.is_some(),
+            "expected trace_id when traces OTLP enabled"
+        );
+    }
+
+    // Metrics should be disabled, so we should have received no /v1/metrics traffic.
+    let mut payloads = vec![];
+    while let Ok(payload) = rx.try_recv() {
+        payloads.push(payload);
+    }
+    let has_metrics = payloads.iter().any(|(path, _)| path == "/v1/metrics");
+    assert!(!has_metrics, "expected zero metrics payloads");
+}
+
+#[tokio::test]
+async fn both_export_simultaneously_same_endpoint() {
+    let work = tempfile::tempdir().unwrap();
+    let repo = work.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    init_repo(&repo);
+    let dataset = work.path().join("dataset.jsonl");
+    let output = work.path().join("runs");
+    std::fs::create_dir_all(&output).unwrap();
+    write_dataset(&dataset, &["repo__F__1"]);
+
+    let (endpoint, server_handle, mut rx) = start_mock_otlp_server().await;
+
+    let cfg = config_with_workdir(&repo);
+    let args = SwebenchArgs {
+        dataset_source: maxwells_daemon::run::dataset::DatasetSource::LocalPath(dataset),
+        dataset_cache_dir: work.path().to_path_buf(),
+        output_dir: output,
+        parallel: 1,
+        config: cfg,
+        reruns: 1,
+        resume: false,
+        cost_limit_usd: None,
+        task_timeout_secs: None,
+        instance_ids: None,
+        limit: None,
+        sample: None,
+        seed: None,
+        stratify_by: None,
+        stratify_mode: maxwells_daemon::run::swebench::StratifyMode::Proportional,
+        max_retries: 0,
+        retry_on: None,
+        retry_backoff_base_ms: 1000,
+        retry_backoff_cap_s: 60,
+        retry_on_resume: false,
+        deterministic_responses: Some(vec![
+            "COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT\n```\ntest\n```".into(),
+        ]),
+        deterministic_usage_per_call: None,
+        config_overlay_paths: vec![],
+        dry_run: false,
+        skip_preflight: true,
+        preflight_format: "text".into(),
+        skip_model_probe: true,
+        preflight_check_timeout_s: 10,
+        preflight_total_timeout_s: 60,
+        preflight_mode: "swebench".into(),
+        skip_patch_validation: true,
+        event_log: None,
+        max_rpm: None,
+        max_input_tpm: None,
+        cancel_deadline_secs: 30,
+        install_os_signal_handlers: false,
+        cancellation_signals: None,
+        github_pr: None,
+        reproduced_from: None,
+        abort_on_systemic_failure: false,
+        systemic_failure_min_samples: 5,
+        systemic_failure_share_pct: 80,
+        otlp_endpoint: None, // Unset, let env var handle it
+        otlp_metrics_interval_secs: Some(1),
+        rehearse: false,
+        skip_evaluator: false,
+        eval_backend: "rehearsal".to_string(),
+        sb_subset: None,
+        sb_split: None,
+        eval_timeout_secs: None,
+        notify_webhook_url: None,
+        notify_webhook_headers: vec![],
+    };
+
+    let _guard = env_var_lock();
+    unsafe {
+        std::env::set_var("OTEL_EXPORTER_OTLP_ENDPOINT", endpoint.clone());
+        std::env::remove_var("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT");
+        std::env::remove_var("OTEL_EXPORTER_OTLP_METRICS_ENDPOINT");
+    }
+
+    let results = run(args).await.unwrap();
+
+    unsafe {
+        std::env::remove_var("OTEL_EXPORTER_OTLP_ENDPOINT");
+    }
+    server_handle.abort();
+
+    // Tracing is active.
+    for inst in &results.instances {
+        assert!(
+            inst.trace_id.is_some(),
+            "expected trace_id when base OTLP env var is set"
+        );
+    }
+
+    // Collect all payloads.
+    let mut payloads = vec![];
+    while let Ok(payload) = rx.try_recv() {
+        payloads.push(payload);
+    }
+
+    // We should have received both trace spans and metrics payloads on the same mock server!
+    let has_metrics = payloads.iter().any(|(path, _)| path == "/v1/metrics");
+    let has_traces = payloads.iter().any(|(path, _)| path == "/v1/traces");
+
+    assert!(has_metrics, "expected /v1/metrics payloads");
+    assert!(has_traces, "expected /v1/traces payloads");
 }

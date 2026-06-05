@@ -84,18 +84,25 @@ impl Drop for MetricsCleanupGuard {
             handle.abort();
             let exporter = self.exporter.clone();
             let state = self.state.clone();
-            tokio::spawn(async move {
-                let final_snapshot = {
-                    let mut s = state
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner);
-                    s.in_flight = 0;
-                    s.completed = s.total;
-                    s.failed = s.total.saturating_sub(s.resolved);
-                    s.snapshot()
-                };
-                exporter.export(&final_snapshot).await;
-            });
+            if let Ok(rt) = tokio::runtime::Handle::try_current() {
+                let (tx, rx) = std::sync::mpsc::channel();
+                std::thread::spawn(move || {
+                    rt.block_on(async move {
+                        let final_snapshot = {
+                            let mut s = state
+                                .lock()
+                                .unwrap_or_else(std::sync::PoisonError::into_inner);
+                            s.in_flight = 0;
+                            s.completed = s.total;
+                            s.failed = s.total.saturating_sub(s.resolved);
+                            s.snapshot()
+                        };
+                        exporter.export(&final_snapshot).await;
+                        let _ = tx.send(());
+                    });
+                });
+                let _ = rx.recv_timeout(std::time::Duration::from_secs(5));
+            }
         }
     }
 }
