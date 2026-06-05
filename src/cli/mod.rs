@@ -5635,6 +5635,22 @@ fn bench_subset(s: args::SubsetCmd) -> Result<(), Error> {
         DatasetSource::LocalPath(_) => None,
     };
 
+    // Refuse to overwrite the source dataset — writing the slice back to the
+    // same file would corrupt the source while the manifest still records the
+    // pre-write hash.  We canonicalize both paths; if the output does not
+    // exist yet it cannot be the same file, so we skip the check.
+    if let Ok(source_canon) = meta.path.canonicalize() {
+        if let Ok(out_canon) = s.output.canonicalize() {
+            if source_canon == out_canon {
+                return Err(Error::Config(crate::error::ConfigError::Invalid(
+                    "the output path resolves to the same file as the source dataset; \
+                     writing would destroy the source — choose a different output path"
+                        .into(),
+                )));
+            }
+        }
+    }
+
     let manifest = run_subset(SubsetArgs {
         instances,
         source_sha256: meta.sha256,
@@ -7362,6 +7378,40 @@ mod tests {
         assert!(
             msg.contains("unknown id") || msg.contains("zero instances"),
             "unexpected error: {msg}"
+        );
+    }
+
+    #[test]
+    fn bench_subset_rejects_output_aliasing_source() {
+        let temp = tempfile::tempdir().unwrap();
+        let dataset_path = make_subset_dataset(&temp, 3);
+        // Output == source: should be rejected before any write occurs.
+        let cmd = args::SubsetCmd {
+            dataset_path: Some(dataset_path.clone()),
+            dataset: None,
+            split: None,
+            dataset_cache_dir: None,
+            instance_ids: None,
+            limit: None,
+            sample: None,
+            seed: None,
+            stratify_by: None,
+            stratify_mode: None,
+            output: dataset_path.clone(),
+        };
+        let original_bytes = std::fs::read(&dataset_path).unwrap();
+        let res = super::bench_subset(cmd);
+        assert!(res.is_err(), "expected error, got ok");
+        let msg = res.unwrap_err().to_string();
+        assert!(
+            msg.contains("same file as the source dataset"),
+            "unexpected error: {msg}"
+        );
+        // Source must be untouched.
+        assert_eq!(
+            std::fs::read(&dataset_path).unwrap(),
+            original_bytes,
+            "source dataset was modified"
         );
     }
 }
