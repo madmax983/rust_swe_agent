@@ -32,6 +32,18 @@ pub enum Error {
     #[error(transparent)]
     Json(#[from] serde_json::Error),
 
+    #[error(transparent)]
+    ArtifactSchema(#[from] crate::artifact::ArtifactSchemaError),
+
+    #[error(transparent)]
+    Bundle(#[from] crate::run::bundle::BundleError),
+
+    #[error(transparent)]
+    Webhook(#[from] crate::stream::webhook::WebhookSinkError),
+
+    #[error(transparent)]
+    SweepWebhook(#[from] crate::stream::sweep_webhook::SweepWebhookSinkError),
+
     /// One or more operator-supplied verification checks did not pass.
     /// `(failed_count, total_count)`.
     #[error("verification failed: {0} of {1} check(s) did not pass")]

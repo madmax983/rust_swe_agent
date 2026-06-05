@@ -269,7 +269,11 @@ impl ExitCode {
             | Error::Trajectory(_)
             | Error::Github(_)
             | Error::Io(_)
-            | Error::Json(_) => Self::InternalError,
+            | Error::Json(_)
+            | Error::ArtifactSchema(_)
+            | Error::Bundle(_)
+            | Error::Webhook(_)
+            | Error::SweepWebhook(_) => Self::InternalError,
             Error::GithubIssue(issue_e) => match issue_e {
                 crate::error::GithubIssueError::MissingToken(_) => Self::GithubIssueMissingToken,
                 crate::error::GithubIssueError::NotFound(_) => Self::GithubIssueNotFound,
