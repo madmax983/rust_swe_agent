@@ -762,3 +762,128 @@ async fn both_export_simultaneously_same_endpoint() {
     assert!(has_metrics, "expected /v1/metrics payloads");
     assert!(has_traces, "expected /v1/traces payloads");
 }
+
+#[tokio::test]
+async fn early_halt_preserves_actual_completed_and_failed_counts() {
+    let work = tempfile::tempdir().unwrap();
+    let repo = work.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    init_repo(&repo);
+    let dataset = work.path().join("dataset.jsonl");
+    let output = work.path().join("runs");
+    std::fs::create_dir_all(&output).unwrap();
+    write_dataset(&dataset, &["repo__G__1", "repo__G__2", "repo__G__3"]);
+
+    let (endpoint, server_handle, mut rx) = start_mock_otlp_server().await;
+
+    let (signal_tx, signal_rx) = tokio::sync::mpsc::unbounded_channel();
+    let _ = signal_tx.send(maxwells_daemon::run::swebench::SweepSignal::Interrupt);
+
+    let cfg = config_with_workdir(&repo);
+    let args = SwebenchArgs {
+        dataset_source: maxwells_daemon::run::dataset::DatasetSource::LocalPath(dataset),
+        dataset_cache_dir: work.path().to_path_buf(),
+        output_dir: output,
+        parallel: 1,
+        config: cfg,
+        reruns: 1,
+        resume: false,
+        cost_limit_usd: None,
+        task_timeout_secs: None,
+        instance_ids: None,
+        limit: None,
+        sample: None,
+        seed: None,
+        stratify_by: None,
+        stratify_mode: maxwells_daemon::run::swebench::StratifyMode::Proportional,
+        max_retries: 0,
+        retry_on: None,
+        retry_backoff_base_ms: 1000,
+        retry_backoff_cap_s: 60,
+        retry_on_resume: false,
+        deterministic_responses: Some(vec![
+            "COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT\n```\ntest\n```".into(),
+        ]),
+        deterministic_usage_per_call: None,
+        config_overlay_paths: vec![],
+        dry_run: false,
+        skip_preflight: true,
+        preflight_format: "text".into(),
+        skip_model_probe: true,
+        preflight_check_timeout_s: 10,
+        preflight_total_timeout_s: 60,
+        preflight_mode: "swebench".into(),
+        skip_patch_validation: true,
+        event_log: None,
+        max_rpm: None,
+        max_input_tpm: None,
+        cancel_deadline_secs: 0,
+        install_os_signal_handlers: false,
+        cancellation_signals: Some(signal_rx),
+        github_pr: None,
+        reproduced_from: None,
+        abort_on_systemic_failure: false,
+        systemic_failure_min_samples: 5,
+        systemic_failure_share_pct: 80,
+        otlp_endpoint: Some(endpoint),
+        otlp_metrics_interval_secs: Some(1),
+        rehearse: false,
+        skip_evaluator: false,
+        eval_backend: "rehearsal".to_string(),
+        sb_subset: None,
+        sb_split: None,
+        eval_timeout_secs: None,
+        notify_webhook_url: None,
+        notify_webhook_headers: vec![],
+    };
+
+    let _guard = env_var_lock();
+    let _results = run(args).await.unwrap();
+    server_handle.abort();
+
+    let mut payloads = vec![];
+    while let Ok(payload) = rx.try_recv() {
+        payloads.push(payload);
+    }
+
+    let metrics_payloads: Vec<_> = payloads
+        .into_iter()
+        .filter(|(path, _)| path == "/v1/metrics")
+        .map(|(_, body)| body)
+        .collect();
+
+    assert!(
+        !metrics_payloads.is_empty(),
+        "expected metrics to be exported"
+    );
+
+    let final_body = metrics_payloads.last().unwrap();
+    let final_val: serde_json::Value = serde_json::from_str(final_body).unwrap();
+    let resource_metrics = final_val["resourceMetrics"].as_array().unwrap();
+    let scope_metrics = resource_metrics[0]["scopeMetrics"].as_array().unwrap();
+    let metrics = scope_metrics[0]["metrics"].as_array().unwrap();
+
+    let get_gauge_int = |name: &str| {
+        metrics
+            .iter()
+            .find(|m| m["name"].as_str() == Some(name))
+            .and_then(|m| m["gauge"]["dataPoints"].as_array())
+            .and_then(|dp| dp.first())
+            .and_then(|dp| dp["asInt"].as_str())
+            .and_then(|s| s.parse::<i64>().ok())
+            .unwrap()
+    };
+
+    assert_eq!(get_gauge_int("instances_total"), 3);
+    let completed = get_gauge_int("instances_completed");
+    let failed = get_gauge_int("instances_failed");
+    assert_eq!(
+        completed, 1,
+        "expected completed to be actual completed (1), got {completed}"
+    );
+    assert_eq!(
+        failed, 1,
+        "expected failed to be actual failed (1), got {failed}"
+    );
+    assert_eq!(get_gauge_int("instances_in_flight"), 0);
+}

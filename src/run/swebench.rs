@@ -93,8 +93,6 @@ impl Drop for MetricsCleanupGuard {
                                 .lock()
                                 .unwrap_or_else(std::sync::PoisonError::into_inner);
                             s.in_flight = 0;
-                            s.completed = s.total;
-                            s.failed = s.total.saturating_sub(s.resolved);
                             s.snapshot()
                         };
                         exporter.export(&final_snapshot).await;
@@ -2952,8 +2950,6 @@ pub async fn run(mut args: SwebenchArgs) -> Result<SweepResults, Error> {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             s.in_flight = 0;
-            s.completed = s.total;
-            s.failed = s.total.saturating_sub(s.resolved);
             s.cumulative_cost = cumulative_cost;
             s.snapshot()
         };

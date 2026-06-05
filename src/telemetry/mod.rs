@@ -820,10 +820,10 @@ pub fn resolve_metrics_endpoint(cli_flag: Option<&str>) -> Option<String> {
 pub fn resolve_metrics_interval(cli_secs: Option<u64>) -> std::time::Duration {
     if let Ok(val) = std::env::var("OTEL_METRIC_EXPORT_INTERVAL") {
         if let Ok(ms) = val.parse::<u64>() {
-            return std::time::Duration::from_millis(ms);
+            return std::time::Duration::from_millis(ms.max(1000));
         }
     }
-    std::time::Duration::from_secs(cli_secs.unwrap_or(15))
+    std::time::Duration::from_secs(cli_secs.unwrap_or(15).max(1))
 }
 
 /// Read OTLP metrics export headers from standard OTel env vars.
@@ -1332,6 +1332,29 @@ mod tests {
         }
         let interval = resolve_metrics_interval(None);
         assert_eq!(interval, std::time::Duration::from_secs(15));
+    }
+
+    #[test]
+    fn resolve_metrics_interval_clamps_zero_env_var_to_1s() {
+        let _guard = env_lock();
+        unsafe {
+            std::env::set_var("OTEL_METRIC_EXPORT_INTERVAL", "0");
+        }
+        let interval = resolve_metrics_interval(None);
+        unsafe {
+            std::env::remove_var("OTEL_METRIC_EXPORT_INTERVAL");
+        }
+        assert_eq!(interval, std::time::Duration::from_secs(1));
+    }
+
+    #[test]
+    fn resolve_metrics_interval_clamps_zero_cli_secs_to_1s() {
+        let _guard = env_lock();
+        unsafe {
+            std::env::remove_var("OTEL_METRIC_EXPORT_INTERVAL");
+        }
+        let interval = resolve_metrics_interval(Some(0));
+        assert_eq!(interval, std::time::Duration::from_secs(1));
     }
 
     #[test]
