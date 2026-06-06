@@ -668,6 +668,19 @@ pub enum AgentCmd {
     Apply(AgentApplyCmd),
     /// Sample N runs and emit the best patch by --verify oracle (issue #485).
     BestOf(Box<BestOfCmd>),
+    /// Profile a single trajectory file: cost, tokens, stage latency, and action mix (issue #503).
+    Profile(AgentProfileCmd),
+}
+
+/// `agent profile` — profile a single trajectory file (issue #503).
+#[derive(Debug, Args)]
+pub struct AgentProfileCmd {
+    /// Path to the `.traj.json` file to profile.
+    pub trajectory: std::path::PathBuf,
+
+    /// Output format: `text` (default) or `json`.
+    #[arg(long, default_value = "text")]
+    pub format: String,
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]

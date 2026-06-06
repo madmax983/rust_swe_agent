@@ -71,6 +71,7 @@ pub enum ArtifactKind {
     ApplyReport,
     StabilityResults,
     BestOfResults,
+    AgentProfileReport,
 }
 
 impl ArtifactKind {
@@ -99,6 +100,7 @@ impl ArtifactKind {
             Self::ApplyReport => "apply_report",
             Self::StabilityResults => "stability_results",
             Self::BestOfResults => "best_of_results",
+            Self::AgentProfileReport => "agent_profile_report",
         }
     }
 }
