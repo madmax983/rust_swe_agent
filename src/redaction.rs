@@ -984,6 +984,18 @@ mod tests {
     use super::*;
 
     #[test]
+    fn check_returns_original_input_when_disabled() {
+        let redactor = Redactor::disabled();
+        let input = "some secret input ghp_0123456789ABCDEF0123456789ABCDEF0123";
+        let result = redactor.check(input);
+
+        assert_eq!(result.redacted, input);
+        assert!(result.matches.is_empty());
+        assert!(result.unmatched_literal_indices.is_empty());
+        assert!(result.unmatched_pattern_indices.is_empty());
+    }
+
+    #[test]
     fn same_value_gets_same_marker() {
         let redactor = Redactor::default_enabled();
         let one = redactor.redact_text("ghp_0123456789ABCDEF0123456789ABCDEF0123", "a");
