@@ -151,7 +151,7 @@ the preflight results table, mirroring the env-preview wiring in `#313`.
 ## Out of scope
 
 - Editing, generating, or recommending skill manifests
-- Co-activation analytics across a corpus (implemented in [bench skill-coverage](file:///c:/Users/markm/rust_swe_agent/docs/spec-skill-coverage.md))
+- Co-activation analytics across a corpus (implemented in [bench skill-coverage](spec-skill-coverage.md))
 - Live-reload / file watching (preview is a one-shot snapshot)
 - Auto-injecting skills into a sweep based on preview output
 - TUI / web UI — CLI + JSON only

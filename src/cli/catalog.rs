@@ -410,6 +410,12 @@ pub fn entries() -> &'static [CatalogEntry] {
             stage: "run",
         },
         CatalogEntry {
+            path: "bench skill-coverage",
+            summary: "Measure agent skill activation and correlate with outcome across a sweep",
+            cost_tier: "free",
+            stage: "analyze",
+        },
+        CatalogEntry {
             path: "bench tool-coverage",
             summary: "Measure MCP tool usage and correlate with outcome across a sweep",
             cost_tier: "free",

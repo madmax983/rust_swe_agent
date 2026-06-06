@@ -4634,7 +4634,11 @@ fn bench_skill_coverage(t: args::SkillCoverageCmd) -> Result<(), Error> {
         per_instance: t.per_instance,
     })?;
     if is_json {
-        println!("{}", serde_json::to_string_pretty(&report)?);
+        let json_str = crate::artifact::to_string_pretty(
+            crate::artifact::ArtifactKind::SkillCoverage,
+            &report,
+        )?;
+        println!("{json_str}");
     } else {
         print!(
             "{}",

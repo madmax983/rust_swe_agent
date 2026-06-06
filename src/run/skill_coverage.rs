@@ -89,7 +89,8 @@ pub struct SkillCoverageReport {
 struct InstanceSkillData {
     id: String,
     bucket: OutcomeBucket,
-    active_skills: Vec<crate::skills::ActiveSkillManifest>,
+    active_skills_unique: Vec<crate::skills::ActiveSkillManifest>,
+    active_skills_all: Vec<crate::skills::ActiveSkillManifest>,
     eligible_skills: HashSet<String>,
     eligible_paths: Vec<String>,
     skills_enabled: bool,
@@ -402,6 +403,7 @@ fn build_report(args: &SkillCoverageArgs) -> Result<SkillCoverageReport, Error> 
     sorted_ids.sort();
 
     let mut instance_data: Vec<InstanceSkillData> = Vec::new();
+    let mut skill_descriptions = HashMap::new();
 
     for id in &sorted_ids {
         let instance = &sweep.instances[id];
@@ -414,40 +416,34 @@ fn build_report(args: &SkillCoverageArgs) -> Result<SkillCoverageReport, Error> 
         }
 
         let bucket = classify_outcome(id, instance, &resolved_set);
-        let mut active_skills: Vec<crate::skills::ActiveSkillManifest> = Vec::new();
+        let mut active_skills_unique: Vec<crate::skills::ActiveSkillManifest> = Vec::new();
+        let mut active_skills_all: Vec<crate::skills::ActiveSkillManifest> = Vec::new();
         let mut instance_skill_paths = global_skill_paths.clone();
         let mut instance_enabled = enabled;
 
         let traj_paths = resolve_trajectory_paths(&args.sweep_dir, id);
         for traj_path in traj_paths {
-            let root_cfg_opt = if let Ok(traj) = load_trajectory(&traj_path) {
-                if let Some(manifest) = &traj.info.manifest {
-                    serde_json::from_value::<crate::config::schema::RootCfg>(
-                        manifest.config_redacted.clone(),
-                    )
-                    .ok()
-                } else {
-                    None
-                }
-            } else {
-                None
-            };
-            if let Some(root_cfg) = root_cfg_opt {
-                instance_enabled = root_cfg.skills.enabled;
-                instance_skill_paths.clone_from(&root_cfg.skills.paths);
-            }
-
             if let Ok(traj) = load_trajectory(&traj_path) {
+                // Parse instance config override
+                if let Some(manifest) = &traj.info.manifest {
+                    if let Ok(root_cfg) = serde_json::from_value::<crate::config::schema::RootCfg>(
+                        manifest.config_redacted.clone(),
+                    ) {
+                        instance_enabled = root_cfg.skills.enabled;
+                        instance_skill_paths.clone_from(&root_cfg.skills.paths);
+                    }
+                }
+
                 // Parse active skills from trajectory other metadata
                 if let Some(raw_skills) = traj.info.other.get("active_skills") {
                     if let Ok(skills) = serde_json::from_value::<
                         Vec<crate::skills::ActiveSkillManifest>,
                     >(raw_skills.clone())
                     {
-                        // Merge active skills by name uniquely
                         for skill in skills {
-                            if !active_skills.iter().any(|s| s.name == skill.name) {
-                                active_skills.push(skill);
+                            active_skills_all.push(skill.clone());
+                            if !active_skills_unique.iter().any(|s| s.name == skill.name) {
+                                active_skills_unique.push(skill);
                             }
                         }
                     }
@@ -465,6 +461,7 @@ fn build_report(args: &SkillCoverageArgs) -> Result<SkillCoverageReport, Error> 
             if let Ok(registry) = crate::skills::SkillRegistry::scan_paths(expanded_paths) {
                 for manifest in registry.manifests() {
                     eligible_skills.insert(manifest.name.clone());
+                    skill_descriptions.insert(manifest.name.clone(), manifest.description.clone());
                 }
             }
         }
@@ -472,7 +469,8 @@ fn build_report(args: &SkillCoverageArgs) -> Result<SkillCoverageReport, Error> 
         instance_data.push(InstanceSkillData {
             id: id.clone(),
             bucket,
-            active_skills,
+            active_skills_unique,
+            active_skills_all,
             eligible_skills,
             eligible_paths: instance_skill_paths,
             skills_enabled: instance_enabled,
@@ -481,7 +479,11 @@ fn build_report(args: &SkillCoverageArgs) -> Result<SkillCoverageReport, Error> 
 
     // If skills subsystem is disabled or empty across all scanned instances, return empty report
     let any_enabled = instance_data.iter().any(|d| d.skills_enabled);
-    if !any_enabled && instance_data.iter().all(|d| d.active_skills.is_empty()) {
+    if !any_enabled
+        && instance_data
+            .iter()
+            .all(|d| d.active_skills_unique.is_empty())
+    {
         return Ok(SkillCoverageReport {
             sweep: args.sweep_dir.display().to_string(),
             generated_at: String::new(),
@@ -495,7 +497,7 @@ fn build_report(args: &SkillCoverageArgs) -> Result<SkillCoverageReport, Error> 
     // Gather raw skill names and descriptions
     let mut all_raw_skills: BTreeMap<String, SkillUniverseEntry> = BTreeMap::new();
     for d in &instance_data {
-        for active in &d.active_skills {
+        for active in &d.active_skills_unique {
             all_raw_skills.insert(
                 active.name.clone(),
                 SkillUniverseEntry {
@@ -506,19 +508,9 @@ fn build_report(args: &SkillCoverageArgs) -> Result<SkillCoverageReport, Error> 
         }
         for name in &d.eligible_skills {
             all_raw_skills.entry(name.clone()).or_insert_with(|| {
-                let expanded_paths = d
-                    .eligible_paths
-                    .iter()
-                    .map(crate::skills::expand_skill_path_pub)
-                    .collect::<Vec<_>>();
-                let description = crate::skills::SkillRegistry::scan_paths(expanded_paths)
-                    .ok()
-                    .and_then(|r| {
-                        r.manifests()
-                            .iter()
-                            .find(|m| &m.name == name)
-                            .map(|m| m.description.clone())
-                    })
+                let description = skill_descriptions
+                    .get(name)
+                    .cloned()
                     .unwrap_or_else(|| "Configured skill".to_owned());
                 SkillUniverseEntry {
                     name: name.clone(),
@@ -544,11 +536,14 @@ fn build_report(args: &SkillCoverageArgs) -> Result<SkillCoverageReport, Error> 
             .get(raw_name)
             .cloned()
             .unwrap_or_else(|| raw_name.clone());
+        let redacted_description = redactor
+            .redact_text(&entry.description, surface::TRAJECTORY)
+            .text;
         skill_universe_map
             .entry(redacted.clone())
             .or_insert_with(|| SkillUniverseEntry {
                 name: redacted,
-                description: entry.description.clone(),
+                description: redacted_description,
             });
     }
 
@@ -557,15 +552,14 @@ fn build_report(args: &SkillCoverageArgs) -> Result<SkillCoverageReport, Error> 
     // Group configurations to detect drift
     let mut config_groups: HashMap<String, (Vec<String>, Vec<String>)> = HashMap::new(); // fingerprint -> (instance_ids, paths)
     for d in &instance_data {
-        if d.skills_enabled {
-            let mut sorted_paths = d.eligible_paths.clone();
-            sorted_paths.sort();
-            let fingerprint = sorted_paths.join(",");
-            let entry = config_groups
-                .entry(fingerprint)
-                .or_insert_with(|| (Vec::new(), d.eligible_paths.clone()));
-            entry.0.push(d.id.clone());
-        }
+        let mut sorted_paths = d.eligible_paths.clone();
+        sorted_paths.sort();
+        let paths_str = sorted_paths.join(",");
+        let fingerprint = format!("enabled={}:{}", d.skills_enabled, paths_str);
+        let entry = config_groups
+            .entry(fingerprint)
+            .or_insert_with(|| (Vec::new(), d.eligible_paths.clone()));
+        entry.0.push(d.id.clone());
     }
 
     let skill_set_drift = if config_groups.len() > 1 {
@@ -611,8 +605,7 @@ fn build_report(args: &SkillCoverageArgs) -> Result<SkillCoverageReport, Error> 
         }
 
         for d in &instance_data {
-            let active_entry = d.active_skills.iter().find(|s| s.name == raw_name);
-            let is_active = active_entry.is_some();
+            let is_active = d.active_skills_unique.iter().any(|s| s.name == raw_name);
             let is_eligible = d.eligible_skills.contains(&raw_name);
 
             // Skill is in scope if it was active or eligible (configured)
@@ -620,17 +613,20 @@ fn build_report(args: &SkillCoverageArgs) -> Result<SkillCoverageReport, Error> 
             let is_resolved = d.bucket == OutcomeBucket::Resolved;
 
             if is_active {
-                total_activations += 1;
                 instances_activated_global += 1;
-
-                if let Some(entry) = active_entry {
-                    let reason_str = match entry.activation_reason {
-                        crate::skills::SkillActivationReason::ExplicitMention => "explicit_mention",
-                        crate::skills::SkillActivationReason::AutoMatch => "auto_match",
-                    };
-                    *reasons.entry(reason_str.to_owned()).or_default() += 1;
-                }
             }
+
+            // Count repeated activations and activation reasons across retry trajectories
+            let mut activation_count_for_instance = 0;
+            for entry in d.active_skills_all.iter().filter(|s| s.name == raw_name) {
+                activation_count_for_instance += 1;
+                let reason_str = match entry.activation_reason {
+                    crate::skills::SkillActivationReason::ExplicitMention => "explicit_mention",
+                    crate::skills::SkillActivationReason::AutoMatch => "auto_match",
+                };
+                *reasons.entry(reason_str.to_owned()).or_default() += 1;
+            }
+            total_activations += activation_count_for_instance;
 
             for &bname in &bucket_names {
                 let in_bucket = bname == "all" || d.bucket.as_str() == bname;
@@ -734,7 +730,7 @@ fn build_report(args: &SkillCoverageArgs) -> Result<SkillCoverageReport, Error> 
         let mut records = Vec::new();
         for d in &instance_data {
             let mut active_skills = BTreeMap::new();
-            for skill in &d.active_skills {
+            for skill in &d.active_skills_unique {
                 let redacted = redactor.redact_text(&skill.name, surface::TRAJECTORY).text;
                 let reason_str = match skill.activation_reason {
                     crate::skills::SkillActivationReason::ExplicitMention => "explicit_mention",

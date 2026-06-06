@@ -293,6 +293,7 @@ paths = ["{}"]
 }
 
 #[test]
+#[allow(clippy::too_many_lines)]
 fn cli_detects_skill_set_drift() {
     let sweep = tempfile::tempdir().unwrap();
 
