@@ -3,7 +3,7 @@
 //! Test structure: Red → Green → Refactor (TDD).
 //! Tests are written before the feature exists and drive the implementation.
 
-#![allow(clippy::unwrap_used)]
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use std::collections::BTreeMap;
 use std::path::Path;
