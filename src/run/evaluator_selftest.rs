@@ -477,6 +477,17 @@ fn evaluate_via_docker_tests(
     write_synthetic_results_json(&scratch, &eval_pairs);
     write_synthetic_predictions(&scratch, &eval_pairs);
 
+    // Write per-instance run-1.patch files so docker-tests can read them via
+    // swebench::existing_patch_path_for_run(), which expects <sweep>/<id>/run-1.patch.
+    for (inst, patch) in &eval_pairs {
+        let inst_dir = scratch.join(&inst.instance_id);
+        std::fs::create_dir_all(&inst_dir)
+            .unwrap_or_else(|e| panic!("cannot create instance dir for selftest: {e}"));
+        let patch_path = swebench::patch_path_for_run(&scratch, &inst.instance_id, 1);
+        std::fs::write(&patch_path, patch)
+            .unwrap_or_else(|e| panic!("failed to write selftest patch file: {e}"));
+    }
+
     // Write a minimal dataset JSONL containing the instances so docker-tests can
     // find their image field and test lists.
     let dataset_path = scratch.join("selftest_dataset.jsonl");

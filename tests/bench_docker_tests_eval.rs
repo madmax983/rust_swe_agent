@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 use maxwells_daemon::run::evaluate::{
-    EvalExitReason, EvaluateArgs, EvaluateBackend, BreakdownSelection,
+    BreakdownSelection, EvalExitReason, EvaluateArgs, EvaluateBackend,
 };
 use maxwells_daemon::run::swebench::{InstanceResult, SweepResults};
 use maxwells_daemon::trajectory::outcome;
@@ -233,7 +233,10 @@ fn instance_without_dataset_image_info_is_skipped_not_unresolved() {
     assert_eq!(eval.instances.len(), 1);
     let inst = &eval.instances[0];
     assert_eq!(inst.instance_id, "task-a");
-    assert!(!inst.resolved, "instance without image should not be resolved");
+    assert!(
+        !inst.resolved,
+        "instance without image should not be resolved"
+    );
     assert_eq!(
         inst.eval_exit_reason,
         EvalExitReason::SkippedNoImage,
@@ -486,7 +489,9 @@ fn inspect_loads_docker_tests_evaluation_json() {
     let output = maxwells_daemon::run::inspect::run(&args).unwrap();
     match output {
         InspectOutput::Summary(summary) => {
-            let prov = summary.evaluator_provenance.expect("provenance should load");
+            let prov = summary
+                .evaluator_provenance
+                .expect("provenance should load");
             assert_eq!(prov.backend, "docker-tests");
         }
         InspectOutput::Instance(_) => panic!("expected Summary"),

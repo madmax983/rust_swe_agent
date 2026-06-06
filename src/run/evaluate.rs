@@ -581,15 +581,15 @@ fn build_provenance(
         },
         dataset_subset: match args.backend {
             EvaluateBackend::SbCli => Some(args.sb_subset.clone()),
-            EvaluateBackend::None
-            | EvaluateBackend::Rehearsal
-            | EvaluateBackend::DockerTests => None,
+            EvaluateBackend::None | EvaluateBackend::Rehearsal | EvaluateBackend::DockerTests => {
+                None
+            }
         },
         dataset_split: match args.backend {
             EvaluateBackend::SbCli => Some(args.sb_split.clone()),
-            EvaluateBackend::None
-            | EvaluateBackend::Rehearsal
-            | EvaluateBackend::DockerTests => None,
+            EvaluateBackend::None | EvaluateBackend::Rehearsal | EvaluateBackend::DockerTests => {
+                None
+            }
         },
         dataset_sha256,
         dataset_instance_count,
@@ -1236,19 +1236,21 @@ fn none_eval_for_result(id: &str, r: &InstanceResult) -> InstanceEvaluation {
 ///
 /// Zero network calls to any evaluation service. Instances with no reachable
 /// Docker image are reported as `SkippedNoImage`, never silently unresolved.
+#[allow(clippy::too_many_lines)]
 fn run_docker_tests(
     args: &EvaluateArgs,
     results: &HashMap<String, InstanceResult>,
 ) -> Result<EvaluationResults, Error> {
-    // Load dataset to get image names and test lists, if a dataset path is provided.
-    let dataset_map: HashMap<String, swebench::SweBenchInstance> = args
-        .dataset_path
-        .as_ref()
-        .and_then(|p| swebench::load_dataset(p).ok())
-        .unwrap_or_default()
-        .into_iter()
-        .map(|inst| (inst.instance_id.clone(), inst))
-        .collect();
+    // Load dataset to get image names and test lists.
+    // Propagate load errors when a path is given — a malformed or missing dataset
+    // would otherwise silently classify every instance as SkippedNoImage.
+    let dataset_map: HashMap<String, swebench::SweBenchInstance> = match &args.dataset_path {
+        Some(p) => swebench::load_dataset(p)?
+            .into_iter()
+            .map(|inst| (inst.instance_id.clone(), inst))
+            .collect(),
+        None => HashMap::new(),
+    };
 
     let mut instances: Vec<InstanceEvaluation> = Vec::with_capacity(results.len());
 
@@ -1366,10 +1368,7 @@ fn run_docker_tests(
 
 /// Extract a test list from a dataset instance's `other` JSON map.
 /// The field may be stored as a JSON array or as a JSON-encoded string.
-fn extract_test_list(
-    other: &serde_json::Map<String, serde_json::Value>,
-    key: &str,
-) -> Vec<String> {
+fn extract_test_list(other: &serde_json::Map<String, serde_json::Value>, key: &str) -> Vec<String> {
     let Some(val) = other.get(key) else {
         return vec![];
     };
@@ -1462,6 +1461,7 @@ struct DockerTestVerdict {
 }
 
 /// Inner logic: start container, apply patch, run tests, collect results.
+#[allow(clippy::too_many_lines)]
 fn evaluate_instance_with_docker_inner(
     _instance_id: &str,
     image: &str,
@@ -1475,22 +1475,26 @@ fn evaluate_instance_with_docker_inner(
 
     let overall_start = Instant::now();
 
-    // 1. Start a detached container.
+    // 1. Start a detached container with a timeout to handle unresponsive daemons.
+    // --pull=never enforces offline operation — images must be pre-loaded locally.
     // Label matches `env::docker::LABEL` so cleanup_orphans() can reap stray containers.
-    let run_out = Command::new("docker")
-        .args([
-            "run",
-            "-d",
-            "--rm",
-            "--label",
-            "maxwells-daemon=1",
-            "-w",
-            "/testbed",
-        ])
-        .arg(image)
-        .args(["sleep", "infinity"])
-        .output()
-        .map_err(|e| format!("docker run failed: {e}"))?;
+    let run_out = run_with_timeout(
+        Command::new("docker")
+            .args([
+                "run",
+                "-d",
+                "--rm",
+                "--pull=never",
+                "--label",
+                "maxwells-daemon=1",
+                "-w",
+                "/testbed",
+            ])
+            .arg(image)
+            .args(["sleep", "infinity"]),
+        timeout,
+    )
+    .map_err(|_| "docker run timed out or failed".to_owned())?;
 
     if !run_out.status.success() {
         return Err(format!(
@@ -1544,7 +1548,9 @@ fn evaluate_instance_with_docker_inner(
         .map_err(|e| format!("git apply exec failed: {e}"))?;
 
     if !apply_out.status.success() {
-        let stderr = String::from_utf8_lossy(&apply_out.stdout).trim().to_string();
+        let stderr = String::from_utf8_lossy(&apply_out.stdout)
+            .trim()
+            .to_string();
         return Ok(DockerTestVerdict {
             resolved: false,
             timed_out: false,
@@ -1575,8 +1581,10 @@ fn evaluate_instance_with_docker_inner(
     }
 
     let tests_arg = all_tests.join(" ");
+    // Redirect pytest output to a file inside the container to avoid pipe buffer
+    // deadlock when test suites produce large output (Linux pipe buffer ~64KB).
     let pytest_cmd = format!(
-        "cd /testbed && python -m pytest -v --tb=no --no-header -rN {tests_arg} 2>&1 || true"
+        "cd /testbed && python -m pytest -v --tb=no --no-header -rN {tests_arg} > /tmp/pytest.output 2>&1 || true"
     );
 
     let remaining = timeout.saturating_sub(overall_start.elapsed());
@@ -1593,13 +1601,19 @@ fn evaluate_instance_with_docker_inner(
 
     // Use a deadline-aware spawn: kill after remaining time.
     let test_out = run_with_timeout(
-        Command::new("docker")
-            .args(["exec", &container_id, "bash", "-c", &pytest_cmd]),
+        Command::new("docker").args(["exec", &container_id, "bash", "-c", &pytest_cmd]),
         remaining,
     );
 
     let (timed_out, output_text) = match test_out {
-        Ok(o) => (false, String::from_utf8_lossy(&o.stdout).into_owned()),
+        Ok(_) => {
+            // Read the redirected output file from inside the container.
+            let cat_out = Command::new("docker")
+                .args(["exec", &container_id, "cat", "/tmp/pytest.output"])
+                .output()
+                .map_err(|e| format!("failed to read pytest output: {e}"))?;
+            (false, String::from_utf8_lossy(&cat_out.stdout).into_owned())
+        }
         Err(TimedOut) => {
             return Ok(DockerTestVerdict {
                 resolved: false,
@@ -1681,28 +1695,27 @@ impl Drop for ContainerGuard<'_> {
 }
 
 /// Parse `pytest -v --tb=no` output and classify each test as passed or failed.
-/// Handles lines like `PASSED tests/test_foo.py::test_bar` and
-/// `FAILED tests/test_foo.py::test_baz`.
+/// Handles lines like `tests/test_foo.py::test_bar PASSED [ 50%]` (status as suffix).
 fn parse_pytest_output(output: &str, all_tests: &[&str]) -> (Vec<String>, Vec<String>) {
     let mut passed = Vec::new();
     let mut failed = Vec::new();
 
     for line in output.lines() {
         let line = line.trim();
-        if let Some(rest) = line.strip_prefix("PASSED ") {
-            let test_id = rest.split_whitespace().next().unwrap_or("").to_owned();
+        if let Some(idx) = line.find(" PASSED") {
+            let test_id = line[..idx].trim().to_owned();
             if !test_id.is_empty() {
                 passed.push(test_id);
             }
-        } else if let Some(rest) = line.strip_prefix("FAILED ") {
-            let test_id = rest.split_whitespace().next().unwrap_or("");
+        } else if let Some(idx) = line.find(" FAILED") {
+            let test_id = line[..idx].trim();
             // Strip trailing " - <reason>" that pytest sometimes appends.
             let test_id = test_id.split(" - ").next().unwrap_or(test_id).to_owned();
             if !test_id.is_empty() {
                 failed.push(test_id);
             }
-        } else if let Some(rest) = line.strip_prefix("ERROR ") {
-            let test_id = rest.split_whitespace().next().unwrap_or("").to_owned();
+        } else if let Some(idx) = line.find(" ERROR") {
+            let test_id = line[..idx].trim().to_owned();
             if !test_id.is_empty() {
                 failed.push(test_id);
             }

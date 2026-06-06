@@ -3113,6 +3113,7 @@ fn cleanup_cmd() -> Result<(), Error> {
     )))
 }
 
+#[allow(clippy::too_many_lines)]
 fn bench_evaluate(e: args::EvaluateCmd) -> Result<(), Error> {
     let backend = match e.backend.as_str() {
         "sb-cli" => crate::run::evaluate::EvaluateBackend::SbCli,
