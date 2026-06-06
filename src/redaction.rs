@@ -166,8 +166,8 @@ impl Redactor {
 
             // Build one deduplicated rule per unique literal, carrying *all*
             // original positions (including duplicate occurrences).
-            let mut literal_entries: Vec<(String, Vec<usize>)> = Vec::new();
-            let mut literal_index_map: BTreeMap<String, usize> = BTreeMap::new();
+            let mut literal_entries: Vec<(&str, Vec<usize>)> = Vec::new();
+            let mut literal_index_map: BTreeMap<&str, usize> = BTreeMap::new();
             for (orig_idx, literal) in cfg.secret_literals.iter().enumerate() {
                 if literal.is_empty() {
                     continue;
@@ -176,21 +176,22 @@ impl Redactor {
                     literal_entries[entry_idx].1.push(orig_idx);
                 } else {
                     let entry_idx = literal_entries.len();
-                    literal_index_map.insert(literal.clone(), entry_idx);
-                    literal_entries.push((literal.clone(), vec![orig_idx]));
+                    literal_index_map.insert(literal.as_str(), entry_idx);
+                    literal_entries.push((literal.as_str(), vec![orig_idx]));
                 }
             }
             for (literal, orig_positions) in literal_entries {
-                if !seen_literals.insert(literal.clone()) {
+                if seen_literals.contains(literal) {
                     continue;
                 }
+                seen_literals.insert(literal.to_owned());
                 rules.push(RedactionRule {
                     kind: KIND_CONFIGURED_LITERAL.to_owned(),
                     source_label: "literal".to_owned(),
                     config_indices: orig_positions,
-                    matcher: RuleMatcher::Literal(literal.clone()),
+                    matcher: RuleMatcher::Literal(literal.to_owned()),
                 });
-                blocking_literals.push(literal);
+                blocking_literals.push(literal.to_owned());
             }
 
             for (name_os, value_os) in std::env::vars_os() {
@@ -808,9 +809,10 @@ fn push_literal_rule(
     source_label: String,
     literal: String,
 ) -> bool {
-    if literal.is_empty() || !seen_literals.insert(literal.clone()) {
+    if literal.is_empty() || seen_literals.contains(&literal) {
         return false;
     }
+    seen_literals.insert(literal.clone());
     rules.push(RedactionRule {
         kind: kind.to_owned(),
         source_label,
