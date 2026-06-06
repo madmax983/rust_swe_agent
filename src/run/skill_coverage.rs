@@ -364,7 +364,6 @@ fn build_report(args: &SkillCoverageArgs) -> Result<SkillCoverageReport, Error> 
         }
     }
 
-    let redactor = Redactor::default_enabled();
     let sweep = load_sweep(&args.sweep_dir)?;
     let evaluation = load_evaluation_results_checked(&args.sweep_dir)?;
 
@@ -387,15 +386,17 @@ fn build_report(args: &SkillCoverageArgs) -> Result<SkillCoverageReport, Error> 
         }
     }
 
-    // Resolve global skill configuration
+    // Resolve global skill configuration and redactor configuration
     let mut enabled = false;
     let mut global_skill_paths = Vec::new();
+    let mut redactor = Redactor::default_enabled();
     if let Some(manifest) = &sweep.manifest {
         if let Ok(mut root_cfg) =
             toml::from_str::<crate::config::schema::RootCfg>(&manifest.config.resolved)
         {
             enabled = root_cfg.skills.enabled;
             global_skill_paths = std::mem::take(&mut root_cfg.skills.paths);
+            redactor = Redactor::from_config_lossy(&root_cfg.redaction);
         }
     }
 
@@ -423,28 +424,26 @@ fn build_report(args: &SkillCoverageArgs) -> Result<SkillCoverageReport, Error> 
 
         let traj_paths = resolve_trajectory_paths(&args.sweep_dir, id);
         for traj_path in traj_paths {
-            if let Ok(traj) = load_trajectory(&traj_path) {
-                // Parse instance config override
-                if let Some(manifest) = &traj.info.manifest {
-                    if let Ok(root_cfg) = serde_json::from_value::<crate::config::schema::RootCfg>(
-                        manifest.config_redacted.clone(),
-                    ) {
-                        instance_enabled = root_cfg.skills.enabled;
-                        instance_skill_paths.clone_from(&root_cfg.skills.paths);
-                    }
+            let traj = load_trajectory(&traj_path)?;
+            // Parse instance config override
+            if let Some(manifest) = &traj.info.manifest {
+                if let Ok(root_cfg) = serde_json::from_value::<crate::config::schema::RootCfg>(
+                    manifest.config_redacted.clone(),
+                ) {
+                    instance_enabled = root_cfg.skills.enabled;
+                    instance_skill_paths.clone_from(&root_cfg.skills.paths);
                 }
+            }
 
-                // Parse active skills from trajectory other metadata
-                if let Some(raw_skills) = traj.info.other.get("active_skills") {
-                    if let Ok(skills) = serde_json::from_value::<
-                        Vec<crate::skills::ActiveSkillManifest>,
-                    >(raw_skills.clone())
-                    {
-                        for skill in skills {
-                            active_skills_all.push(skill.clone());
-                            if !active_skills_unique.iter().any(|s| s.name == skill.name) {
-                                active_skills_unique.push(skill);
-                            }
+            // Parse active skills from trajectory other metadata
+            if let Some(raw_skills) = traj.info.other.get("active_skills") {
+                if let Ok(skills) = serde_json::from_value::<Vec<crate::skills::ActiveSkillManifest>>(
+                    raw_skills.clone(),
+                ) {
+                    for skill in skills {
+                        active_skills_all.push(skill.clone());
+                        if !active_skills_unique.iter().any(|s| s.name == skill.name) {
+                            active_skills_unique.push(skill);
                         }
                     }
                 }
@@ -605,7 +604,10 @@ fn build_report(args: &SkillCoverageArgs) -> Result<SkillCoverageReport, Error> 
         }
 
         for d in &instance_data {
-            let is_active = d.active_skills_unique.iter().any(|s| s.name == raw_name);
+            let is_active = d
+                .active_skills_unique
+                .iter()
+                .any(|s| redactor.redact_text(&s.name, surface::TRAJECTORY).text == redacted_name);
             let is_eligible = d.eligible_skills.contains(&raw_name);
 
             // Skill is in scope if it was active or eligible (configured)
@@ -618,7 +620,9 @@ fn build_report(args: &SkillCoverageArgs) -> Result<SkillCoverageReport, Error> 
 
             // Count repeated activations and activation reasons across retry trajectories
             let mut activation_count_for_instance = 0;
-            for entry in d.active_skills_all.iter().filter(|s| s.name == raw_name) {
+            for entry in d.active_skills_all.iter().filter(|s| {
+                redactor.redact_text(&s.name, surface::TRAJECTORY).text == redacted_name
+            }) {
                 activation_count_for_instance += 1;
                 let reason_str = match entry.activation_reason {
                     crate::skills::SkillActivationReason::ExplicitMention => "explicit_mention",
