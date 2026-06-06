@@ -117,6 +117,18 @@ pub struct ConfigResolveCmd {
     #[arg(long)]
     pub workdir: Option<PathBuf>,
 
+    /// Enable/disable stagnation detection (mirrors `mini --detect-stagnation`).
+    #[arg(long = "detect-stagnation", num_args = 0..=1, default_missing_value = "true")]
+    pub detect_stagnation: Option<bool>,
+
+    /// Minimum identical actions to trip stagnation detector (mirrors `mini --stagnation-repeat-threshold`).
+    #[arg(long)]
+    pub stagnation_repeat_threshold: Option<u32>,
+
+    /// Stagnation detection window size (mirrors `mini --stagnation-window`).
+    #[arg(long)]
+    pub stagnation_window: Option<u32>,
+
     /// Output format: `text` (default, human-readable) or `json`
     /// (machine-readable; keys emitted in stable, deterministic order).
     #[arg(long, default_value = "text")]

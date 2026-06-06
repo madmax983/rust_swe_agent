@@ -31,8 +31,14 @@ pub struct ConfigResolveArgs {
     pub hide_budget_from_agent_flag: bool,
     /// Mirrors `mini --env local|docker`.
     pub env_flag: Option<String>,
-    /// Mirrors `mini --workdir`.
+    /// Mirrors `mini --workdir` (path already validated/canonicalized by caller).
     pub workdir_flag: Option<PathBuf>,
+    /// Mirrors `mini --detect-stagnation`.
+    pub detect_stagnation_flag: Option<bool>,
+    /// Mirrors `mini --stagnation-repeat-threshold`.
+    pub stagnation_repeat_threshold_flag: Option<u32>,
+    /// Mirrors `mini --stagnation-window`.
+    pub stagnation_window_flag: Option<u32>,
 }
 
 // ── Output types ──────────────────────────────────────────────────────────────
@@ -260,6 +266,11 @@ fn get_flag_override(key: &str, args: &ConfigResolveArgs) -> Option<Value> {
                 None
             }
         }
+        "agent.detect_stagnation" => args.detect_stagnation_flag.map(Value::Bool),
+        "agent.stagnation_repeat_threshold" => args
+            .stagnation_repeat_threshold_flag
+            .map(|v| Value::Number(v.into())),
+        "agent.stagnation_window" => args.stagnation_window_flag.map(|v| Value::Number(v.into())),
         "environment.kind" => args.env_flag.as_ref().map(|v| Value::String(v.clone())),
         "environment.workdir" => args
             .workdir_flag
@@ -293,13 +304,17 @@ fn detect_hazards(
             commands_affected: vec![
                 "mini".to_string(),
                 "bench swebench".to_string(),
+                "bench rehearsal".to_string(),
+                "bench forecast".to_string(),
+                "bench doctor".to_string(),
                 "agent stability".to_string(),
                 "agent best-of".to_string(),
                 "agent suite".to_string(),
             ],
             message: format!(
                 "Config file sets model.name='{redacted_model}' but 'mini', \
-                 'bench swebench', 'agent stability', 'agent best-of', and \
+                 'bench swebench', 'bench rehearsal', 'bench forecast', \
+                 'bench doctor', 'agent stability', 'agent best-of', and \
                  'agent suite' unconditionally apply the clap default \
                  '{CLAP_DEFAULT_MODEL}' when --model is not explicitly passed; \
                  your config-file value is silently ignored."
@@ -319,11 +334,17 @@ fn detect_hazards(
             field: "agent.step_limit".to_string(),
             file_value: Value::Number(merged_step.into()),
             clap_default_value: Value::Number(CLAP_DEFAULT_STEP_LIMIT.into()),
-            commands_affected: vec!["bench swebench".to_string()],
+            commands_affected: vec![
+                "bench swebench".to_string(),
+                "bench rehearsal".to_string(),
+                "bench forecast".to_string(),
+                "bench doctor".to_string(),
+            ],
             message: format!(
-                "Config file sets agent.step_limit={merged_step} but 'bench swebench' \
-                 unconditionally applies the clap default {CLAP_DEFAULT_STEP_LIMIT} when \
-                 --step-limit is not explicitly passed; your config-file value is silently ignored."
+                "Config file sets agent.step_limit={merged_step} but 'bench swebench', \
+                 'bench rehearsal', 'bench forecast', and 'bench doctor' unconditionally \
+                 apply the clap default {CLAP_DEFAULT_STEP_LIMIT} when --step-limit is not \
+                 explicitly passed; your config-file value is silently ignored."
             ),
         });
     }
@@ -422,6 +443,9 @@ mod tests {
             hide_budget_from_agent_flag: false,
             env_flag: None,
             workdir_flag: None,
+            detect_stagnation_flag: None,
+            stagnation_repeat_threshold_flag: None,
+            stagnation_window_flag: None,
         }
     }
 

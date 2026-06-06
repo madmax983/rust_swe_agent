@@ -207,6 +207,23 @@ fn agent_config_resolve_cmd(r: &args::ConfigResolveCmd) -> Result<(), Error> {
             )));
         }
     }
+    if let Some(ref env_val) = r.env {
+        parse_env_kind(env_val.as_str())?;
+    }
+    let canonical_workdir = if let Some(ref wd) = r.workdir {
+        // Build an ephemeral config with the --env flag applied so the docker+workdir
+        // check mirrors runtime behaviour.
+        let mut check_cfg = match &r.config {
+            Some(p) => Config::load(p)?,
+            None => Config::defaults()?,
+        };
+        if let Some(ref env_val) = r.env {
+            check_cfg.root.environment.kind = parse_env_kind(env_val.as_str())?;
+        }
+        resolve_and_validate_workdir(Some(wd), &check_cfg)?
+    } else {
+        None
+    };
 
     let resolve_args = ConfigResolveArgs {
         config: r.config.clone(),
@@ -217,7 +234,10 @@ fn agent_config_resolve_cmd(r: &args::ConfigResolveCmd) -> Result<(), Error> {
         per_task_budget_usd_flag: r.per_task_budget_usd,
         hide_budget_from_agent_flag: r.hide_budget_from_agent,
         env_flag: r.env.clone(),
-        workdir_flag: r.workdir.clone(),
+        workdir_flag: canonical_workdir,
+        detect_stagnation_flag: r.detect_stagnation,
+        stagnation_repeat_threshold_flag: r.stagnation_repeat_threshold,
+        stagnation_window_flag: r.stagnation_window,
     };
 
     let report = run_config_resolve(&resolve_args).map_err(Error::Config)?;
