@@ -1,0 +1,87 @@
+ Documenting maxwells-daemon v0.1.0 (/app)
+warning: unresolved link to `redact_text`
+   --> src/redaction.rs:452:18
+    |
+452 |     /// Unlike [`redact_text`], this method does not update surface-lev...
+    |                  ^^^^^^^^^^^ no item named `redact_text` in scope
+    |
+    = help: to escape `[` and `]` characters, add '\' before them like `\[` or `\]`
+    = note: `#[warn(rustdoc::broken_intra_doc_links)]` on by default
+
+warning: public documentation for `drive` links to private item `discover_claude_config`
+   --> src/run/claude_driver.rs:408:9
+    |
+408 | ///   [`discover_claude_config`]) into the trajectory so the run is aud...
+    |         ^^^^^^^^^^^^^^^^^^^^^^ this item is private
+    |
+    = note: this link will resolve properly if you pass `--document-private-items`
+    = note: `#[warn(rustdoc::private_intra_doc_links)]` on by default
+
+warning: public documentation for `drive` links to private item `ALLOWED_TOOLS`
+   --> src/run/claude_driver.rs:411:22
+    |
+411 | ///   (restrict to [`ALLOWED_TOOLS`]), and `--no-session-persistence` f...
+    |                      ^^^^^^^^^^^^^ this item is private
+    |
+    = note: this link will resolve properly if you pass `--document-private-items`
+
+warning: unresolved link to `Trajectory`
+ --> src/run/codex_driver.rs:6:56
+  |
+6 | ...e harness [`Trajectory`] format so that
+  |                ^^^^^^^^^^ no item named `Trajectory` in scope
+  |
+  = help: to escape `[` and `]` characters, add '\' before them like `\[` or `\]`
+
+warning: unresolved link to `0,1`
+ --> src/run/contamination_check.rs:9:89
+  |
+9 | ...before patching | [0,1] |
+  |                       ^^^ no item named `0,1` in scope
+  |
+  = help: to escape `[` and `]` characters, add '\' before them like `\[` or `\]`
+
+warning: unresolved link to `0,1`
+  --> src/run/contamination_check.rs:10:96
+   |
+10 | ...and gold patch | [0,1] |
+   |                      ^^^ no item named `0,1` in scope
+   |
+   = help: to escape `[` and `]` characters, add '\' before them like `\[` or `\]`
+
+warning: unresolved link to `0,1`
+  --> src/run/contamination_check.rs:11:97
+   |
+11 | ...st step → 0.0) | [0,1] |
+   |                      ^^^ no item named `0,1` in scope
+   |
+   = help: to escape `[` and `]` characters, add '\' before them like `\[` or `\]`
+
+warning: unresolved link to `run`
+  --> src/run/ui.rs:42:43
+   |
+42 | /// Arguments forwarded from the CLI to [`run`].
+   |                                           ^^^ no item named `run` in scope
+   |
+   = help: to escape `[` and `]` characters, add '\' before them like `\[` or `\]`
+
+warning: redundant explicit link target
+ --> src/run/redact_audit.rs:3:42
+  |
+3 | ...The runtime [`Redactor`](crate::redaction::Redactor) masks secrets
+  |                 ----------  ^^^^^^^^^^^^^^^^^^^^^^^^^^ explicit target is redundant
+  |                 |
+  |                 because label contains path that resolves to same destination
+  |
+  = note: when a link's destination is not specified,
+          the label is used to resolve intra-doc links
+  = note: `#[warn(rustdoc::redundant_explicit_links)]` on by default
+help: remove explicit link target
+  |
+3 - //! Issue #342. The runtime [`Redactor`](crate::redaction::Redactor) masks secrets
+3 + //! Issue #342. The runtime [`Redactor`] masks secrets
+  |
+
+warning: `maxwells-daemon` (lib doc) generated 9 warnings
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 14.52s
+   Generated /app/target/doc/maxwells_daemon/index.html and 1 other file
