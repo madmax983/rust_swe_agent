@@ -124,6 +124,35 @@ pub fn run_config_resolve(args: &ConfigResolveArgs) -> Result<ConfigResolveRepor
 
     let redactor = Redactor::from_config_lossy(&merged_cfg.root.redaction);
 
+    // Mirror DefaultAgent's stagnation validation: resolve effective values
+    // (flag overrides config), then check bounds only when detection is enabled.
+    let effective_detect = args
+        .detect_stagnation_flag
+        .unwrap_or(merged_cfg.root.agent.detect_stagnation);
+    if effective_detect {
+        let k = args
+            .stagnation_repeat_threshold_flag
+            .unwrap_or(merged_cfg.root.agent.stagnation_repeat_threshold);
+        let w = args
+            .stagnation_window_flag
+            .unwrap_or(merged_cfg.root.agent.stagnation_window);
+        if k == 0 {
+            return Err(ConfigError::Invalid(
+                "--stagnation-repeat-threshold must be >= 1".into(),
+            ));
+        }
+        if w == 0 {
+            return Err(ConfigError::Invalid(
+                "--stagnation-window must be >= 1".into(),
+            ));
+        }
+        if w < k {
+            return Err(ConfigError::Invalid(format!(
+                "--stagnation-window ({w}) must be >= --stagnation-repeat-threshold ({k})"
+            )));
+        }
+    }
+
     let fields = build_resolved_fields(&defaults_json, &merged_json, args, &redactor);
     let hazards = detect_hazards(&merged_json, args, &redactor);
     let has_hazards = !hazards.is_empty();
@@ -888,5 +917,48 @@ mod tests {
         let f = find_field(&report, "environment.workdir");
         assert_eq!(f.layer, ProvenanceLayer::Flag);
         assert_eq!(f.value.as_str().unwrap(), "/tmp/myrepo");
+    }
+
+    #[test]
+    fn stagnation_window_less_than_threshold_is_error() {
+        let args = ConfigResolveArgs {
+            stagnation_repeat_threshold_flag: Some(5),
+            stagnation_window_flag: Some(3),
+            ..no_args()
+        };
+        let err = run_config_resolve(&args).unwrap_err();
+        assert!(err.to_string().contains("stagnation-window"));
+    }
+
+    #[test]
+    fn stagnation_zero_threshold_is_error() {
+        let args = ConfigResolveArgs {
+            stagnation_repeat_threshold_flag: Some(0),
+            ..no_args()
+        };
+        let err = run_config_resolve(&args).unwrap_err();
+        assert!(err.to_string().contains("stagnation-repeat-threshold"));
+    }
+
+    #[test]
+    fn stagnation_zero_window_is_error() {
+        let args = ConfigResolveArgs {
+            stagnation_window_flag: Some(0),
+            ..no_args()
+        };
+        let err = run_config_resolve(&args).unwrap_err();
+        assert!(err.to_string().contains("stagnation-window"));
+    }
+
+    #[test]
+    fn stagnation_disabled_skips_bounds_check() {
+        // With detect_stagnation=false, window < threshold is allowed.
+        let args = ConfigResolveArgs {
+            detect_stagnation_flag: Some(false),
+            stagnation_repeat_threshold_flag: Some(5),
+            stagnation_window_flag: Some(1),
+            ..no_args()
+        };
+        assert!(run_config_resolve(&args).is_ok());
     }
 }
