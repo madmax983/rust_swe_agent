@@ -79,78 +79,75 @@ pub fn run(args: &DiffConfigArgs) -> Result<(), Error> {
     let mut changed_fields = Vec::new();
     let mut ignored_fields = Vec::new();
 
+    let cmp_manifest = |group: &str,
+                        field: &str,
+                        compared_fields: &mut Vec<ComparedField>,
+                        changed_fields: &mut Vec<ChangedField>,
+                        ignored_fields: &mut Vec<IgnoredField>| {
+        let path = format!(".{field}");
+        compare_field(
+            group,
+            &path,
+            &get_field_val(&baseline_manifest, &[group, field]),
+            &get_field_val(&candidate_manifest, &[group, field]),
+            compared_fields,
+            changed_fields,
+            ignored_fields,
+            &ignore_patterns,
+        );
+    };
+
     // 1. harness
-    compare_field(
+    cmp_manifest(
         "harness",
-        ".name",
-        &get_field_val(&baseline_manifest, &["harness", "name"]),
-        &get_field_val(&candidate_manifest, &["harness", "name"]),
+        "name",
         &mut compared_fields,
         &mut changed_fields,
         &mut ignored_fields,
-        &ignore_patterns,
     );
-    compare_field(
+    cmp_manifest(
         "harness",
-        ".version",
-        &get_field_val(&baseline_manifest, &["harness", "version"]),
-        &get_field_val(&candidate_manifest, &["harness", "version"]),
+        "version",
         &mut compared_fields,
         &mut changed_fields,
         &mut ignored_fields,
-        &ignore_patterns,
     );
-    compare_field(
+    cmp_manifest(
         "harness",
-        ".git_sha",
-        &get_field_val(&baseline_manifest, &["harness", "git_sha"]),
-        &get_field_val(&candidate_manifest, &["harness", "git_sha"]),
+        "git_sha",
         &mut compared_fields,
         &mut changed_fields,
         &mut ignored_fields,
-        &ignore_patterns,
     );
-    compare_field(
+    cmp_manifest(
         "harness",
-        ".git_dirty",
-        &get_field_val(&baseline_manifest, &["harness", "git_dirty"]),
-        &get_field_val(&candidate_manifest, &["harness", "git_dirty"]),
+        "git_dirty",
         &mut compared_fields,
         &mut changed_fields,
         &mut ignored_fields,
-        &ignore_patterns,
     );
 
     // 2. dataset
-    compare_field(
+    cmp_manifest(
         "dataset",
-        ".path",
-        &get_field_val(&baseline_manifest, &["dataset", "path"]),
-        &get_field_val(&candidate_manifest, &["dataset", "path"]),
+        "path",
         &mut compared_fields,
         &mut changed_fields,
         &mut ignored_fields,
-        &ignore_patterns,
     );
-    compare_field(
+    cmp_manifest(
         "dataset",
-        ".sha256",
-        &get_field_val(&baseline_manifest, &["dataset", "sha256"]),
-        &get_field_val(&candidate_manifest, &["dataset", "sha256"]),
+        "sha256",
         &mut compared_fields,
         &mut changed_fields,
         &mut ignored_fields,
-        &ignore_patterns,
     );
-    compare_field(
+    cmp_manifest(
         "dataset",
-        ".instance_count",
-        &get_field_val(&baseline_manifest, &["dataset", "instance_count"]),
-        &get_field_val(&candidate_manifest, &["dataset", "instance_count"]),
+        "instance_count",
         &mut compared_fields,
         &mut changed_fields,
         &mut ignored_fields,
-        &ignore_patterns,
     );
 
     let base_fs = get_field_val(&baseline_manifest, &["dataset", "filter_spec"]);
@@ -180,77 +177,56 @@ pub fn run(args: &DiffConfigArgs) -> Result<(), Error> {
     }
 
     // 3. prompt_template
-    compare_field(
+    cmp_manifest(
         "prompt_template",
-        ".source",
-        &get_field_val(&baseline_manifest, &["prompt_template", "source"]),
-        &get_field_val(&candidate_manifest, &["prompt_template", "source"]),
+        "source",
         &mut compared_fields,
         &mut changed_fields,
         &mut ignored_fields,
-        &ignore_patterns,
     );
-    compare_field(
+    cmp_manifest(
         "prompt_template",
-        ".path",
-        &get_field_val(&baseline_manifest, &["prompt_template", "path"]),
-        &get_field_val(&candidate_manifest, &["prompt_template", "path"]),
+        "path",
         &mut compared_fields,
         &mut changed_fields,
         &mut ignored_fields,
-        &ignore_patterns,
     );
-    compare_field(
+    cmp_manifest(
         "prompt_template",
-        ".sha256",
-        &get_field_val(&baseline_manifest, &["prompt_template", "sha256"]),
-        &get_field_val(&candidate_manifest, &["prompt_template", "sha256"]),
+        "sha256",
         &mut compared_fields,
         &mut changed_fields,
         &mut ignored_fields,
-        &ignore_patterns,
     );
 
     // 4. model
-    compare_field(
+    cmp_manifest(
         "model",
-        ".name",
-        &get_field_val(&baseline_manifest, &["model", "name"]),
-        &get_field_val(&candidate_manifest, &["model", "name"]),
+        "name",
         &mut compared_fields,
         &mut changed_fields,
         &mut ignored_fields,
-        &ignore_patterns,
     );
-    compare_field(
+    cmp_manifest(
         "model",
-        ".backend",
-        &get_field_val(&baseline_manifest, &["model", "backend"]),
-        &get_field_val(&candidate_manifest, &["model", "backend"]),
+        "backend",
         &mut compared_fields,
         &mut changed_fields,
         &mut ignored_fields,
-        &ignore_patterns,
     );
-    compare_field(
+    cmp_manifest(
         "model",
-        ".backend_version",
-        &get_field_val(&baseline_manifest, &["model", "backend_version"]),
-        &get_field_val(&candidate_manifest, &["model", "backend_version"]),
+        "backend_version",
         &mut compared_fields,
         &mut changed_fields,
         &mut ignored_fields,
-        &ignore_patterns,
     );
-    compare_field(
+    cmp_manifest(
         "model",
-        ".base_url",
-        &get_field_val(&baseline_manifest, &["model", "base_url"]),
-        &get_field_val(&candidate_manifest, &["model", "base_url"]),
+        "base_url",
         &mut compared_fields,
         &mut changed_fields,
         &mut ignored_fields,
-        &ignore_patterns,
     );
 
     // 5. sampling
@@ -295,45 +271,47 @@ pub fn run(args: &DiffConfigArgs) -> Result<(), Error> {
     // 8. limits
     let base_limits = get_field_val(&baseline_manifest, &["limits"]);
     let cand_limits = get_field_val(&candidate_manifest, &["limits"]);
-    compare_field(
-        "limits",
-        ".step_limit",
-        &get_field_val(&base_limits, &["step_limit"]),
-        &get_field_val(&cand_limits, &["step_limit"]),
+
+    let cmp_limits = |field: &str,
+                      compared_fields: &mut Vec<ComparedField>,
+                      changed_fields: &mut Vec<ChangedField>,
+                      ignored_fields: &mut Vec<IgnoredField>| {
+        let path = format!(".{field}");
+        compare_field(
+            "limits",
+            &path,
+            &get_field_val(&base_limits, &[field]),
+            &get_field_val(&cand_limits, &[field]),
+            compared_fields,
+            changed_fields,
+            ignored_fields,
+            &ignore_patterns,
+        );
+    };
+
+    cmp_limits(
+        "step_limit",
         &mut compared_fields,
         &mut changed_fields,
         &mut ignored_fields,
-        &ignore_patterns,
     );
-    compare_field(
-        "limits",
-        ".per_task_budget_usd",
-        &get_field_val(&base_limits, &["per_task_budget_usd"]),
-        &get_field_val(&cand_limits, &["per_task_budget_usd"]),
+    cmp_limits(
+        "per_task_budget_usd",
         &mut compared_fields,
         &mut changed_fields,
         &mut ignored_fields,
-        &ignore_patterns,
     );
-    compare_field(
-        "limits",
-        ".task_timeout_secs",
-        &get_field_val(&base_limits, &["task_timeout_secs"]),
-        &get_field_val(&cand_limits, &["task_timeout_secs"]),
+    cmp_limits(
+        "task_timeout_secs",
         &mut compared_fields,
         &mut changed_fields,
         &mut ignored_fields,
-        &ignore_patterns,
     );
-    compare_field(
-        "limits",
-        ".sweep_cost_limit_usd",
-        &get_field_val(&base_limits, &["sweep_cost_limit_usd"]),
-        &get_field_val(&cand_limits, &["sweep_cost_limit_usd"]),
+    cmp_limits(
+        "sweep_cost_limit_usd",
         &mut compared_fields,
         &mut changed_fields,
         &mut ignored_fields,
-        &ignore_patterns,
     );
 
     // 9. config.resolved
