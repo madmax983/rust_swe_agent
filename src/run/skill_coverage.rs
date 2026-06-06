@@ -91,6 +91,7 @@ pub struct SkillCoverageReport {
 #[derive(Debug)]
 struct InstanceSkillData {
     id: String,
+    parent_instance_id: String,
     bucket: OutcomeBucket,
     active_skills_unique: Vec<crate::skills::ActiveSkillManifest>,
     active_skills_all: Vec<crate::skills::ActiveSkillManifest>,
@@ -374,7 +375,12 @@ struct RunSlotKey {
     run_index: u32,
 }
 
-fn load_resolved_by_run(sweep_dir: &Path) -> HashMap<RunSlotKey, bool> {
+fn load_resolved_by_run(
+    sweep_dir: &Path,
+    filter_run_id: Option<&str>,
+    filter_subset: Option<&str>,
+    filter_split: Option<&str>,
+) -> HashMap<RunSlotKey, bool> {
     let mut resolved_by_run = HashMap::new();
     let report_dir = sweep_dir.join("sb_cli_reports");
     if report_dir.is_dir() {
@@ -383,78 +389,114 @@ fn load_resolved_by_run(sweep_dir: &Path) -> HashMap<RunSlotKey, bool> {
                 let path = entry.path();
                 if path.extension().and_then(|s| s.to_str()) == Some("json") {
                     let filename = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
-                    let run_index = if let Some(idx_str) = filename.split("-run-").nth(1) {
-                        idx_str.parse::<u32>().unwrap_or(1)
+                    let parts: Vec<&str> = filename.split("__").collect();
+                    let (subset, split, run_id_part) = if parts.len() == 3 {
+                        (Some(parts[0]), Some(parts[1]), parts[2])
                     } else {
-                        1
+                        (None, None, filename)
                     };
-                    if let Ok(text) = std::fs::read_to_string(&path) {
-                        if let Ok(val) = serde_json::from_str::<serde_json::Value>(&text) {
-                            if let Some(instances) =
-                                val.get("instances").and_then(serde_json::Value::as_array)
-                            {
-                                for inst in instances {
-                                    if let (Some(inst_id), Some(resolved)) = (
-                                        inst.get("instance_id").and_then(serde_json::Value::as_str),
-                                        inst.get("resolved").and_then(serde_json::Value::as_bool),
-                                    ) {
-                                        resolved_by_run.insert(
-                                            RunSlotKey {
-                                                instance_id: inst_id.to_owned(),
-                                                run_index,
-                                            },
-                                            resolved,
-                                        );
-                                    }
-                                }
-                            } else {
-                                // sb-cli report shape: resolved_ids and submitted_ids
-                                let resolved_ids = val
-                                    .get("resolved_ids")
-                                    .and_then(serde_json::Value::as_array)
-                                    .map(|xs| {
-                                        xs.iter()
-                                            .filter_map(|v| v.as_str().map(ToOwned::to_owned))
-                                            .collect::<Vec<_>>()
-                                    })
-                                    .unwrap_or_default();
-                                let submitted_ids = val
-                                    .get("submitted_ids")
-                                    .and_then(serde_json::Value::as_array)
-                                    .map(|xs| {
-                                        xs.iter()
-                                            .filter_map(|v| v.as_str().map(ToOwned::to_owned))
-                                            .collect::<Vec<_>>()
-                                    })
-                                    .unwrap_or_default();
-                                for id in &submitted_ids {
-                                    resolved_by_run.insert(
-                                        RunSlotKey {
-                                            instance_id: id.clone(),
-                                            run_index,
-                                        },
-                                        resolved_ids.contains(id),
-                                    );
-                                }
-                                if submitted_ids.is_empty() {
-                                    for id in resolved_ids {
-                                        resolved_by_run.insert(
-                                            RunSlotKey {
-                                                instance_id: id,
-                                                run_index,
-                                            },
-                                            true,
-                                        );
-                                    }
-                                }
+
+                    let (run_id, run_index) = if let Some(idx_pos) = run_id_part.rfind("-run-") {
+                        let (base, suffix) = run_id_part.split_at(idx_pos);
+                        let index_str = &suffix[5..]; // skip "-run-"
+                        let idx = index_str.parse::<u32>().unwrap_or(1);
+                        (base, idx)
+                    } else {
+                        (run_id_part, 1)
+                    };
+
+                    if let Some(f_run_id) = filter_run_id {
+                        if run_id != f_run_id {
+                            continue;
+                        }
+                    }
+                    if let Some(f_subset) = filter_subset {
+                        if let Some(sub) = subset {
+                            if sub != f_subset {
+                                continue;
                             }
                         }
                     }
+                    if let Some(f_split) = filter_split {
+                        if let Some(spl) = split {
+                            if spl != f_split {
+                                continue;
+                            }
+                        }
+                    }
+
+                    let _ = parse_report_outcomes(&path, run_index, &mut resolved_by_run);
                 }
             }
         }
     }
     resolved_by_run
+}
+
+fn parse_report_outcomes(
+    path: &Path,
+    run_index: u32,
+    resolved_by_run: &mut HashMap<RunSlotKey, bool>,
+) -> Result<(), Error> {
+    let text = std::fs::read_to_string(path)?;
+    let val = serde_json::from_str::<serde_json::Value>(&text)?;
+    if let Some(instances) = val.get("instances").and_then(serde_json::Value::as_array) {
+        for inst in instances {
+            if let (Some(inst_id), Some(resolved)) = (
+                inst.get("instance_id").and_then(serde_json::Value::as_str),
+                inst.get("resolved").and_then(serde_json::Value::as_bool),
+            ) {
+                resolved_by_run.insert(
+                    RunSlotKey {
+                        instance_id: inst_id.to_owned(),
+                        run_index,
+                    },
+                    resolved,
+                );
+            }
+        }
+    } else {
+        // sb-cli report shape: resolved_ids and submitted_ids
+        let resolved_ids = val
+            .get("resolved_ids")
+            .and_then(serde_json::Value::as_array)
+            .map(|xs| {
+                xs.iter()
+                    .filter_map(|v| v.as_str().map(ToOwned::to_owned))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        let submitted_ids = val
+            .get("submitted_ids")
+            .and_then(serde_json::Value::as_array)
+            .map(|xs| {
+                xs.iter()
+                    .filter_map(|v| v.as_str().map(ToOwned::to_owned))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        for id in &submitted_ids {
+            resolved_by_run.insert(
+                RunSlotKey {
+                    instance_id: id.clone(),
+                    run_index,
+                },
+                resolved_ids.contains(id),
+            );
+        }
+        if submitted_ids.is_empty() {
+            for id in resolved_ids {
+                resolved_by_run.insert(
+                    RunSlotKey {
+                        instance_id: id,
+                        run_index,
+                    },
+                    true,
+                );
+            }
+        }
+    }
+    Ok(())
 }
 
 #[allow(clippy::too_many_lines)]
@@ -505,7 +547,22 @@ fn build_report(args: &SkillCoverageArgs) -> Result<SkillCoverageReport, Error> 
     let mut sorted_ids: Vec<String> = sweep.instances.keys().cloned().collect();
     sorted_ids.sort();
 
-    let resolved_by_run = load_resolved_by_run(&args.sweep_dir);
+    let (filter_run_id, filter_subset, filter_split) = if let Some(ev) = &evaluation {
+        if let Some(prov) = &ev.results.provenance {
+            (
+                prov.run_id.as_deref(),
+                prov.dataset_subset.as_deref(),
+                prov.dataset_split.as_deref(),
+            )
+        } else {
+            (None, None, None)
+        }
+    } else {
+        (None, None, None)
+    };
+
+    let resolved_by_run =
+        load_resolved_by_run(&args.sweep_dir, filter_run_id, filter_subset, filter_split);
     let mut instance_data: Vec<InstanceSkillData> = Vec::new();
     let mut skill_descriptions = HashMap::new();
 
@@ -633,6 +690,7 @@ fn build_report(args: &SkillCoverageArgs) -> Result<SkillCoverageReport, Error> 
 
             instance_data.push(InstanceSkillData {
                 id: run_id,
+                parent_instance_id: id.clone(),
                 bucket: run_bucket,
                 active_skills_unique,
                 active_skills_all,
@@ -754,22 +812,23 @@ fn build_report(args: &SkillCoverageArgs) -> Result<SkillCoverageReport, Error> 
 
     for (redacted_name, _raw_name) in raw_to_redacted.iter().map(|(k, v)| (v.clone(), k.clone())) {
         let mut total_activations = 0;
-        let mut instances_activated_global = 0;
         let mut reasons: BTreeMap<String, usize> = BTreeMap::new();
 
-        // Track counts per bucket
-        let mut per_bucket_activated: HashMap<&str, usize> = HashMap::new();
-        let mut per_bucket_total: HashMap<&str, usize> = HashMap::new();
-        let mut per_bucket_resolved_active: HashMap<&str, usize> = HashMap::new();
-        let mut per_bucket_resolved_total: HashMap<&str, usize> = HashMap::new();
+        // Track distinct parent instances
+        let mut global_activated_instances = HashSet::new();
+        let mut global_total_instances = HashSet::new();
+
+        let mut per_bucket_activated_instances: HashMap<&str, HashSet<String>> = HashMap::new();
+        let mut per_bucket_total_instances: HashMap<&str, HashSet<String>> = HashMap::new();
+        let mut per_bucket_resolved_active_instances: HashMap<&str, HashSet<String>> =
+            HashMap::new();
+        let mut per_bucket_resolved_total_instances: HashMap<&str, HashSet<String>> =
+            HashMap::new();
+
         let mut per_bucket_activations: HashMap<&str, usize> = HashMap::new();
         let mut per_bucket_reasons: HashMap<&str, BTreeMap<String, usize>> = HashMap::new();
 
         for &bname in &bucket_names {
-            per_bucket_activated.insert(bname, 0);
-            per_bucket_total.insert(bname, 0);
-            per_bucket_resolved_active.insert(bname, 0);
-            per_bucket_resolved_total.insert(bname, 0);
             per_bucket_activations.insert(bname, 0);
             per_bucket_reasons.insert(bname, BTreeMap::new());
         }
@@ -779,10 +838,11 @@ fn build_report(args: &SkillCoverageArgs) -> Result<SkillCoverageReport, Error> 
                 .active_skills_unique
                 .iter()
                 .any(|s| redactor.redact_text(&s.name, surface::TRAJECTORY).text == redacted_name);
-            let is_resolved = d.bucket == OutcomeBucket::Resolved;
+            let is_parent_resolved = resolved_set.contains(&d.parent_instance_id);
 
+            global_total_instances.insert(d.parent_instance_id.clone());
             if is_active {
-                instances_activated_global += 1;
+                global_activated_instances.insert(d.parent_instance_id.clone());
             }
 
             // Count repeated activations and activation reasons across retry trajectories
@@ -805,13 +865,30 @@ fn build_report(args: &SkillCoverageArgs) -> Result<SkillCoverageReport, Error> 
                     continue;
                 }
 
-                *per_bucket_total.entry(bname).or_default() += 1;
-                *per_bucket_resolved_total.entry(bname).or_default() += usize::from(is_resolved);
+                per_bucket_total_instances
+                    .entry(bname)
+                    .or_default()
+                    .insert(d.parent_instance_id.clone());
+
+                if is_parent_resolved {
+                    per_bucket_resolved_total_instances
+                        .entry(bname)
+                        .or_default()
+                        .insert(d.parent_instance_id.clone());
+                }
 
                 if is_active {
-                    *per_bucket_activated.entry(bname).or_default() += 1;
-                    *per_bucket_resolved_active.entry(bname).or_default() +=
-                        usize::from(is_resolved);
+                    per_bucket_activated_instances
+                        .entry(bname)
+                        .or_default()
+                        .insert(d.parent_instance_id.clone());
+
+                    if is_parent_resolved {
+                        per_bucket_resolved_active_instances
+                            .entry(bname)
+                            .or_default()
+                            .insert(d.parent_instance_id.clone());
+                    }
                 }
 
                 *per_bucket_activations.entry(bname).or_default() += activation_count_for_instance;
@@ -833,7 +910,8 @@ fn build_report(args: &SkillCoverageArgs) -> Result<SkillCoverageReport, Error> 
         }
 
         // Calculate rates
-        let total_instances = instance_data.len();
+        let total_instances = global_total_instances.len();
+        let instances_activated_global = global_activated_instances.len();
         #[allow(clippy::cast_precision_loss)]
         let activation_rate = if total_instances > 0 {
             instances_activated_global as f64 / total_instances as f64
@@ -843,10 +921,18 @@ fn build_report(args: &SkillCoverageArgs) -> Result<SkillCoverageReport, Error> 
 
         let mut by_outcome: BTreeMap<String, SkillOutcomeMetrics> = BTreeMap::new();
         for &bname in &bucket_names {
-            let activated = per_bucket_activated[bname];
-            let total = per_bucket_total[bname];
-            let res_active = per_bucket_resolved_active[bname];
-            let res_total = per_bucket_resolved_total[bname];
+            let activated = per_bucket_activated_instances
+                .get(bname)
+                .map_or(0, HashSet::len);
+            let total = per_bucket_total_instances
+                .get(bname)
+                .map_or(0, HashSet::len);
+            let res_active = per_bucket_resolved_active_instances
+                .get(bname)
+                .map_or(0, HashSet::len);
+            let res_total = per_bucket_resolved_total_instances
+                .get(bname)
+                .map_or(0, HashSet::len);
 
             #[allow(clippy::cast_precision_loss)]
             let usage_rate = if total > 0 {
