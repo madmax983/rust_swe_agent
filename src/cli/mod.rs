@@ -6501,7 +6501,9 @@ async fn agent_best_of_cmd(b: args::BestOfCmd) -> Result<(), Error> {
 }
 
 fn agent_profile_cmd(p: &args::AgentProfileCmd) -> Result<(), Error> {
-    use crate::run::agent_profile::{AgentProfileOpts, ProfileFormat, format_text, run_agent_profile};
+    use crate::run::agent_profile::{
+        AgentProfileOpts, ProfileFormat, format_text, run_agent_profile,
+    };
 
     let format = match p.format.as_str() {
         "json" => ProfileFormat::Json,

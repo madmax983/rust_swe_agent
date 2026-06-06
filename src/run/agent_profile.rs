@@ -95,11 +95,19 @@ pub struct AgentProfileReport {
 // ── core logic ────────────────────────────────────────────────────────────────
 
 pub fn run_agent_profile(opts: &AgentProfileOpts) -> Result<AgentProfileReport, Error> {
-    let raw = std::fs::read_to_string(&opts.trajectory_path)
-        .map_err(|e| Error::Trajectory(format!("cannot read {}: {e}", opts.trajectory_path.display())))?;
+    let raw = std::fs::read_to_string(&opts.trajectory_path).map_err(|e| {
+        Error::Trajectory(format!(
+            "cannot read {}: {e}",
+            opts.trajectory_path.display()
+        ))
+    })?;
 
-    let traj: Trajectory = serde_json::from_str(&raw)
-        .map_err(|e| Error::Trajectory(format!("cannot parse {}: {e}", opts.trajectory_path.display())))?;
+    let traj: Trajectory = serde_json::from_str(&raw).map_err(|e| {
+        Error::Trajectory(format!(
+            "cannot parse {}: {e}",
+            opts.trajectory_path.display()
+        ))
+    })?;
 
     let info = &traj.info;
 
@@ -221,7 +229,10 @@ pub fn format_text(report: &AgentProfileReport) -> String {
     let _ = writeln!(out, "{}", "─".repeat(60));
 
     // Run summary
-    let _ = writeln!(out, "\n── Run Summary ──────────────────────────────────────────");
+    let _ = writeln!(
+        out,
+        "\n── Run Summary ──────────────────────────────────────────"
+    );
     let outcome = report.outcome.as_deref().unwrap_or("unknown");
     let failure = report
         .failure_category
@@ -238,42 +249,76 @@ pub fn format_text(report: &AgentProfileReport) -> String {
     let _ = writeln!(out, "  duration:       {duration}");
 
     // Token usage
-    let _ = writeln!(out, "\n── Token Usage ──────────────────────────────────────────");
+    let _ = writeln!(
+        out,
+        "\n── Token Usage ──────────────────────────────────────────"
+    );
     let tu = &report.token_usage;
     let _ = writeln!(out, "  prompt:          {:>8}", tu.prompt_tokens);
     let _ = writeln!(out, "  cache-read:      {:>8}", tu.cache_read_tokens);
     let _ = writeln!(out, "  cache-creation:  {:>8}", tu.cache_creation_tokens);
     let _ = writeln!(out, "  completion:      {:>8}", tu.completion_tokens);
-    let total = tu.prompt_tokens + tu.cache_read_tokens + tu.cache_creation_tokens + tu.completion_tokens;
+    let total =
+        tu.prompt_tokens + tu.cache_read_tokens + tu.cache_creation_tokens + tu.completion_tokens;
     let _ = writeln!(out, "  ─────────────────────────");
     let _ = writeln!(out, "  total:           {:>8}", total);
 
     // Stage breakdown
-    let _ = writeln!(out, "\n── Stage Breakdown ──────────────────────────────────────");
+    let _ = writeln!(
+        out,
+        "\n── Stage Breakdown ──────────────────────────────────────"
+    );
     let sb = &report.stage_breakdown;
     let _ = writeln!(out, "  {:<10} {:>10}   {:>5}", "stage", "ms", "share");
     let _ = writeln!(out, "  {}", "─".repeat(30));
-    let _ = writeln!(out, "  {:<10} {:>10}   {:>5}", "model", fmt_ms(sb.model_ms), fmt_pct(sb.model_pct));
-    let _ = writeln!(out, "  {:<10} {:>10}   {:>5}", "tool", fmt_ms(sb.tool_ms), fmt_pct(sb.tool_pct));
-    let _ = writeln!(out, "  {:<10} {:>10}   {:>5}", "harness", fmt_ms(sb.harness_ms), fmt_pct(sb.harness_pct));
+    let _ = writeln!(
+        out,
+        "  {:<10} {:>10}   {:>5}",
+        "model",
+        fmt_ms(sb.model_ms),
+        fmt_pct(sb.model_pct)
+    );
+    let _ = writeln!(
+        out,
+        "  {:<10} {:>10}   {:>5}",
+        "tool",
+        fmt_ms(sb.tool_ms),
+        fmt_pct(sb.tool_pct)
+    );
+    let _ = writeln!(
+        out,
+        "  {:<10} {:>10}   {:>5}",
+        "harness",
+        fmt_ms(sb.harness_ms),
+        fmt_pct(sb.harness_pct)
+    );
 
     // Action mix
-    let _ = writeln!(out, "\n── Action Mix ───────────────────────────────────────────");
+    let _ = writeln!(
+        out,
+        "\n── Action Mix ───────────────────────────────────────────"
+    );
     let _ = writeln!(out, "  {:<10} {:>6}   {:>6}", "class", "count", "share");
     let _ = writeln!(out, "  {}", "─".repeat(28));
     for (name, entry) in &report.action_mix {
-        let _ = writeln!(out, "  {:<10} {:>6}   {:>5.1}%", name, entry.count, entry.share_pct);
+        let _ = writeln!(
+            out,
+            "  {:<10} {:>6}   {:>5.1}%",
+            name, entry.count, entry.share_pct
+        );
     }
 
     out
 }
 
 fn fmt_ms(v: Option<u64>) -> String {
-    v.map(|ms| format!("{ms}ms")).unwrap_or_else(|| "unknown".to_owned())
+    v.map(|ms| format!("{ms}ms"))
+        .unwrap_or_else(|| "unknown".to_owned())
 }
 
 fn fmt_pct(v: Option<u8>) -> String {
-    v.map(|p| format!("{p}%")).unwrap_or_else(|| "unknown".to_owned())
+    v.map(|p| format!("{p}%"))
+        .unwrap_or_else(|| "unknown".to_owned())
 }
 
 fn failure_category_label(fc: &FailureCategory) -> &'static str {
