@@ -170,6 +170,14 @@ pub enum ExitCode {
     /// `all_failed: true` is set in `best-of-results.json`. Pass
     /// `--allow-no-pass` to downgrade to exit 0 while keeping `all_failed: true`.
     BestOfAllFailed = 41,
+    /// 42 — `agent config resolve` detected at least one clap-default override
+    /// hazard: a `--config` file sets a field (`model.name` or
+    /// `agent.step_limit`) that a clap default in `mini` or `bench swebench`
+    /// will silently overwrite unless the corresponding flag is also passed
+    /// explicitly. The resolved config was printed successfully; the non-zero
+    /// exit allows CI to gate on silent override detection. Exit 0 when the
+    /// resolved config matches operator intent (no hazards detected).
+    ConfigOverrideWarning = 42,
     /// 130 — user interruption (graceful SIGINT / Ctrl-C; 128 + SIGINT(2)).
     Interrupted = 130,
     /// 137 — forced kill (SIGKILL escalation after graceful-cancel deadline; 128 + SIGKILL(9)).
@@ -232,6 +240,7 @@ impl ExitCode {
             Self::StabilityGateFailure => "stability_gate_failure",
             Self::DatasetVerifyMismatch => "dataset_verify_mismatch",
             Self::BestOfAllFailed => "best_of_all_failed",
+            Self::ConfigOverrideWarning => "config_override_warning",
             Self::Interrupted => "interrupted",
             Self::Killed => "killed",
         }
@@ -423,6 +432,17 @@ mod tests {
         assert_eq!(
             ExitCode::from_error(&Error::Model(ModelError::ResponsesExhausted(0))),
             ExitCode::TaskUnsuccessful
+        );
+    }
+
+    // ── RED-phase: config override warning exit code ──────────────────────────
+
+    #[test]
+    fn config_override_warning_exit_code_is_42() {
+        assert_eq!(ExitCode::ConfigOverrideWarning.as_i32(), 42);
+        assert_eq!(
+            ExitCode::ConfigOverrideWarning.outcome_class(),
+            "config_override_warning"
         );
     }
 

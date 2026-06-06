@@ -17,6 +17,7 @@ pub mod claude_driver;
 pub mod codex_driver;
 pub mod command_stats;
 pub mod compare;
+pub mod config_resolve;
 pub mod contamination_check;
 pub mod dataset;
 pub mod dataset_stats;

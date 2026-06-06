@@ -73,6 +73,12 @@ pub fn entries() -> &'static [CatalogEntry] {
             stage: "run",
         },
         CatalogEntry {
+            path: "agent config resolve",
+            summary: "Print the fully-resolved effective run configuration annotated with provenance",
+            cost_tier: "free",
+            stage: "preflight",
+        },
+        CatalogEntry {
             path: "agent env preview",
             summary: "Preview environment configuration for a task without running anything",
             cost_tier: "free",

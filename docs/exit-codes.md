@@ -44,6 +44,10 @@ parsing human-oriented output.
 | 36   | `github_issue_rate_limited` | The GitHub API returned a `403 Rate Limit Exceeded` status. |
 | 37   | `injection_audit_hits` | `agent injection-audit` found at least one hit at or above the configured `--fail-on` severity threshold. The audit completed; use as a publish gate (`injection-audit <dir> && publish`). Distinct from `internal_error` (1) so CI can route "injection signals found" separately from a crash. |
 | 38   | `injection_audit_scan_error` | `agent injection-audit` could not read the sweep directory, a trajectory file, or a subdirectory of the sweep (missing path, unreadable file, mid-stream walk failure). The scan is incomplete so a clean verdict cannot be trusted. Hits take precedence: exit 37 is returned instead when any actionable hit is also present. |
+| 39   | `stability_gate_failure` | `agent stability --fail-under <F>` found `pass_at_k < F`. All runs completed; the gate is wired correctly but the measured pass rate did not meet the declared threshold. |
+| 40   | `dataset_verify_mismatch` | `bench dataset-verify` detected a mismatch between the candidate dataset and the canonical reference. |
+| 41   | `best_of_all_failed`     | `agent best-of` completed all runs and no run passed all verify checks. The best-scoring run was still selected and its patch emitted; `all_failed: true` is set in `best-of-results.json`. Pass `--allow-no-pass` to downgrade to exit 0 while keeping `all_failed: true`. |
+| 42   | `config_override_warning` | `agent config resolve` detected at least one clap-default override hazard: a `--config` file sets a field (`model.name` or `agent.step_limit`) that a clap default in `mini` or `bench swebench` will silently overwrite unless the corresponding flag is also passed explicitly. The resolved config was printed; exit 0 when no hazards are detected. See `docs/spec-config-resolve.md`. |
 | 130  | `interrupted`            | Graceful SIGINT / Ctrl-C cancellation (POSIX convention: 128 + SIGINT(2)). |
 | 137  | `killed`                 | SIGKILL escalation after the graceful-cancel deadline expired (128 + SIGKILL(9)). |
 
