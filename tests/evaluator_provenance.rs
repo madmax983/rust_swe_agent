@@ -181,6 +181,7 @@ fn evaluator_provenance_struct_exists_and_serializes() {
         eval_ended_at: Some("2026-01-01T00:01:00Z".into()),
         report_source: None,
         sb_cli: None,
+        docker_tests: None,
         source_reports: vec![],
     };
 
@@ -210,6 +211,7 @@ fn evaluation_results_roundtrip_with_provenance() {
         eval_ended_at: None,
         report_source: None,
         sb_cli: None,
+        docker_tests: None,
         source_reports: vec![],
     };
 
@@ -355,6 +357,7 @@ fn compare_matching_provenance_gives_matching_status() {
         eval_ended_at: None,
         report_source: None,
         sb_cli: None,
+        docker_tests: None,
         source_reports: vec![],
     };
 
@@ -414,6 +417,7 @@ fn compare_backend_mismatch_gives_mismatched_status() {
         eval_ended_at: None,
         report_source: None,
         sb_cli: None,
+        docker_tests: None,
         source_reports: vec![],
     });
     write_evaluation(dir_b.path(), &eval_b);
@@ -433,6 +437,7 @@ fn compare_backend_mismatch_gives_mismatched_status() {
         eval_ended_at: None,
         report_source: None,
         sb_cli: None,
+        docker_tests: None,
         source_reports: vec![],
     });
     write_evaluation(dir_c.path(), &eval_c);
@@ -481,6 +486,7 @@ fn compare_dataset_subset_mismatch_gives_mismatched_status() {
         eval_ended_at: None,
         report_source: None,
         sb_cli: None,
+        docker_tests: None,
         source_reports: vec![],
     });
     write_evaluation(dir_b.path(), &eval_b);
@@ -500,6 +506,7 @@ fn compare_dataset_subset_mismatch_gives_mismatched_status() {
         eval_ended_at: None,
         report_source: None,
         sb_cli: None,
+        docker_tests: None,
         source_reports: vec![],
     });
     write_evaluation(dir_c.path(), &eval_c);
@@ -547,6 +554,7 @@ fn compare_dataset_split_mismatch_gives_mismatched_status() {
         eval_ended_at: None,
         report_source: None,
         sb_cli: None,
+        docker_tests: None,
         source_reports: vec![],
     };
 
@@ -603,6 +611,7 @@ fn compare_one_side_missing_provenance_gives_unavailable() {
         eval_ended_at: None,
         report_source: None,
         sb_cli: None,
+        docker_tests: None,
         source_reports: vec![],
     });
     write_evaluation(dir_b.path(), &eval_b);
@@ -666,6 +675,7 @@ fn summary_report_has_evaluator_provenance_field() {
         eval_ended_at: None,
         report_source: None,
         sb_cli: None,
+        docker_tests: None,
         source_reports: vec![],
     };
 
@@ -744,6 +754,7 @@ fn inspect_summary_loads_provenance_from_evaluation_json() {
         eval_ended_at: None,
         report_source: None,
         sb_cli: None,
+        docker_tests: None,
         source_reports: vec![],
     });
     write_evaluation(dir.path(), &eval);
@@ -794,6 +805,7 @@ fn inspect_text_renders_provenance_summary() {
         eval_ended_at: Some("2026-01-01T00:10:00Z".into()),
         report_source: None,
         sb_cli: None,
+        docker_tests: None,
         source_reports: vec![],
     };
 
@@ -861,6 +873,7 @@ fn evaluator_provenance_backend_version_optional() {
         eval_ended_at: None,
         report_source: None,
         sb_cli: None,
+        docker_tests: None,
         source_reports: vec![],
     };
 
@@ -896,6 +909,7 @@ fn compare_backend_version_mismatch_gives_mismatched_status() {
         eval_ended_at: None,
         report_source: None,
         sb_cli: None,
+        docker_tests: None,
         source_reports: vec![],
     });
     write_evaluation(dir_b.path(), &eval_b);
@@ -915,6 +929,7 @@ fn compare_backend_version_mismatch_gives_mismatched_status() {
         eval_ended_at: None,
         report_source: None,
         sb_cli: None,
+        docker_tests: None,
         source_reports: vec![],
     });
     write_evaluation(dir_c.path(), &eval_c);
@@ -985,6 +1000,7 @@ fn compare_run_id_diff_does_not_warn() {
         eval_ended_at: None,
         report_source: None,
         sb_cli: None,
+        docker_tests: None,
         source_reports: vec![],
     };
 
@@ -1053,6 +1069,7 @@ fn compare_timeout_mismatch_gives_mismatched_status() {
         eval_ended_at: None,
         report_source: None,
         sb_cli: Some(sb_cli_prov(timeout)),
+        docker_tests: None,
         source_reports: vec![],
     };
 
@@ -1119,6 +1136,7 @@ fn compare_parallel_mismatch_gives_mismatched_status() {
         eval_ended_at: None,
         report_source: None,
         sb_cli: Some(sb_cli_prov(parallel)),
+        docker_tests: None,
         source_reports: vec![],
     };
 
@@ -1202,6 +1220,7 @@ fn compare_human_table_shows_provenance_warnings() {
         eval_ended_at: None,
         report_source: None,
         sb_cli: None,
+        docker_tests: None,
         source_reports: vec![],
     });
     write_evaluation(dir_b.path(), &eval_b);
@@ -1221,6 +1240,7 @@ fn compare_human_table_shows_provenance_warnings() {
         eval_ended_at: None,
         report_source: None,
         sb_cli: None,
+        docker_tests: None,
         source_reports: vec![],
     });
     write_evaluation(dir_c.path(), &eval_c);

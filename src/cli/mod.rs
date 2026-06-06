@@ -3118,9 +3118,10 @@ fn bench_evaluate(e: args::EvaluateCmd) -> Result<(), Error> {
         "sb-cli" => crate::run::evaluate::EvaluateBackend::SbCli,
         "none" => crate::run::evaluate::EvaluateBackend::None,
         "rehearsal" => crate::run::evaluate::EvaluateBackend::Rehearsal,
+        "docker-tests" => crate::run::evaluate::EvaluateBackend::DockerTests,
         other => {
             return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
-                "unknown --backend `{other}` (expected `sb-cli`, `none`, or `rehearsal`)"
+                "unknown --backend `{other}` (expected `sb-cli`, `none`, `rehearsal`, or `docker-tests`)"
             ))));
         }
     };

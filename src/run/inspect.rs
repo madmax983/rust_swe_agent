@@ -1422,6 +1422,7 @@ fn eval_exit_reason_label(reason: &EvalExitReason) -> String {
         EvalExitReason::PatchApplyFailed => "patch_apply_failed".into(),
         EvalExitReason::EvalError => "eval_error".into(),
         EvalExitReason::SkippedNoPatch => "skipped_no_patch".into(),
+        EvalExitReason::SkippedNoImage => "skipped_no_image".into(),
     }
 }
 

@@ -139,8 +139,8 @@ const EXIT_REASON_EVALUATOR_FAILED: &str = "evaluator_failed";
 #[allow(clippy::needless_pass_by_value)]
 pub fn run(args: SelftestArgs) -> SelftestResult {
     assert!(
-        args.backend == "none" || args.backend == "sb-cli",
-        "unknown --backend {:?}: accepted values are `none` and `sb-cli`",
+        args.backend == "none" || args.backend == "sb-cli" || args.backend == "docker-tests",
+        "unknown --backend {:?}: accepted values are `none`, `sb-cli`, and `docker-tests`",
         args.backend
     );
     assert!(
@@ -159,6 +159,8 @@ pub fn run(args: SelftestArgs) -> SelftestResult {
 
     let mut instance_results: Vec<SelftestInstanceResult> = if args.backend == "sb-cli" {
         evaluate_via_sb_cli(&selected, &args)
+    } else if args.backend == "docker-tests" {
+        evaluate_via_docker_tests(&selected, &args)
     } else {
         selected.iter().map(evaluate_gold_patch_none).collect()
     };
@@ -428,7 +430,116 @@ fn map_eval_exit_reason(reason: &EvalExitReason) -> String {
         EvalExitReason::PatchApplyFailed => "patch_apply_failed".to_owned(),
         EvalExitReason::EvalError => EXIT_REASON_EVALUATOR_FAILED.to_owned(),
         EvalExitReason::SkippedNoPatch => EXIT_REASON_GOLD_PATCH_MISSING.to_owned(),
+        EvalExitReason::SkippedNoImage => "skipped_no_image".to_owned(),
     }
+}
+
+// ── Docker-tests backend evaluation ──────────────────────────────────────────
+
+/// Route gold patches through the `docker-tests` offline evaluator backend.
+///
+/// For each instance, writes gold patch + synthetic sweep directory, then calls
+/// `evaluate::run()` with `EvaluateBackend::DockerTests`. Instances missing an
+/// `image` field in the dataset are returned as `skipped_no_image`.
+fn evaluate_via_docker_tests(
+    selected: &[SweBenchInstance],
+    args: &SelftestArgs,
+) -> Vec<SelftestInstanceResult> {
+    let scratch = args.output_dir.join("_docker_tests_scratch");
+    std::fs::create_dir_all(&scratch)
+        .unwrap_or_else(|e| panic!("cannot create docker-tests scratch dir: {e}"));
+
+    let mut missing: Vec<SelftestInstanceResult> = Vec::new();
+    let mut eval_pairs: Vec<(&SweBenchInstance, String)> = Vec::new();
+
+    for inst in selected {
+        let patch = inst
+            .other
+            .get("patch")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("");
+        if patch.trim().is_empty() {
+            missing.push(SelftestInstanceResult {
+                instance_id: inst.instance_id.clone(),
+                resolved: false,
+                evaluator_exit_reason: EXIT_REASON_GOLD_PATCH_MISSING.to_owned(),
+                evaluator_duration_ms: 0,
+            });
+        } else {
+            eval_pairs.push((inst, patch.to_owned()));
+        }
+    }
+
+    if eval_pairs.is_empty() {
+        return missing;
+    }
+
+    write_synthetic_results_json(&scratch, &eval_pairs);
+    write_synthetic_predictions(&scratch, &eval_pairs);
+
+    // Write a minimal dataset JSONL containing the instances so docker-tests can
+    // find their image field and test lists.
+    let dataset_path = scratch.join("selftest_dataset.jsonl");
+    {
+        let mut lines = String::new();
+        for (inst, _) in &eval_pairs {
+            let row = serde_json::json!({
+                "instance_id": inst.instance_id,
+                "image": inst.image,
+                "FAIL_TO_PASS": inst.other.get("FAIL_TO_PASS").cloned().unwrap_or(serde_json::Value::Array(vec![])),
+                "PASS_TO_PASS": inst.other.get("PASS_TO_PASS").cloned().unwrap_or(serde_json::Value::Array(vec![])),
+            });
+            lines.push_str(&serde_json::to_string(&row).unwrap_or_default());
+            lines.push('\n');
+        }
+        std::fs::write(&dataset_path, lines)
+            .unwrap_or_else(|e| panic!("failed to write selftest dataset: {e}"));
+    }
+
+    let eval_args = EvaluateArgs {
+        sweep_dir: scratch,
+        dataset_path: Some(dataset_path),
+        backend: EvaluateBackend::DockerTests,
+        timeout_per_instance_secs: args.timeout_per_instance,
+        parallel: args.parallel,
+        sb_subset: args.sb_subset.clone(),
+        sb_split: args.sb_split.clone(),
+        run_id: None,
+        breakdown: BreakdownSelection::none(),
+        cost_attribution: false,
+    };
+
+    let start = std::time::Instant::now();
+    let eval_result = crate::run::evaluate::run(&eval_args);
+    let total_ms = start.elapsed().as_millis() as u64;
+
+    let mut results: Vec<SelftestInstanceResult> = match eval_result {
+        Ok(eval) => {
+            let n = eval.instances.len().max(1) as u64;
+            let per_inst_ms = total_ms / n;
+            eval.instances
+                .into_iter()
+                .map(|e| SelftestInstanceResult {
+                    instance_id: e.instance_id,
+                    resolved: e.resolved,
+                    evaluator_exit_reason: map_eval_exit_reason(&e.eval_exit_reason),
+                    evaluator_duration_ms: per_inst_ms,
+                })
+                .collect()
+        }
+        Err(e) => eval_pairs
+            .iter()
+            .map(|(inst, _)| SelftestInstanceResult {
+                instance_id: inst.instance_id.clone(),
+                resolved: false,
+                evaluator_exit_reason: format!("{EXIT_REASON_EVALUATOR_FAILED}: {e}"),
+                evaluator_duration_ms: total_ms,
+            })
+            .collect(),
+    };
+
+    results.extend(missing);
+    results
 }
 
 // ── Aggregate computations ────────────────────────────────────────────────────

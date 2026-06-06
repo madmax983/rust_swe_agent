@@ -4955,6 +4955,7 @@ mod tests {
             eval_ended_at: None,
             report_source: None,
             sb_cli,
+            docker_tests: None,
             source_reports: vec![],
         }
     }
