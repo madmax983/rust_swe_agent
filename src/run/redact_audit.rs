@@ -976,6 +976,7 @@ pub(crate) fn is_audited_file(path: &Path) -> bool {
                 || name == "results.json"
                 || name == "suite-results.json"
                 || name == "tool-coverage.json"
+                || name == "skill-coverage.json"
                 || name == "test-progress.json"
                 || name == "scriptability_check.json"
                 || name == "triage.json"
@@ -2784,13 +2785,19 @@ mod tests {
 
     #[test]
     fn audits_tool_coverage_and_bundle_inventory_json() {
-        // `bench tool-coverage` writes a redaction-surfaced `tool-coverage.json`
-        // and `bench bundle` appends a `BUNDLE.json` inventory; both are
+        // `bench tool-coverage` writes a redaction-surfaced `tool-coverage.json`,
+        // `bench skill-coverage` writes a redaction-surfaced `skill-coverage.json`,
+        // and `bench bundle` appends a `BUNDLE.json` inventory; all are
         // first-class stored artifacts and must be scanned by name.
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(
             dir.path().join("tool-coverage.json"),
             r#"{"tools":[{"name":"x","cmd":"run AKIAIOSFODNN7EXAMPLE"}]}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("skill-coverage.json"),
+            r#"{"skills":[{"name":"x","cmd":"run AKIAIOSFODNN7EXAMPLE"}]}"#,
         )
         .unwrap();
         std::fs::write(
@@ -2803,6 +2810,10 @@ mod tests {
         assert!(
             files.iter().any(|f| f.ends_with("tool-coverage.json")),
             "tool-coverage.json not audited: {files:?}"
+        );
+        assert!(
+            files.iter().any(|f| f.ends_with("skill-coverage.json")),
+            "skill-coverage.json not audited: {files:?}"
         );
         assert!(
             files.iter().any(|f| f.ends_with("BUNDLE.json")),

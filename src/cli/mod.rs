@@ -109,6 +109,7 @@ pub async fn run() -> Result<(), Error> {
             args::BenchCmd::Retry(r) => Box::pin(bench_retry(r)).await,
             args::BenchCmd::Behavior(b) => bench_behavior(b),
             args::BenchCmd::ToolCoverage(t) => bench_tool_coverage(t),
+            args::BenchCmd::SkillCoverage(t) => bench_skill_coverage(t),
             args::BenchCmd::PolicyImpact(p) => bench_policy_impact(p),
             args::BenchCmd::InstanceHistory(h) => bench_instance_history(h),
             args::BenchCmd::CacheStats(c) => bench_cache_stats(c),
@@ -4610,6 +4611,34 @@ fn bench_tool_coverage(t: args::ToolCoverageCmd) -> Result<(), Error> {
         print!(
             "{}",
             crate::run::tool_coverage::render_text(&report, bucket.as_deref(), t.min_invocations,)
+        );
+    }
+    Ok(())
+}
+
+fn bench_skill_coverage(t: args::SkillCoverageCmd) -> Result<(), Error> {
+    let is_json = match t.format.as_str() {
+        "text" => false,
+        "json" => true,
+        other => {
+            return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+                "skill-coverage: unknown --format `{other}` (expected `text` or `json`)"
+            ))));
+        }
+    };
+    let bucket = t.bucket.clone();
+    let report = crate::run::skill_coverage::run(&crate::run::skill_coverage::SkillCoverageArgs {
+        sweep_dir: t.sweep,
+        bucket: t.bucket,
+        filter: t.filter,
+        per_instance: t.per_instance,
+    })?;
+    if is_json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        print!(
+            "{}",
+            crate::run::skill_coverage::render_text(&report, bucket.as_deref())
         );
     }
     Ok(())
