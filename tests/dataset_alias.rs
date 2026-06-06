@@ -4,7 +4,12 @@
 //! They are written before the implementation is complete; some will fail until
 //! the GREEN phase wires them up.
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::too_many_lines)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::too_many_lines,
+    clippy::large_futures
+)]
 
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
@@ -76,6 +81,7 @@ fn base_args(dataset_source: DatasetSource, output_dir: PathBuf) -> SwebenchArgs
         systemic_failure_min_samples: 5,
         systemic_failure_share_pct: 80,
         otlp_endpoint: None,
+        otlp_metrics_interval_secs: None,
         rehearse: false,
         skip_evaluator: false,
         eval_backend: "rehearsal".to_string(),

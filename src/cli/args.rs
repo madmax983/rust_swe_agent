@@ -2583,6 +2583,12 @@ pub struct SwebenchCmd {
     #[arg(long, value_name = "URL")]
     pub otlp_endpoint: Option<String>,
 
+    /// OTLP metrics export interval in seconds (default: 15).
+    /// When metrics export is active, the runner periodically sends sweep-level
+    /// metrics to the metrics collector.
+    #[arg(long, value_name = "SECS")]
+    pub otlp_metrics_interval_secs: Option<u64>,
+
     /// Run the zero-cost rehearsal pipeline instead of a real sweep.
     #[arg(long, default_value_t = false)]
     pub rehearse: bool,

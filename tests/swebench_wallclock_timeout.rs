@@ -84,6 +84,7 @@ async fn sweep_wallclock_timeout_finalizes_trajectory_and_reclaims_worker() {
         systemic_failure_min_samples: 5,
         systemic_failure_share_pct: 80,
         otlp_endpoint: None,
+        otlp_metrics_interval_secs: None,
         rehearse: false,
         skip_evaluator: false,
         eval_backend: "rehearsal".to_string(),

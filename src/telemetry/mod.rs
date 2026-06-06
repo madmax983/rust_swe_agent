@@ -602,6 +602,249 @@ pub fn resolve_endpoint(cli_flag: Option<&str>) -> Option<String> {
 }
 
 // ---------------------------------------------------------------------------
+// OTLP Metrics Export (issue #493)
+// ---------------------------------------------------------------------------
+
+/// Snapshot of the sweep progress at a single point in time.
+#[derive(Debug, Clone)]
+pub struct SweepMetricsSnapshot {
+    pub total: u64,
+    pub completed: u64,
+    pub resolved: u64,
+    pub failed: u64,
+    pub in_flight: u64,
+    pub cumulative_cost: f64,
+    pub elapsed_secs: u64,
+}
+
+/// OTLP metrics exporter client.
+#[derive(Clone)]
+pub struct MetricsExporter(Option<Arc<MetricsExporterInner>>);
+
+struct MetricsExporterInner {
+    endpoint: String,
+    client: reqwest::Client,
+    headers: Vec<(String, String)>,
+    sweep_id: String,
+    model: String,
+    dataset: String,
+}
+
+impl MetricsExporter {
+    /// Construct a no-op exporter.
+    pub fn noop() -> Self {
+        Self(None)
+    }
+
+    /// Construct an active metrics exporter.
+    pub fn new(
+        endpoint: impl Into<String>,
+        sweep_id: String,
+        model: String,
+        dataset: String,
+    ) -> Self {
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(5))
+            .build()
+            .unwrap_or_default();
+        Self(Some(Arc::new(MetricsExporterInner {
+            endpoint: endpoint.into(),
+            client,
+            headers: resolve_metrics_headers(),
+            sweep_id,
+            model,
+            dataset,
+        })))
+    }
+
+    /// Returns `true` when a real OTLP metrics exporter is active.
+    pub fn is_active(&self) -> bool {
+        self.0.is_some()
+    }
+
+    /// Export a single snapshot to the collector.
+    pub async fn export(&self, snapshot: &SweepMetricsSnapshot) {
+        let Some(inner) = &self.0 else { return };
+
+        let url = inner.endpoint.clone();
+        let body = build_metrics_json(&inner.sweep_id, &inner.model, &inner.dataset, snapshot);
+
+        let mut req = inner
+            .client
+            .post(&url)
+            .header("Content-Type", "application/json");
+        for (k, v) in &inner.headers {
+            req = req.header(k.as_str(), v.as_str());
+        }
+
+        match req.body(body).send().await {
+            Ok(resp) if resp.status().is_success() => {}
+            Ok(resp) => {
+                tracing::warn!(
+                    endpoint = %url,
+                    http_status = %resp.status(),
+                    "OTLP metrics export failed: non-2xx response"
+                );
+            }
+            Err(e) => {
+                tracing::warn!(
+                    endpoint = %url,
+                    error = %e,
+                    "OTLP metrics export failed: network error"
+                );
+            }
+        }
+    }
+}
+
+fn json_gauge_int(name: &str, time_nanos: &str, val: i64) -> serde_json::Value {
+    serde_json::json!({
+        "name": name,
+        "gauge": {
+            "dataPoints": [{
+                "timeUnixNano": time_nanos,
+                "asInt": val.to_string()
+            }]
+        }
+    })
+}
+
+fn json_gauge_double(name: &str, time_nanos: &str, val: f64) -> serde_json::Value {
+    serde_json::json!({
+        "name": name,
+        "gauge": {
+            "dataPoints": [{
+                "timeUnixNano": time_nanos,
+                "asDouble": val
+            }]
+        }
+    })
+}
+
+/// Format the metrics into OTLP/HTTP JSON representation.
+#[allow(clippy::cast_possible_wrap, clippy::cast_precision_loss)]
+pub fn build_metrics_json(
+    sweep_id: &str,
+    model: &str,
+    dataset: &str,
+    state: &SweepMetricsSnapshot,
+) -> String {
+    let now_nanos = now_unix_nanos().to_string();
+
+    let metrics = vec![
+        json_gauge_int("instances_total", &now_nanos, state.total as i64),
+        json_gauge_int("instances_completed", &now_nanos, state.completed as i64),
+        json_gauge_int("instances_resolved", &now_nanos, state.resolved as i64),
+        json_gauge_int("instances_failed", &now_nanos, state.failed as i64),
+        json_gauge_int("instances_in_flight", &now_nanos, state.in_flight as i64),
+        json_gauge_double("cumulative_cost_usd", &now_nanos, state.cumulative_cost),
+        json_gauge_double(
+            "resolved_rate",
+            &now_nanos,
+            if state.completed > 0 {
+                state.resolved as f64 / state.completed as f64
+            } else {
+                0.0
+            },
+        ),
+        json_gauge_double(
+            "error_rate",
+            &now_nanos,
+            if state.completed > 0 {
+                state.failed as f64 / state.completed as f64
+            } else {
+                0.0
+            },
+        ),
+        json_gauge_int(
+            "sweep_wallclock_seconds",
+            &now_nanos,
+            state.elapsed_secs as i64,
+        ),
+    ];
+
+    serde_json::to_string(&serde_json::json!({
+        "resourceMetrics": [{
+            "resource": {
+                "attributes": [
+                    str_attr("service.name", "maxwells-daemon"),
+                    str_attr("service.version", env!("CARGO_PKG_VERSION")),
+                    str_attr("sweep_id", sweep_id),
+                    str_attr("model", model),
+                    str_attr("dataset", dataset),
+                ]
+            },
+            "scopeMetrics": [{
+                "scope": {
+                    "name": "maxwells-daemon",
+                    "version": env!("CARGO_PKG_VERSION")
+                },
+                "metrics": metrics
+            }]
+        }]
+    }))
+    .unwrap_or_default()
+}
+
+/// Returns the fully-resolved OTLP metrics endpoint URL.
+///
+/// Resolution order (first match wins):
+/// 1. CLI `--otlp-endpoint` flag — treated as a base URL; `/v1/metrics` is appended.
+/// 2. `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT` — the OTel metrics-specific env var.
+///    Already a full URL (e.g. `http://host:4318/v1/metrics`); used as-is.
+/// 3. `OTEL_EXPORTER_OTLP_ENDPOINT` — the generic OTel base URL env var;
+///    `/v1/metrics` is appended.
+pub fn resolve_metrics_endpoint(cli_flag: Option<&str>) -> Option<String> {
+    let with_path = |base: &str| format!("{}/v1/metrics", base.trim_end_matches('/'));
+
+    if let Some(ep) = cli_flag {
+        return Some(with_path(ep));
+    }
+    if let Ok(ep) = std::env::var("OTEL_EXPORTER_OTLP_METRICS_ENDPOINT") {
+        if !ep.is_empty() {
+            return Some(ep); // already a full URL per OTel spec
+        }
+    }
+    std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .map(|base| with_path(&base))
+}
+
+/// Returns the resolved OTLP metrics export interval.
+///
+/// Resolution order (first match wins):
+/// 1. `OTEL_METRIC_EXPORT_INTERVAL` env var (parsed as milliseconds).
+/// 2. CLI `--otlp-metrics-interval-secs` flag.
+/// 3. Default of 15 seconds.
+pub fn resolve_metrics_interval(cli_secs: Option<u64>) -> std::time::Duration {
+    if let Ok(val) = std::env::var("OTEL_METRIC_EXPORT_INTERVAL") {
+        if let Ok(ms) = val.parse::<u64>() {
+            return std::time::Duration::from_millis(ms.max(1000));
+        }
+    }
+    std::time::Duration::from_secs(cli_secs.unwrap_or(15).max(1))
+}
+
+/// Read OTLP metrics export headers from standard OTel env vars.
+///
+/// `OTEL_EXPORTER_OTLP_METRICS_HEADERS` takes precedence; falls back to
+/// `OTEL_EXPORTER_OTLP_HEADERS`. Returns an empty vec when neither is set.
+pub fn resolve_metrics_headers() -> Vec<(String, String)> {
+    for var in &[
+        "OTEL_EXPORTER_OTLP_METRICS_HEADERS",
+        "OTEL_EXPORTER_OTLP_HEADERS",
+    ] {
+        if let Ok(val) = std::env::var(var) {
+            if !val.is_empty() {
+                return parse_otlp_header_env(&val);
+            }
+        }
+    }
+    vec![]
+}
+
+// ---------------------------------------------------------------------------
 // Build instance span data from a completed trajectory
 // ---------------------------------------------------------------------------
 
@@ -878,6 +1121,7 @@ pub(crate) mod build {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::float_cmp)]
 mod tests {
     use super::*;
     use std::sync::{Mutex, OnceLock};
@@ -999,5 +1243,232 @@ mod tests {
         };
         let json = build_otlp_json(&sweep, &[]);
         assert!(serde_json::from_str::<serde_json::Value>(&json).is_ok());
+    }
+
+    #[test]
+    fn resolve_metrics_endpoint_prefers_cli_flag() {
+        let _guard = env_lock();
+        unsafe {
+            std::env::set_var("OTEL_EXPORTER_OTLP_ENDPOINT", "http://env-host:4318");
+            std::env::remove_var("OTEL_EXPORTER_OTLP_METRICS_ENDPOINT");
+        }
+        let ep = resolve_metrics_endpoint(Some("http://cli-host:4318"));
+        unsafe {
+            std::env::remove_var("OTEL_EXPORTER_OTLP_ENDPOINT");
+        }
+        assert_eq!(ep.as_deref(), Some("http://cli-host:4318/v1/metrics"));
+    }
+
+    #[test]
+    fn resolve_metrics_endpoint_falls_back_to_env_var() {
+        let _guard = env_lock();
+        unsafe {
+            std::env::set_var("OTEL_EXPORTER_OTLP_ENDPOINT", "http://env-host:4318");
+            std::env::remove_var("OTEL_EXPORTER_OTLP_METRICS_ENDPOINT");
+        }
+        let ep = resolve_metrics_endpoint(None);
+        unsafe {
+            std::env::remove_var("OTEL_EXPORTER_OTLP_ENDPOINT");
+        }
+        assert_eq!(ep.as_deref(), Some("http://env-host:4318/v1/metrics"));
+    }
+
+    #[test]
+    fn resolve_metrics_endpoint_metrics_env_var_used_as_full_url() {
+        let _guard = env_lock();
+        unsafe {
+            std::env::remove_var("OTEL_EXPORTER_OTLP_ENDPOINT");
+            std::env::set_var(
+                "OTEL_EXPORTER_OTLP_METRICS_ENDPOINT",
+                "http://metrics-host:4318/v1/metrics",
+            );
+        }
+        let ep = resolve_metrics_endpoint(None);
+        unsafe {
+            std::env::remove_var("OTEL_EXPORTER_OTLP_METRICS_ENDPOINT");
+        }
+        assert_eq!(ep.as_deref(), Some("http://metrics-host:4318/v1/metrics"));
+    }
+
+    #[test]
+    fn resolve_metrics_endpoint_returns_none_when_unset() {
+        let _guard = env_lock();
+        unsafe {
+            std::env::remove_var("OTEL_EXPORTER_OTLP_ENDPOINT");
+            std::env::remove_var("OTEL_EXPORTER_OTLP_METRICS_ENDPOINT");
+        }
+        let ep = resolve_metrics_endpoint(None);
+        assert!(ep.is_none());
+    }
+
+    #[test]
+    fn resolve_metrics_interval_prefers_env_var() {
+        let _guard = env_lock();
+        unsafe {
+            std::env::set_var("OTEL_METRIC_EXPORT_INTERVAL", "30000");
+        }
+        let interval = resolve_metrics_interval(Some(10));
+        unsafe {
+            std::env::remove_var("OTEL_METRIC_EXPORT_INTERVAL");
+        }
+        assert_eq!(interval, std::time::Duration::from_secs(30));
+    }
+
+    #[test]
+    fn resolve_metrics_interval_prefers_cli_secs() {
+        let _guard = env_lock();
+        unsafe {
+            std::env::remove_var("OTEL_METRIC_EXPORT_INTERVAL");
+        }
+        let interval = resolve_metrics_interval(Some(10));
+        assert_eq!(interval, std::time::Duration::from_secs(10));
+    }
+
+    #[test]
+    fn resolve_metrics_interval_defaults_to_15s() {
+        let _guard = env_lock();
+        unsafe {
+            std::env::remove_var("OTEL_METRIC_EXPORT_INTERVAL");
+        }
+        let interval = resolve_metrics_interval(None);
+        assert_eq!(interval, std::time::Duration::from_secs(15));
+    }
+
+    #[test]
+    fn resolve_metrics_interval_clamps_zero_env_var_to_1s() {
+        let _guard = env_lock();
+        unsafe {
+            std::env::set_var("OTEL_METRIC_EXPORT_INTERVAL", "0");
+        }
+        let interval = resolve_metrics_interval(None);
+        unsafe {
+            std::env::remove_var("OTEL_METRIC_EXPORT_INTERVAL");
+        }
+        assert_eq!(interval, std::time::Duration::from_secs(1));
+    }
+
+    #[test]
+    fn resolve_metrics_interval_clamps_zero_cli_secs_to_1s() {
+        let _guard = env_lock();
+        unsafe {
+            std::env::remove_var("OTEL_METRIC_EXPORT_INTERVAL");
+        }
+        let interval = resolve_metrics_interval(Some(0));
+        assert_eq!(interval, std::time::Duration::from_secs(1));
+    }
+
+    #[test]
+    fn resolve_metrics_headers_prefers_metrics_var() {
+        let _guard = env_lock();
+        unsafe {
+            std::env::set_var("OTEL_EXPORTER_OTLP_HEADERS", "a=1,b=2");
+            std::env::set_var("OTEL_EXPORTER_OTLP_METRICS_HEADERS", "c=3");
+        }
+        let headers = resolve_metrics_headers();
+        unsafe {
+            std::env::remove_var("OTEL_EXPORTER_OTLP_HEADERS");
+            std::env::remove_var("OTEL_EXPORTER_OTLP_METRICS_HEADERS");
+        }
+        assert_eq!(headers, vec![("c".to_owned(), "3".to_owned())]);
+    }
+
+    #[test]
+    fn build_metrics_json_is_valid_and_has_all_instruments() {
+        let snapshot = SweepMetricsSnapshot {
+            total: 100,
+            completed: 10,
+            resolved: 3,
+            failed: 7,
+            in_flight: 2,
+            cumulative_cost: 0.15,
+            elapsed_secs: 120,
+        };
+        let json = build_metrics_json("sweep-123", "claude-3.5", "lite", &snapshot);
+        let val: serde_json::Value = serde_json::from_str(&json).unwrap();
+
+        let resource_metrics = val.get("resourceMetrics").unwrap().as_array().unwrap();
+        assert_eq!(resource_metrics.len(), 1);
+
+        let resource = resource_metrics[0].get("resource").unwrap();
+        let attrs = resource.get("attributes").unwrap().as_array().unwrap();
+
+        let find_attr = |key: &str| {
+            attrs
+                .iter()
+                .find(|a| a.get("key").unwrap().as_str() == Some(key))
+                .and_then(|a| {
+                    a.get("value")
+                        .and_then(|v| v.get("stringValue").and_then(|s| s.as_str()))
+                })
+        };
+
+        assert_eq!(find_attr("sweep_id"), Some("sweep-123"));
+        assert_eq!(find_attr("model"), Some("claude-3.5"));
+        assert_eq!(find_attr("dataset"), Some("lite"));
+        assert_eq!(find_attr("service.name"), Some("maxwells-daemon"));
+
+        let scope_metrics = resource_metrics[0]
+            .get("scopeMetrics")
+            .unwrap()
+            .as_array()
+            .unwrap();
+        assert_eq!(scope_metrics.len(), 1);
+
+        let metrics = scope_metrics[0].get("metrics").unwrap().as_array().unwrap();
+
+        let find_metric = |name: &str| {
+            metrics
+                .iter()
+                .find(|m| m.get("name").unwrap().as_str() == Some(name))
+                .unwrap()
+        };
+
+        let total_gauge = find_metric("instances_total");
+        let total_val = total_gauge
+            .get("gauge")
+            .unwrap()
+            .get("dataPoints")
+            .unwrap()
+            .as_array()
+            .unwrap()[0]
+            .get("asInt")
+            .unwrap()
+            .as_str()
+            .unwrap();
+        assert_eq!(total_val, "100");
+
+        let cost_gauge = find_metric("cumulative_cost_usd");
+        let cost_val = cost_gauge
+            .get("gauge")
+            .unwrap()
+            .get("dataPoints")
+            .unwrap()
+            .as_array()
+            .unwrap()[0]
+            .get("asDouble")
+            .unwrap()
+            .as_f64()
+            .unwrap();
+        assert_eq!(cost_val, 0.15);
+
+        let res_rate_gauge = find_metric("resolved_rate");
+        let res_rate_val = res_rate_gauge
+            .get("gauge")
+            .unwrap()
+            .get("dataPoints")
+            .unwrap()
+            .as_array()
+            .unwrap()[0]
+            .get("asDouble")
+            .unwrap()
+            .as_f64()
+            .unwrap();
+        assert_eq!(res_rate_val, 0.3);
+    }
+
+    #[test]
+    fn metrics_exporter_noop_is_inactive() {
+        let exporter = MetricsExporter::noop();
+        assert!(!exporter.is_active());
     }
 }

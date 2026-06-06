@@ -48,6 +48,63 @@ pub const CANCEL_EXIT_CODE_ESCALATED: i32 = 137;
 pub const SYSTEMIC_HALT_EXIT_CODE: i32 = 11;
 pub const DEFAULT_PARALLEL: usize = 4;
 
+struct SweepMetricsState {
+    total: u64,
+    completed: u64,
+    resolved: u64,
+    failed: u64,
+    in_flight: u64,
+    cumulative_cost: f64,
+    started_at: std::time::Instant,
+}
+
+impl SweepMetricsState {
+    fn snapshot(&self) -> crate::telemetry::SweepMetricsSnapshot {
+        crate::telemetry::SweepMetricsSnapshot {
+            total: self.total,
+            completed: self.completed,
+            resolved: self.resolved,
+            failed: self.failed,
+            in_flight: self.in_flight,
+            cumulative_cost: self.cumulative_cost,
+            elapsed_secs: self.started_at.elapsed().as_secs(),
+        }
+    }
+}
+
+struct MetricsCleanupGuard {
+    handle: Option<tokio::task::JoinHandle<()>>,
+    exporter: crate::telemetry::MetricsExporter,
+    state: std::sync::Arc<std::sync::Mutex<SweepMetricsState>>,
+}
+
+impl Drop for MetricsCleanupGuard {
+    fn drop(&mut self) {
+        if let Some(handle) = self.handle.take() {
+            handle.abort();
+            let exporter = self.exporter.clone();
+            let state = self.state.clone();
+            if let Ok(rt) = tokio::runtime::Handle::try_current() {
+                let (tx, rx) = std::sync::mpsc::channel();
+                std::thread::spawn(move || {
+                    rt.block_on(async move {
+                        let final_snapshot = {
+                            let mut s = state
+                                .lock()
+                                .unwrap_or_else(std::sync::PoisonError::into_inner);
+                            s.in_flight = 0;
+                            s.snapshot()
+                        };
+                        exporter.export(&final_snapshot).await;
+                        let _ = tx.send(());
+                    });
+                });
+                let _ = rx.recv_timeout(std::time::Duration::from_secs(5));
+            }
+        }
+    }
+}
+
 /// Circuit-breaker logic for detecting systemic sweep failures.
 ///
 /// After each instance completes, the sweep runner calls `CircuitBreaker::check`
@@ -1355,6 +1412,7 @@ pub struct SwebenchArgs {
     /// consulted.  When both are absent, OTLP export is disabled and no
     /// sockets are opened.
     pub otlp_endpoint: Option<String>,
+    pub otlp_metrics_interval_secs: Option<u64>,
     pub rehearse: bool,
     pub skip_evaluator: bool,
     pub eval_backend: String,
@@ -2033,6 +2091,69 @@ pub async fn run(mut args: SwebenchArgs) -> Result<SweepResults, Error> {
     }
 
     let mut results = skipped_results;
+
+    // OTLP metrics setup and initialization.
+    let otlp_metrics_endpoint =
+        crate::telemetry::resolve_metrics_endpoint(args.otlp_endpoint.as_deref());
+    let metrics_exporter = if let Some(ep) = otlp_metrics_endpoint {
+        let dataset = args.dataset_source.display_path();
+        let model = args.config.root.model.name.clone();
+        crate::telemetry::MetricsExporter::new(ep, sweep_id.clone(), model, dataset)
+    } else {
+        crate::telemetry::MetricsExporter::noop()
+    };
+
+    let metrics_state = std::sync::Arc::new(std::sync::Mutex::new(SweepMetricsState {
+        total: (total * args.reruns as usize) as u64,
+        completed: 0,
+        resolved: 0,
+        failed: 0,
+        in_flight: 0,
+        cumulative_cost,
+        started_at: std::time::Instant::now(),
+    }));
+
+    // Pre-populate metrics state with already completed skipped results.
+    {
+        let mut state = metrics_state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        for r in &results {
+            state.completed += 1;
+            if is_resolved_instance_result(&r.result) {
+                state.resolved += 1;
+            } else {
+                state.failed += 1;
+            }
+        }
+    }
+
+    // Spawn background periodic exporter if active.
+    let mut metrics_guard = if metrics_exporter.is_active() {
+        let metrics_state_clone = metrics_state.clone();
+        let exporter_clone = metrics_exporter.clone();
+        let interval = crate::telemetry::resolve_metrics_interval(args.otlp_metrics_interval_secs);
+        let handle = tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(interval).await;
+                let snapshot = {
+                    let state = metrics_state_clone
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    state.snapshot()
+                };
+                exporter_clone.export(&snapshot).await;
+            }
+        });
+        Some(MetricsCleanupGuard {
+            handle: Some(handle),
+            exporter: metrics_exporter.clone(),
+            state: metrics_state.clone(),
+        })
+    } else {
+        None
+    };
+
     let mut skipped = results
         .iter()
         .filter(|r| r.result.exit_reason == "skipped_resume")
@@ -2093,10 +2214,15 @@ pub async fn run(mut args: SwebenchArgs) -> Result<SweepResults, Error> {
         // Resume already exhausted the budget; everything that was queued
         // never starts.
         while let Some(inst) = pending.pop_front() {
-            results.push(RunSlotResult::new(
-                inst.run_index,
-                budget_halt_result(&inst.inst.instance_id),
-            ));
+            let r = RunSlotResult::new(inst.run_index, budget_halt_result(&inst.inst.instance_id));
+            {
+                let mut state = metrics_state
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                state.completed += 1;
+                state.failed += 1;
+            }
+            results.push(r);
             budget_halted += 1;
         }
     } else {
@@ -2105,6 +2231,12 @@ pub async fn run(mut args: SwebenchArgs) -> Result<SweepResults, Error> {
             if let Some(inst) = pending.pop_front() {
                 spawn_one(inst, &mut set, governor_arc.clone());
                 in_flight += 1;
+                {
+                    let mut state = metrics_state
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    state.in_flight += 1;
+                }
                 if let Some(g) = &governor_arc {
                     g.update_peak_concurrent(u32::try_from(in_flight).unwrap_or(u32::MAX))
                         .await;
@@ -2201,6 +2333,19 @@ pub async fn run(mut args: SwebenchArgs) -> Result<SweepResults, Error> {
                             r.result.cost_usd,
                             r.result.duration_secs,
                         );
+                        {
+                            let mut state = metrics_state
+                                .lock()
+                                .unwrap_or_else(std::sync::PoisonError::into_inner);
+                            state.in_flight = state.in_flight.saturating_sub(1);
+                            state.completed += 1;
+                            if is_resolved_instance_result(&r.result) {
+                                state.resolved += 1;
+                            } else {
+                                state.failed += 1;
+                            }
+                            state.cumulative_cost = cumulative_cost;
+                        }
                         results.push(r);
 
                         // Emit instance_completed webhook event.
@@ -2323,7 +2468,7 @@ pub async fn run(mut args: SwebenchArgs) -> Result<SweepResults, Error> {
                     }
                     Err(e) => {
                         errored += 1;
-                        results.push(RunSlotResult::new(
+                        let r = RunSlotResult::new(
                             1,
                             InstanceResult {
                                 instance_id: "<join_error>".into(),
@@ -2356,7 +2501,17 @@ pub async fn run(mut args: SwebenchArgs) -> Result<SweepResults, Error> {
                                 previous_failure_category: None,
                                 trace_id: None,
                             },
-                        ));
+                        );
+                        {
+                            let mut state = metrics_state
+                                .lock()
+                                .unwrap_or_else(std::sync::PoisonError::into_inner);
+                            state.in_flight = state.in_flight.saturating_sub(1);
+                            state.completed += 1;
+                            state.failed += 1;
+                            state.cumulative_cost = cumulative_cost;
+                        }
+                        results.push(r);
                     }
                 }
             }
@@ -2437,16 +2592,30 @@ pub async fn run(mut args: SwebenchArgs) -> Result<SweepResults, Error> {
             if cancellation.is_none() && !systemic_halt_triggered {
                 if halted {
                     while let Some(inst) = pending.pop_front() {
-                        results.push(RunSlotResult::new(
+                        let r = RunSlotResult::new(
                             inst.run_index,
                             budget_halt_result(&inst.inst.instance_id),
-                        ));
+                        );
+                        {
+                            let mut state = metrics_state
+                                .lock()
+                                .unwrap_or_else(std::sync::PoisonError::into_inner);
+                            state.completed += 1;
+                            state.failed += 1;
+                        }
+                        results.push(r);
                         budget_halted += 1;
                     }
                 } else if in_flight < effective_parallelism {
                     if let Some(inst) = pending.pop_front() {
                         spawn_one(inst, &mut set, governor_arc.clone());
                         in_flight += 1;
+                        {
+                            let mut state = metrics_state
+                                .lock()
+                                .unwrap_or_else(std::sync::PoisonError::into_inner);
+                            state.in_flight += 1;
+                        }
                         if let Some(g) = &governor_arc {
                             g.update_peak_concurrent(u32::try_from(in_flight).unwrap_or(u32::MAX))
                                 .await;
@@ -2768,6 +2937,24 @@ pub async fn run(mut args: SwebenchArgs) -> Result<SweepResults, Error> {
     }
 
     write_sweep_results_atomic(&summary_path, &sweep)?;
+
+    // Happy path disarm and synchronous final export
+    if let Some(mut guard) = metrics_guard.take() {
+        if let Some(handle) = guard.handle.take() {
+            handle.abort();
+            let _ = handle.await;
+        }
+        let final_snapshot = {
+            let mut s = guard
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            s.in_flight = 0;
+            s.cumulative_cost = cumulative_cost;
+            s.snapshot()
+        };
+        guard.exporter.export(&final_snapshot).await;
+    }
 
     Ok(sweep)
 }
@@ -5446,6 +5633,7 @@ mod tests {
             systemic_failure_min_samples: 5,
             systemic_failure_share_pct: 80,
             otlp_endpoint: None,
+            otlp_metrics_interval_secs: None,
             rehearse: false,
             skip_evaluator: false,
             eval_backend: "rehearsal".to_string(),
@@ -6341,6 +6529,7 @@ mod tests {
             systemic_failure_share_pct: 80,
 
             otlp_endpoint: None,
+            otlp_metrics_interval_secs: None,
             rehearse: false,
             skip_evaluator: false,
             eval_backend: "rehearsal".to_string(),
@@ -6426,6 +6615,7 @@ mod tests {
             systemic_failure_share_pct: 80,
 
             otlp_endpoint: None,
+            otlp_metrics_interval_secs: None,
             rehearse: false,
             skip_evaluator: false,
             eval_backend: "rehearsal".to_string(),
@@ -6522,6 +6712,7 @@ instance = "inst"
             systemic_failure_share_pct: 80,
 
             otlp_endpoint: None,
+            otlp_metrics_interval_secs: None,
             rehearse: false,
             skip_evaluator: false,
             eval_backend: "rehearsal".to_string(),
@@ -6658,6 +6849,7 @@ instance = "inst"
             systemic_failure_share_pct: 80,
 
             otlp_endpoint: None,
+            otlp_metrics_interval_secs: None,
             rehearse: false,
             skip_evaluator: false,
             eval_backend: "rehearsal".to_string(),
@@ -7343,6 +7535,7 @@ instance = "inst"
             systemic_failure_share_pct: 80,
 
             otlp_endpoint: None,
+            otlp_metrics_interval_secs: None,
             rehearse: false,
             skip_evaluator: false,
             eval_backend: "rehearsal".to_string(),
@@ -8024,11 +8217,7 @@ instance = "inst"
                 };
                 let mut buf = Vec::new();
                 let mut chunk = [0u8; 8192];
-                loop {
-                    let n = match socket.read(&mut chunk).await {
-                        Ok(n) => n,
-                        Err(_) => break,
-                    };
+                while let Ok(n) = socket.read(&mut chunk).await {
                     if n == 0 {
                         break;
                     }
@@ -8116,6 +8305,7 @@ instance = "inst"
             systemic_failure_min_samples: 5,
             systemic_failure_share_pct: 80,
             otlp_endpoint: None,
+            otlp_metrics_interval_secs: None,
             rehearse: false,
             skip_evaluator: false,
             eval_backend: "rehearsal".to_string(),
