@@ -97,14 +97,18 @@ const CLAP_DEFAULT_STEP_LIMIT: u64 = 50;
 /// are redacted through the configured `[redaction]` policy.
 pub fn run_config_resolve(args: &ConfigResolveArgs) -> Result<ConfigResolveReport, ConfigError> {
     let defaults_cfg = Config::defaults()?;
-    let defaults_json = defaults_cfg.raw.clone();
+    // Serialize the typed root so serde-default fields (e.g. detect_stagnation=true)
+    // are included even when absent from default.toml.
+    let defaults_json = serde_json::to_value(&defaults_cfg.root)
+        .map_err(|e| ConfigError::Invalid(e.to_string()))?;
 
     // Reuse the already-loaded defaults when no config file is provided.
     let merged_cfg = match &args.config {
         Some(path) => Config::load(path)?,
         None => defaults_cfg,
     };
-    let merged_json = merged_cfg.raw.clone();
+    let merged_json =
+        serde_json::to_value(&merged_cfg.root).map_err(|e| ConfigError::Invalid(e.to_string()))?;
 
     let redactor = Redactor::from_config_lossy(&merged_cfg.root.redaction);
 
@@ -263,10 +267,17 @@ fn detect_hazards(merged_json: &Value, args: &ConfigResolveArgs) -> Vec<Override
             field: "model.name".to_string(),
             file_value: Value::String(merged_model.to_string()),
             clap_default_value: Value::String(CLAP_DEFAULT_MODEL.to_string()),
-            commands_affected: vec!["mini".to_string(), "bench swebench".to_string()],
+            commands_affected: vec![
+                "mini".to_string(),
+                "bench swebench".to_string(),
+                "agent stability".to_string(),
+                "agent best-of".to_string(),
+                "agent suite".to_string(),
+            ],
             message: format!(
-                "Config file sets model.name='{merged_model}' but 'mini' and \
-                 'bench swebench' unconditionally apply the clap default \
+                "Config file sets model.name='{merged_model}' but 'mini', \
+                 'bench swebench', 'agent stability', 'agent best-of', and \
+                 'agent suite' unconditionally apply the clap default \
                  '{CLAP_DEFAULT_MODEL}' when --model is not explicitly passed; \
                  your config-file value is silently ignored."
             ),
@@ -730,5 +741,43 @@ mod tests {
                 .unwrap_or("")
                 .contains("my-secret-model-name")
         );
+    }
+
+    #[test]
+    fn serde_default_fields_show_typed_values_not_null() {
+        // Fields absent from default.toml but with serde defaults must resolve
+        // to their actual runtime values, not null.
+        let report = run_config_resolve(&no_args()).unwrap();
+        let detect = find_field(&report, "agent.detect_stagnation");
+        assert_eq!(detect.layer, ProvenanceLayer::Default);
+        assert_eq!(detect.value, Value::Bool(true));
+
+        let threshold = find_field(&report, "agent.stagnation_repeat_threshold");
+        assert_eq!(threshold.layer, ProvenanceLayer::Default);
+        assert_eq!(threshold.value.as_u64().unwrap(), 4);
+
+        let window = find_field(&report, "agent.stagnation_window");
+        assert_eq!(window.layer, ProvenanceLayer::Default);
+        assert_eq!(window.value.as_u64().unwrap(), 8);
+    }
+
+    #[test]
+    fn stability_best_of_suite_listed_in_model_hazard() {
+        let temp = tempfile::tempdir().unwrap();
+        let config_path = temp.path().join("config.toml");
+        fs::write(&config_path, "[model]\nname = \"claude-sonnet-4-6\"\n").unwrap();
+        let args = ConfigResolveArgs {
+            config: Some(config_path),
+            ..no_args()
+        };
+        let report = run_config_resolve(&args).unwrap();
+        let h = report
+            .hazards
+            .iter()
+            .find(|h| h.field == "model.name")
+            .unwrap();
+        assert!(h.commands_affected.contains(&"agent stability".to_string()));
+        assert!(h.commands_affected.contains(&"agent best-of".to_string()));
+        assert!(h.commands_affected.contains(&"agent suite".to_string()));
     }
 }
