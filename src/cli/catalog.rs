@@ -380,6 +380,12 @@ pub fn entries() -> &'static [CatalogEntry] {
             stage: "analyze",
         },
         CatalogEntry {
+            path: "bench subset",
+            summary: "Export a sampled dataset slice as a pinned JSONL artifact and provenance manifest",
+            cost_tier: "free",
+            stage: "preflight",
+        },
+        CatalogEntry {
             path: "bench swebench",
             summary: "Run a SWE-bench sweep over a local JSONL dataset",
             cost_tier: "paid",
@@ -457,37 +463,22 @@ pub fn run_catalog(cmd: CatalogCmd) -> Result<(), Error> {
             schema_version: "1.0",
             commands: filtered,
         };
-        let json_str = serde_json::to_string_pretty(&resp)
-            .map_err(|e| Error::Config(crate::error::ConfigError::Invalid(e.to_string())))?;
-        println!("{json_str}");
-    } else {
-        // Text grouped by stage
-        let mut first = true;
-        for stage in STAGES {
-            let stage_entries: Vec<&CatalogEntry> =
-                filtered.iter().filter(|e| e.stage == *stage).collect();
-            if stage_entries.is_empty() {
-                continue;
-            }
-
-            if !first {
-                println!();
-            }
-            first = false;
-
-            println!("Stage: {stage}");
-            let mut table = Table::new();
-            table
-                .load_preset(UTF8_FULL)
-                .apply_modifier(UTF8_ROUND_CORNERS)
-                .set_header(vec!["Command Path", "Job-to-be-Done Summary", "Cost Tier"]);
-
-            for e in stage_entries {
-                table.add_row(vec![e.path, e.summary, e.cost_tier]);
-            }
-            println!("{table}");
-        }
+        let json = serde_json::to_string_pretty(&resp)?;
+        println!("{json}");
+        return Ok(());
     }
 
+    // Text table output
+    let mut table = Table::new();
+    table
+        .load_preset(UTF8_FULL)
+        .apply_modifier(UTF8_ROUND_CORNERS)
+        .set_header(["Command", "Summary", "Cost", "Stage"]);
+
+    for entry in &filtered {
+        table.add_row([entry.path, entry.summary, entry.cost_tier, entry.stage]);
+    }
+
+    println!("{table}");
     Ok(())
 }

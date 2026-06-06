@@ -4,7 +4,12 @@
 //! They are written before the implementation is complete; some will fail until
 //! the GREEN phase wires them up.
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::too_many_lines)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::too_many_lines,
+    clippy::large_futures
+)]
 
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};

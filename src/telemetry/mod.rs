@@ -676,7 +676,7 @@ impl MetricsExporter {
         for (k, v) in &inner.headers {
             req = req.header(k.as_str(), v.as_str());
         }
-        
+
         match req.body(body).send().await {
             Ok(resp) if resp.status().is_success() => {}
             Ok(resp) => {
@@ -722,6 +722,7 @@ fn json_gauge_double(name: &str, time_nanos: &str, val: f64) -> serde_json::Valu
 }
 
 /// Format the metrics into OTLP/HTTP JSON representation.
+#[allow(clippy::cast_possible_wrap, clippy::cast_precision_loss)]
 pub fn build_metrics_json(
     sweep_id: &str,
     model: &str,
@@ -737,11 +738,29 @@ pub fn build_metrics_json(
         json_gauge_int("instances_failed", &now_nanos, state.failed as i64),
         json_gauge_int("instances_in_flight", &now_nanos, state.in_flight as i64),
         json_gauge_double("cumulative_cost_usd", &now_nanos, state.cumulative_cost),
-        json_gauge_double("resolved_rate", &now_nanos, 
-            if state.completed > 0 { state.resolved as f64 / state.completed as f64 } else { 0.0 }),
-        json_gauge_double("error_rate", &now_nanos, 
-            if state.completed > 0 { state.failed as f64 / state.completed as f64 } else { 0.0 }),
-        json_gauge_int("sweep_wallclock_seconds", &now_nanos, state.elapsed_secs as i64),
+        json_gauge_double(
+            "resolved_rate",
+            &now_nanos,
+            if state.completed > 0 {
+                state.resolved as f64 / state.completed as f64
+            } else {
+                0.0
+            },
+        ),
+        json_gauge_double(
+            "error_rate",
+            &now_nanos,
+            if state.completed > 0 {
+                state.failed as f64 / state.completed as f64
+            } else {
+                0.0
+            },
+        ),
+        json_gauge_int(
+            "sweep_wallclock_seconds",
+            &now_nanos,
+            state.elapsed_secs as i64,
+        ),
     ];
 
     serde_json::to_string(&serde_json::json!({
@@ -801,10 +820,10 @@ pub fn resolve_metrics_endpoint(cli_flag: Option<&str>) -> Option<String> {
 pub fn resolve_metrics_interval(cli_secs: Option<u64>) -> std::time::Duration {
     if let Ok(val) = std::env::var("OTEL_METRIC_EXPORT_INTERVAL") {
         if let Ok(ms) = val.parse::<u64>() {
-            return std::time::Duration::from_millis(ms);
+            return std::time::Duration::from_millis(ms.max(1000));
         }
     }
-    std::time::Duration::from_secs(cli_secs.unwrap_or(15))
+    std::time::Duration::from_secs(cli_secs.unwrap_or(15).max(1))
 }
 
 /// Read OTLP metrics export headers from standard OTel env vars.
@@ -1102,6 +1121,7 @@ pub(crate) mod build {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::float_cmp)]
 mod tests {
     use super::*;
     use std::sync::{Mutex, OnceLock};
@@ -1291,7 +1311,7 @@ mod tests {
         unsafe {
             std::env::remove_var("OTEL_METRIC_EXPORT_INTERVAL");
         }
-        assert_eq!(interval, std::time::Duration::from_millis(30000));
+        assert_eq!(interval, std::time::Duration::from_secs(30));
     }
 
     #[test]
@@ -1312,6 +1332,29 @@ mod tests {
         }
         let interval = resolve_metrics_interval(None);
         assert_eq!(interval, std::time::Duration::from_secs(15));
+    }
+
+    #[test]
+    fn resolve_metrics_interval_clamps_zero_env_var_to_1s() {
+        let _guard = env_lock();
+        unsafe {
+            std::env::set_var("OTEL_METRIC_EXPORT_INTERVAL", "0");
+        }
+        let interval = resolve_metrics_interval(None);
+        unsafe {
+            std::env::remove_var("OTEL_METRIC_EXPORT_INTERVAL");
+        }
+        assert_eq!(interval, std::time::Duration::from_secs(1));
+    }
+
+    #[test]
+    fn resolve_metrics_interval_clamps_zero_cli_secs_to_1s() {
+        let _guard = env_lock();
+        unsafe {
+            std::env::remove_var("OTEL_METRIC_EXPORT_INTERVAL");
+        }
+        let interval = resolve_metrics_interval(Some(0));
+        assert_eq!(interval, std::time::Duration::from_secs(1));
     }
 
     #[test]
@@ -1350,9 +1393,13 @@ mod tests {
         let attrs = resource.get("attributes").unwrap().as_array().unwrap();
 
         let find_attr = |key: &str| {
-            attrs.iter()
+            attrs
+                .iter()
                 .find(|a| a.get("key").unwrap().as_str() == Some(key))
-                .and_then(|a| a.get("value").and_then(|v| v.get("stringValue").and_then(|s| s.as_str())))
+                .and_then(|a| {
+                    a.get("value")
+                        .and_then(|v| v.get("stringValue").and_then(|s| s.as_str()))
+                })
         };
 
         assert_eq!(find_attr("sweep_id"), Some("sweep-123"));
@@ -1360,31 +1407,62 @@ mod tests {
         assert_eq!(find_attr("dataset"), Some("lite"));
         assert_eq!(find_attr("service.name"), Some("maxwells-daemon"));
 
-        let scope_metrics = resource_metrics[0].get("scopeMetrics").unwrap().as_array().unwrap();
+        let scope_metrics = resource_metrics[0]
+            .get("scopeMetrics")
+            .unwrap()
+            .as_array()
+            .unwrap();
         assert_eq!(scope_metrics.len(), 1);
 
         let metrics = scope_metrics[0].get("metrics").unwrap().as_array().unwrap();
-        
+
         let find_metric = |name: &str| {
-            metrics.iter().find(|m| m.get("name").unwrap().as_str() == Some(name)).unwrap()
+            metrics
+                .iter()
+                .find(|m| m.get("name").unwrap().as_str() == Some(name))
+                .unwrap()
         };
 
         let total_gauge = find_metric("instances_total");
-        let total_val = total_gauge.get("gauge").unwrap()
-            .get("dataPoints").unwrap().as_array().unwrap()[0]
-            .get("asInt").unwrap().as_str().unwrap();
+        let total_val = total_gauge
+            .get("gauge")
+            .unwrap()
+            .get("dataPoints")
+            .unwrap()
+            .as_array()
+            .unwrap()[0]
+            .get("asInt")
+            .unwrap()
+            .as_str()
+            .unwrap();
         assert_eq!(total_val, "100");
 
         let cost_gauge = find_metric("cumulative_cost_usd");
-        let cost_val = cost_gauge.get("gauge").unwrap()
-            .get("dataPoints").unwrap().as_array().unwrap()[0]
-            .get("asDouble").unwrap().as_f64().unwrap();
+        let cost_val = cost_gauge
+            .get("gauge")
+            .unwrap()
+            .get("dataPoints")
+            .unwrap()
+            .as_array()
+            .unwrap()[0]
+            .get("asDouble")
+            .unwrap()
+            .as_f64()
+            .unwrap();
         assert_eq!(cost_val, 0.15);
 
         let res_rate_gauge = find_metric("resolved_rate");
-        let res_rate_val = res_rate_gauge.get("gauge").unwrap()
-            .get("dataPoints").unwrap().as_array().unwrap()[0]
-            .get("asDouble").unwrap().as_f64().unwrap();
+        let res_rate_val = res_rate_gauge
+            .get("gauge")
+            .unwrap()
+            .get("dataPoints")
+            .unwrap()
+            .as_array()
+            .unwrap()[0]
+            .get("asDouble")
+            .unwrap()
+            .as_f64()
+            .unwrap();
         assert_eq!(res_rate_val, 0.3);
     }
 

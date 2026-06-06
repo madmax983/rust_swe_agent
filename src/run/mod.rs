@@ -60,6 +60,7 @@ pub mod self_check;
 pub mod skills_preview;
 pub mod stability;
 pub mod stagnation_report;
+pub mod subset;
 pub mod suite;
 pub mod swebench;
 pub mod tail;
