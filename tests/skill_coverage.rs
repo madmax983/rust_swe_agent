@@ -280,6 +280,13 @@ paths = ["{}"]
         0.0
     ); // inst_3 is unresolved (not active)
     assert_eq!(a_all["resolved_rate_delta"].as_f64().unwrap(), 0.5);
+    assert_eq!(a_all["total_activations"].as_u64().unwrap(), 2);
+    assert_eq!(
+        a_all["share_of_all_activations"].as_f64().unwrap(),
+        2.0 / 3.0
+    );
+    assert_eq!(a_all["reasons"]["explicit_mention"].as_u64().unwrap(), 1);
+    assert_eq!(a_all["reasons"]["auto_match"].as_u64().unwrap(), 1);
 
     // skill_c metrics (never activated)
     let c = &by_skill["skill_c"];
@@ -290,6 +297,38 @@ paths = ["{}"]
 
     // check if skill-coverage.json artifact was written
     assert!(sweep.path().join("skill-coverage.json").exists());
+
+    // Verify bucket filter output for JSON
+    let out_unresolved = run_skill_coverage(
+        sweep.path(),
+        &["--format", "json", "--bucket", "unresolved"],
+    );
+    assert!(out_unresolved.status.success());
+    let report_unresolved: serde_json::Value =
+        serde_json::from_slice(&out_unresolved.stdout).unwrap();
+    let by_skill_unresolved = &report_unresolved["by_skill"];
+
+    let a_unres = &by_skill_unresolved["skill_a"]["by_outcome"]["unresolved"];
+    assert_eq!(a_unres["instances_activated"].as_u64().unwrap(), 1);
+    assert_eq!(a_unres["instances_total"].as_u64().unwrap(), 2); // inst_2 and inst_3 are unresolved
+    assert_eq!(a_unres["usage_rate"].as_f64().unwrap(), 0.5);
+    assert_eq!(a_unres["total_activations"].as_u64().unwrap(), 1);
+    assert_eq!(a_unres["share_of_all_activations"].as_f64().unwrap(), 0.5); // skill_a: 1, skill_b: 1. Grand total in unresolved: 2.
+    assert_eq!(a_unres["reasons"]["auto_match"].as_u64().unwrap(), 1);
+    assert_eq!(
+        a_unres["reasons"]
+            .get("explicit_mention")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0),
+        0
+    );
+
+    // Verify bucket filter output for rendered text
+    let out_text = run_skill_coverage(sweep.path(), &["--bucket", "unresolved"]);
+    assert!(out_text.status.success());
+    let text_stdout = String::from_utf8(out_text.stdout).unwrap();
+    assert!(text_stdout.contains("Bucket filter: unresolved"));
+    assert!(text_stdout.contains("skill_a"));
 }
 
 #[test]
@@ -468,4 +507,116 @@ fn cli_supports_per_instance_activation_reasons() {
     let inst = &per_instance[0];
     assert_eq!(inst["instance_id"], "inst_1");
     assert_eq!(inst["active_skills"]["skill_a"], "explicit_mention");
+}
+
+#[test]
+fn cli_fails_when_instance_has_no_trajectory() {
+    let sweep = tempfile::tempdir().unwrap();
+
+    let results = serde_json::json!({
+        "total": 1,
+        "sweep_status": "completed",
+        "submitted": 1,
+        "skipped": 0,
+        "errored": 0,
+        "instances": [
+            { "instance_id": "inst_1", "exit_reason": "submitted" }
+        ],
+        "filter_spec": {},
+        "manifest": {
+            "harness": { "name": "max", "version": "1.0", "git_resolution": "clean" },
+            "dataset": { "path": "x", "sha256": "x", "instance_count": 1 },
+            "prompt_template": { "source": "x", "sha256": "x" },
+            "config": {
+                "resolved": "[skills]\nenabled=true\npaths=[]",
+                "overlay_paths": []
+            },
+            "model": { "name": "claude-3-5", "backend": "anthropic" },
+            "runtime": { "started_at_utc": "2026-06-06T00:00:00Z", "host_os": "linux" },
+            "cli": { "argv": [] }
+        }
+    });
+    write_json_file(&sweep.path().join("results.json"), &results);
+
+    let out = run_skill_coverage(sweep.path(), &[]);
+    assert!(!out.status.success());
+    let stderr = String::from_utf8(out.stderr).unwrap();
+    assert!(stderr.contains("no trajectory found for instance inst_1"));
+}
+
+#[test]
+#[allow(clippy::similar_names)]
+fn cli_fails_when_skill_registry_scan_fails() {
+    let sweep = tempfile::tempdir().unwrap();
+    let skills_dir = sweep.path().join("skills");
+    fs::create_dir_all(&skills_dir).unwrap();
+
+    let skill_a_dir = skills_dir.join("skill_a");
+    fs::create_dir_all(&skill_a_dir).unwrap();
+    let skill_b_dir = skills_dir.join("skill_b");
+    fs::create_dir_all(&skill_b_dir).unwrap();
+
+    fs::write(
+        skill_a_dir.join("SKILL.md"),
+        "---\nname: duplicate_skill\ndescription: desc\n---\nbody",
+    )
+    .unwrap();
+
+    fs::write(
+        skill_b_dir.join("SKILL.md"),
+        "---\nname: duplicate_skill\ndescription: desc\n---\nbody",
+    )
+    .unwrap();
+
+    let toml_config = format!(
+        r#"
+[skills]
+enabled = true
+paths = ["{}"]
+"#,
+        skills_dir.display().to_string().replace('\\', "/")
+    );
+
+    let results = serde_json::json!({
+        "total": 1,
+        "sweep_status": "completed",
+        "submitted": 1,
+        "skipped": 0,
+        "errored": 0,
+        "instances": [
+            { "instance_id": "inst_1", "exit_reason": "submitted" }
+        ],
+        "filter_spec": {},
+        "manifest": {
+            "harness": { "name": "max", "version": "1.0", "git_resolution": "clean" },
+            "dataset": { "path": "x", "sha256": "x", "instance_count": 1 },
+            "prompt_template": { "source": "x", "sha256": "x" },
+            "config": {
+                "resolved": toml_config,
+                "overlay_paths": []
+            },
+            "model": { "name": "claude-3-5", "backend": "anthropic" },
+            "runtime": { "started_at_utc": "2026-06-06T00:00:00Z", "host_os": "linux" },
+            "cli": { "argv": [] }
+        }
+    });
+    write_json_file(&sweep.path().join("results.json"), &results);
+
+    let traj = serde_json::json!({
+        "trajectory_format": "mini-swe-agent-1.2",
+        "artifact_kind": "trajectory",
+        "schema_version": { "major": 1, "minor": 10 },
+        "info": {
+            "task": "task 1",
+            "outcome": "submitted"
+        },
+        "messages": []
+    });
+    fs::create_dir_all(sweep.path().join("inst_1")).unwrap();
+    write_json_file(&sweep.path().join("inst_1").join("trajectory.json"), &traj);
+
+    let out = run_skill_coverage(sweep.path(), &[]);
+    assert!(!out.status.success());
+    let stderr = String::from_utf8(out.stderr).unwrap();
+    assert!(stderr.contains("duplicate skill name"));
 }

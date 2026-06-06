@@ -41,6 +41,9 @@ pub struct SkillOutcomeMetrics {
     pub resolved_rate_when_active: f64,
     pub resolved_rate_when_not_active: f64,
     pub resolved_rate_delta: f64,
+    pub total_activations: usize,
+    pub share_of_all_activations: f64,
+    pub reasons: BTreeMap<String, usize>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -128,6 +131,7 @@ pub fn run(args: &SkillCoverageArgs) -> Result<SkillCoverageReport, Error> {
 
 // ── text rendering ────────────────────────────────────────────────────────────
 
+#[allow(clippy::too_many_lines)]
 pub fn render_text(report: &SkillCoverageReport, bucket_filter: Option<&str>) -> String {
     use comfy_table::Table;
     use comfy_table::modifiers::UTF8_ROUND_CORNERS;
@@ -198,7 +202,18 @@ pub fn render_text(report: &SkillCoverageReport, bucket_filter: Option<&str>) ->
         for (name, m) in &rows {
             let bucket_metrics = m.by_outcome.get(display_bucket);
 
-            let (activated, _total, usage, rr_active, rr_not_active, delta) = match bucket_metrics {
+            let (
+                activated,
+                _total,
+                usage,
+                rr_active,
+                rr_not_active,
+                delta,
+                total_activations,
+                share_of_all_activations,
+                explicit_count,
+                auto_count,
+            ) = match bucket_metrics {
                 Some(o) => (
                     o.instances_activated,
                     o.instances_total,
@@ -206,20 +221,22 @@ pub fn render_text(report: &SkillCoverageReport, bucket_filter: Option<&str>) ->
                     o.resolved_rate_when_active,
                     o.resolved_rate_when_not_active,
                     o.resolved_rate_delta,
+                    o.total_activations,
+                    o.share_of_all_activations,
+                    o.reasons.get("explicit_mention").copied().unwrap_or(0),
+                    o.reasons.get("auto_match").copied().unwrap_or(0),
                 ),
-                None => (0, 0, 0.0, 0.0, 0.0, 0.0),
+                None => (0, 0, 0.0, 0.0, 0.0, 0.0, 0, 0.0, 0, 0),
             };
 
-            let explicit_count = m.reasons.get("explicit_mention").copied().unwrap_or(0);
-            let auto_count = m.reasons.get("auto_match").copied().unwrap_or(0);
             let reasons_str = format!("{explicit_count}/{auto_count}");
 
             table.add_row(vec![
                 (*name).to_owned(),
-                m.total_activations.to_string(),
+                total_activations.to_string(),
                 activated.to_string(),
                 format!("{usage:.4}"),
-                format!("{:.4}", m.share_of_all_activations),
+                format!("{:.4}", share_of_all_activations),
                 reasons_str,
                 format!("{rr_active:.3}"),
                 format!("{rr_not_active:.3}"),
@@ -423,6 +440,11 @@ fn build_report(args: &SkillCoverageArgs) -> Result<SkillCoverageReport, Error> 
         let mut instance_enabled = enabled;
 
         let traj_paths = resolve_trajectory_paths(&args.sweep_dir, id);
+        if traj_paths.is_empty() {
+            return Err(Error::Trajectory(format!(
+                "no trajectory found for instance {id}"
+            )));
+        }
         for traj_path in traj_paths {
             let traj = load_trajectory(&traj_path)?;
             // Parse instance config override
@@ -457,11 +479,10 @@ fn build_report(args: &SkillCoverageArgs) -> Result<SkillCoverageReport, Error> 
                 .iter()
                 .map(crate::skills::expand_skill_path_pub)
                 .collect::<Vec<_>>();
-            if let Ok(registry) = crate::skills::SkillRegistry::scan_paths(expanded_paths) {
-                for manifest in registry.manifests() {
-                    eligible_skills.insert(manifest.name.clone());
-                    skill_descriptions.insert(manifest.name.clone(), manifest.description.clone());
-                }
+            let registry = crate::skills::SkillRegistry::scan_paths(expanded_paths)?;
+            for manifest in registry.manifests() {
+                eligible_skills.insert(manifest.name.clone());
+                skill_descriptions.insert(manifest.name.clone(), manifest.description.clone());
             }
         }
 
@@ -585,7 +606,7 @@ fn build_report(args: &SkillCoverageArgs) -> Result<SkillCoverageReport, Error> 
     let mut by_skill: BTreeMap<String, SkillMetrics> = BTreeMap::new();
     let bucket_names = ["resolved", "unresolved", "errored", "all"];
 
-    for (redacted_name, raw_name) in raw_to_redacted.iter().map(|(k, v)| (v.clone(), k.clone())) {
+    for (redacted_name, _raw_name) in raw_to_redacted.iter().map(|(k, v)| (v.clone(), k.clone())) {
         let mut total_activations = 0;
         let mut instances_activated_global = 0;
         let mut reasons: BTreeMap<String, usize> = BTreeMap::new();
@@ -595,12 +616,16 @@ fn build_report(args: &SkillCoverageArgs) -> Result<SkillCoverageReport, Error> 
         let mut per_bucket_total: HashMap<&str, usize> = HashMap::new();
         let mut per_bucket_resolved_active: HashMap<&str, usize> = HashMap::new();
         let mut per_bucket_resolved_total: HashMap<&str, usize> = HashMap::new();
+        let mut per_bucket_activations: HashMap<&str, usize> = HashMap::new();
+        let mut per_bucket_reasons: HashMap<&str, BTreeMap<String, usize>> = HashMap::new();
 
         for &bname in &bucket_names {
             per_bucket_activated.insert(bname, 0);
             per_bucket_total.insert(bname, 0);
             per_bucket_resolved_active.insert(bname, 0);
             per_bucket_resolved_total.insert(bname, 0);
+            per_bucket_activations.insert(bname, 0);
+            per_bucket_reasons.insert(bname, BTreeMap::new());
         }
 
         for d in &instance_data {
@@ -608,10 +633,6 @@ fn build_report(args: &SkillCoverageArgs) -> Result<SkillCoverageReport, Error> 
                 .active_skills_unique
                 .iter()
                 .any(|s| redactor.redact_text(&s.name, surface::TRAJECTORY).text == redacted_name);
-            let is_eligible = d.eligible_skills.contains(&raw_name);
-
-            // Skill is in scope if it was active or eligible (configured)
-            let in_scope = is_active || is_eligible;
             let is_resolved = d.bucket == OutcomeBucket::Resolved;
 
             if is_active {
@@ -638,16 +659,29 @@ fn build_report(args: &SkillCoverageArgs) -> Result<SkillCoverageReport, Error> 
                     continue;
                 }
 
-                if in_scope {
-                    *per_bucket_total.entry(bname).or_default() += 1;
-                    *per_bucket_resolved_total.entry(bname).or_default() +=
-                        usize::from(is_resolved);
-                }
+                *per_bucket_total.entry(bname).or_default() += 1;
+                *per_bucket_resolved_total.entry(bname).or_default() += usize::from(is_resolved);
 
                 if is_active {
                     *per_bucket_activated.entry(bname).or_default() += 1;
                     *per_bucket_resolved_active.entry(bname).or_default() +=
                         usize::from(is_resolved);
+                }
+
+                *per_bucket_activations.entry(bname).or_default() += activation_count_for_instance;
+
+                for entry in d.active_skills_all.iter().filter(|s| {
+                    redactor.redact_text(&s.name, surface::TRAJECTORY).text == redacted_name
+                }) {
+                    let reason_str = match entry.activation_reason {
+                        crate::skills::SkillActivationReason::ExplicitMention => "explicit_mention",
+                        crate::skills::SkillActivationReason::AutoMatch => "auto_match",
+                    };
+                    *per_bucket_reasons
+                        .entry(bname)
+                        .or_default()
+                        .entry(reason_str.to_owned())
+                        .or_default() += 1;
                 }
             }
         }
@@ -692,6 +726,8 @@ fn build_report(args: &SkillCoverageArgs) -> Result<SkillCoverageReport, Error> 
             };
 
             let resolved_rate_delta = resolved_rate_when_active - resolved_rate_when_not_active;
+            let bucket_total_activations = per_bucket_activations[bname];
+            let bucket_reasons = per_bucket_reasons[bname].clone();
 
             by_outcome.insert(
                 bname.to_owned(),
@@ -702,6 +738,9 @@ fn build_report(args: &SkillCoverageArgs) -> Result<SkillCoverageReport, Error> 
                     resolved_rate_when_active,
                     resolved_rate_when_not_active,
                     resolved_rate_delta,
+                    total_activations: bucket_total_activations,
+                    share_of_all_activations: 0.0,
+                    reasons: bucket_reasons,
                 },
             );
         }
@@ -719,13 +758,36 @@ fn build_report(args: &SkillCoverageArgs) -> Result<SkillCoverageReport, Error> 
         );
     }
 
-    // Compute share of all activations
+    // Compute share of all activations (both global and per-bucket)
     let grand_total_activations: usize = by_skill.values().map(|m| m.total_activations).sum();
+
+    // Track grand total activations per bucket
+    let mut grand_total_activations_by_bucket: HashMap<String, usize> = HashMap::new();
+    for &bname in &bucket_names {
+        let bucket_grand_total: usize = by_skill
+            .values()
+            .map(|m| m.by_outcome.get(bname).map_or(0, |o| o.total_activations))
+            .sum();
+        grand_total_activations_by_bucket.insert(bname.to_owned(), bucket_grand_total);
+    }
+
     for metrics in by_skill.values_mut() {
         #[allow(clippy::cast_precision_loss)]
         if grand_total_activations > 0 {
             metrics.share_of_all_activations =
                 metrics.total_activations as f64 / grand_total_activations as f64;
+        }
+
+        for (bname, outcome_metrics) in &mut metrics.by_outcome {
+            let bucket_grand_total = grand_total_activations_by_bucket
+                .get(bname)
+                .copied()
+                .unwrap_or(0);
+            #[allow(clippy::cast_precision_loss)]
+            if bucket_grand_total > 0 {
+                outcome_metrics.share_of_all_activations =
+                    outcome_metrics.total_activations as f64 / bucket_grand_total as f64;
+            }
         }
     }
 
