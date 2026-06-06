@@ -165,6 +165,8 @@ pub fn run_agent_profile(opts: &AgentProfileOpts) -> Result<AgentProfileReport, 
     }
 
     // ── per-stage share of duration_secs ────────────────────────────────────
+    // duration_ms is used only for percentage computation; truncation from f64 is acceptable here.
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     let duration_ms = info.duration_secs.map(|s| (s * 1000.0) as u64);
     let model_pct = compute_pct(model_ms_total, duration_ms);
     let tool_pct = compute_pct(tool_ms_total, duration_ms);
@@ -183,6 +185,8 @@ pub fn run_agent_profile(opts: &AgentProfileOpts) -> Result<AgentProfileReport, 
     let action_mix: BTreeMap<String, ActionMixEntry> = class_counts
         .into_iter()
         .map(|(name, count)| {
+            // usize→f64 precision loss is acceptable for percentage display.
+            #[allow(clippy::cast_precision_loss)]
             let share_pct = if total_classified > 0 {
                 (count as f64 / total_classified as f64) * 100.0
             } else {
@@ -197,7 +201,7 @@ pub fn run_agent_profile(opts: &AgentProfileOpts) -> Result<AgentProfileReport, 
         schema_version: ArtifactSchemaVersion::CURRENT,
         trajectory_path: opts.trajectory_path.display().to_string(),
         outcome: info.outcome.clone(),
-        failure_category: info.failure_category.clone(),
+        failure_category: info.failure_category,
         steps: info.steps,
         total_cost_usd: info.total_cost_usd.unwrap_or(0.0),
         token_usage,
@@ -207,6 +211,13 @@ pub fn run_agent_profile(opts: &AgentProfileOpts) -> Result<AgentProfileReport, 
     })
 }
 
+// Percentage of stage_ms relative to total_ms (whole-percent, 0–100).
+// Casts from u64→f64 and f64→u8 are acceptable: values are small latency milliseconds.
+#[allow(
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss
+)]
 fn compute_pct(stage_ms: Option<u64>, total_ms: Option<u64>) -> Option<u8> {
     match (stage_ms, total_ms) {
         (Some(s), Some(t)) if t > 0 => Some(((s as f64 / t as f64) * 100.0).round() as u8),
@@ -236,7 +247,6 @@ pub fn format_text(report: &AgentProfileReport) -> String {
     let outcome = report.outcome.as_deref().unwrap_or("unknown");
     let failure = report
         .failure_category
-        .as_ref()
         .map(|c| format!(" ({})", failure_category_label(c)))
         .unwrap_or_default();
     let _ = writeln!(out, "  outcome:        {outcome}{failure}");
@@ -244,8 +254,7 @@ pub fn format_text(report: &AgentProfileReport) -> String {
     let _ = writeln!(out, "  total_cost_usd: ${:.4}", report.total_cost_usd);
     let duration = report
         .duration_secs
-        .map(|d| format!("{d:.1}s"))
-        .unwrap_or_else(|| "unknown".to_owned());
+        .map_or_else(|| "unknown".to_owned(), |d| format!("{d:.1}s"));
     let _ = writeln!(out, "  duration:       {duration}");
 
     // Token usage
@@ -261,7 +270,7 @@ pub fn format_text(report: &AgentProfileReport) -> String {
     let total =
         tu.prompt_tokens + tu.cache_read_tokens + tu.cache_creation_tokens + tu.completion_tokens;
     let _ = writeln!(out, "  ─────────────────────────");
-    let _ = writeln!(out, "  total:           {:>8}", total);
+    let _ = writeln!(out, "  total:           {total:>8}");
 
     // Stage breakdown
     let _ = writeln!(
@@ -312,16 +321,14 @@ pub fn format_text(report: &AgentProfileReport) -> String {
 }
 
 fn fmt_ms(v: Option<u64>) -> String {
-    v.map(|ms| format!("{ms}ms"))
-        .unwrap_or_else(|| "unknown".to_owned())
+    v.map_or_else(|| "unknown".to_owned(), |ms| format!("{ms}ms"))
 }
 
 fn fmt_pct(v: Option<u8>) -> String {
-    v.map(|p| format!("{p}%"))
-        .unwrap_or_else(|| "unknown".to_owned())
+    v.map_or_else(|| "unknown".to_owned(), |p| format!("{p}%"))
 }
 
-fn failure_category_label(fc: &FailureCategory) -> &'static str {
+fn failure_category_label(fc: FailureCategory) -> &'static str {
     match fc {
         FailureCategory::EnvSetup => "env_setup",
         FailureCategory::ModelApi => "model_api",
