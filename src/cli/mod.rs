@@ -67,8 +67,13 @@ pub async fn run() -> Result<(), Error> {
         // for non-zero exits (exit 0 means --help / --version, not an error).
         let _ = e.print();
         if e.exit_code() != 0 {
-            eprintln!("outcome_class: {}", ExitCode::UsageError.outcome_class());
-            eprintln!("error: {e}");
+            use crossterm::style::Stylize;
+            eprintln!(
+                "{} {}",
+                "outcome_class:".dim(),
+                ExitCode::UsageError.outcome_class().dim()
+            );
+            eprintln!("{} {e}", "error:".red().bold());
         }
         std::process::exit(e.exit_code());
     });
@@ -2127,8 +2132,9 @@ async fn bench_forecast(s: args::SwebenchCmd) -> Result<(), Error> {
 /// Used for outcomes that are driven by explicit CLI logic (regression gate,
 /// budget-halt forecast, tail abort) rather than propagated `Error` variants.
 fn exit_with_outcome(code: ExitCode, detail: &str) -> ! {
-    eprintln!("outcome_class: {}", code.outcome_class());
-    eprintln!("error: {detail}");
+    use crossterm::style::Stylize;
+    eprintln!("{} {}", "outcome_class:".dim(), code.outcome_class().dim());
+    eprintln!("{} {}", "error:".red().bold(), detail);
     // Flush stdout so piped consumers receive any buffered report output
     // before the process terminates (process::exit bypasses Drop).
     let _ = std::io::Write::flush(&mut std::io::stdout());
