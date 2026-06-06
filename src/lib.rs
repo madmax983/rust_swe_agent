@@ -24,8 +24,10 @@ pub mod run;
 pub mod skills;
 pub mod stagnation;
 pub mod stream;
-pub mod telemetry;
-pub mod template;
+#[allow(dead_code)]
+pub(crate) mod telemetry;
+#[allow(dead_code)]
+pub(crate) mod template;
 pub mod tool;
 pub mod trajectory;
 
