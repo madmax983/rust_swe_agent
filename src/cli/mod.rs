@@ -144,6 +144,9 @@ pub async fn run() -> Result<(), Error> {
             args::AgentCmd::Env {
                 cmd: args::AgentEnvCmd::Preview(ref p),
             } => agent_env_preview_cmd(p),
+            args::AgentCmd::Config {
+                cmd: args::AgentConfigCmd::Resolve(ref r),
+            } => agent_config_resolve_cmd(r),
             args::AgentCmd::Stability(s) => Box::pin(agent_stability_cmd(*s)).await,
             args::AgentCmd::Suite(s) => Box::pin(agent_suite_cmd(*s)).await,
             args::AgentCmd::PolicyCheck(p) => agent_policy_check_cmd(&p),
@@ -186,6 +189,50 @@ fn agent_env_preview_cmd(p: &args::EnvPreviewCmd) -> Result<(), Error> {
         exit_with_outcome(
             ExitCode::EnvPreviewWarning,
             "env preview has risky findings",
+        );
+    }
+    Ok(())
+}
+
+fn agent_config_resolve_cmd(r: &args::ConfigResolveCmd) -> Result<(), Error> {
+    use crate::run::config_resolve::{ConfigResolveArgs, format_text, run_config_resolve};
+
+    let resolve_args = ConfigResolveArgs {
+        config: r.config.clone(),
+        model_flag: r.model.clone(),
+        step_limit_flag: r.step_limit,
+        observation_max_bytes_flag: r.observation_max_bytes,
+        observation_head_ratio_flag: r.observation_head_ratio,
+        per_task_budget_usd_flag: r.per_task_budget_usd,
+    };
+
+    let report = run_config_resolve(&resolve_args)
+        .map_err(|e| Error::Config(e))?;
+
+    match r.format.as_str() {
+        "json" => {
+            let wrapped = serde_json::json!({ "config_resolve": &report });
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&wrapped)
+                    .map_err(|e| Error::Config(crate::error::ConfigError::Invalid(e.to_string())))?
+            );
+        }
+        "text" | "" => {
+            print!("{}", format_text(&report));
+        }
+        other => {
+            return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+                "--format '{other}' is not valid; use 'text' or 'json'"
+            ))));
+        }
+    }
+
+    if report.has_hazards {
+        exit_with_outcome(
+            ExitCode::ConfigOverrideWarning,
+            "config resolve detected clap-default override hazard(s); \
+             see output above for affected fields",
         );
     }
     Ok(())

@@ -11,6 +11,7 @@ pub mod bisect;
 pub mod budget_fit;
 pub mod bundle;
 pub mod cache_stats;
+pub mod config_resolve;
 pub mod calibrate;
 pub mod cascade;
 pub mod claude_driver;

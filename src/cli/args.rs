@@ -61,6 +61,56 @@ pub enum AgentEnvCmd {
     Preview(EnvPreviewCmd),
 }
 
+/// `agent config` subcommands.
+#[derive(Debug, Subcommand)]
+pub enum AgentConfigCmd {
+    /// Print the fully-resolved run configuration annotated with provenance
+    /// (issue #500). Exits 0 when no hazards are detected; exits 42
+    /// (`config_override_warning`) when at least one clap-default override
+    /// hazard is found. Performs no model calls and no network I/O.
+    Resolve(ConfigResolveCmd),
+}
+
+/// `agent config resolve` — print effective merged run config with provenance.
+///
+/// Exits 0 when the resolved config matches operator intent (no silent
+/// overrides detected). Exits 42 (`config_override_warning`) when at least
+/// one clap-default override hazard is found — suitable as a CI gate.
+#[derive(Debug, Args)]
+pub struct ConfigResolveCmd {
+    /// Path to a TOML config file (overlays defaults).
+    #[arg(long)]
+    pub config: Option<PathBuf>,
+
+    /// Model name. When omitted the clap-default hazard detector will warn if
+    /// your config file sets `model.name` to a different value.
+    #[arg(long)]
+    pub model: Option<String>,
+
+    /// Max agent steps. When omitted the hazard detector will warn if your
+    /// config file sets `agent.step_limit` to a non-default value
+    /// (affects `bench swebench`).
+    #[arg(long)]
+    pub step_limit: Option<u32>,
+
+    /// Observation max-bytes override.
+    #[arg(long)]
+    pub observation_max_bytes: Option<usize>,
+
+    /// Observation head-ratio override.
+    #[arg(long)]
+    pub observation_head_ratio: Option<f64>,
+
+    /// Per-task budget USD override.
+    #[arg(long)]
+    pub per_task_budget_usd: Option<f64>,
+
+    /// Output format: `text` (default, human-readable) or `json`
+    /// (machine-readable; keys emitted in stable, deterministic order).
+    #[arg(long, default_value = "text")]
+    pub format: String,
+}
+
 /// Output-format selector for `agent stability`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum StabilityFormatArg {
@@ -570,6 +620,11 @@ pub enum AgentCmd {
     Env {
         #[command(subcommand)]
         cmd: AgentEnvCmd,
+    },
+    /// Print and validate run configuration.
+    Config {
+        #[command(subcommand)]
+        cmd: AgentConfigCmd,
     },
     /// Verify the secret-redaction config against sample input (zero-cost, no model call).
     RedactCheck(RedactCheckCmd),
