@@ -8019,16 +8019,14 @@ instance = "inst"
 
         tokio::spawn(async move {
             loop {
-                let Ok((mut socket, _)) = listener.accept().await else {
+                let Ok((socket, _)) = listener.accept().await else {
                     break;
                 };
                 let mut buf = Vec::new();
                 let mut chunk = [0u8; 8192];
-                loop {
-                    let n = match socket.read(&mut chunk).await {
-                        Ok(n) => n,
-                        Err(_) => break,
-                    };
+                let reader = tokio::io::BufReader::new(socket);
+                let mut limited_reader = reader.take(1024 * 1024); // Cap to 1MB max reader length
+                while let Ok(n) = limited_reader.read(&mut chunk).await {
                     if n == 0 {
                         break;
                     }
@@ -8049,7 +8047,9 @@ instance = "inst"
                         break;
                     }
                 }
-                let _ = socket
+                let _ = limited_reader
+                    .into_inner()
+                    .into_inner()
                     .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
                     .await;
                 let req_str = String::from_utf8_lossy(&buf);
