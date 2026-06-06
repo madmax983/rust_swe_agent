@@ -1477,6 +1477,7 @@ fn evaluate_instance_with_docker_inner(
 
     // 1. Start a detached container with a timeout to handle unresponsive daemons.
     // --pull=never enforces offline operation — images must be pre-loaded locally.
+    // --network none isolates the container so candidate code cannot make external calls.
     // Label matches `env::docker::LABEL` so cleanup_orphans() can reap stray containers.
     let run_out = run_with_timeout(
         Command::new("docker")
@@ -1485,6 +1486,7 @@ fn evaluate_instance_with_docker_inner(
                 "-d",
                 "--rm",
                 "--pull=never",
+                "--network=none",
                 "--label",
                 "maxwells-daemon=1",
                 "-w",
@@ -1535,17 +1537,41 @@ fn evaluate_instance_with_docker_inner(
         ));
     }
 
-    // 3. Apply the patch with git apply.
-    let apply_out = Command::new("docker")
-        .args([
+    // 3. Apply the patch with git apply, bounded by the remaining deadline.
+    let remaining_for_apply = timeout.saturating_sub(overall_start.elapsed());
+    if remaining_for_apply.is_zero() {
+        return Ok(DockerTestVerdict {
+            resolved: false,
+            timed_out: true,
+            patch_apply_failed: false,
+            patch_error_log: None,
+            tests_passed: vec![],
+            tests_failed: vec![],
+        });
+    }
+    let apply_result = run_with_timeout(
+        Command::new("docker").args([
             "exec",
             &container_id,
             "bash",
             "-c",
             "cd /testbed && git apply /tmp/candidate.patch 2>&1",
-        ])
-        .output()
-        .map_err(|e| format!("git apply exec failed: {e}"))?;
+        ]),
+        remaining_for_apply,
+    );
+    let apply_out = match apply_result {
+        Ok(o) => o,
+        Err(TimedOut) => {
+            return Ok(DockerTestVerdict {
+                resolved: false,
+                timed_out: true,
+                patch_apply_failed: false,
+                patch_error_log: None,
+                tests_passed: vec![],
+                tests_failed: vec![],
+            });
+        }
+    };
 
     if !apply_out.status.success() {
         let stderr = String::from_utf8_lossy(&apply_out.stdout)
@@ -3944,5 +3970,113 @@ mod tests {
             unresolved.patch_error_log.is_none(),
             "patch_error_log must be None for unresolved rows (not patch_apply_failed)"
         );
+    }
+
+    // ── parse_pytest_output ───────────────────────────────────────────────────
+
+    #[test]
+    fn parse_pytest_output_standard_suffix_format() {
+        let output =
+            "tests/test_foo.py::test_bar PASSED [ 50%]\ntests/test_foo.py::test_baz FAILED [ 100%]";
+        let all_tests = &["tests/test_foo.py::test_bar", "tests/test_foo.py::test_baz"];
+        let (passed, failed) = parse_pytest_output(output, all_tests);
+        assert_eq!(passed, vec!["tests/test_foo.py::test_bar"]);
+        assert_eq!(failed, vec!["tests/test_foo.py::test_baz"]);
+    }
+
+    #[test]
+    fn parse_pytest_output_error_lines_classified_as_failed() {
+        let output = "tests/test_x.py::test_setup ERROR\ntests/test_x.py::test_ok PASSED";
+        let all_tests = &["tests/test_x.py::test_setup", "tests/test_x.py::test_ok"];
+        let (passed, failed) = parse_pytest_output(output, all_tests);
+        assert_eq!(passed, vec!["tests/test_x.py::test_ok"]);
+        assert_eq!(failed, vec!["tests/test_x.py::test_setup"]);
+    }
+
+    #[test]
+    fn parse_pytest_output_unrun_tests_counted_as_failed() {
+        let output = "";
+        let all_tests = &["tests/test_x.py::test_a", "tests/test_x.py::test_b"];
+        let (passed, failed) = parse_pytest_output(output, all_tests);
+        assert!(passed.is_empty());
+        assert_eq!(
+            failed,
+            vec!["tests/test_x.py::test_a", "tests/test_x.py::test_b"]
+        );
+    }
+
+    #[test]
+    fn parse_pytest_output_failed_with_reason_suffix_stripped() {
+        let output = "tests/test_foo.py::test_bar FAILED - AssertionError: wrong";
+        let all_tests = &["tests/test_foo.py::test_bar"];
+        let (passed, failed) = parse_pytest_output(output, all_tests);
+        assert!(passed.is_empty());
+        assert_eq!(failed, vec!["tests/test_foo.py::test_bar"]);
+    }
+
+    #[test]
+    fn parse_pytest_output_empty_output_all_tests_fail() {
+        let all_tests = &["a::b", "c::d"];
+        let (passed, failed) = parse_pytest_output("", all_tests);
+        assert!(passed.is_empty());
+        assert_eq!(failed.len(), 2);
+    }
+
+    #[test]
+    fn parse_pytest_output_already_counted_test_not_duplicated() {
+        let output = "tests/a.py::t PASSED [ 100%]";
+        let all_tests = &["tests/a.py::t"];
+        let (passed, failed) = parse_pytest_output(output, all_tests);
+        assert_eq!(passed, vec!["tests/a.py::t"]);
+        assert!(failed.is_empty());
+    }
+
+    // ── extract_test_list ────────────────────────────────────────────────────
+
+    #[test]
+    fn extract_test_list_json_array_form() {
+        let mut other = serde_json::Map::new();
+        other.insert(
+            "FAIL_TO_PASS".to_owned(),
+            serde_json::json!(["test_a", "test_b"]),
+        );
+        let result = extract_test_list(&other, "FAIL_TO_PASS");
+        assert_eq!(result, vec!["test_a", "test_b"]);
+    }
+
+    #[test]
+    fn extract_test_list_json_encoded_string_form() {
+        let mut other = serde_json::Map::new();
+        other.insert(
+            "FAIL_TO_PASS".to_owned(),
+            serde_json::json!(r#"["test_x", "test_y"]"#),
+        );
+        let result = extract_test_list(&other, "FAIL_TO_PASS");
+        assert_eq!(result, vec!["test_x", "test_y"]);
+    }
+
+    #[test]
+    fn extract_test_list_missing_key_returns_empty() {
+        let other = serde_json::Map::new();
+        assert!(extract_test_list(&other, "FAIL_TO_PASS").is_empty());
+    }
+
+    #[test]
+    fn extract_test_list_wrong_type_returns_empty() {
+        let mut other = serde_json::Map::new();
+        other.insert("FAIL_TO_PASS".to_owned(), serde_json::json!(42));
+        assert!(extract_test_list(&other, "FAIL_TO_PASS").is_empty());
+    }
+
+    #[test]
+    fn extract_test_list_pass_to_pass_key() {
+        let mut other = serde_json::Map::new();
+        other.insert(
+            "PASS_TO_PASS".to_owned(),
+            serde_json::json!(["p::t1", "p::t2", "p::t3"]),
+        );
+        let result = extract_test_list(&other, "PASS_TO_PASS");
+        assert_eq!(result.len(), 3);
+        assert_eq!(result[0], "p::t1");
     }
 }
