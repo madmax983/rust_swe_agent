@@ -195,6 +195,10 @@ fn agent_env_preview_cmd(p: &args::EnvPreviewCmd) -> Result<(), Error> {
 }
 
 fn agent_config_resolve_cmd(r: &args::ConfigResolveCmd) -> Result<(), Error> {
+    if let Some(v) = r.observation_head_ratio {
+        validate_observation_head_ratio(v)?;
+    }
+
     use crate::run::config_resolve::{ConfigResolveArgs, format_text, run_config_resolve};
 
     let resolve_args = ConfigResolveArgs {
@@ -206,16 +210,16 @@ fn agent_config_resolve_cmd(r: &args::ConfigResolveCmd) -> Result<(), Error> {
         per_task_budget_usd_flag: r.per_task_budget_usd,
     };
 
-    let report = run_config_resolve(&resolve_args)
-        .map_err(|e| Error::Config(e))?;
+    let report = run_config_resolve(&resolve_args).map_err(|e| Error::Config(e))?;
 
     match r.format.as_str() {
         "json" => {
             let wrapped = serde_json::json!({ "config_resolve": &report });
             println!(
                 "{}",
-                serde_json::to_string_pretty(&wrapped)
-                    .map_err(|e| Error::Config(crate::error::ConfigError::Invalid(e.to_string())))?
+                serde_json::to_string_pretty(&wrapped).map_err(|e| Error::Config(
+                    crate::error::ConfigError::Invalid(e.to_string())
+                ))?
             );
         }
         "text" | "" => {

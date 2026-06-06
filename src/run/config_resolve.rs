@@ -99,9 +99,10 @@ pub fn run_config_resolve(args: &ConfigResolveArgs) -> Result<ConfigResolveRepor
     let defaults_cfg = Config::defaults()?;
     let defaults_json = defaults_cfg.raw.clone();
 
+    // Reuse the already-loaded defaults when no config file is provided.
     let merged_cfg = match &args.config {
         Some(path) => Config::load(path)?,
-        None => Config::defaults()?,
+        None => defaults_cfg,
     };
     let merged_json = merged_cfg.raw.clone();
 
@@ -208,7 +209,7 @@ fn build_resolved_fields(
             if let Some(flag_val) = get_flag_override(field_def.key, args) {
                 ResolvedField {
                     key: field_def.key.to_string(),
-                    value: flag_val,
+                    value: redact_value(flag_val, redactor),
                     layer: ProvenanceLayer::Flag,
                 }
             } else if merged_val != default_val {
@@ -233,15 +234,15 @@ fn get_flag_override(key: &str, args: &ConfigResolveArgs) -> Option<Value> {
     match key {
         "model.name" => args.model_flag.as_ref().map(|v| Value::String(v.clone())),
         "agent.step_limit" => args.step_limit_flag.map(|v| Value::Number(v.into())),
-        "agent.observation_max_bytes" => {
-            args.observation_max_bytes_flag.map(|v| Value::Number(v.into()))
-        }
-        "agent.observation_head_ratio" => args.observation_head_ratio_flag.and_then(|v| {
-            serde_json::Number::from_f64(v).map(Value::Number)
-        }),
-        "agent.per_task_budget_usd" => args.per_task_budget_usd_flag.and_then(|v| {
-            serde_json::Number::from_f64(v).map(Value::Number)
-        }),
+        "agent.observation_max_bytes" => args
+            .observation_max_bytes_flag
+            .map(|v| Value::Number(v.into())),
+        "agent.observation_head_ratio" => args
+            .observation_head_ratio_flag
+            .and_then(|v| serde_json::Number::from_f64(v).map(Value::Number)),
+        "agent.per_task_budget_usd" => args
+            .per_task_budget_usd_flag
+            .and_then(|v| serde_json::Number::from_f64(v).map(Value::Number)),
         _ => None,
     }
 }
@@ -335,11 +336,7 @@ pub fn format_text(report: &ConfigResolveReport) -> String {
             ProvenanceLayer::Env => "env",
             ProvenanceLayer::Flag => "flag",
         };
-        let _ = writeln!(
-            out,
-            "{:<42} {:<32} {}",
-            field.key, value_str, layer_str
-        );
+        let _ = writeln!(out, "{:<42} {:<32} {}", field.key, value_str, layer_str);
     }
 
     let _ = writeln!(out);
@@ -525,12 +522,16 @@ mod tests {
             .filter(|h| h.field == "model.name")
             .collect();
         assert_eq!(model_hazards.len(), 1);
-        assert!(model_hazards[0]
-            .commands_affected
-            .contains(&"mini".to_string()));
-        assert!(model_hazards[0]
-            .commands_affected
-            .contains(&"bench swebench".to_string()));
+        assert!(
+            model_hazards[0]
+                .commands_affected
+                .contains(&"mini".to_string())
+        );
+        assert!(
+            model_hazards[0]
+                .commands_affected
+                .contains(&"bench swebench".to_string())
+        );
     }
 
     #[test]
@@ -544,7 +545,11 @@ mod tests {
             ..no_args()
         };
         let report = run_config_resolve(&args).unwrap();
-        let h = report.hazards.iter().find(|h| h.field == "model.name").unwrap();
+        let h = report
+            .hazards
+            .iter()
+            .find(|h| h.field == "model.name")
+            .unwrap();
         assert_eq!(h.file_value.as_str().unwrap(), "claude-sonnet-4-6");
         assert_eq!(h.clap_default_value.as_str().unwrap(), "claude-opus-4-7");
     }
@@ -561,12 +566,7 @@ mod tests {
             ..no_args()
         };
         let report = run_config_resolve(&args).unwrap();
-        let model_hazards: Vec<_> = report
-            .hazards
-            .iter()
-            .filter(|h| h.field == "model.name")
-            .collect();
-        assert!(model_hazards.is_empty());
+        assert!(!report.hazards.iter().any(|h| h.field == "model.name"));
     }
 
     #[test]
@@ -574,11 +574,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let config_path = temp.path().join("config.toml");
         // Setting the same value as the clap default — no hazard expected
-        fs::write(
-            &config_path,
-            "[model]\nname = \"claude-opus-4-7\"\n",
-        )
-        .unwrap();
+        fs::write(&config_path, "[model]\nname = \"claude-opus-4-7\"\n").unwrap();
 
         let args = ConfigResolveArgs {
             config: Some(config_path),
@@ -586,12 +582,7 @@ mod tests {
             ..no_args()
         };
         let report = run_config_resolve(&args).unwrap();
-        let model_hazards: Vec<_> = report
-            .hazards
-            .iter()
-            .filter(|h| h.field == "model.name")
-            .collect();
-        assert!(model_hazards.is_empty());
+        assert!(!report.hazards.iter().any(|h| h.field == "model.name"));
     }
 
     #[test]
@@ -612,9 +603,11 @@ mod tests {
             .filter(|h| h.field == "agent.step_limit")
             .collect();
         assert_eq!(step_hazards.len(), 1);
-        assert!(step_hazards[0]
-            .commands_affected
-            .contains(&"bench swebench".to_string()));
+        assert!(
+            step_hazards[0]
+                .commands_affected
+                .contains(&"bench swebench".to_string())
+        );
     }
 
     #[test]
@@ -629,12 +622,7 @@ mod tests {
             ..no_args()
         };
         let report = run_config_resolve(&args).unwrap();
-        let step_hazards: Vec<_> = report
-            .hazards
-            .iter()
-            .filter(|h| h.field == "agent.step_limit")
-            .collect();
-        assert!(step_hazards.is_empty());
+        assert!(!report.hazards.iter().any(|h| h.field == "agent.step_limit"));
     }
 
     #[test]
@@ -648,12 +636,7 @@ mod tests {
             ..no_args()
         };
         let report = run_config_resolve(&args).unwrap();
-        let step_hazards: Vec<_> = report
-            .hazards
-            .iter()
-            .filter(|h| h.field == "agent.step_limit")
-            .collect();
-        assert!(step_hazards.is_empty());
+        assert!(!report.hazards.iter().any(|h| h.field == "agent.step_limit"));
     }
 
     // ── Output format tests ───────────────────────────────────────────────────
@@ -718,5 +701,34 @@ mod tests {
         let f = find_field(&report, "agent.observation_max_bytes");
         assert_eq!(f.layer, ProvenanceLayer::Flag);
         assert_eq!(f.value.as_u64().unwrap(), 8192);
+    }
+
+    #[test]
+    fn flag_value_string_is_redacted_when_it_matches_secret_literal() {
+        // Configure a secret literal in the redaction section, then pass it
+        // as --model. The flag value must be masked in the output.
+        let temp = tempfile::tempdir().unwrap();
+        let config_path = temp.path().join("config.toml");
+        fs::write(
+            &config_path,
+            "[redaction]\nsecret_literals = [\"my-secret-model-name\"]\n",
+        )
+        .unwrap();
+
+        let args = ConfigResolveArgs {
+            config: Some(config_path),
+            model_flag: Some("my-secret-model-name".into()),
+            ..no_args()
+        };
+        let report = run_config_resolve(&args).unwrap();
+        let f = find_field(&report, "model.name");
+        assert_eq!(f.layer, ProvenanceLayer::Flag);
+        // The raw secret must not appear verbatim in the resolved output.
+        assert!(
+            !f.value
+                .as_str()
+                .unwrap_or("")
+                .contains("my-secret-model-name")
+        );
     }
 }
