@@ -253,20 +253,6 @@ pub fn render_text(report: &SkillCoverageReport, bucket_filter: Option<&str>) ->
 
 // ── helper logic ──────────────────────────────────────────────────────────────
 
-fn classify_outcome(
-    instance_id: &str,
-    instance: &InstanceResult,
-    resolved_set: &HashSet<String>,
-) -> OutcomeBucket {
-    if resolved_set.contains(instance_id) {
-        return OutcomeBucket::Resolved;
-    }
-    if instance.outcome.as_deref() == Some(crate::trajectory::outcome::ERROR) {
-        return OutcomeBucket::Errored;
-    }
-    OutcomeBucket::Unresolved
-}
-
 fn matches_filter(
     instance: &InstanceResult,
     is_resolved: bool,
@@ -335,7 +321,14 @@ fn resolve_trajectory_paths(sweep: &Path, instance_id: &str) -> Vec<PathBuf> {
                             .is_some_and(|n| n.starts_with("run-") && n.ends_with(".traj.json"))
                     })
                     .collect();
-                paths.sort();
+                paths.sort_by_key(|p| {
+                    p.file_name()
+                        .and_then(|n| n.to_str())
+                        .and_then(|n| n.strip_prefix("run-"))
+                        .and_then(|n| n.strip_suffix(".traj.json"))
+                        .and_then(|n| n.parse::<u64>().ok())
+                        .unwrap_or(u64::MAX)
+                });
                 paths
             })
             .unwrap_or_default();
@@ -369,6 +362,55 @@ fn load_trajectory(path: &Path) -> Result<Trajectory, Error> {
 
 fn utc_now_iso8601() -> String {
     chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct RunSlotKey {
+    instance_id: String,
+    run_index: u32,
+}
+
+fn load_resolved_by_run(sweep_dir: &Path) -> HashMap<RunSlotKey, bool> {
+    let mut resolved_by_run = HashMap::new();
+    let report_dir = sweep_dir.join("sb_cli_reports");
+    if report_dir.is_dir() {
+        if let Ok(entries) = std::fs::read_dir(report_dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.extension().and_then(|s| s.to_str()) == Some("json") {
+                    let filename = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+                    let run_index = if let Some(idx_str) = filename.split("-run-").nth(1) {
+                        idx_str.parse::<u32>().unwrap_or(1)
+                    } else {
+                        1
+                    };
+                    if let Ok(text) = std::fs::read_to_string(&path) {
+                        if let Ok(val) = serde_json::from_str::<serde_json::Value>(&text) {
+                            if let Some(instances) =
+                                val.get("instances").and_then(serde_json::Value::as_array)
+                            {
+                                for inst in instances {
+                                    if let (Some(inst_id), Some(resolved)) = (
+                                        inst.get("instance_id").and_then(serde_json::Value::as_str),
+                                        inst.get("resolved").and_then(serde_json::Value::as_bool),
+                                    ) {
+                                        resolved_by_run.insert(
+                                            RunSlotKey {
+                                                instance_id: inst_id.to_owned(),
+                                                run_index,
+                                            },
+                                            resolved,
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    resolved_by_run
 }
 
 #[allow(clippy::too_many_lines)]
@@ -420,6 +462,7 @@ fn build_report(args: &SkillCoverageArgs) -> Result<SkillCoverageReport, Error> 
     let mut sorted_ids: Vec<String> = sweep.instances.keys().cloned().collect();
     sorted_ids.sort();
 
+    let resolved_by_run = load_resolved_by_run(&args.sweep_dir);
     let mut instance_data: Vec<InstanceSkillData> = Vec::new();
     let mut skill_descriptions = HashMap::new();
 
@@ -433,20 +476,37 @@ fn build_report(args: &SkillCoverageArgs) -> Result<SkillCoverageReport, Error> 
             }
         }
 
-        let bucket = classify_outcome(id, instance, &resolved_set);
-        let mut active_skills_unique: Vec<crate::skills::ActiveSkillManifest> = Vec::new();
-        let mut active_skills_all: Vec<crate::skills::ActiveSkillManifest> = Vec::new();
-        let mut instance_skill_paths = global_skill_paths.clone();
-        let mut instance_enabled = enabled;
-
         let traj_paths = resolve_trajectory_paths(&args.sweep_dir, id);
         if traj_paths.is_empty() {
             return Err(Error::Trajectory(format!(
                 "no trajectory found for instance {id}"
             )));
         }
-        for traj_path in traj_paths {
-            let traj = load_trajectory(&traj_path)?;
+        let total_traj_paths = traj_paths.len();
+
+        for traj_path in &traj_paths {
+            let run_index = if traj_path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.starts_with("run-") && n.ends_with(".traj.json"))
+            {
+                traj_path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .and_then(|n| n.strip_prefix("run-"))
+                    .and_then(|n| n.strip_suffix(".traj.json"))
+                    .and_then(|n| n.parse::<u32>().ok())
+                    .unwrap_or(1)
+            } else {
+                1
+            };
+
+            let traj = load_trajectory(traj_path)?;
+            let mut active_skills_unique: Vec<crate::skills::ActiveSkillManifest> = Vec::new();
+            let mut active_skills_all: Vec<crate::skills::ActiveSkillManifest> = Vec::new();
+            let mut instance_skill_paths = global_skill_paths.clone();
+            let mut instance_enabled = enabled;
+
             // Parse instance config override
             if let Some(manifest) = &traj.info.manifest {
                 if let Ok(root_cfg) = serde_json::from_value::<crate::config::schema::RootCfg>(
@@ -459,42 +519,80 @@ fn build_report(args: &SkillCoverageArgs) -> Result<SkillCoverageReport, Error> 
 
             // Parse active skills from trajectory other metadata
             if let Some(raw_skills) = traj.info.other.get("active_skills") {
-                if let Ok(skills) = serde_json::from_value::<Vec<crate::skills::ActiveSkillManifest>>(
-                    raw_skills.clone(),
-                ) {
-                    for skill in skills {
-                        active_skills_all.push(skill.clone());
-                        if !active_skills_unique.iter().any(|s| s.name == skill.name) {
-                            active_skills_unique.push(skill);
-                        }
+                let skills: Vec<crate::skills::ActiveSkillManifest> =
+                    serde_json::from_value(raw_skills.clone())?;
+                for skill in skills {
+                    active_skills_all.push(skill.clone());
+                    if !active_skills_unique.iter().any(|s| s.name == skill.name) {
+                        active_skills_unique.push(skill.clone());
                     }
                 }
             }
-        }
 
-        // Collect eligible skills for this instance if skills subsystem is enabled
-        let mut eligible_skills = HashSet::new();
-        if instance_enabled {
-            let expanded_paths = instance_skill_paths
-                .iter()
-                .map(crate::skills::expand_skill_path_pub)
-                .collect::<Vec<_>>();
-            let registry = crate::skills::SkillRegistry::scan_paths(expanded_paths)?;
-            for manifest in registry.manifests() {
-                eligible_skills.insert(manifest.name.clone());
-                skill_descriptions.insert(manifest.name.clone(), manifest.description.clone());
+            // Collect eligible skills for this instance if skills subsystem is enabled
+            let mut eligible_skills = HashSet::new();
+            if instance_enabled {
+                // For scanning eligible skills, use the unredacted global_skill_paths (from the sweep config),
+                // because the per-instance paths in config_redacted are redacted and thus cannot be scanned.
+                let expanded_paths = global_skill_paths
+                    .iter()
+                    .map(crate::skills::expand_skill_path_pub)
+                    .collect::<Vec<_>>();
+                let registry = crate::skills::SkillRegistry::scan_paths(expanded_paths)?;
+                for manifest in registry.manifests() {
+                    eligible_skills.insert(manifest.name.clone());
+                    skill_descriptions.insert(manifest.name.clone(), manifest.description.clone());
+                }
             }
-        }
 
-        instance_data.push(InstanceSkillData {
-            id: id.clone(),
-            bucket,
-            active_skills_unique,
-            active_skills_all,
-            eligible_skills,
-            eligible_paths: instance_skill_paths,
-            skills_enabled: instance_enabled,
-        });
+            let is_run_resolved = resolved_by_run
+                .get(&RunSlotKey {
+                    instance_id: id.clone(),
+                    run_index,
+                })
+                .copied()
+                .unwrap_or_else(|| {
+                    // Heuristic fallback
+                    if is_resolved {
+                        let runs = crate::run::swebench::effective_runs(instance);
+                        let resolved_count = crate::run::swebench::resolved_count(instance);
+                        let pass_at_1 = crate::run::swebench::pass_at_1(instance);
+                        if runs <= 1 {
+                            true
+                        } else if run_index == 1 {
+                            pass_at_1
+                        } else {
+                            resolved_count == runs || (run_index == runs)
+                        }
+                    } else {
+                        false
+                    }
+                });
+
+            let run_bucket = if is_run_resolved {
+                OutcomeBucket::Resolved
+            } else if traj.info.outcome.as_deref() == Some(crate::trajectory::outcome::ERROR) {
+                OutcomeBucket::Errored
+            } else {
+                OutcomeBucket::Unresolved
+            };
+
+            let run_id = if total_traj_paths > 1 {
+                format!("{id}-run-{run_index}")
+            } else {
+                id.clone()
+            };
+
+            instance_data.push(InstanceSkillData {
+                id: run_id,
+                bucket: run_bucket,
+                active_skills_unique,
+                active_skills_all,
+                eligible_skills,
+                eligible_paths: instance_skill_paths,
+                skills_enabled: instance_enabled,
+            });
+        }
     }
 
     // If skills subsystem is disabled or empty across all scanned instances, return empty report

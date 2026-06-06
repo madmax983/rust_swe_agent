@@ -620,3 +620,283 @@ paths = ["{}"]
     let stderr = String::from_utf8(out.stderr).unwrap();
     assert!(stderr.contains("duplicate skill name"));
 }
+
+#[test]
+fn cli_fails_on_malformed_active_skills_manifest() {
+    let sweep = tempfile::tempdir().unwrap();
+
+    let results = serde_json::json!({
+        "total": 1,
+        "sweep_status": "completed",
+        "submitted": 1,
+        "skipped": 0,
+        "errored": 0,
+        "instances": [
+            { "instance_id": "inst_1", "exit_reason": "submitted" }
+        ],
+        "filter_spec": {},
+        "manifest": {
+            "harness": { "name": "max", "version": "1.0", "git_resolution": "clean" },
+            "dataset": { "path": "x", "sha256": "x", "instance_count": 1 },
+            "prompt_template": { "source": "x", "sha256": "x" },
+            "config": {
+                "resolved": "[skills]\nenabled=true\npaths=[]",
+                "overlay_paths": []
+            },
+            "model": { "name": "claude-3-5", "backend": "anthropic" },
+            "runtime": { "started_at_utc": "2026-06-06T00:00:00Z", "host_os": "linux" },
+            "cli": { "argv": [] }
+        }
+    });
+    write_json_file(&sweep.path().join("results.json"), &results);
+
+    // active_skills contains malformed json (a string instead of list of manifests)
+    let traj = serde_json::json!({
+        "trajectory_format": "mini-swe-agent-1.2",
+        "artifact_kind": "trajectory",
+        "schema_version": { "major": 1, "minor": 10 },
+        "info": {
+            "task": "task 1",
+            "outcome": "submitted",
+            "active_skills": "not-a-list"
+        },
+        "messages": []
+    });
+    fs::create_dir_all(sweep.path().join("inst_1")).unwrap();
+    write_json_file(&sweep.path().join("inst_1").join("trajectory.json"), &traj);
+
+    let out = run_skill_coverage(sweep.path(), &[]);
+    assert!(!out.status.success());
+    let stderr = String::from_utf8(out.stderr).unwrap();
+    assert!(stderr.contains("invalid type"));
+}
+
+#[test]
+fn cli_attributes_retry_activations_to_correct_outcome_bucket() {
+    let sweep = tempfile::tempdir().unwrap();
+
+    let results = serde_json::json!({
+        "total": 1,
+        "sweep_status": "completed",
+        "submitted": 1,
+        "skipped": 0,
+        "errored": 0,
+        "instances": [
+            {
+                "instance_id": "inst_1",
+                "exit_reason": "submitted",
+                "resolved_count": 1,
+                "runs": 2,
+                "pass_at_1": false
+            }
+        ],
+        "filter_spec": {},
+        "manifest": {
+            "harness": { "name": "max", "version": "1.0", "git_resolution": "clean" },
+            "dataset": { "path": "x", "sha256": "x", "instance_count": 1 },
+            "prompt_template": { "source": "x", "sha256": "x" },
+            "config": {
+                "resolved": "[skills]\nenabled=true\npaths=[]",
+                "overlay_paths": []
+            },
+            "model": { "name": "claude-3-5", "backend": "anthropic" },
+            "runtime": { "started_at_utc": "2026-06-06T00:00:00Z", "host_os": "linux" },
+            "cli": { "argv": [] }
+        }
+    });
+    write_json_file(&sweep.path().join("results.json"), &results);
+
+    // Mock sb_cli_reports
+    let report_dir = sweep.path().join("sb_cli_reports");
+    fs::create_dir_all(&report_dir).unwrap();
+
+    let report_1 = serde_json::json!({
+        "instances": [
+            { "instance_id": "inst_1", "resolved": false }
+        ]
+    });
+    write_json_file(&report_dir.join("max__test__run-run-1.json"), &report_1);
+
+    let report_2 = serde_json::json!({
+        "instances": [
+            { "instance_id": "inst_1", "resolved": true }
+        ]
+    });
+    write_json_file(&report_dir.join("max__test__run-run-2.json"), &report_2);
+
+    // traj for run-1: skill_a activated
+    let traj_1 = serde_json::json!({
+        "trajectory_format": "mini-swe-agent-1.2",
+        "artifact_kind": "trajectory",
+        "schema_version": { "major": 1, "minor": 10 },
+        "info": {
+            "task": "task 1",
+            "outcome": "submitted",
+            "active_skills": [
+                {
+                    "name": "skill_a",
+                    "description": "desc",
+                    "path": "/path/a",
+                    "sha256": "hash",
+                    "activation_reason": "explicit_mention"
+                }
+            ]
+        },
+        "messages": []
+    });
+    let inst_dir = sweep.path().join("inst_1");
+    fs::create_dir_all(&inst_dir).unwrap();
+    write_json_file(&inst_dir.join("run-1.traj.json"), &traj_1);
+
+    // traj for run-2: skill_b activated
+    let traj_2 = serde_json::json!({
+        "trajectory_format": "mini-swe-agent-1.2",
+        "artifact_kind": "trajectory",
+        "schema_version": { "major": 1, "minor": 10 },
+        "info": {
+            "task": "task 1",
+            "outcome": "submitted",
+            "active_skills": [
+                {
+                    "name": "skill_b",
+                    "description": "desc",
+                    "path": "/path/b",
+                    "sha256": "hash",
+                    "activation_reason": "explicit_mention"
+                }
+            ]
+        },
+        "messages": []
+    });
+    write_json_file(&inst_dir.join("run-2.traj.json"), &traj_2);
+
+    let out = run_skill_coverage(sweep.path(), &["--format", "json"]);
+    assert!(
+        out.status.success(),
+        "Stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let report: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+
+    let by_skill = &report["by_skill"];
+
+    // skill_a should be activated in unresolved but not resolved
+    let a_resolved = &by_skill["skill_a"]["by_outcome"]["resolved"];
+    assert_eq!(a_resolved["instances_activated"].as_u64().unwrap(), 0);
+    let a_unresolved = &by_skill["skill_a"]["by_outcome"]["unresolved"];
+    assert_eq!(a_unresolved["instances_activated"].as_u64().unwrap(), 1);
+
+    // skill_b should be activated in resolved but not unresolved
+    let b_resolved = &by_skill["skill_b"]["by_outcome"]["resolved"];
+    assert_eq!(b_resolved["instances_activated"].as_u64().unwrap(), 1);
+    let b_unresolved = &by_skill["skill_b"]["by_outcome"]["unresolved"];
+    assert_eq!(b_unresolved["instances_activated"].as_u64().unwrap(), 0);
+}
+
+#[test]
+fn cli_attributes_retry_activations_using_heuristic_fallback() {
+    let sweep = tempfile::tempdir().unwrap();
+
+    let results = serde_json::json!({
+        "total": 1,
+        "sweep_status": "completed",
+        "submitted": 1,
+        "skipped": 0,
+        "errored": 0,
+        "instances": [
+            {
+                "instance_id": "inst_1",
+                "exit_reason": "submitted",
+                "resolved_count": 1,
+                "runs": 2,
+                "pass_at_1": false
+            }
+        ],
+        "filter_spec": {},
+        "manifest": {
+            "harness": { "name": "max", "version": "1.0", "git_resolution": "clean" },
+            "dataset": { "path": "x", "sha256": "x", "instance_count": 1 },
+            "prompt_template": { "source": "x", "sha256": "x" },
+            "config": {
+                "resolved": "[skills]\nenabled=true\npaths=[]",
+                "overlay_paths": []
+            },
+            "model": { "name": "claude-3-5", "backend": "anthropic" },
+            "runtime": {
+                "started_at_utc": "2026-06-06T00:00:00Z",
+                "finished_at_utc": "2026-06-06T00:01:00Z",
+                "host_os": "linux"
+            },
+            "cli": { "argv": [] }
+        }
+    });
+    write_json_file(&sweep.path().join("results.json"), &results);
+
+    // traj for run-1: skill_a activated
+    let traj_1 = serde_json::json!({
+        "trajectory_format": "mini-swe-agent-1.2",
+        "artifact_kind": "trajectory",
+        "schema_version": { "major": 1, "minor": 10 },
+        "info": {
+            "task": "task 1",
+            "outcome": "submitted",
+            "active_skills": [
+                {
+                    "name": "skill_a",
+                    "description": "desc",
+                    "path": "/path/a",
+                    "sha256": "hash",
+                    "activation_reason": "explicit_mention"
+                }
+            ]
+        },
+        "messages": []
+    });
+    let inst_dir = sweep.path().join("inst_1");
+    fs::create_dir_all(&inst_dir).unwrap();
+    write_json_file(&inst_dir.join("run-1.traj.json"), &traj_1);
+
+    // traj for run-2: skill_b activated
+    let traj_2 = serde_json::json!({
+        "trajectory_format": "mini-swe-agent-1.2",
+        "artifact_kind": "trajectory",
+        "schema_version": { "major": 1, "minor": 10 },
+        "info": {
+            "task": "task 1",
+            "outcome": "submitted",
+            "active_skills": [
+                {
+                    "name": "skill_b",
+                    "description": "desc",
+                    "path": "/path/b",
+                    "sha256": "hash",
+                    "activation_reason": "explicit_mention"
+                }
+            ]
+        },
+        "messages": []
+    });
+    write_json_file(&inst_dir.join("run-2.traj.json"), &traj_2);
+
+    let out = run_skill_coverage(sweep.path(), &["--format", "json"]);
+    assert!(
+        out.status.success(),
+        "Stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let report: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+
+    let by_skill = &report["by_skill"];
+
+    // skill_a should be activated in unresolved but not resolved
+    let a_resolved = &by_skill["skill_a"]["by_outcome"]["resolved"];
+    assert_eq!(a_resolved["instances_activated"].as_u64().unwrap(), 0);
+    let a_unresolved = &by_skill["skill_a"]["by_outcome"]["unresolved"];
+    assert_eq!(a_unresolved["instances_activated"].as_u64().unwrap(), 1);
+
+    // skill_b should be activated in resolved but not unresolved
+    let b_resolved = &by_skill["skill_b"]["by_outcome"]["resolved"];
+    assert_eq!(b_resolved["instances_activated"].as_u64().unwrap(), 1);
+    let b_unresolved = &by_skill["skill_b"]["by_outcome"]["unresolved"];
+    assert_eq!(b_unresolved["instances_activated"].as_u64().unwrap(), 0);
+}
