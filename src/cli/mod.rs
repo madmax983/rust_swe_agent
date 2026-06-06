@@ -152,6 +152,7 @@ pub async fn run() -> Result<(), Error> {
             args::AgentCmd::PolicyCheck(p) => agent_policy_check_cmd(&p),
             args::AgentCmd::Apply(a) => agent_apply_cmd(&a),
             args::AgentCmd::BestOf(b) => Box::pin(agent_best_of_cmd(*b)).await,
+            args::AgentCmd::Profile(p) => agent_profile_cmd(&p),
         },
         Command::Catalog(c) => catalog::run_catalog(c),
         Command::Ui(u) => ui_cmd(u).await,
@@ -6496,6 +6497,43 @@ async fn agent_best_of_cmd(b: args::BestOfCmd) -> Result<(), Error> {
     if exit_code != ExitCode::Success {
         exit_with_outcome(exit_code, exit_code.outcome_class());
     }
+    Ok(())
+}
+
+fn agent_profile_cmd(p: &args::AgentProfileCmd) -> Result<(), Error> {
+    use crate::run::agent_profile::{
+        AgentProfileOpts, ProfileFormat, format_text, run_agent_profile,
+    };
+
+    let format = match p.format.as_str() {
+        "json" => ProfileFormat::Json,
+        "text" | "" => ProfileFormat::Text,
+        other => {
+            return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+                "--format '{other}' is not valid; use 'text' or 'json'"
+            ))));
+        }
+    };
+
+    let opts = AgentProfileOpts {
+        trajectory_path: p.trajectory.clone(),
+        format,
+    };
+
+    let report = run_agent_profile(&opts)?;
+
+    match format {
+        ProfileFormat::Json => {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&report).map_err(Error::Json)?
+            );
+        }
+        ProfileFormat::Text => {
+            print!("{}", format_text(&report));
+        }
+    }
+
     Ok(())
 }
 

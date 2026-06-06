@@ -97,6 +97,12 @@ pub fn entries() -> &'static [CatalogEntry] {
             stage: "preflight",
         },
         CatalogEntry {
+            path: "agent profile",
+            summary: "Profile a single trajectory file: cost, tokens, stage latency, and action mix",
+            cost_tier: "free",
+            stage: "inspect",
+        },
+        CatalogEntry {
             path: "agent redact-audit",
             summary: "Audit a finished sweep tree for secret leaks in stored artifacts",
             cost_tier: "free",

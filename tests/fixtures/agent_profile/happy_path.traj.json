@@ -1,0 +1,98 @@
+{
+  "trajectory_format": "mini-swe-agent-1.3",
+  "artifact_kind": "trajectory",
+  "schema_version": {"major": 1, "minor": 10},
+  "info": {
+    "task": "Fix the off-by-one bug in parser.py",
+    "model_name": "claude-opus-4-7",
+    "outcome": "submitted",
+    "exit_reason": "submitted",
+    "failure_category": null,
+    "total_cost_usd": 0.1234,
+    "actual_cost_usd": 0.1234,
+    "actual_cost_source": "rate_card_estimate",
+    "baseline_cost_usd": 0.0500,
+    "token_usage": {
+      "prompt_tokens": 8000,
+      "cache_read_tokens": 2000,
+      "cache_creation_tokens": 500,
+      "completion_tokens": 1200
+    },
+    "duration_secs": 42.5,
+    "steps": 4,
+    "test_invocations": [],
+    "tests_run_before_submit": true,
+    "started_at": "2026-01-01T10:00:00Z",
+    "ended_at": "2026-01-01T10:00:42Z"
+  },
+  "messages": [
+    {
+      "role": "assistant",
+      "content": "Let me read the file first.",
+      "extra": {
+        "actions": ["cat parser.py"],
+        "cost": 0.01,
+        "model_latency_ms": 1200,
+        "harness_overhead_ms": 80
+      }
+    },
+    {
+      "role": "user",
+      "content": "def parse(): pass",
+      "extra": {
+        "tool_latency_ms": 150
+      }
+    },
+    {
+      "role": "assistant",
+      "content": "Let me search for the bug.",
+      "extra": {
+        "actions": ["grep -n 'off_by_one' parser.py"],
+        "cost": 0.02,
+        "model_latency_ms": 900,
+        "harness_overhead_ms": 60
+      }
+    },
+    {
+      "role": "user",
+      "content": "parser.py:42: off_by_one = True",
+      "extra": {
+        "tool_latency_ms": 200
+      }
+    },
+    {
+      "role": "assistant",
+      "content": "Fix the bug.",
+      "extra": {
+        "actions": ["sed -i 's/off_by_one = True/off_by_one = False/' parser.py"],
+        "cost": 0.04,
+        "model_latency_ms": 1500,
+        "harness_overhead_ms": 100
+      }
+    },
+    {
+      "role": "user",
+      "content": "",
+      "extra": {
+        "tool_latency_ms": 300
+      }
+    },
+    {
+      "role": "assistant",
+      "content": "Run tests to verify.",
+      "extra": {
+        "actions": ["pytest tests/"],
+        "cost": 0.05,
+        "model_latency_ms": 800,
+        "harness_overhead_ms": 50
+      }
+    },
+    {
+      "role": "user",
+      "content": "4 passed, 0 failed",
+      "extra": {
+        "tool_latency_ms": 5000
+      }
+    }
+  ]
+}
