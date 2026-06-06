@@ -195,11 +195,18 @@ fn agent_env_preview_cmd(p: &args::EnvPreviewCmd) -> Result<(), Error> {
 }
 
 fn agent_config_resolve_cmd(r: &args::ConfigResolveCmd) -> Result<(), Error> {
+    use crate::run::config_resolve::{ConfigResolveArgs, format_text, run_config_resolve};
+
     if let Some(v) = r.observation_head_ratio {
         validate_observation_head_ratio(v)?;
     }
-
-    use crate::run::config_resolve::{ConfigResolveArgs, format_text, run_config_resolve};
+    if let Some(v) = r.per_task_budget_usd {
+        if !v.is_finite() {
+            return Err(Error::Config(crate::error::ConfigError::Invalid(
+                "--per-task-budget-usd must be a finite value".into(),
+            )));
+        }
+    }
 
     let resolve_args = ConfigResolveArgs {
         config: r.config.clone(),
@@ -208,9 +215,12 @@ fn agent_config_resolve_cmd(r: &args::ConfigResolveCmd) -> Result<(), Error> {
         observation_max_bytes_flag: r.observation_max_bytes,
         observation_head_ratio_flag: r.observation_head_ratio,
         per_task_budget_usd_flag: r.per_task_budget_usd,
+        hide_budget_from_agent_flag: r.hide_budget_from_agent,
+        env_flag: r.env.clone(),
+        workdir_flag: r.workdir.clone(),
     };
 
-    let report = run_config_resolve(&resolve_args).map_err(|e| Error::Config(e))?;
+    let report = run_config_resolve(&resolve_args).map_err(Error::Config)?;
 
     match r.format.as_str() {
         "json" => {

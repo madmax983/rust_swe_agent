@@ -27,6 +27,12 @@ pub struct ConfigResolveArgs {
     pub observation_max_bytes_flag: Option<usize>,
     pub observation_head_ratio_flag: Option<f64>,
     pub per_task_budget_usd_flag: Option<f64>,
+    /// Mirrors `mini --hide-budget-from-agent`.
+    pub hide_budget_from_agent_flag: bool,
+    /// Mirrors `mini --env local|docker`.
+    pub env_flag: Option<String>,
+    /// Mirrors `mini --workdir`.
+    pub workdir_flag: Option<PathBuf>,
 }
 
 // ── Output types ──────────────────────────────────────────────────────────────
@@ -113,7 +119,7 @@ pub fn run_config_resolve(args: &ConfigResolveArgs) -> Result<ConfigResolveRepor
     let redactor = Redactor::from_config_lossy(&merged_cfg.root.redaction);
 
     let fields = build_resolved_fields(&defaults_json, &merged_json, args, &redactor);
-    let hazards = detect_hazards(&merged_json, args);
+    let hazards = detect_hazards(&merged_json, args, &redactor);
     let has_hazards = !hazards.is_empty();
 
     Ok(ConfigResolveReport {
@@ -247,11 +253,27 @@ fn get_flag_override(key: &str, args: &ConfigResolveArgs) -> Option<Value> {
         "agent.per_task_budget_usd" => args
             .per_task_budget_usd_flag
             .and_then(|v| serde_json::Number::from_f64(v).map(Value::Number)),
+        "agent.hide_budget_from_agent" => {
+            if args.hide_budget_from_agent_flag {
+                Some(Value::Bool(true))
+            } else {
+                None
+            }
+        }
+        "environment.kind" => args.env_flag.as_ref().map(|v| Value::String(v.clone())),
+        "environment.workdir" => args
+            .workdir_flag
+            .as_ref()
+            .map(|v| Value::String(v.to_string_lossy().into_owned())),
         _ => None,
     }
 }
 
-fn detect_hazards(merged_json: &Value, args: &ConfigResolveArgs) -> Vec<OverrideHazard> {
+fn detect_hazards(
+    merged_json: &Value,
+    args: &ConfigResolveArgs,
+    redactor: &Redactor,
+) -> Vec<OverrideHazard> {
     let mut hazards = Vec::new();
 
     // Hazard 1: model.name
@@ -263,9 +285,10 @@ fn detect_hazards(merged_json: &Value, args: &ConfigResolveArgs) -> Vec<Override
         .unwrap_or(CLAP_DEFAULT_MODEL);
 
     if merged_model != CLAP_DEFAULT_MODEL && args.model_flag.is_none() {
+        let redacted_model = redactor.redact_text(merged_model, "config_resolve").text;
         hazards.push(OverrideHazard {
             field: "model.name".to_string(),
-            file_value: Value::String(merged_model.to_string()),
+            file_value: Value::String(redacted_model.clone()),
             clap_default_value: Value::String(CLAP_DEFAULT_MODEL.to_string()),
             commands_affected: vec![
                 "mini".to_string(),
@@ -275,7 +298,7 @@ fn detect_hazards(merged_json: &Value, args: &ConfigResolveArgs) -> Vec<Override
                 "agent suite".to_string(),
             ],
             message: format!(
-                "Config file sets model.name='{merged_model}' but 'mini', \
+                "Config file sets model.name='{redacted_model}' but 'mini', \
                  'bench swebench', 'agent stability', 'agent best-of', and \
                  'agent suite' unconditionally apply the clap default \
                  '{CLAP_DEFAULT_MODEL}' when --model is not explicitly passed; \
@@ -336,7 +359,7 @@ pub fn format_text(report: &ConfigResolveReport) -> String {
     let _ = writeln!(out, "=== agent config resolve (no model call made) ===");
     let _ = writeln!(out);
 
-    let _ = writeln!(out, "{:<42} {:<32} {}", "Field", "Value", "Layer");
+    let _ = writeln!(out, "{:<42} {:<32} Layer", "Field", "Value");
     let _ = writeln!(out, "{}", "-".repeat(82));
 
     for field in &report.fields {
@@ -396,6 +419,9 @@ mod tests {
             observation_max_bytes_flag: None,
             observation_head_ratio_flag: None,
             per_task_budget_usd_flag: None,
+            hide_budget_from_agent_flag: false,
+            env_flag: None,
+            workdir_flag: None,
         }
     }
 
@@ -779,5 +805,64 @@ mod tests {
         assert!(h.commands_affected.contains(&"agent stability".to_string()));
         assert!(h.commands_affected.contains(&"agent best-of".to_string()));
         assert!(h.commands_affected.contains(&"agent suite".to_string()));
+    }
+
+    #[test]
+    fn hazard_model_file_value_is_redacted() {
+        let temp = tempfile::tempdir().unwrap();
+        let config_path = temp.path().join("config.toml");
+        fs::write(
+            &config_path,
+            "[model]\nname = \"secret-model\"\n[redaction]\nsecret_literals = [\"secret-model\"]\n",
+        )
+        .unwrap();
+        let args = ConfigResolveArgs {
+            config: Some(config_path),
+            ..no_args()
+        };
+        let report = run_config_resolve(&args).unwrap();
+        let h = report
+            .hazards
+            .iter()
+            .find(|h| h.field == "model.name")
+            .unwrap();
+        assert!(!h.file_value.as_str().unwrap_or("").contains("secret-model"));
+        assert!(!h.message.contains("secret-model"));
+    }
+
+    #[test]
+    fn hide_budget_flag_sets_flag_layer() {
+        let args = ConfigResolveArgs {
+            hide_budget_from_agent_flag: true,
+            ..no_args()
+        };
+        let report = run_config_resolve(&args).unwrap();
+        let f = find_field(&report, "agent.hide_budget_from_agent");
+        assert_eq!(f.layer, ProvenanceLayer::Flag);
+        assert_eq!(f.value, Value::Bool(true));
+    }
+
+    #[test]
+    fn env_flag_sets_flag_layer_for_environment_kind() {
+        let args = ConfigResolveArgs {
+            env_flag: Some("docker".to_string()),
+            ..no_args()
+        };
+        let report = run_config_resolve(&args).unwrap();
+        let f = find_field(&report, "environment.kind");
+        assert_eq!(f.layer, ProvenanceLayer::Flag);
+        assert_eq!(f.value.as_str().unwrap(), "docker");
+    }
+
+    #[test]
+    fn workdir_flag_sets_flag_layer_for_environment_workdir() {
+        let args = ConfigResolveArgs {
+            workdir_flag: Some(PathBuf::from("/tmp/myrepo")),
+            ..no_args()
+        };
+        let report = run_config_resolve(&args).unwrap();
+        let f = find_field(&report, "environment.workdir");
+        assert_eq!(f.layer, ProvenanceLayer::Flag);
+        assert_eq!(f.value.as_str().unwrap(), "/tmp/myrepo");
     }
 }

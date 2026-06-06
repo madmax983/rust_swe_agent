@@ -105,6 +105,18 @@ pub struct ConfigResolveCmd {
     #[arg(long)]
     pub per_task_budget_usd: Option<f64>,
 
+    /// Hide the budget block from the agent's observations (mirrors `mini --hide-budget-from-agent`).
+    #[arg(long, default_value_t = false)]
+    pub hide_budget_from_agent: bool,
+
+    /// Environment kind override: `local` or `docker` (mirrors `mini --env`).
+    #[arg(long)]
+    pub env: Option<String>,
+
+    /// Local working-directory override (mirrors `mini --workdir`).
+    #[arg(long)]
+    pub workdir: Option<PathBuf>,
+
     /// Output format: `text` (default, human-readable) or `json`
     /// (machine-readable; keys emitted in stable, deterministic order).
     #[arg(long, default_value = "text")]
