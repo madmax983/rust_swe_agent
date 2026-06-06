@@ -253,6 +253,10 @@ pub fn render_text(report: &SkillCoverageReport, bucket_filter: Option<&str>) ->
 
 // ── helper logic ──────────────────────────────────────────────────────────────
 
+fn is_path_redacted(path: &str) -> bool {
+    path.to_ascii_lowercase().contains("[redacted")
+}
+
 fn matches_filter(
     instance: &InstanceResult,
     is_resolved: bool,
@@ -403,6 +407,46 @@ fn load_resolved_by_run(sweep_dir: &Path) -> HashMap<RunSlotKey, bool> {
                                         );
                                     }
                                 }
+                            } else {
+                                // sb-cli report shape: resolved_ids and submitted_ids
+                                let resolved_ids = val
+                                    .get("resolved_ids")
+                                    .and_then(serde_json::Value::as_array)
+                                    .map(|xs| {
+                                        xs.iter()
+                                            .filter_map(|v| v.as_str().map(ToOwned::to_owned))
+                                            .collect::<Vec<_>>()
+                                    })
+                                    .unwrap_or_default();
+                                let submitted_ids = val
+                                    .get("submitted_ids")
+                                    .and_then(serde_json::Value::as_array)
+                                    .map(|xs| {
+                                        xs.iter()
+                                            .filter_map(|v| v.as_str().map(ToOwned::to_owned))
+                                            .collect::<Vec<_>>()
+                                    })
+                                    .unwrap_or_default();
+                                for id in &submitted_ids {
+                                    resolved_by_run.insert(
+                                        RunSlotKey {
+                                            instance_id: id.clone(),
+                                            run_index,
+                                        },
+                                        resolved_ids.contains(id),
+                                    );
+                                }
+                                if submitted_ids.is_empty() {
+                                    for id in resolved_ids {
+                                        resolved_by_run.insert(
+                                            RunSlotKey {
+                                                instance_id: id,
+                                                run_index,
+                                            },
+                                            true,
+                                        );
+                                    }
+                                }
                             }
                         }
                     }
@@ -446,18 +490,17 @@ fn build_report(args: &SkillCoverageArgs) -> Result<SkillCoverageReport, Error> 
     }
 
     // Resolve global skill configuration and redactor configuration
-    let mut enabled = false;
-    let mut global_skill_paths = Vec::new();
-    let mut redactor = Redactor::default_enabled();
-    if let Some(manifest) = &sweep.manifest {
-        if let Ok(mut root_cfg) =
+    let (enabled, global_skill_paths, redactor) = if let Some(manifest) = &sweep.manifest {
+        let mut root_cfg =
             toml::from_str::<crate::config::schema::RootCfg>(&manifest.config.resolved)
-        {
-            enabled = root_cfg.skills.enabled;
-            global_skill_paths = std::mem::take(&mut root_cfg.skills.paths);
-            redactor = Redactor::from_config_lossy(&root_cfg.redaction);
-        }
-    }
+                .map_err(|e| Error::Config(e.into()))?;
+        let enabled = root_cfg.skills.enabled;
+        let global_skill_paths = std::mem::take(&mut root_cfg.skills.paths);
+        let redactor = Redactor::from_config_lossy(&root_cfg.redaction);
+        (enabled, global_skill_paths, redactor)
+    } else {
+        (false, Vec::new(), Redactor::default_enabled())
+    };
 
     let mut sorted_ids: Vec<String> = sweep.instances.keys().cloned().collect();
     sorted_ids.sort();
@@ -532,9 +575,14 @@ fn build_report(args: &SkillCoverageArgs) -> Result<SkillCoverageReport, Error> 
             // Collect eligible skills for this instance if skills subsystem is enabled
             let mut eligible_skills = HashSet::new();
             if instance_enabled {
-                // For scanning eligible skills, use the unredacted global_skill_paths (from the sweep config),
-                // because the per-instance paths in config_redacted are redacted and thus cannot be scanned.
-                let expanded_paths = global_skill_paths
+                // If the per-instance config override has unredacted custom paths, scan those.
+                // Otherwise fall back to global_skill_paths.
+                let paths_to_scan = if instance_skill_paths.iter().any(|p| is_path_redacted(p)) {
+                    &global_skill_paths
+                } else {
+                    &instance_skill_paths
+                };
+                let expanded_paths = paths_to_scan
                     .iter()
                     .map(crate::skills::expand_skill_path_pub)
                     .collect::<Vec<_>>();
