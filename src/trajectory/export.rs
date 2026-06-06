@@ -245,11 +245,62 @@ impl TrajectoryExporter for MermaidExporter {
     }
 }
 
+pub struct TableExporter;
+
+impl TrajectoryExporter for TableExporter {
+    fn export(trajectory: &Trajectory) -> String {
+        let mut table = comfy_table::Table::new();
+        table
+            .load_preset(comfy_table::presets::UTF8_FULL)
+            .apply_modifier(comfy_table::modifiers::UTF8_ROUND_CORNERS)
+            .set_header(vec!["Turn", "Role", "Content Snippet"]);
+
+        let redactor = Redactor::default_enabled();
+        for (i, msg) in trajectory.messages.iter().enumerate() {
+            let role = match msg.role.as_str() {
+                "system" => "System",
+                "user" => "User",
+                "assistant" => "Assistant",
+                "tool" => "Tool",
+                other => other,
+            };
+            let content = redactor.redact_text(&msg.content, surface::EXPORT).text;
+            let snippet = if content.chars().count() > 100 {
+                format!("{}...", content.chars().take(97).collect::<String>())
+            } else {
+                content
+            };
+            table.add_row(vec![
+                i.to_string(),
+                role.to_string(),
+                snippet.replace('\n', " "),
+            ]);
+        }
+        table.to_string()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::model::Message;
     use crate::trajectory::outcome;
+
+    #[test]
+    fn test_table_export_format() {
+        let mut t = Trajectory::new();
+        t.record_message(&Message::system("System prompt"));
+        t.record_message(&Message::user("Hello agent"));
+        t.record_message(&Message::assistant("Hello user"));
+
+        let out = TableExporter::export(&t);
+        assert!(out.contains("System prompt"));
+        assert!(out.contains("Hello agent"));
+        assert!(out.contains("Hello user"));
+        assert!(out.contains("Turn"));
+        assert!(out.contains("Role"));
+        assert!(out.contains("Content Snippet"));
+    }
 
     #[test]
     fn test_markdown_export_format() {

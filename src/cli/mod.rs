@@ -3695,13 +3695,16 @@ fn bench_inspect(i: args::InspectCmd) -> Result<(), Error> {
         return Ok(());
     }
 
-    if matches!(i.format.as_str(), "markdown" | "html" | "csv" | "mermaid") {
+    if matches!(
+        i.format.as_str(),
+        "markdown" | "html" | "csv" | "mermaid" | "table"
+    ) {
         return bench_inspect_export(i);
     }
 
     if i.output.is_some() {
         return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
-            "inspect: --output is only supported with export formats (markdown/html/csv/mermaid), not `{}`",
+            "inspect: --output is only supported with export formats (markdown/table/html/csv/mermaid), not `{}`",
             i.format
         ))));
     }
@@ -3711,7 +3714,7 @@ fn bench_inspect(i: args::InspectCmd) -> Result<(), Error> {
         "json" => crate::run::inspect::InspectFormat::Json,
         other => {
             return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
-                "unknown --format `{other}` (expected `text`, `json`, `markdown`, `html`, `csv`, or `mermaid`)"
+                "unknown --format `{other}` (expected `text`, `json`, `markdown`, `table`, `html`, `csv`, or `mermaid`)"
             ))));
         }
     };
@@ -3771,6 +3774,10 @@ fn bench_inspect_export(i: args::InspectCmd) -> Result<(), Error> {
         "markdown" => {
             use crate::trajectory::export::{MarkdownExporter, TrajectoryExporter};
             MarkdownExporter::export(&traj)
+        }
+        "table" => {
+            use crate::trajectory::export::{TableExporter, TrajectoryExporter};
+            TableExporter::export(&traj)
         }
         "html" => inspect_export_html(&traj)?,
         "csv" => inspect_export_csv(&traj)?,
