@@ -44,6 +44,7 @@ struct DashboardState {
     finished: Option<String>,
     feedback_input: Option<String>,
     edit_input: Option<String>,
+    active_rules: Vec<String>,
 }
 
 #[derive(Clone)]
@@ -168,6 +169,7 @@ fn restore_terminal() -> std::io::Result<()> {
 }
 
 impl StreamSink for RatatuiDashboard {
+    #[allow(clippy::too_many_lines)]
     fn emit(&self, event: StreamEvent) {
         match event {
             StreamEvent::RunStarted {
@@ -266,9 +268,18 @@ impl StreamSink for RatatuiDashboard {
                 );
             }
             StreamEvent::AutoApproveRuleCreated { scope } => {
+                let mut s = self
+                    .state
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                if !s.active_rules.contains(&scope) {
+                    s.active_rules.push(scope.clone());
+                }
+                drop(s);
+                self.notify.notify_waiters();
                 self.append(
                     LineKind::Info,
-                    format!("auto-approve rule created for scope: {scope}"),
+                    format!("auto-approve rule created for: {scope}"),
                 );
             }
         }
@@ -431,7 +442,11 @@ fn handle_key_normal(
             s.pending = Some(pending);
             dash.notify.notify_waiters();
         }
-        KeyCode::Char('a' | 'A') | KeyCode::Esc => {
+        KeyCode::Char('A') => {
+            let scope = pending.ctx.derive_scope();
+            let _ = pending.responder.send(ConfirmDecision::AutoApprove(scope));
+        }
+        KeyCode::Char('a') | KeyCode::Esc => {
             let _ = pending.responder.send(ConfirmDecision::Abort);
         }
         _ => {
@@ -490,6 +505,7 @@ fn draw_frame(
             pending: s.pending.as_ref().map(|p| p.ctx.clone()),
             feedback_input: s.feedback_input.clone(),
             edit_input: s.edit_input.clone(),
+            active_rules: s.active_rules.clone(),
         }
     };
     terminal.draw(|frame| draw(frame, &snapshot))?;
@@ -507,6 +523,7 @@ struct DashboardSnapshot {
     pending: Option<ConfirmContext>,
     feedback_input: Option<String>,
     edit_input: Option<String>,
+    active_rules: Vec<String>,
 }
 
 fn draw(frame: &mut ratatui::Frame, snap: &DashboardSnapshot) {
@@ -562,11 +579,15 @@ fn header_paragraph(snap: &DashboardSnapshot) -> Paragraph<'_> {
             Style::default().add_modifier(Modifier::DIM),
         ),
     ]);
-    Paragraph::new(line).block(
-        Block::default()
-            .borders(Borders::ALL)
-            .title(" maxwell's daemon — interactive "),
-    )
+    let block_title = if snap.active_rules.is_empty() {
+        " maxwell's daemon — interactive ".to_string()
+    } else {
+        format!(
+            " maxwell's daemon — interactive [auto-approve: {}] ",
+            snap.active_rules.join(", ")
+        )
+    };
+    Paragraph::new(line).block(Block::default().borders(Borders::ALL).title(block_title))
 }
 
 fn log_paragraph(snap: &DashboardSnapshot) -> Paragraph<'_> {
@@ -594,13 +615,14 @@ fn log_paragraph(snap: &DashboardSnapshot) -> Paragraph<'_> {
 
 fn footer_paragraph(snap: &DashboardSnapshot) -> Paragraph<'_> {
     let hint = if snap.finished.is_some() {
-        "run complete — press 'q' or Ctrl-C to close"
+        "run complete — press 'q' or Ctrl-C to close".to_string()
     } else if snap.edit_input.is_some() {
-        "[Enter] execute edit   [Esc] cancel"
-    } else if snap.pending.is_some() {
-        "(y) approve   (n) reject   (e) edit   (a) abort"
+        "[Enter] execute edit   [Esc] cancel".to_string()
+    } else if let Some(pending) = &snap.pending {
+        let scope = pending.derive_scope();
+        format!("(y) approve   (n) reject   (e) edit   (a) abort   (A) auto-approve {scope}")
     } else {
-        "waiting for next agent step…"
+        "waiting for next agent step…".to_string()
     };
     Paragraph::new(Line::from(Span::styled(
         hint,
@@ -695,8 +717,9 @@ fn draw_modal(
             Style::default().add_modifier(Modifier::DIM),
         )));
     } else {
+        let scope = ctx.derive_scope();
         lines.push(Line::from(Span::styled(
-            "(y) approve   (n) reject   (e) edit   (a) abort",
+            format!("(y) approve   (n) reject   (e) edit   (a) abort   (A) auto-approve {scope}"),
             Style::default().add_modifier(Modifier::BOLD),
         )));
     }
@@ -837,6 +860,7 @@ mod tests {
             pending: s.pending.as_ref().map(|p| p.ctx.clone()),
             feedback_input: s.feedback_input.clone(),
             edit_input: s.edit_input.clone(),
+            active_rules: s.active_rules.clone(),
         }
     }
 
@@ -1506,5 +1530,39 @@ mod tests {
         };
         let _sink = handle.stream_sink();
         let _cb = handle.confirm_callback();
+    }
+
+    #[test]
+    fn tui_processes_auto_approve_rule_created_event() {
+        let dash = make_dashboard();
+        assert!(snap(&dash).active_rules.is_empty());
+
+        // Emit event
+        dash.emit(StreamEvent::AutoApproveRuleCreated {
+            scope: "cargo".to_string(),
+        });
+
+        // Assert state updated
+        let s = snap(&dash);
+        assert_eq!(s.active_rules, vec!["cargo".to_string()]);
+
+        // Render and check header block title
+        let buf = render_to_buffer(&s, 80, 24);
+        // Check that block title contains "[auto-approve: cargo]"
+        let header_text = buffer_text(&buf);
+        assert!(header_text.contains("[auto-approve: cargo]"));
+    }
+
+    #[test]
+    fn tui_key_a_submits_auto_approve_decision() {
+        let dash = make_dashboard();
+        let mut rx = make_pending(&dash);
+
+        // Send keystroke 'A' (Shift + A)
+        let event = KeyEvent::new(KeyCode::Char('A'), KeyModifiers::SHIFT);
+        handle_key(&dash, event);
+
+        let decision = rx.try_recv().unwrap();
+        assert_eq!(decision, ConfirmDecision::AutoApprove("x".to_string())); // "x" is the default scope for the dummy pending prompt command "x"
     }
 }
