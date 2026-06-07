@@ -435,7 +435,7 @@ pub fn run(args: &EvaluateArgs) -> Result<EvaluationResults, Error> {
         }
         EvaluateBackend::SbCli => run_sb_cli(args, &results)?,
         EvaluateBackend::Rehearsal => run_rehearsal_eval(args, &results)?,
-        EvaluateBackend::DockerTests => run_docker_tests(args, &results)?
+        EvaluateBackend::DockerTests => run_docker_tests(args, &results)?,
     };
     let EvaluateRunOutput {
         mut eval,
@@ -1335,8 +1335,7 @@ fn run_docker_tests(
         let timeout = std::time::Duration::from_secs(args.timeout_per_instance_secs);
         let mut run_verdicts: Vec<(u32, Result<DockerTestVerdict, String>)> = Vec::new();
         for run_index in 1..=runs {
-            let patch_path =
-                swebench::existing_patch_path_for_run(&args.sweep_dir, id, run_index);
+            let patch_path = swebench::existing_patch_path_for_run(&args.sweep_dir, id, run_index);
             let patch_content = match std::fs::read_to_string(&patch_path) {
                 Ok(c) if !c.trim().is_empty() => c,
                 _ => continue,
@@ -1401,32 +1400,32 @@ fn run_docker_tests(
         }
 
         let resolved = resolved_count > 0;
-        let (tests_passed, tests_failed, eval_exit_reason, patch_error_log) =
-            match display_verdict {
-                Some(v) => {
-                    let reason = if v.timed_out {
-                        EvalExitReason::EvalError
-                    } else if v.patch_apply_failed {
-                        EvalExitReason::PatchApplyFailed
-                    } else if resolved {
-                        EvalExitReason::Resolved
-                    } else {
-                        EvalExitReason::Unresolved
-                    };
-                    (
-                        v.tests_passed.clone(),
-                        v.tests_failed.clone(),
-                        reason,
-                        v.patch_error_log.clone(),
-                    )
-                }
-                None => (
-                    vec![],
-                    vec![],
-                    EvalExitReason::EvalError,
-                    last_error.map(ToOwned::to_owned),
-                ),
-            };
+        let (tests_passed, tests_failed, eval_exit_reason, patch_error_log) = match display_verdict
+        {
+            Some(v) => {
+                let reason = if v.timed_out {
+                    EvalExitReason::EvalError
+                } else if v.patch_apply_failed {
+                    EvalExitReason::PatchApplyFailed
+                } else if resolved {
+                    EvalExitReason::Resolved
+                } else {
+                    EvalExitReason::Unresolved
+                };
+                (
+                    v.tests_passed.clone(),
+                    v.tests_failed.clone(),
+                    reason,
+                    v.patch_error_log.clone(),
+                )
+            }
+            None => (
+                vec![],
+                vec![],
+                EvalExitReason::EvalError,
+                last_error.map(ToOwned::to_owned),
+            ),
+        };
 
         instances.push(InstanceEvaluation {
             instance_id: id.to_owned(),
