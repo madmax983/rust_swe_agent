@@ -321,15 +321,43 @@ impl Redactor {
         let mut out = String::with_capacity(input.len());
         let mut last = 0usize;
         for matched in filtered {
-            out.push_str(&input[last..matched.start]);
+            let start = matched.start.min(input.len());
+            let end = matched.end.min(input.len());
+
+            // Fast path for valid byte indices
+            if input.is_char_boundary(last) && input.is_char_boundary(start) && last <= start {
+                out.push_str(&input[last..start]);
+            } else {
+                // Slower character-aware fallback for malformed indices or split multibyte chars
+                let chars: Vec<char> = input.chars().collect();
+                let last_char_idx = input[..last.min(input.len())].chars().count();
+                let start_char_idx = input[..start].chars().count();
+                if last_char_idx <= start_char_idx && start_char_idx <= chars.len() {
+                    out.push_str(
+                        &chars[last_char_idx..start_char_idx]
+                            .iter()
+                            .collect::<String>(),
+                    );
+                }
+            }
+
             let marker = self.marker_for(&matched.raw, &matched.kind);
             out.push_str(&marker);
             if let Some(srf) = surface {
                 self.increment(srf, &matched.kind);
             }
-            last = matched.end;
+            last = end;
         }
-        out.push_str(&input[last..]);
+
+        if input.is_char_boundary(last) && last <= input.len() {
+            out.push_str(&input[last..]);
+        } else {
+            let chars: Vec<char> = input.chars().collect();
+            let last_char_idx = input[..last.min(input.len())].chars().count();
+            if last_char_idx <= chars.len() {
+                out.push_str(&chars[last_char_idx..].iter().collect::<String>());
+            }
+        }
         (out, true)
     }
 
@@ -517,7 +545,26 @@ impl Redactor {
         let mut last = 0usize;
 
         for m in &filtered {
-            out_text.push_str(&input[last..m.start]);
+            let start = m.start.min(input.len());
+            let end = m.end.min(input.len());
+
+            // Fast path for valid byte indices
+            if input.is_char_boundary(last) && input.is_char_boundary(start) && last <= start {
+                out_text.push_str(&input[last..start]);
+            } else {
+                // Slower character-aware fallback for malformed indices or split multibyte chars
+                let chars: Vec<char> = input.chars().collect();
+                let last_char_idx = input[..last.min(input.len())].chars().count();
+                let start_char_idx = input[..start].chars().count();
+                if last_char_idx <= start_char_idx && start_char_idx <= chars.len() {
+                    out_text.push_str(
+                        &chars[last_char_idx..start_char_idx]
+                            .iter()
+                            .collect::<String>(),
+                    );
+                }
+            }
+
             let marker = self.marker_for(&m.raw, &m.kind);
             check_matches.push(CheckMatch {
                 start: m.start,
@@ -526,9 +573,18 @@ impl Redactor {
                 source: m.source_label.clone(),
             });
             out_text.push_str(&marker);
-            last = m.end;
+            last = end;
         }
-        out_text.push_str(&input[last..]);
+
+        if input.is_char_boundary(last) && last <= input.len() {
+            out_text.push_str(&input[last..]);
+        } else {
+            let chars: Vec<char> = input.chars().collect();
+            let last_char_idx = input[..last.min(input.len())].chars().count();
+            if last_char_idx <= chars.len() {
+                out_text.push_str(&chars[last_char_idx..].iter().collect::<String>());
+            }
+        }
 
         let unmatched_literal_indices = self
             .inner

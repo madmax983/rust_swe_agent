@@ -3830,26 +3830,28 @@ index 8a1218a..24c5735 100644\n\
         // AC: Secrets injected via env (*_API_KEY, *_TOKEN, *_SECRET) must not
         // appear in the serialized manifest.
         let tmp = tempfile::tempdir().unwrap();
+        let tmp_path = tmp.path().to_path_buf();
 
         // Inject a fake secret as an environment variable that the redactor picks up.
         // We use a value that looks like a real API key pattern so the redactor fires.
         let fake_secret = "sk-ant-fake-secret-value-for-test-0123456789abcdef";
-        // SAFETY: test-only; single-threaded context for secret injection.
-        unsafe { std::env::set_var("TEST_MANIFEST_API_KEY", fake_secret) };
+        let fut = temp_env::async_with_vars(
+            [("TEST_MANIFEST_API_KEY", Some(fake_secret))],
+            async move {
+                let args = make_mini_args_for_manifest_test(tmp_path.clone(), "secret-test");
+                run(args).await.unwrap();
 
-        let args = make_mini_args_for_manifest_test(tmp.path().to_path_buf(), "secret-test");
-        run(args).await.unwrap();
+                let traj_path = tmp_path.join("secret-test.traj.json");
+                let content = std::fs::read_to_string(&traj_path).unwrap();
 
-        // Clean up env var
-        unsafe { std::env::remove_var("TEST_MANIFEST_API_KEY") };
-
-        let traj_path = tmp.path().join("secret-test.traj.json");
-        let content = std::fs::read_to_string(&traj_path).unwrap();
-
-        assert!(
-            !content.contains(fake_secret),
-            "serialized manifest must not contain secret value from env; found in: {content}"
+                assert!(
+                    !content.contains(fake_secret),
+                    "serialized manifest must not contain secret value from env; found in: {content}"
+                );
+            },
         );
+        #[allow(clippy::large_futures)]
+        Box::pin(fut).await;
     }
 
     #[tokio::test]
