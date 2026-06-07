@@ -1120,7 +1120,8 @@ impl Agent for DefaultAgent {
             }
         };
         let tool_name = tool_call.name;
-        let mut tool_input = tool_call.input;
+        let tool_input = tool_call.input;
+        let mut final_tool_input = tool_input.clone();
         let is_bash = tool_name == BASH_TOOL_NAME;
         if self.read_only {
             self.history.push(Message::assistant(
@@ -1273,10 +1274,11 @@ impl Agent for DefaultAgent {
                         return Ok(StepOutcome::Terminate(ExitReason::UserInterrupt));
                     }
                     super::ConfirmDecision::Edit(edited_command) => {
+                        let unredacted_command = self.redactor.unredact_text(&edited_command);
                         let policy_command_edit = if is_bash {
-                            Some(edited_command.clone())
+                            Some(unredacted_command.clone())
                         } else if let Some(tool) = self.tool_registry.command_tool(&tool_name) {
-                            let context = self.command_tool_context(tool, &edited_command);
+                            let context = self.command_tool_context(tool, &unredacted_command);
                             Some(self.renderer.render_str(&tool.command, &context)?)
                         } else {
                             None
@@ -1334,7 +1336,7 @@ impl Agent for DefaultAgent {
                                     "interactive_substituted_command".into(),
                                     serde_json::Value::String(
                                         self.redactor
-                                            .redact_text(&edited_command, surface::TRAJECTORY)
+                                            .redact_text(&unredacted_command, surface::TRAJECTORY)
                                             .text,
                                     ),
                                 );
@@ -1369,25 +1371,30 @@ impl Agent for DefaultAgent {
                             }
                         }
 
-                        // Run PreToolUse hooks on the edited_command. Update pre_hook_results and tool_use_blocked status.
+                        // Run PreToolUse hooks on the unredacted_command. Update pre_hook_results and tool_use_blocked status.
                         pre_hook_results = self
                             .run_tool_hooks(
                                 ToolHookPhase::PreToolUse,
                                 &self.config.root.agent.hooks.pre_tool_use,
                                 &tool_name,
-                                &edited_command,
+                                &unredacted_command,
                                 None,
                             )
                             .await?;
                         tool_use_blocked =
                             pre_hook_results.iter().any(ToolHookResult::blocks_tool_use);
 
+                        if self.cancellation_requested() {
+                            self.finalize_cancelled();
+                            return Ok(StepOutcome::Terminate(ExitReason::UserInterrupt));
+                        }
+
                         interactive_edit = Some((
                             tool_input.clone(),
-                            edited_command.clone(),
+                            unredacted_command.clone(),
                             chrono::Utc::now().to_rfc3339(),
                         ));
-                        tool_input = edited_command;
+                        final_tool_input = unredacted_command;
                     }
                 }
             }
@@ -1405,10 +1412,10 @@ impl Agent for DefaultAgent {
             let result = if is_bash {
                 self.stream.emit(StreamEvent::BashStart {
                     step: self.steps,
-                    command: tool_input.clone(),
+                    command: final_tool_input.clone(),
                     timestamp: chrono::Utc::now().to_rfc3339(),
                 });
-                let run_req = RunRequest::new(&tool_input).with_timeout(Duration::from_secs(
+                let run_req = RunRequest::new(&final_tool_input).with_timeout(Duration::from_secs(
                     self.config.root.environment.timeout_secs,
                 ));
                 let run_req = if let Some(cancellation) = self.cancellation.clone() {
@@ -1427,7 +1434,8 @@ impl Agent for DefaultAgent {
                 });
                 result
             } else {
-                self.run_non_bash_tool(&tool_name, &tool_input).await?
+                self.run_non_bash_tool(&tool_name, &final_tool_input)
+                    .await?
             };
             let tool_latency = elapsed_ms_since(tool_start);
             let post_hook_results = self
@@ -1435,7 +1443,7 @@ impl Agent for DefaultAgent {
                     ToolHookPhase::PostToolUse,
                     &self.config.root.agent.hooks.post_tool_use,
                     &tool_name,
-                    &tool_input,
+                    &final_tool_input,
                     Some(&result),
                 )
                 .await?;
@@ -1443,7 +1451,7 @@ impl Agent for DefaultAgent {
         };
 
         if is_bash && !tool_use_blocked {
-            self.record_test_invocation_if_matched(&tool_input, result.exit_code);
+            self.record_test_invocation_if_matched(&final_tool_input, result.exit_code);
         }
 
         let result_for_observation = RunResult {
@@ -1512,7 +1520,7 @@ impl Agent for DefaultAgent {
         );
         let tool_input_for_observation = self
             .redactor
-            .redact_text(&tool_input, surface::MODEL_OBSERVATION)
+            .redact_text(&final_tool_input, surface::MODEL_OBSERVATION)
             .text;
         let tool_name_for_observation = self
             .redactor
@@ -1666,7 +1674,7 @@ impl Agent for DefaultAgent {
         // Check for stagnation after cancellation so step_index = self.steps - 1.
         if is_bash && !tool_use_blocked {
             if let Some(detector) = &mut self.stagnation_detector {
-                if let Some(trip) = detector.observe(self.steps - 1, &tool_input) {
+                if let Some(trip) = detector.observe(self.steps - 1, &final_tool_input) {
                     return Ok(self.terminate_stagnation(trip));
                 }
             }

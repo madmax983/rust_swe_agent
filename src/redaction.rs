@@ -269,6 +269,28 @@ impl Redactor {
         RedactionOutcome { text, redacted }
     }
 
+    #[must_use]
+    pub fn unredact_text(&self, input: &str) -> String {
+        let mut pairs: Vec<(String, String)> = {
+            let markers = self
+                .inner
+                .markers
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            markers
+                .iter()
+                .map(|(raw, marker)| (raw.clone(), marker.clone()))
+                .collect()
+        };
+        pairs.sort_by_key(|a| std::cmp::Reverse(a.1.len()));
+
+        let mut result = input.to_owned();
+        for (raw, marker) in pairs {
+            result = result.replace(&marker, &raw);
+        }
+        result
+    }
+
     /// Redact `input` without updating redaction-count telemetry.
     ///
     /// Use only for internal computations (e.g. fingerprinting) where the
@@ -1201,5 +1223,22 @@ mod tests {
                 "Failed for input: {input}",
             );
         }
+    }
+
+    #[test]
+    fn unredact_text_restores_original_secrets() {
+        let cfg = RedactionCfg {
+            secret_literals: vec!["secret1".into(), "secret2".into(), "longersecret".into()],
+            ..RedactionCfg::default()
+        };
+        let redactor = Redactor::from_config(&cfg).unwrap();
+        let original = "This is secret1 and longersecret, but not secret2.";
+        let redacted = redactor.redact_text(original, surface::TRAJECTORY).text;
+
+        assert_ne!(original, redacted);
+        assert!(redacted.contains("[REDACTED:"));
+
+        let unredacted = redactor.unredact_text(&redacted);
+        assert_eq!(original, unredacted);
     }
 }
