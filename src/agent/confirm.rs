@@ -34,12 +34,12 @@ pub struct ConfirmContext {
 }
 
 /// The operator's decision returned by `ConfirmCallback::confirm`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ConfirmDecision {
     /// Execute the proposed action normally.
     Approve,
     /// Skip execution; surface a synthetic observation to the model.
-    Reject,
+    Reject(Option<String>),
     /// Terminate the run cleanly with `ExitReason::UserInterrupt`.
     Abort,
 }
@@ -47,10 +47,10 @@ pub enum ConfirmDecision {
 impl ConfirmDecision {
     /// Stable lowercase label for trajectory `interactive_decision` entries.
     #[must_use]
-    pub fn label(self) -> &'static str {
+    pub fn label(&self) -> &'static str {
         match self {
             Self::Approve => "approve",
-            Self::Reject => "reject",
+            Self::Reject(_) => "reject",
             Self::Abort => "abort",
         }
     }
@@ -117,7 +117,7 @@ mod tests {
 
     #[tokio::test]
     async fn scripted_returns_decisions_in_order_then_default_approve() {
-        let c = ScriptedConfirmer::new([ConfirmDecision::Reject, ConfirmDecision::Abort]);
+        let c = ScriptedConfirmer::new([ConfirmDecision::Reject(None), ConfirmDecision::Abort]);
         let ctx = ConfirmContext {
             tool_name: "bash".into(),
             command: "x".into(),
@@ -126,7 +126,7 @@ mod tests {
             cost_usd: 0.0,
             cache_marker: "cache:auto-or-none",
         };
-        assert_eq!(c.confirm(&ctx).await, ConfirmDecision::Reject);
+        assert_eq!(c.confirm(&ctx).await, ConfirmDecision::Reject(None));
         assert_eq!(c.confirm(&ctx).await, ConfirmDecision::Abort);
         assert_eq!(c.confirm(&ctx).await, ConfirmDecision::Approve);
         assert_eq!(c.call_count(), 3);
@@ -135,7 +135,11 @@ mod tests {
     #[test]
     fn decision_labels_are_stable() {
         assert_eq!(ConfirmDecision::Approve.label(), "approve");
-        assert_eq!(ConfirmDecision::Reject.label(), "reject");
+        assert_eq!(ConfirmDecision::Reject(None).label(), "reject");
+        assert_eq!(
+            ConfirmDecision::Reject(Some("feedback".to_owned())).label(),
+            "reject"
+        );
         assert_eq!(ConfirmDecision::Abort.label(), "abort");
     }
 }

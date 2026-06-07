@@ -1259,8 +1259,8 @@ impl Agent for DefaultAgent {
             if let Some(decision) = self.confirm_operator_action(&tool_name, &tool_input).await {
                 match decision {
                     super::ConfirmDecision::Approve => {}
-                    super::ConfirmDecision::Reject => {
-                        self.record_interactive_rejection(&tool_name, &tool_input);
+                    super::ConfirmDecision::Reject(feedback) => {
+                        self.record_interactive_rejection(&tool_name, &tool_input, feedback);
                         self.last_measurement_end = Instant::now();
                         self.steps += 1;
                         return Ok(StepOutcome::Continue);
@@ -1817,11 +1817,27 @@ impl DefaultAgent {
     /// Record an operator rejection: surface a synthetic observation to
     /// the model so it can revise, and tag the trajectory record with
     /// the structured `interactive_decision: "reject"` event.
-    fn record_interactive_rejection(&mut self, tool_name: &str, tool_input: &str) {
+    fn record_interactive_rejection(
+        &mut self,
+        tool_name: &str,
+        tool_input: &str,
+        feedback: Option<String>,
+    ) {
         let ts = chrono::Utc::now().to_rfc3339();
-        let rejection = "Exit code: 1\nOutput:\nCommand rejected by operator (interactive mode). \
-                         The command was not executed. Please attempt a safer alternative."
-            .to_owned();
+        let rejection = if let Some(ref text) = feedback {
+            let model_feedback = self
+                .redactor
+                .redact_text(text, surface::MODEL_OBSERVATION)
+                .text;
+            format!(
+                "Exit code: 1\nOutput:\nCommand rejected by operator (interactive mode). \
+                 The command was not executed. {model_feedback}"
+            )
+        } else {
+            "Exit code: 1\nOutput:\nCommand rejected by operator (interactive mode). \
+             The command was not executed. Please attempt a safer alternative."
+                .to_owned()
+        };
         let obs_msg = Message::user(rejection.clone());
         self.history.push(obs_msg.clone());
 
@@ -1836,7 +1852,11 @@ impl DefaultAgent {
         obs_extra.timestamp = Some(ts.clone());
         obs_extra.other.insert(
             "interactive_decision".into(),
-            serde_json::Value::String(super::ConfirmDecision::Reject.label().to_owned()),
+            serde_json::Value::String(
+                super::ConfirmDecision::Reject(feedback.clone())
+                    .label()
+                    .to_owned(),
+            ),
         );
         obs_extra.other.insert(
             "interactive_proposed_command".into(),
@@ -1850,6 +1870,13 @@ impl DefaultAgent {
             "interactive_timestamp".into(),
             serde_json::Value::String(ts),
         );
+        if let Some(text) = feedback {
+            let trajectory_feedback = self.redactor.redact_text(&text, surface::TRAJECTORY).text;
+            obs_extra.other.insert(
+                "interactive_feedback".into(),
+                serde_json::Value::String(trajectory_feedback),
+            );
+        }
         record_redacted_message(&mut self.trajectory, &obs_msg, obs_extra, &self.redactor);
         self.stream.emit(StreamEvent::Observation {
             step: self.steps,

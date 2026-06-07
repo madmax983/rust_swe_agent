@@ -47,13 +47,28 @@ fn prompt_blocking(ctx: &ConfirmContext) -> ConfirmDecision {
     let _ = err.write_all(render_banner(ctx).as_bytes());
     let _ = err.flush();
 
-    match read_single_keystroke() {
+    let mut decision = match read_single_keystroke() {
         Some(decision) => {
             let _ = err.write_all(b"\n");
             decision
         }
         None => read_line_buffered(),
+    };
+
+    if let ConfirmDecision::Reject(_) = decision {
+        if std::io::stdin().is_terminal() {
+            let _ = err.write_all(b"Provide corrective feedback (optional): ");
+            let _ = err.flush();
+            let mut feedback = String::new();
+            if std::io::stdin().read_line(&mut feedback).is_ok() {
+                let trimmed = feedback.trim();
+                if !trimmed.is_empty() {
+                    decision = ConfirmDecision::Reject(Some(trimmed.to_owned()));
+                }
+            }
+        }
     }
+    decision
 }
 
 /// Pure renderer for the stderr prompt banner, factored out so tests can
@@ -116,7 +131,7 @@ fn key_event_to_decision(key: KeyEvent) -> Option<ConfirmDecision> {
     }
     match key.code {
         KeyCode::Char('y' | 'Y') => Some(ConfirmDecision::Approve),
-        KeyCode::Char('n' | 'N') => Some(ConfirmDecision::Reject),
+        KeyCode::Char('n' | 'N') => Some(ConfirmDecision::Reject(None)),
         KeyCode::Char('a' | 'A') | KeyCode::Esc => Some(ConfirmDecision::Abort),
         _ => None,
     }
@@ -146,7 +161,7 @@ pub fn parse_line_decision(input: &str) -> ConfirmDecision {
     let trimmed = input.trim().to_ascii_lowercase();
     match trimmed.as_str() {
         "y" | "yes" => ConfirmDecision::Approve,
-        "n" | "no" => ConfirmDecision::Reject,
+        "n" | "no" => ConfirmDecision::Reject(None),
         _ => ConfirmDecision::Abort,
     }
 }
@@ -165,8 +180,8 @@ mod tests {
         assert_eq!(parse_line_decision("y\n"), ConfirmDecision::Approve);
         assert_eq!(parse_line_decision(" Y "), ConfirmDecision::Approve);
         assert_eq!(parse_line_decision("yes"), ConfirmDecision::Approve);
-        assert_eq!(parse_line_decision("n"), ConfirmDecision::Reject);
-        assert_eq!(parse_line_decision("NO"), ConfirmDecision::Reject);
+        assert_eq!(parse_line_decision("n"), ConfirmDecision::Reject(None));
+        assert_eq!(parse_line_decision("NO"), ConfirmDecision::Reject(None));
         assert_eq!(parse_line_decision("a"), ConfirmDecision::Abort);
         assert_eq!(parse_line_decision("abort"), ConfirmDecision::Abort);
         assert_eq!(parse_line_decision(""), ConfirmDecision::Abort);
@@ -222,12 +237,12 @@ mod tests {
             (
                 KeyCode::Char('n'),
                 KeyModifiers::NONE,
-                Some(ConfirmDecision::Reject),
+                Some(ConfirmDecision::Reject(None)),
             ),
             (
                 KeyCode::Char('N'),
                 KeyModifiers::NONE,
-                Some(ConfirmDecision::Reject),
+                Some(ConfirmDecision::Reject(None)),
             ),
             (
                 KeyCode::Char('a'),

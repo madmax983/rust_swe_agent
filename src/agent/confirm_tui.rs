@@ -42,6 +42,7 @@ struct DashboardState {
     log: VecDeque<LogLine>,
     pending: Option<PendingPrompt>,
     finished: Option<String>,
+    feedback_input: Option<String>,
 }
 
 #[derive(Clone)]
@@ -324,36 +325,70 @@ fn handle_key(dash: &Arc<RatatuiDashboard>, key: KeyEvent) {
     if !matches!(key.kind, KeyEventKind::Press) {
         return;
     }
-    let pending = {
-        let mut s = dash
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        s.pending.take()
-    };
-    let Some(pending) = pending else {
+    let mut s = dash
+        .state
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let Some(pending) = s.pending.take() else {
         return;
     };
     let ctrl_c = key.modifiers.contains(KeyModifiers::CONTROL)
         && matches!(key.code, KeyCode::Char('c' | 'C'));
-    let decision = if ctrl_c {
-        Some(ConfirmDecision::Abort)
+    if ctrl_c {
+        s.feedback_input = None;
+        let _ = pending.responder.send(ConfirmDecision::Abort);
+        return;
+    }
+
+    if let Some(mut buffer) = s.feedback_input.take() {
+        match key.code {
+            KeyCode::Enter => {
+                let decision = if buffer.trim().is_empty() {
+                    ConfirmDecision::Reject(None)
+                } else {
+                    ConfirmDecision::Reject(Some(buffer))
+                };
+                let _ = pending.responder.send(decision);
+            }
+            KeyCode::Esc => {
+                s.feedback_input = None;
+                s.pending = Some(pending);
+                dash.notify.notify_waiters();
+            }
+            KeyCode::Backspace => {
+                buffer.pop();
+                s.feedback_input = Some(buffer);
+                s.pending = Some(pending);
+                dash.notify.notify_waiters();
+            }
+            KeyCode::Char(c) => {
+                buffer.push(c);
+                s.feedback_input = Some(buffer);
+                s.pending = Some(pending);
+                dash.notify.notify_waiters();
+            }
+            _ => {
+                s.feedback_input = Some(buffer);
+                s.pending = Some(pending);
+            }
+        }
     } else {
         match key.code {
-            KeyCode::Char('y' | 'Y') => Some(ConfirmDecision::Approve),
-            KeyCode::Char('n' | 'N') => Some(ConfirmDecision::Reject),
-            KeyCode::Char('a' | 'A') | KeyCode::Esc => Some(ConfirmDecision::Abort),
-            _ => None,
+            KeyCode::Char('y' | 'Y') => {
+                let _ = pending.responder.send(ConfirmDecision::Approve);
+            }
+            KeyCode::Char('n' | 'N') => {
+                s.feedback_input = Some(String::new());
+                s.pending = Some(pending);
+                dash.notify.notify_waiters();
+            }
+            KeyCode::Char('a' | 'A') | KeyCode::Esc => {
+                let _ = pending.responder.send(ConfirmDecision::Abort);
+            }
+            _ => {
+                s.pending = Some(pending);
+            }
         }
-    };
-    if let Some(d) = decision {
-        let _ = pending.responder.send(d);
-    } else {
-        let mut s = dash
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        s.pending = Some(pending);
     }
 }
 
@@ -375,6 +410,7 @@ fn draw_frame(
             finished: s.finished.clone(),
             log: s.log.iter().cloned().collect(),
             pending: s.pending.as_ref().map(|p| p.ctx.clone()),
+            feedback_input: s.feedback_input.clone(),
         }
     };
     terminal.draw(|frame| draw(frame, &snapshot))?;
@@ -390,6 +426,7 @@ struct DashboardSnapshot {
     finished: Option<String>,
     log: Vec<LogLine>,
     pending: Option<ConfirmContext>,
+    feedback_input: Option<String>,
 }
 
 fn draw(frame: &mut ratatui::Frame, snap: &DashboardSnapshot) {
@@ -408,7 +445,7 @@ fn draw(frame: &mut ratatui::Frame, snap: &DashboardSnapshot) {
     frame.render_widget(footer_paragraph(snap), chunks[2]);
 
     if let Some(ctx) = &snap.pending {
-        draw_modal(frame, ctx, area);
+        draw_modal(frame, ctx, snap.feedback_input.as_ref(), area);
     }
 }
 
@@ -484,7 +521,12 @@ fn footer_paragraph(snap: &DashboardSnapshot) -> Paragraph<'_> {
     .block(Block::default().borders(Borders::ALL))
 }
 
-fn draw_modal(frame: &mut ratatui::Frame, ctx: &ConfirmContext, area: Rect) {
+fn draw_modal(
+    frame: &mut ratatui::Frame,
+    ctx: &ConfirmContext,
+    feedback_input: Option<&String>,
+    area: Rect,
+) {
     let modal = centered_rect(70, 50, area);
     frame.render_widget(Clear, modal);
     let mut lines = vec![
@@ -514,10 +556,31 @@ fn draw_modal(frame: &mut ratatui::Frame, ctx: &ConfirmContext, area: Rect) {
         )));
     }
     lines.push(Line::from(""));
-    lines.push(Line::from(Span::styled(
-        "(y) approve   (n) reject   (a) abort",
-        Style::default().add_modifier(Modifier::BOLD),
-    )));
+
+    if let Some(buffer) = feedback_input {
+        lines.push(Line::from(Span::styled(
+            "Provide corrective feedback (optional):",
+            Style::default()
+                .fg(Color::LightYellow)
+                .add_modifier(Modifier::BOLD),
+        )));
+        lines.push(Line::from(vec![
+            Span::styled(" > ", Style::default().fg(Color::Green)),
+            Span::styled(buffer.clone(), Style::default().fg(Color::White)),
+            Span::styled("█", Style::default().fg(Color::Green)),
+        ]));
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            "[Enter] submit   [Esc] back to choices",
+            Style::default().add_modifier(Modifier::DIM),
+        )));
+    } else {
+        lines.push(Line::from(Span::styled(
+            "(y) approve   (n) reject   (a) abort",
+            Style::default().add_modifier(Modifier::BOLD),
+        )));
+    }
+
     let block = Block::default()
         .borders(Borders::ALL)
         .title(" confirm action ");
@@ -652,6 +715,7 @@ mod tests {
             finished: s.finished.clone(),
             log: s.log.iter().cloned().collect(),
             pending: s.pending.as_ref().map(|p| p.ctx.clone()),
+            feedback_input: s.feedback_input.clone(),
         }
     }
 
@@ -905,10 +969,6 @@ mod tests {
                 ConfirmDecision::Approve,
             ),
             (
-                KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE),
-                ConfirmDecision::Reject,
-            ),
-            (
                 KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE),
                 ConfirmDecision::Abort,
             ),
@@ -925,6 +985,68 @@ mod tests {
             handle_key(&d, key);
             assert_eq!(rx.try_recv().unwrap(), expected);
         }
+    }
+
+    #[test]
+    fn handle_key_rejection_feedback_flow() {
+        let d = make_dashboard();
+
+        // 1. Initial pending prompt
+        let mut rx = make_pending(&d);
+        assert!(snap(&d).feedback_input.is_none());
+
+        // 2. Press 'n' to enter feedback mode
+        let key_n = KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE);
+        handle_key(&d, key_n);
+
+        // Assert no decision sent yet, and we are in feedback mode
+        assert!(rx.try_recv().is_err());
+        assert_eq!(snap(&d).feedback_input.as_deref(), Some(""));
+
+        // 3. Type "f", "i", "x"
+        for c in ['f', 'i', 'x'] {
+            handle_key(&d, KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+        }
+        assert_eq!(snap(&d).feedback_input.as_deref(), Some("fix"));
+
+        // 4. Backspace
+        handle_key(&d, KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE));
+        assert_eq!(snap(&d).feedback_input.as_deref(), Some("fi"));
+
+        // 5. Enter to submit
+        handle_key(&d, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(
+            rx.try_recv().unwrap(),
+            ConfirmDecision::Reject(Some("fi".to_owned()))
+        );
+    }
+
+    #[test]
+    fn handle_key_rejection_empty_feedback_flow() {
+        let d = make_dashboard();
+        let mut rx = make_pending(&d);
+
+        // Press 'n'
+        handle_key(&d, KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE));
+
+        // Press Enter without typing feedback
+        handle_key(&d, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(rx.try_recv().unwrap(), ConfirmDecision::Reject(None));
+    }
+
+    #[test]
+    fn handle_key_rejection_cancel_flow() {
+        let d = make_dashboard();
+        let _rx = make_pending(&d);
+
+        // Press 'n'
+        handle_key(&d, KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE));
+        assert!(snap(&d).feedback_input.is_some());
+
+        // Press Esc
+        handle_key(&d, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert!(snap(&d).feedback_input.is_none());
+        assert!(snap(&d).pending.is_some());
     }
 
     #[test]
