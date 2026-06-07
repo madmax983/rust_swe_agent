@@ -266,7 +266,7 @@ fn read_line_buffered() -> ConfirmDecision {
 /// input map to `Abort` so a closed/piped stdin never silently approves.
 pub fn parse_line_decision(input: &str) -> ConfirmDecision {
     let trimmed = input.trim();
-    if trimmed == "A" || trimmed.to_ascii_lowercase() == "auto" {
+    if trimmed == "A" || trimmed.eq_ignore_ascii_case("auto") {
         return ConfirmDecision::AutoApprove(String::new());
     }
     let lower = trimmed.to_ascii_lowercase();
@@ -446,11 +446,11 @@ mod tests {
     fn parse_line_decision_matches_auto_approve() {
         assert_eq!(
             parse_line_decision("A"),
-            ConfirmDecision::AutoApprove("".to_string())
+            ConfirmDecision::AutoApprove(String::new())
         );
         assert_eq!(
             parse_line_decision("auto"),
-            ConfirmDecision::AutoApprove("".to_string())
+            ConfirmDecision::AutoApprove(String::new())
         );
     }
 
@@ -459,7 +459,7 @@ mod tests {
         let key = KeyEvent::new(KeyCode::Char('A'), KeyModifiers::SHIFT);
         assert_eq!(
             key_event_to_decision(key),
-            Some(ConfirmDecision::AutoApprove("".to_string()))
+            Some(ConfirmDecision::AutoApprove(String::new()))
         );
 
         // Lowercase 'a' still aborts

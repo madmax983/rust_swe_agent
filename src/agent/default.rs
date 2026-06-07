@@ -1268,8 +1268,7 @@ impl Agent for DefaultAgent {
                     super::ConfirmDecision::Approve => {}
                     super::ConfirmDecision::AutoApprove(scope) => {
                         if let Ok(mut rules) = self.auto_approve_rules.lock() {
-                            if !rules.contains(&scope) {
-                                rules.insert(scope.clone());
+                            if rules.insert(scope.clone()) {
                                 self.stream.emit(StreamEvent::AutoApproveRuleCreated {
                                     scope: scope.clone(),
                                 });
@@ -3592,8 +3591,6 @@ mod tests {
                 }
             }
         }
-        println!("TRAJECTORY JSON: {}", traj_json);
-        println!("DECISIONS: {:?}", decisions);
         assert_eq!(decisions, vec!["approve", "auto-approve"]);
         assert_eq!(rule_created, Some("cargo".to_string()));
         assert_eq!(rule_matched, Some("cargo".to_string()));
