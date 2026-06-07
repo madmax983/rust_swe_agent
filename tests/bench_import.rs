@@ -955,6 +955,40 @@ fn import_help_exposes_evaluator_forwarding_flags() {
     assert!(stdout.contains("--run-id"), "should expose --run-id");
 }
 
+/// AC: `--backend rehearsal` must be rejected — rehearsal needs trajectory files
+/// that imported sweeps never have.
+#[test]
+fn import_evaluate_rehearsal_backend_rejected() {
+    let tmp = tempfile::tempdir().unwrap();
+    let out = tmp.path().join("imported");
+
+    let output = Command::new(binary_path())
+        .args([
+            "bench",
+            "import",
+            "--predictions",
+            predictions_path(),
+            "--dataset-path",
+            dataset_path(),
+            "--output",
+            out.to_str().unwrap(),
+            "--evaluate",
+            "--backend",
+            "rehearsal",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        !output.status.success(),
+        "bench import --evaluate --backend rehearsal should exit non-zero"
+    );
+    // The sweep directory must NOT have been created — backend validated before I/O.
+    assert!(
+        !out.join("results.json").exists(),
+        "results.json must not be written when backend validation fails before import"
+    );
+}
+
 /// AC: passing a malformed dataset file (rows without instance_id) must fail clearly.
 #[test]
 fn import_rejects_dataset_missing_instance_id() {

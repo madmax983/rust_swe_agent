@@ -258,6 +258,15 @@ fn write_all_preds_jsonl(
 /// Run `bench import`.
 #[allow(clippy::too_many_lines)]
 pub fn run(args: &ImportArgs) -> Result<ImportSummary, Error> {
+    // 0. Validate evaluate-related args before touching the filesystem so that
+    //    an invalid or unsupported --backend fails fast without leaving a partial
+    //    sweep directory behind that would block a corrected retry.
+    let eval_backend = if args.evaluate {
+        Some(parse_evaluate_backend(&args.backend)?)
+    } else {
+        None
+    };
+
     // 1. Read and hash the predictions file.
     let predictions_bytes = std::fs::read(&args.predictions).map_err(|e| {
         Error::Trajectory(format!(
@@ -531,8 +540,7 @@ pub fn run(args: &ImportArgs) -> Result<ImportSummary, Error> {
     // 11. Optionally run the evaluator pipeline against the freshly imported sweep.
     //     The sweep directory has already been written; a failure here leaves it intact
     //     so the operator can re-run `bench evaluate` without re-importing.
-    let evaluation = if args.evaluate {
-        let backend = parse_evaluate_backend(&args.backend)?;
+    let evaluation = if let Some(backend) = eval_backend {
         let eval_args = crate::run::evaluate::EvaluateArgs {
             sweep_dir: canonical_output.clone(),
             dataset_path: Some(args.dataset_path.clone()),
@@ -566,12 +574,64 @@ fn parse_evaluate_backend(backend: &str) -> Result<crate::run::evaluate::Evaluat
     match backend {
         "sb-cli" => Ok(crate::run::evaluate::EvaluateBackend::SbCli),
         "none" => Ok(crate::run::evaluate::EvaluateBackend::None),
-        "rehearsal" => Ok(crate::run::evaluate::EvaluateBackend::Rehearsal),
         "docker-tests" => Ok(crate::run::evaluate::EvaluateBackend::DockerTests),
+        "rehearsal" => Err(Error::Config(crate::error::ConfigError::Invalid(
+            "bench import --evaluate does not support --backend rehearsal: \
+             the rehearsal evaluator requires trajectory files (.traj.json) \
+             that imported sweeps do not have; use --backend sb-cli, none, \
+             or docker-tests instead"
+                .to_owned(),
+        ))),
         other => Err(Error::Config(crate::error::ConfigError::Invalid(format!(
             "bench import --backend `{other}` is not valid; \
-             expected `sb-cli`, `none`, `rehearsal`, or `docker-tests`"
+             expected `sb-cli`, `none`, or `docker-tests`"
         )))),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::run::evaluate::EvaluateBackend;
+
+    #[test]
+    fn parse_evaluate_backend_valid_variants() {
+        assert_eq!(
+            parse_evaluate_backend("sb-cli").unwrap(),
+            EvaluateBackend::SbCli
+        );
+        assert_eq!(
+            parse_evaluate_backend("none").unwrap(),
+            EvaluateBackend::None
+        );
+        assert_eq!(
+            parse_evaluate_backend("docker-tests").unwrap(),
+            EvaluateBackend::DockerTests
+        );
+    }
+
+    #[test]
+    fn parse_evaluate_backend_rehearsal_is_rejected() {
+        let err = parse_evaluate_backend("rehearsal").unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("rehearsal"),
+            "error should explain why rehearsal is unsupported; got: {msg}"
+        );
+        assert!(
+            msg.contains("trajectory") || msg.contains("traj"),
+            "error should mention the missing trajectory files; got: {msg}"
+        );
+    }
+
+    #[test]
+    fn parse_evaluate_backend_invalid_returns_error() {
+        let err = parse_evaluate_backend("bogus").unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("bogus"),
+            "error should mention the invalid value; got: {msg}"
+        );
     }
 }
 
