@@ -1120,7 +1120,7 @@ impl Agent for DefaultAgent {
             }
         };
         let tool_name = tool_call.name;
-        let tool_input = tool_call.input;
+        let mut tool_input = tool_call.input;
         let is_bash = tool_name == BASH_TOOL_NAME;
         if self.read_only {
             self.history.push(Message::assistant(
@@ -1237,7 +1237,7 @@ impl Agent for DefaultAgent {
         }
 
         // 5c. PreToolUse hooks, then tool execution if not blocked.
-        let pre_hook_results = self
+        let mut pre_hook_results = self
             .run_tool_hooks(
                 ToolHookPhase::PreToolUse,
                 &self.config.root.agent.hooks.pre_tool_use,
@@ -1246,11 +1246,13 @@ impl Agent for DefaultAgent {
                 None,
             )
             .await?;
-        let tool_use_blocked = pre_hook_results.iter().any(ToolHookResult::blocks_tool_use);
+        let mut tool_use_blocked = pre_hook_results.iter().any(ToolHookResult::blocks_tool_use);
         if self.cancellation_requested() {
             self.finalize_cancelled();
             return Ok(StepOutcome::Terminate(ExitReason::UserInterrupt));
         }
+
+        let mut interactive_edit: Option<(String, String, String)> = None;
 
         // 5d. Operator confirmation gate (issue #312). Skipped when the
         // PreToolUse hook layer already blocked the tool — the operator
@@ -1270,10 +1272,122 @@ impl Agent for DefaultAgent {
                         self.finalize_cancelled();
                         return Ok(StepOutcome::Terminate(ExitReason::UserInterrupt));
                     }
-                    super::ConfirmDecision::Edit(_) => {
-                        todo!(
-                            "Task 1 only requires confirm.rs edits and scripted tests to pass first"
-                        );
+                    super::ConfirmDecision::Edit(edited_command) => {
+                        let policy_command_edit = if is_bash {
+                            Some(edited_command.clone())
+                        } else if let Some(tool) = self.tool_registry.command_tool(&tool_name) {
+                            let context = self.command_tool_context(tool, &edited_command);
+                            Some(self.renderer.render_str(&tool.command, &context)?)
+                        } else {
+                            None
+                        };
+
+                        if let Some(policy_command_edit_str) = policy_command_edit.as_deref() {
+                            let policy_decision = self
+                                .policy_engine
+                                .check_command_non_interactive(policy_command_edit_str);
+                            if let PolicyDecision::Deny { ref label } = policy_decision {
+                                self.trajectory.info.policy_counts.record(&policy_decision);
+                                let rejection = format!(
+                                    "Exit code: 1\nOutput:\nCommand blocked by policy rule '{label}'. \
+                                     The command was not executed. Please attempt a safer alternative.",
+                                );
+                                let obs_msg = Message::user(rejection.clone());
+                                self.history.push(obs_msg.clone());
+                                let mut obs_extra = crate::model::MessageExtra {
+                                    harness_overhead_ms: Some(elapsed_ms_since(
+                                        self.last_measurement_end,
+                                    )),
+                                    ..crate::model::MessageExtra::default()
+                                };
+                                obs_extra
+                                    .other
+                                    .insert("policy_blocked".into(), serde_json::Value::Bool(true));
+                                obs_extra.other.insert(
+                                    "policy_rule".into(),
+                                    serde_json::Value::String(label.clone()),
+                                );
+                                obs_extra.other.insert(
+                                    "blocked_command".into(),
+                                    serde_json::Value::String(
+                                        self.redactor
+                                            .redact_text(
+                                                policy_command_edit_str,
+                                                surface::TRAJECTORY,
+                                            )
+                                            .text,
+                                    ),
+                                );
+                                obs_extra.other.insert(
+                                    "interactive_decision".into(),
+                                    serde_json::Value::String("edit".to_owned()),
+                                );
+                                obs_extra.other.insert(
+                                    "interactive_proposed_command".into(),
+                                    serde_json::Value::String(
+                                        self.redactor
+                                            .redact_text(&tool_input, surface::TRAJECTORY)
+                                            .text,
+                                    ),
+                                );
+                                obs_extra.other.insert(
+                                    "interactive_substituted_command".into(),
+                                    serde_json::Value::String(
+                                        self.redactor
+                                            .redact_text(&edited_command, surface::TRAJECTORY)
+                                            .text,
+                                    ),
+                                );
+                                obs_extra.other.insert(
+                                    "interactive_tool_name".into(),
+                                    serde_json::Value::String(tool_name.clone()),
+                                );
+                                obs_extra.other.insert(
+                                    "interactive_timestamp".into(),
+                                    serde_json::Value::String(chrono::Utc::now().to_rfc3339()),
+                                );
+
+                                record_redacted_message(
+                                    &mut self.trajectory,
+                                    &obs_msg,
+                                    obs_extra,
+                                    &self.redactor,
+                                );
+                                self.stream.emit(StreamEvent::Observation {
+                                    step: self.steps,
+                                    content: rejection,
+                                    timestamp: chrono::Utc::now().to_rfc3339(),
+                                });
+                                self.last_measurement_end = Instant::now();
+                                self.steps += 1;
+                                return Ok(StepOutcome::Continue);
+                            }
+                            if *self.policy_engine.profile() == PolicyProfile::Yolo {
+                                self.trajectory.info.policy_counts.record_yolo_bypass();
+                            } else {
+                                self.trajectory.info.policy_counts.record(&policy_decision);
+                            }
+                        }
+
+                        // Run PreToolUse hooks on the edited_command. Update pre_hook_results and tool_use_blocked status.
+                        pre_hook_results = self
+                            .run_tool_hooks(
+                                ToolHookPhase::PreToolUse,
+                                &self.config.root.agent.hooks.pre_tool_use,
+                                &tool_name,
+                                &edited_command,
+                                None,
+                            )
+                            .await?;
+                        tool_use_blocked =
+                            pre_hook_results.iter().any(ToolHookResult::blocks_tool_use);
+
+                        interactive_edit = Some((
+                            tool_input.clone(),
+                            edited_command.clone(),
+                            chrono::Utc::now().to_rfc3339(),
+                        ));
+                        tool_input = edited_command;
                     }
                 }
             }
@@ -1441,6 +1555,36 @@ impl Agent for DefaultAgent {
         let obs_msg = Message::user(obs_text.clone());
         self.history.push(obs_msg.clone());
         let mut obs_extra = MessageExtra::default();
+        if let Some((ref proposed, ref substituted, ref ts)) = interactive_edit {
+            obs_extra.other.insert(
+                "interactive_decision".into(),
+                serde_json::Value::String("edit".to_owned()),
+            );
+            obs_extra.other.insert(
+                "interactive_proposed_command".into(),
+                serde_json::Value::String(
+                    self.redactor
+                        .redact_text(proposed, surface::TRAJECTORY)
+                        .text,
+                ),
+            );
+            obs_extra.other.insert(
+                "interactive_substituted_command".into(),
+                serde_json::Value::String(
+                    self.redactor
+                        .redact_text(substituted, surface::TRAJECTORY)
+                        .text,
+                ),
+            );
+            obs_extra.other.insert(
+                "interactive_tool_name".into(),
+                serde_json::Value::String(tool_name.clone()),
+            );
+            obs_extra.other.insert(
+                "interactive_timestamp".into(),
+                serde_json::Value::String(ts.clone()),
+            );
+        }
         // Mark chaos-injected results so `bench inspect` can distinguish a
         // deterministically synthesized timeout from a real one. We detect by
         // the decorator's stderr sentinel on a timed-out result; the flag is

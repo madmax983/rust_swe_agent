@@ -405,9 +405,13 @@ fn handle_key_normal(
     dash: &RatatuiDashboard,
     s: &mut DashboardState,
     pending: PendingPrompt,
-    key_code: KeyCode,
+    key: KeyEvent,
 ) {
-    match key_code {
+    if !key.modifiers.is_empty() && key.modifiers != KeyModifiers::SHIFT {
+        s.pending = Some(pending);
+        return;
+    }
+    match key.code {
         KeyCode::Char('y' | 'Y') => {
             let _ = pending.responder.send(ConfirmDecision::Approve);
         }
@@ -455,7 +459,7 @@ fn handle_key(dash: &Arc<RatatuiDashboard>, key: KeyEvent) {
     } else if let Some(buffer) = s.edit_input.take() {
         handle_key_edit_input(dash, &mut s, pending, key.code, buffer);
     } else {
-        handle_key_normal(dash, &mut s, pending, key.code);
+        handle_key_normal(dash, &mut s, pending, key);
     }
     drop(s);
 }
@@ -1193,6 +1197,38 @@ mod tests {
         handle_key(&d, key_e);
 
         // Assert no decision sent yet, and we are in edit mode
+        assert!(rx.try_recv().is_err());
+        assert_eq!(snap(&d).edit_input.as_deref(), Some("x"));
+    }
+
+    #[test]
+    fn handle_key_edit_flow_with_invalid_modifiers_is_ignored() {
+        let d = make_dashboard();
+
+        // 1. Initial pending prompt
+        let mut rx = make_pending(&d);
+        assert!(snap(&d).edit_input.is_none());
+
+        // 2. Press 'Ctrl-e' (unsupported modifier) -> should be ignored, stay in choice screen
+        let key_ctrl_e = KeyEvent::new(KeyCode::Char('e'), KeyModifiers::CONTROL);
+        handle_key(&d, key_ctrl_e);
+
+        assert!(rx.try_recv().is_err());
+        assert!(snap(&d).edit_input.is_none());
+        assert!(snap(&d).pending.is_some());
+
+        // 3. Press 'Alt-E' (unsupported modifier) -> should be ignored, stay in choice screen
+        let key_alt_e = KeyEvent::new(KeyCode::Char('E'), KeyModifiers::ALT);
+        handle_key(&d, key_alt_e);
+
+        assert!(rx.try_recv().is_err());
+        assert!(snap(&d).edit_input.is_none());
+        assert!(snap(&d).pending.is_some());
+
+        // 4. Press 'Shift-E' (supported modifier for uppercase E) -> should enter edit mode
+        let key_shift_e = KeyEvent::new(KeyCode::Char('E'), KeyModifiers::SHIFT);
+        handle_key(&d, key_shift_e);
+
         assert!(rx.try_recv().is_err());
         assert_eq!(snap(&d).edit_input.as_deref(), Some("x"));
     }
