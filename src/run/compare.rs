@@ -2935,6 +2935,12 @@ fn compare_evaluator_provenance(
                         b_dt.parallel, c_dt.parallel
                     ));
                 }
+                if b_dt.image_names != c_dt.image_names {
+                    warnings.push(format!(
+                        "evaluator provenance: docker_tests image names differ (baseline={:?}, candidate={:?})",
+                        b_dt.image_names, c_dt.image_names
+                    ));
+                }
             }
             (None, Some(_)) => warnings.push(
                 "evaluator provenance: baseline docker-tests details unavailable (legacy artifact)"

@@ -70,6 +70,10 @@ pub struct DockerTestsProvenance {
     pub timeout_per_instance_secs: u64,
     /// Parallel worker count (reserved; currently evaluated sequentially).
     pub parallel: usize,
+    /// Sorted unique set of Docker image names (tags) used during this run.
+    /// Differences here indicate different testbed images were evaluated.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub image_names: Vec<String>,
 }
 
 /// Provenance specific to `sb-cli` submit/get-report command pairs.
@@ -395,6 +399,8 @@ struct EvaluateRunOutput {
     resolved_by_run: HashMap<RunSlotKey, bool>,
     /// The actual run id used (may be auto-generated when args.run_id is None).
     effective_run_id: Option<String>,
+    /// Sorted unique Docker image names used (docker-tests backend only).
+    docker_image_names: Vec<String>,
 }
 
 impl EvaluateRunOutput {
@@ -403,6 +409,7 @@ impl EvaluateRunOutput {
             eval,
             resolved_by_run: HashMap::new(),
             effective_run_id: None,
+            docker_image_names: Vec::new(),
         }
     }
 }
@@ -441,6 +448,7 @@ pub fn run(args: &EvaluateArgs) -> Result<EvaluationResults, Error> {
         mut eval,
         resolved_by_run,
         effective_run_id,
+        docker_image_names,
     } = run_output;
     let (dataset_sha256, dataset_instance_count) = if let Some(ref dataset_path) = args.dataset_path
     {
@@ -462,6 +470,7 @@ pub fn run(args: &EvaluateArgs) -> Result<EvaluationResults, Error> {
         eval_started_at,
         dataset_sha256,
         dataset_instance_count,
+        docker_image_names,
     );
     attach_patch_stats(&mut eval, args, &resolved_by_run)?;
     let (rollup, test_only_resolved_rate) = build_submission_class_rollup(&eval.instances);
@@ -514,6 +523,7 @@ fn build_provenance(
     started_at: String,
     dataset_sha256: Option<String>,
     dataset_instance_count: Option<usize>,
+    docker_image_names: Vec<String>,
 ) -> EvaluatorProvenance {
     let run_id_str = effective_run_id
         .or(args.run_id.as_deref())
@@ -525,6 +535,7 @@ fn build_provenance(
             let prov = DockerTestsProvenance {
                 timeout_per_instance_secs: args.timeout_per_instance_secs,
                 parallel: args.parallel,
+                image_names: docker_image_names,
             };
             ("docker-tests", None, Some(prov), vec![])
         }
@@ -1193,6 +1204,7 @@ fn run_rehearsal_eval(
         },
         resolved_by_run,
         effective_run_id: Some("rehearsal-eval".to_owned()),
+        docker_image_names: vec![],
     })
 }
 
@@ -1252,6 +1264,8 @@ fn run_docker_tests(
 
     let mut instances: Vec<InstanceEvaluation> = Vec::with_capacity(results.len());
     let mut resolved_by_run: HashMap<RunSlotKey, bool> = HashMap::new();
+    let mut image_names_seen: std::collections::BTreeSet<String> =
+        std::collections::BTreeSet::new();
 
     for (id, r) in results {
         let runs = effective_runs(r);
@@ -1312,6 +1326,8 @@ fn run_docker_tests(
                     })
             })
             .unwrap_or_else(|| format!("swebench/sweb.eval.x86_64.{id}"));
+
+        image_names_seen.insert(image.clone());
 
         // Extract FAIL_TO_PASS and PASS_TO_PASS test lists.
         let fail_to_pass = extract_test_list(&inst_data.other, "FAIL_TO_PASS");
@@ -1374,7 +1390,8 @@ fn run_docker_tests(
         let mut resolved_count = 0u32;
         let mut pass_at_1 = false;
         let mut display_verdict: Option<&DockerTestVerdict> = None;
-        let mut last_error: Option<&str> = None;
+        let mut had_eval_error = false;
+        let mut first_error_msg: Option<&str> = None;
 
         for (run_index, result) in &run_verdicts {
             match result {
@@ -1397,7 +1414,10 @@ fn run_docker_tests(
                 }
                 Err(msg) => {
                     resolved_by_run.insert(RunSlotKey::new(id, *run_index), false);
-                    last_error = Some(msg.as_str());
+                    had_eval_error = true;
+                    if first_error_msg.is_none() {
+                        first_error_msg = Some(msg.as_str());
+                    }
                 }
             }
         }
@@ -1406,7 +1426,10 @@ fn run_docker_tests(
         let (tests_passed, tests_failed, eval_exit_reason, patch_error_log) = match display_verdict
         {
             Some(v) => {
-                let reason = if v.timed_out {
+                // If any run had an infrastructure error and nothing resolved,
+                // report EvalError so the error isn't masked by a later
+                // clean-but-unresolved run.
+                let reason = if (had_eval_error && !resolved) || v.timed_out {
                     EvalExitReason::EvalError
                 } else if v.patch_apply_failed {
                     EvalExitReason::PatchApplyFailed
@@ -1415,18 +1438,18 @@ fn run_docker_tests(
                 } else {
                     EvalExitReason::Unresolved
                 };
-                (
-                    v.tests_passed.clone(),
-                    v.tests_failed.clone(),
-                    reason,
-                    v.patch_error_log.clone(),
-                )
+                let log = if had_eval_error && !resolved {
+                    first_error_msg.map(ToOwned::to_owned)
+                } else {
+                    v.patch_error_log.clone()
+                };
+                (v.tests_passed.clone(), v.tests_failed.clone(), reason, log)
             }
             None => (
                 vec![],
                 vec![],
                 EvalExitReason::EvalError,
-                last_error.map(ToOwned::to_owned),
+                first_error_msg.map(ToOwned::to_owned),
             ),
         };
 
@@ -1454,6 +1477,7 @@ fn run_docker_tests(
         },
         resolved_by_run,
         effective_run_id: None,
+        docker_image_names: image_names_seen.into_iter().collect(),
     })
 }
 
@@ -1822,25 +1846,40 @@ fn evaluate_instance_with_docker_inner(
     };
 
     // 5. Parse pytest output to classify each test.
-    // For custom test commands whose runners don't emit pytest verbose lines,
-    // fall back to the sidecar exit code: exit 0 → all tests passed.
-    let has_result_lines = output_text.contains(" PASSED")
-        || output_text.contains(" FAILED")
-        || output_text.contains(" ERROR");
-
-    let (tests_passed, tests_failed) = if test_command.is_some() && !has_result_lines {
-        // Non-pytest runner: read the exit code we saved to the sidecar file.
-        let runner_ok = Command::new("docker")
-            .args(["exec", &container_id, "cat", "/tmp/test.exitcode"])
-            .output()
-            .ok()
-            .and_then(|o| String::from_utf8(o.stdout).ok())
-            .and_then(|s| s.trim().parse::<i32>().ok())
-            .is_some_and(|code| code == 0);
-        if runner_ok {
-            (all_tests.iter().map(|&s| s.to_owned()).collect(), vec![])
+    // For custom test commands, check whether the scanner found any of the
+    // requested test node IDs explicitly (not just summary words like "PASSED"
+    // that can appear in runner banners). If none match, fall back to the
+    // sidecar exit code rather than marking everything as not-run/failed.
+    let (tests_passed, tests_failed) = if test_command.is_some() {
+        let (explicit_passed, explicit_failed) = scan_pytest_result_lines(&output_text);
+        let any_selector_matched = explicit_passed
+            .iter()
+            .chain(explicit_failed.iter())
+            .any(|t| all_tests.contains(&t.as_str()));
+        if any_selector_matched {
+            // Pytest-compatible output: apply the not-run fallback for unseen tests.
+            let passed = explicit_passed;
+            let mut failed = explicit_failed;
+            for &test in &all_tests {
+                if !passed.iter().any(|p| p == test) && !failed.iter().any(|f| f == test) {
+                    failed.push(test.to_owned());
+                }
+            }
+            (passed, failed)
         } else {
-            (vec![], all_tests.iter().map(|&s| s.to_owned()).collect())
+            // No requested selectors found → use exit code oracle.
+            let runner_ok = Command::new("docker")
+                .args(["exec", &container_id, "cat", "/tmp/test.exitcode"])
+                .output()
+                .ok()
+                .and_then(|o| String::from_utf8(o.stdout).ok())
+                .and_then(|s| s.trim().parse::<i32>().ok())
+                .is_some_and(|code| code == 0);
+            if runner_ok {
+                (all_tests.iter().map(|&s| s.to_owned()).collect(), vec![])
+            } else {
+                (vec![], all_tests.iter().map(|&s| s.to_owned()).collect())
+            }
         }
     } else {
         parse_pytest_output(&output_text, &all_tests)
@@ -1953,17 +1992,17 @@ impl Drop for ContainerGuard<'_> {
     }
 }
 
-/// Parse `pytest -v --tb=no` output and classify each test as passed or failed.
-/// Handles lines like `tests/test_foo.py::test_bar PASSED [ 50%]` (status as suffix).
-fn parse_pytest_output(output: &str, all_tests: &[&str]) -> (Vec<String>, Vec<String>) {
+/// Scan `pytest -v` output for explicit result tokens on each line.
+/// Returns (passed, failed) with only lines that contain a status suffix —
+/// the "not run" fallback is NOT applied. Use `parse_pytest_output` for the
+/// full parse including the fallback.
+fn scan_pytest_result_lines(output: &str) -> (Vec<String>, Vec<String>) {
     let mut passed = Vec::new();
     let mut failed = Vec::new();
-
     for line in output.lines() {
         let line = line.trim();
-        // Use rfind so that status words embedded in parametrized node IDs
-        // (e.g. "test_foo[PASSED-val] FAILED") don't fool the parser; the
-        // rightmost occurrence is always the actual verbose-output status token.
+        // Use rfind so status words embedded in parametrized node IDs
+        // (e.g. "test_foo[PASSED-val] FAILED") don't fool the parser.
         if let Some(idx) = line.rfind(" PASSED") {
             let test_id = line[..idx].trim().to_owned();
             if !test_id.is_empty() {
@@ -1971,7 +2010,6 @@ fn parse_pytest_output(output: &str, all_tests: &[&str]) -> (Vec<String>, Vec<St
             }
         } else if let Some(idx) = line.rfind(" FAILED") {
             let test_id = line[..idx].trim();
-            // Strip trailing " - <reason>" that pytest sometimes appends.
             let test_id = test_id.split(" - ").next().unwrap_or(test_id).to_owned();
             if !test_id.is_empty() {
                 failed.push(test_id);
@@ -1983,6 +2021,14 @@ fn parse_pytest_output(output: &str, all_tests: &[&str]) -> (Vec<String>, Vec<St
             }
         }
     }
+    (passed, failed)
+}
+
+/// Parse `pytest -v --tb=no` output and classify each test as passed or failed.
+/// Handles lines like `tests/test_foo.py::test_bar PASSED [ 50%]` (status as suffix).
+/// Tests in `all_tests` not seen in any result line are added to `failed` (conservative).
+fn parse_pytest_output(output: &str, all_tests: &[&str]) -> (Vec<String>, Vec<String>) {
+    let (passed, mut failed) = scan_pytest_result_lines(output);
 
     // Any test in all_tests that doesn't appear in passed or failed was not run;
     // count it as failed (conservative).
@@ -2034,6 +2080,7 @@ fn run_sb_cli(
             eval: merge_rerun_reports_with_results(results, &reports),
             resolved_by_run,
             effective_run_id: Some(run_id),
+            docker_image_names: vec![],
         });
     }
 
@@ -2047,6 +2094,7 @@ fn run_sb_cli(
         eval: merge_with_results(results, &parsed),
         resolved_by_run,
         effective_run_id: Some(run_id),
+        docker_image_names: vec![],
     })
 }
 
@@ -3882,6 +3930,7 @@ mod tests {
             "2026-01-01T00:00:00Z".into(),
             None,
             None,
+            vec![],
         );
         assert_eq!(prov.backend, "none");
         assert!(prov.backend_version.is_none());
@@ -3920,6 +3969,7 @@ mod tests {
             "2026-01-01T00:00:00Z".into(),
             None,
             None,
+            vec![],
         );
         assert_eq!(prov.run_id.as_deref(), Some("generated-123"));
     }
