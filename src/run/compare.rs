@@ -2836,6 +2836,7 @@ fn breakdown_map<S: std::hash::BuildHasher>(
 /// prediction_sha256, timestamps) are intentionally ignored so that comparing
 /// two different candidate sweeps scored by the same evaluator setup reports
 /// `Matching` rather than `Mismatched`.
+#[allow(clippy::too_many_lines)]
 fn compare_evaluator_provenance(
     baseline: Option<&crate::run::evaluate::EvaluatorProvenance>,
     candidate: Option<&crate::run::evaluate::EvaluatorProvenance>,
