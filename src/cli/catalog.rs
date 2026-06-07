@@ -254,6 +254,12 @@ pub fn entries() -> &'static [CatalogEntry] {
             stage: "analyze",
         },
         CatalogEntry {
+            path: "bench eval-parity",
+            summary: "Compare offline and canonical evaluator verdicts to measure parity and gate CI",
+            cost_tier: "free",
+            stage: "analyze",
+        },
+        CatalogEntry {
             path: "bench evaluate",
             summary: "Evaluate a completed sweep with an evaluation backend",
             cost_tier: "free",
