@@ -556,9 +556,7 @@ pub fn run(args: &ImportArgs) -> Result<ImportSummary, Error> {
     Ok(summary)
 }
 
-fn parse_evaluate_backend(
-    backend: &str,
-) -> Result<crate::run::evaluate::EvaluateBackend, Error> {
+fn parse_evaluate_backend(backend: &str) -> Result<crate::run::evaluate::EvaluateBackend, Error> {
     match backend {
         "sb-cli" => Ok(crate::run::evaluate::EvaluateBackend::SbCli),
         "none" => Ok(crate::run::evaluate::EvaluateBackend::None),
