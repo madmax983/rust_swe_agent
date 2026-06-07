@@ -4575,6 +4575,12 @@ fn bench_import(i: args::ImportCmd) -> Result<(), Error> {
         dataset_path: i.dataset_path,
         output: i.output,
         evaluate: i.evaluate,
+        backend: i.backend,
+        sb_subset: i.sb_subset,
+        sb_split: i.sb_split,
+        timeout_per_instance_secs: i.timeout_per_instance,
+        parallel: i.parallel,
+        run_id: i.run_id,
         format,
     };
     let summary = crate::run::import::run(&args)?;

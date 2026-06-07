@@ -1917,6 +1917,36 @@ pub struct ImportCmd {
     #[arg(long, default_value_t = false)]
     pub evaluate: bool,
 
+    /// Evaluation backend used when `--evaluate` is set: `sb-cli` (default), `none`,
+    /// `rehearsal`, or `docker-tests`. Matches `bench evaluate --backend`.
+    #[arg(long, default_value = "sb-cli")]
+    pub backend: String,
+
+    /// SWE-bench subset for sb-cli when `--evaluate` is set (e.g. `swe-bench-m`).
+    /// Matches `bench evaluate --sb-subset`.
+    #[arg(long, default_value = "swe-bench-m")]
+    pub sb_subset: String,
+
+    /// SWE-bench split for sb-cli when `--evaluate` is set (`dev` or `test`).
+    /// Matches `bench evaluate --sb-split`.
+    #[arg(long, default_value = "dev")]
+    pub sb_split: String,
+
+    /// Per-instance evaluation timeout in seconds when `--evaluate` is set.
+    /// Matches `bench evaluate --timeout-per-instance`.
+    #[arg(long, default_value_t = 600)]
+    pub timeout_per_instance: u64,
+
+    /// Parallel worker count for the evaluation backend when `--evaluate` is set.
+    /// Matches `bench evaluate --parallel`.
+    #[arg(long, default_value_t = 4)]
+    pub parallel: usize,
+
+    /// Optional sb-cli run id when `--evaluate` is set.
+    /// Matches `bench evaluate --run-id`.
+    #[arg(long)]
+    pub run_id: Option<String>,
+
     /// Output format for the summary printed to stdout: `text` (default) or `json`.
     #[arg(long, default_value = "text", value_parser = ["text", "json"])]
     pub format: String,

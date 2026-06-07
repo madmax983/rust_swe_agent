@@ -24,8 +24,9 @@
 //! * `all_preds.jsonl` — evaluator-compatible predictions file (only submitted
 //!   records with non-empty patches), suitable for `bench evaluate --backend sb-cli`.
 //!
-//! Without `--evaluate`, `resolved` flags are absent (all `pass_at_1 = false`,
-//! `resolved_count = 0`). A separate `bench evaluate` pass fills them in.
+//! Without `--evaluate`, `resolved` flags default to `pass_at_1 = false` /
+//! `resolved_count = 0`. Pass `--evaluate` (with optional `--backend`) to run the
+//! evaluator in the same invocation, or run `bench evaluate` separately afterwards.
 
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
@@ -54,9 +55,21 @@ pub struct ImportArgs {
     pub dataset_path: PathBuf,
     /// Output directory for the normalised sweep.
     pub output: PathBuf,
-    /// When `true`, run the evaluator pipeline after import (not yet implemented;
-    /// presence of the flag is validated so callers get a clear error).
+    /// When `true`, run the evaluator pipeline against the freshly imported sweep.
     pub evaluate: bool,
+    /// Evaluator backend: `"sb-cli"`, `"none"`, `"rehearsal"`, or `"docker-tests"`.
+    /// Only used when `evaluate` is `true`. Default: `"sb-cli"`.
+    pub backend: String,
+    /// SWE-bench subset for sb-cli (e.g. `"swe-bench-m"`). Only used when `evaluate` is `true`.
+    pub sb_subset: String,
+    /// SWE-bench split for sb-cli (e.g. `"dev"` or `"test"`). Only used when `evaluate` is `true`.
+    pub sb_split: String,
+    /// Per-instance evaluation timeout in seconds. Only used when `evaluate` is `true`.
+    pub timeout_per_instance_secs: u64,
+    /// Parallel worker count for the evaluation backend. Only used when `evaluate` is `true`.
+    pub parallel: usize,
+    /// Optional sb-cli run id. Only used when `evaluate` is `true`.
+    pub run_id: Option<String>,
     /// Output format for the summary printed to stdout.
     pub format: ImportFormat,
 }
@@ -242,15 +255,6 @@ fn write_all_preds_jsonl(
 /// Run `bench import`.
 #[allow(clippy::too_many_lines)]
 pub fn run(args: &ImportArgs) -> Result<ImportSummary, Error> {
-    // 0. Fail fast on unsupported flags before touching the filesystem.
-    if args.evaluate {
-        return Err(Error::Config(crate::error::ConfigError::Usage(
-            "bench import --evaluate is not yet implemented; run `bench evaluate` \
-             separately after import to populate resolved flags"
-                .to_owned(),
-        )));
-    }
-
     // 1. Read and hash the predictions file.
     let predictions_bytes = std::fs::read(&args.predictions).map_err(|e| {
         Error::Trajectory(format!(
@@ -521,6 +525,26 @@ pub fn run(args: &ImportArgs) -> Result<ImportSummary, Error> {
         .canonicalize()
         .unwrap_or_else(|_| args.output.clone());
 
+    // 11. Optionally run the evaluator pipeline against the freshly imported sweep.
+    //     The sweep directory has already been written; a failure here leaves it intact
+    //     so the operator can re-run `bench evaluate` without re-importing.
+    if args.evaluate {
+        let backend = parse_evaluate_backend(&args.backend)?;
+        let eval_args = crate::run::evaluate::EvaluateArgs {
+            sweep_dir: canonical_output.clone(),
+            dataset_path: Some(args.dataset_path.clone()),
+            backend,
+            timeout_per_instance_secs: args.timeout_per_instance_secs,
+            parallel: args.parallel,
+            sb_subset: args.sb_subset.clone(),
+            sb_split: args.sb_split.clone(),
+            run_id: args.run_id.clone(),
+            breakdown: crate::run::evaluate::BreakdownSelection::default_axes(),
+            cost_attribution: true,
+        };
+        crate::run::evaluate::run(&eval_args)?;
+    }
+
     let summary = ImportSummary {
         records_imported: total,
         records_skipped: skip_reasons.len(),
@@ -530,6 +554,21 @@ pub fn run(args: &ImportArgs) -> Result<ImportSummary, Error> {
     };
 
     Ok(summary)
+}
+
+fn parse_evaluate_backend(
+    backend: &str,
+) -> Result<crate::run::evaluate::EvaluateBackend, Error> {
+    match backend {
+        "sb-cli" => Ok(crate::run::evaluate::EvaluateBackend::SbCli),
+        "none" => Ok(crate::run::evaluate::EvaluateBackend::None),
+        "rehearsal" => Ok(crate::run::evaluate::EvaluateBackend::Rehearsal),
+        "docker-tests" => Ok(crate::run::evaluate::EvaluateBackend::DockerTests),
+        other => Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+            "bench import --backend `{other}` is not valid; \
+             expected `sb-cli`, `none`, `rehearsal`, or `docker-tests`"
+        )))),
+    }
 }
 
 /// Format the import summary as a human-readable text block.
