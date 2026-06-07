@@ -358,3 +358,159 @@ async fn reject_with_feedback_records_synthetic_observation_and_event() {
         "expected interactive_feedback in MessageExtra"
     );
 }
+
+#[tokio::test]
+async fn edit_executes_edited_command_and_records_trajectory() {
+    let mut cfg = Config::defaults().unwrap();
+    cfg.root.agent.step_limit = 5;
+    let model = Arc::new(DeterministicModel::new(vec![
+        "```bash\necho original\n```".into(),
+        "COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT\n```\nok\n```".into(),
+    ]));
+    let env: Box<dyn Environment> = Box::new(LocalEnvironment::new());
+    let confirmer = Arc::new(ScriptedConfirmer::new(vec![ConfirmDecision::Edit(
+        "echo edited-cmd".to_owned(),
+    )]));
+    let mut agent = DefaultAgentBuilder {
+        config: cfg,
+        model,
+        env,
+        task: "edit-test".into(),
+        extra_context: None,
+        renderer: None,
+        stream: None,
+        resume_from: None,
+        read_only: false,
+    }
+    .build()
+    .unwrap();
+    agent.confirm_callback = Some(confirmer.clone() as Arc<dyn ConfirmCallback>);
+
+    let result = agent.run().await.unwrap();
+    assert!(matches!(result, ExitReason::Submitted { .. }));
+    assert_eq!(confirmer.call_count(), 1);
+
+    // Assert that the output in the observation contains `edited-cmd`.
+    let has_edited_output = agent.trajectory.messages.iter().any(|m| {
+        m.role == "user"
+            && m.extra.other.contains_key("run_result")
+            && m.content.contains("edited-cmd")
+    });
+    assert!(
+        has_edited_output,
+        "expected to find command execution output containing `edited-cmd`"
+    );
+
+    // Check that the trajectory contains the interactive_decision metadata
+    let edit_msg = agent
+        .trajectory
+        .messages
+        .iter()
+        .find(|m| {
+            m.extra
+                .other
+                .get("interactive_decision")
+                .and_then(|v| v.as_str())
+                == Some("edit")
+        })
+        .unwrap();
+
+    assert_eq!(
+        edit_msg
+            .extra
+            .other
+            .get("interactive_proposed_command")
+            .and_then(|v| v.as_str()),
+        Some("echo original")
+    );
+    assert_eq!(
+        edit_msg
+            .extra
+            .other
+            .get("interactive_substituted_command")
+            .and_then(|v| v.as_str()),
+        Some("echo edited-cmd")
+    );
+}
+
+#[tokio::test]
+async fn edit_blocked_by_policy_fails_with_denial() {
+    let mut cfg = Config::defaults().unwrap();
+    cfg.root.agent.step_limit = 5;
+    // Configure policy config to deny "rm".
+    cfg.root.policy.extra_deny_patterns = vec![r"rm\b".to_owned()];
+
+    let model = Arc::new(DeterministicModel::new(vec![
+        "```bash\necho original\n```".into(),
+        "COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT\n```\nok\n```".into(),
+    ]));
+    let env: Box<dyn Environment> = Box::new(LocalEnvironment::new());
+    let confirmer = Arc::new(ScriptedConfirmer::new(vec![ConfirmDecision::Edit(
+        "rm -rf /".to_owned(),
+    )]));
+    let mut agent = DefaultAgentBuilder {
+        config: cfg,
+        model,
+        env,
+        task: "edit-policy-test".into(),
+        extra_context: None,
+        renderer: None,
+        stream: None,
+        resume_from: None,
+        read_only: false,
+    }
+    .build()
+    .unwrap();
+    agent.confirm_callback = Some(confirmer.clone() as Arc<dyn ConfirmCallback>);
+
+    let result = agent.run().await.unwrap();
+    assert!(matches!(result, ExitReason::Submitted { .. }));
+    assert_eq!(confirmer.call_count(), 1);
+
+    // Assert that it gets denied with the standard denial observation
+    let user_msg = agent
+        .trajectory
+        .messages
+        .iter()
+        .find(|m| m.role == "user" && m.content.contains("Command blocked by policy rule"));
+    assert!(user_msg.is_some(), "expected policy blocked user message");
+
+    // Records interactive_decision as "edit", the original command, and the blocked command.
+    let blocked_msg = agent
+        .trajectory
+        .messages
+        .iter()
+        .find(|m| {
+            m.extra
+                .other
+                .get("interactive_decision")
+                .and_then(|v| v.as_str())
+                == Some("edit")
+        })
+        .unwrap();
+
+    assert_eq!(
+        blocked_msg
+            .extra
+            .other
+            .get("interactive_proposed_command")
+            .and_then(|v| v.as_str()),
+        Some("echo original")
+    );
+    assert_eq!(
+        blocked_msg
+            .extra
+            .other
+            .get("interactive_substituted_command")
+            .and_then(|v| v.as_str()),
+        Some("rm -rf /")
+    );
+    assert_eq!(
+        blocked_msg
+            .extra
+            .other
+            .get("blocked_command")
+            .and_then(|v| v.as_str()),
+        Some("rm -rf /")
+    );
+}
