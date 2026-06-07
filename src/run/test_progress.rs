@@ -693,6 +693,7 @@ fn build_instance_row(
             EvalExitReason::PatchApplyFailed
                 | EvalExitReason::EvalError
                 | EvalExitReason::SkippedNoPatch
+                | EvalExitReason::SkippedNoImage
         ),
     };
 

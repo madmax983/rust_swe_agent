@@ -2836,6 +2836,7 @@ fn breakdown_map<S: std::hash::BuildHasher>(
 /// prediction_sha256, timestamps) are intentionally ignored so that comparing
 /// two different candidate sweeps scored by the same evaluator setup reports
 /// `Matching` rather than `Mismatched`.
+#[allow(clippy::too_many_lines)]
 fn compare_evaluator_provenance(
     baseline: Option<&crate::run::evaluate::EvaluatorProvenance>,
     candidate: Option<&crate::run::evaluate::EvaluatorProvenance>,
@@ -2913,6 +2914,40 @@ fn compare_evaluator_provenance(
             ),
             (Some(_), None) => warnings.push(
                 "evaluator provenance: candidate sb-cli details unavailable (legacy artifact)"
+                    .into(),
+            ),
+            (None, None) => {}
+        }
+    }
+
+    if b.backend == "docker-tests" && c.backend == "docker-tests" {
+        match (&b.docker_tests, &c.docker_tests) {
+            (Some(b_dt), Some(c_dt)) => {
+                if b_dt.timeout_per_instance_secs != c_dt.timeout_per_instance_secs {
+                    warnings.push(format!(
+                        "evaluator provenance: docker_tests timeout_per_instance_secs differs (baseline={}, candidate={})",
+                        b_dt.timeout_per_instance_secs, c_dt.timeout_per_instance_secs
+                    ));
+                }
+                if b_dt.parallel != c_dt.parallel {
+                    warnings.push(format!(
+                        "evaluator provenance: docker_tests parallel differs (baseline={}, candidate={})",
+                        b_dt.parallel, c_dt.parallel
+                    ));
+                }
+                if b_dt.image_names != c_dt.image_names {
+                    warnings.push(format!(
+                        "evaluator provenance: docker_tests image names differ (baseline={:?}, candidate={:?})",
+                        b_dt.image_names, c_dt.image_names
+                    ));
+                }
+            }
+            (None, Some(_)) => warnings.push(
+                "evaluator provenance: baseline docker-tests details unavailable (legacy artifact)"
+                    .into(),
+            ),
+            (Some(_), None) => warnings.push(
+                "evaluator provenance: candidate docker-tests details unavailable (legacy artifact)"
                     .into(),
             ),
             (None, None) => {}
@@ -4955,6 +4990,7 @@ mod tests {
             eval_ended_at: None,
             report_source: None,
             sb_cli,
+            docker_tests: None,
             source_reports: vec![],
         }
     }

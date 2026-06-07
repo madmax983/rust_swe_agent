@@ -139,8 +139,8 @@ const EXIT_REASON_EVALUATOR_FAILED: &str = "evaluator_failed";
 #[allow(clippy::needless_pass_by_value)]
 pub fn run(args: SelftestArgs) -> SelftestResult {
     assert!(
-        args.backend == "none" || args.backend == "sb-cli",
-        "unknown --backend {:?}: accepted values are `none` and `sb-cli`",
+        args.backend == "none" || args.backend == "sb-cli" || args.backend == "docker-tests",
+        "unknown --backend {:?}: accepted values are `none`, `sb-cli`, and `docker-tests`",
         args.backend
     );
     assert!(
@@ -159,6 +159,8 @@ pub fn run(args: SelftestArgs) -> SelftestResult {
 
     let mut instance_results: Vec<SelftestInstanceResult> = if args.backend == "sb-cli" {
         evaluate_via_sb_cli(&selected, &args)
+    } else if args.backend == "docker-tests" {
+        evaluate_via_docker_tests(&selected, &args)
     } else {
         selected.iter().map(evaluate_gold_patch_none).collect()
     };
@@ -428,7 +430,133 @@ fn map_eval_exit_reason(reason: &EvalExitReason) -> String {
         EvalExitReason::PatchApplyFailed => "patch_apply_failed".to_owned(),
         EvalExitReason::EvalError => EXIT_REASON_EVALUATOR_FAILED.to_owned(),
         EvalExitReason::SkippedNoPatch => EXIT_REASON_GOLD_PATCH_MISSING.to_owned(),
+        EvalExitReason::SkippedNoImage => "skipped_no_image".to_owned(),
     }
+}
+
+// ── Docker-tests backend evaluation ──────────────────────────────────────────
+
+/// Route gold patches through the `docker-tests` offline evaluator backend.
+///
+/// For each instance, writes gold patch + synthetic sweep directory, then calls
+/// `evaluate::run()` with `EvaluateBackend::DockerTests`. Instances missing an
+/// `image` field in the dataset are returned as `skipped_no_image`.
+fn evaluate_via_docker_tests(
+    selected: &[SweBenchInstance],
+    args: &SelftestArgs,
+) -> Vec<SelftestInstanceResult> {
+    let scratch = args.output_dir.join("_docker_tests_scratch");
+    std::fs::create_dir_all(&scratch)
+        .unwrap_or_else(|e| panic!("cannot create docker-tests scratch dir: {e}"));
+
+    let mut missing: Vec<SelftestInstanceResult> = Vec::new();
+    let mut eval_pairs: Vec<(&SweBenchInstance, String)> = Vec::new();
+
+    for inst in selected {
+        let patch = inst
+            .other
+            .get("patch")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("");
+        if patch.trim().is_empty() {
+            missing.push(SelftestInstanceResult {
+                instance_id: inst.instance_id.clone(),
+                resolved: false,
+                evaluator_exit_reason: EXIT_REASON_GOLD_PATCH_MISSING.to_owned(),
+                evaluator_duration_ms: 0,
+            });
+        } else {
+            eval_pairs.push((inst, patch.to_owned()));
+        }
+    }
+
+    if eval_pairs.is_empty() {
+        return missing;
+    }
+
+    write_synthetic_results_json(&scratch, &eval_pairs);
+    write_synthetic_predictions(&scratch, &eval_pairs);
+
+    // Write per-instance run-1.patch files so docker-tests can read them via
+    // swebench::existing_patch_path_for_run(), which expects <sweep>/<id>/run-1.patch.
+    for (inst, patch) in &eval_pairs {
+        let inst_dir = scratch.join(&inst.instance_id);
+        std::fs::create_dir_all(&inst_dir)
+            .unwrap_or_else(|e| panic!("cannot create instance dir for selftest: {e}"));
+        let patch_path = swebench::patch_path_for_run(&scratch, &inst.instance_id, 1);
+        std::fs::write(&patch_path, patch)
+            .unwrap_or_else(|e| panic!("failed to write selftest patch file: {e}"));
+    }
+
+    // Write a minimal dataset JSONL containing the instances so docker-tests can
+    // find their image field and test lists.
+    let dataset_path = scratch.join("selftest_dataset.jsonl");
+    {
+        let mut lines = String::new();
+        for (inst, _) in &eval_pairs {
+            let row = serde_json::json!({
+                "instance_id": inst.instance_id,
+                "image": inst.image,
+                "FAIL_TO_PASS": inst.other.get("FAIL_TO_PASS").cloned().unwrap_or(serde_json::Value::Array(vec![])),
+                "PASS_TO_PASS": inst.other.get("PASS_TO_PASS").cloned().unwrap_or(serde_json::Value::Array(vec![])),
+                // Preserve oracle-test, runner, and alternate image fields so
+                // docker-tests can resolve the image and apply oracle tests.
+                "test_patch": inst.other.get("test_patch").cloned().unwrap_or(serde_json::Value::Null),
+                "test_command": inst.other.get("test_command").cloned().unwrap_or(serde_json::Value::Null),
+                "image_name": inst.other.get("image_name").cloned().unwrap_or(serde_json::Value::Null),
+                "docker_image": inst.other.get("docker_image").cloned().unwrap_or(serde_json::Value::Null),
+            });
+            lines.push_str(&serde_json::to_string(&row).unwrap_or_default());
+            lines.push('\n');
+        }
+        std::fs::write(&dataset_path, lines)
+            .unwrap_or_else(|e| panic!("failed to write selftest dataset: {e}"));
+    }
+
+    let eval_args = EvaluateArgs {
+        sweep_dir: scratch,
+        dataset_path: Some(dataset_path),
+        backend: EvaluateBackend::DockerTests,
+        timeout_per_instance_secs: args.timeout_per_instance,
+        parallel: args.parallel,
+        sb_subset: args.sb_subset.clone(),
+        sb_split: args.sb_split.clone(),
+        run_id: None,
+        breakdown: BreakdownSelection::none(),
+        cost_attribution: false,
+    };
+
+    let start = std::time::Instant::now();
+    let eval_result = crate::run::evaluate::run(&eval_args);
+    let total_ms = start.elapsed().as_millis() as u64;
+
+    let mut results: Vec<SelftestInstanceResult> = match eval_result {
+        Ok(eval) => {
+            let n = eval.instances.len().max(1) as u64;
+            let per_inst_ms = total_ms / n;
+            eval.instances
+                .into_iter()
+                .map(|e| SelftestInstanceResult {
+                    instance_id: e.instance_id,
+                    resolved: e.resolved,
+                    evaluator_exit_reason: map_eval_exit_reason(&e.eval_exit_reason),
+                    evaluator_duration_ms: per_inst_ms,
+                })
+                .collect()
+        }
+        Err(e) => eval_pairs
+            .iter()
+            .map(|(inst, _)| SelftestInstanceResult {
+                instance_id: inst.instance_id.clone(),
+                resolved: false,
+                evaluator_exit_reason: format!("{EXIT_REASON_EVALUATOR_FAILED}: {e}"),
+                evaluator_duration_ms: total_ms,
+            })
+            .collect(),
+    };
+
+    results.extend(missing);
+    results
 }
 
 // ── Aggregate computations ────────────────────────────────────────────────────
@@ -442,7 +570,9 @@ fn map_eval_exit_reason(reason: &EvalExitReason) -> String {
 /// Both warrant exit code 3 (`HasErrored`); a plain unresolved verdict
 /// (gold patch submitted but not resolved) warrants exit code 4 (`HasUnresolved`).
 fn is_errored_reason(reason: &str) -> bool {
-    reason == EXIT_REASON_GOLD_PATCH_MISSING || reason.starts_with(EXIT_REASON_EVALUATOR_FAILED)
+    reason == EXIT_REASON_GOLD_PATCH_MISSING
+        || reason.starts_with(EXIT_REASON_EVALUATOR_FAILED)
+        || reason == "skipped_no_image"
 }
 
 fn compute_totals(results: &[SelftestInstanceResult]) -> SelftestTotals {
@@ -697,6 +827,8 @@ mod tests {
         assert!(is_errored_reason(
             "evaluator_failed: sb-cli exited with status 1"
         ));
+        // docker-tests: no image found — infrastructure problem, not a model verdict
+        assert!(is_errored_reason("skipped_no_image"));
         // unresolved verdict — not an infrastructure error
         assert!(!is_errored_reason("unresolved"));
         assert!(!is_errored_reason("patch_apply_failed"));

@@ -96,6 +96,7 @@ fn eval_exit_reason_label(reason: &crate::run::evaluate::EvalExitReason) -> &'st
         EvalExitReason::PatchApplyFailed => "patch_apply_failed",
         EvalExitReason::EvalError => "eval_error",
         EvalExitReason::SkippedNoPatch => "skipped_no_patch",
+        EvalExitReason::SkippedNoImage => "skipped_no_image",
     }
 }
 

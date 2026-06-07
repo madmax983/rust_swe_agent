@@ -55,9 +55,25 @@ pub struct EvaluatorProvenance {
     /// `sb-cli`-specific provenance fields; present only when `backend == "sb-cli"`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sb_cli: Option<SbCliProvenance>,
+    /// `docker-tests`-specific provenance fields; present only when `backend == "docker-tests"`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub docker_tests: Option<DockerTestsProvenance>,
     /// One entry per run slot for rerun/pass@k evaluations.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub source_reports: Vec<SourceReportEntry>,
+}
+
+/// Provenance specific to the `docker-tests` offline backend.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DockerTestsProvenance {
+    /// Per-instance evaluation timeout in seconds.
+    pub timeout_per_instance_secs: u64,
+    /// Parallel worker count (reserved; currently evaluated sequentially).
+    pub parallel: usize,
+    /// Sorted unique set of Docker image names (tags) used during this run.
+    /// Differences here indicate different testbed images were evaluated.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub image_names: Vec<String>,
 }
 
 /// Provenance specific to `sb-cli` submit/get-report command pairs.
@@ -121,6 +137,10 @@ pub enum EvaluateBackend {
     SbCli,
     None,
     Rehearsal,
+    /// Offline backend: applies the patch inside the instance's canonical Docker
+    /// image and runs its FAIL_TO_PASS + PASS_TO_PASS test sets locally with
+    /// zero network calls to any evaluation service.
+    DockerTests,
 }
 
 #[derive(Debug, Clone)]
@@ -171,6 +191,10 @@ pub enum EvalExitReason {
     PatchApplyFailed,
     EvalError,
     SkippedNoPatch,
+    /// Instance could not be evaluated offline because no canonical Docker image
+    /// is known for it (e.g. no `image` field in the dataset and no docker-tests
+    /// image convention is available). Never counted as unresolved.
+    SkippedNoImage,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -375,6 +399,8 @@ struct EvaluateRunOutput {
     resolved_by_run: HashMap<RunSlotKey, bool>,
     /// The actual run id used (may be auto-generated when args.run_id is None).
     effective_run_id: Option<String>,
+    /// Sorted unique Docker image names used (docker-tests backend only).
+    docker_image_names: Vec<String>,
 }
 
 impl EvaluateRunOutput {
@@ -383,6 +409,7 @@ impl EvaluateRunOutput {
             eval,
             resolved_by_run: HashMap::new(),
             effective_run_id: None,
+            docker_image_names: Vec::new(),
         }
     }
 }
@@ -415,11 +442,13 @@ pub fn run(args: &EvaluateArgs) -> Result<EvaluationResults, Error> {
         }
         EvaluateBackend::SbCli => run_sb_cli(args, &results)?,
         EvaluateBackend::Rehearsal => run_rehearsal_eval(args, &results)?,
+        EvaluateBackend::DockerTests => run_docker_tests(args, &results)?,
     };
     let EvaluateRunOutput {
         mut eval,
         resolved_by_run,
         effective_run_id,
+        docker_image_names,
     } = run_output;
     let (dataset_sha256, dataset_instance_count) = if let Some(ref dataset_path) = args.dataset_path
     {
@@ -441,6 +470,7 @@ pub fn run(args: &EvaluateArgs) -> Result<EvaluationResults, Error> {
         eval_started_at,
         dataset_sha256,
         dataset_instance_count,
+        docker_image_names,
     );
     attach_patch_stats(&mut eval, args, &resolved_by_run)?;
     let (rollup, test_only_resolved_rate) = build_submission_class_rollup(&eval.instances);
@@ -493,13 +523,22 @@ fn build_provenance(
     started_at: String,
     dataset_sha256: Option<String>,
     dataset_instance_count: Option<usize>,
+    docker_image_names: Vec<String>,
 ) -> EvaluatorProvenance {
     let run_id_str = effective_run_id
         .or(args.run_id.as_deref())
         .unwrap_or_default();
-    let (backend_str, sb_cli, source_reports) = match args.backend {
-        EvaluateBackend::None => ("none", None, vec![]),
-        EvaluateBackend::Rehearsal => ("rehearsal", None, vec![]),
+    let (backend_str, sb_cli, docker_tests_prov, source_reports) = match args.backend {
+        EvaluateBackend::None => ("none", None, None, vec![]),
+        EvaluateBackend::Rehearsal => ("rehearsal", None, None, vec![]),
+        EvaluateBackend::DockerTests => {
+            let prov = DockerTestsProvenance {
+                timeout_per_instance_secs: args.timeout_per_instance_secs,
+                parallel: args.parallel,
+                image_names: docker_image_names,
+            };
+            ("docker-tests", None, Some(prov), vec![])
+        }
         EvaluateBackend::SbCli => {
             let preds = swebench::predictions_path(&args.sweep_dir);
             let report_dir = args.sweep_dir.join("sb_cli_reports");
@@ -523,7 +562,7 @@ fn build_provenance(
                 timeout_per_instance_secs: args.timeout_per_instance_secs,
                 parallel: args.parallel,
             };
-            ("sb-cli", Some(sb), source_reports)
+            ("sb-cli", Some(sb), None, source_reports)
         }
     };
 
@@ -532,7 +571,7 @@ fn build_provenance(
             let p = swebench::predictions_path(&args.sweep_dir);
             Some(p.display().to_string())
         }
-        EvaluateBackend::None => None,
+        EvaluateBackend::None | EvaluateBackend::DockerTests => None,
     };
     let prediction_sha256 = prediction_path
         .as_deref()
@@ -545,15 +584,21 @@ fn build_provenance(
         backend: backend_str.into(),
         backend_version: match args.backend {
             EvaluateBackend::SbCli => probe_sb_cli_version(),
-            EvaluateBackend::None | EvaluateBackend::Rehearsal => None,
+            EvaluateBackend::None | EvaluateBackend::Rehearsal | EvaluateBackend::DockerTests => {
+                None
+            }
         },
         dataset_subset: match args.backend {
             EvaluateBackend::SbCli => Some(args.sb_subset.clone()),
-            EvaluateBackend::None | EvaluateBackend::Rehearsal => None,
+            EvaluateBackend::None | EvaluateBackend::Rehearsal | EvaluateBackend::DockerTests => {
+                None
+            }
         },
         dataset_split: match args.backend {
             EvaluateBackend::SbCli => Some(args.sb_split.clone()),
-            EvaluateBackend::None | EvaluateBackend::Rehearsal => None,
+            EvaluateBackend::None | EvaluateBackend::Rehearsal | EvaluateBackend::DockerTests => {
+                None
+            }
         },
         dataset_sha256,
         dataset_instance_count,
@@ -564,6 +609,7 @@ fn build_provenance(
         eval_ended_at: Some(utc_now_iso8601()),
         report_source: None,
         sb_cli,
+        docker_tests: docker_tests_prov,
         source_reports,
     }
 }
@@ -1158,6 +1204,7 @@ fn run_rehearsal_eval(
         },
         resolved_by_run,
         effective_run_id: Some("rehearsal-eval".to_owned()),
+        docker_image_names: vec![],
     })
 }
 
@@ -1192,6 +1239,806 @@ fn none_eval_for_result(id: &str, r: &InstanceResult) -> InstanceEvaluation {
         patch_stats: None,
         patch_error_log: None,
     }
+}
+
+/// Offline Docker-based evaluator: applies the candidate patch inside the
+/// instance's canonical Docker image and runs FAIL_TO_PASS + PASS_TO_PASS tests.
+///
+/// Zero network calls to any evaluation service. Instances with no reachable
+/// Docker image are reported as `SkippedNoImage`, never silently unresolved.
+#[allow(clippy::too_many_lines)]
+fn run_docker_tests(
+    args: &EvaluateArgs,
+    results: &HashMap<String, InstanceResult>,
+) -> Result<EvaluateRunOutput, Error> {
+    // Load dataset to get image names and test lists.
+    // Propagate load errors when a path is given — a malformed or missing dataset
+    // would otherwise silently classify every instance as SkippedNoImage.
+    let dataset_map: HashMap<String, swebench::SweBenchInstance> = match &args.dataset_path {
+        Some(p) => swebench::load_dataset(p)?
+            .into_iter()
+            .map(|inst| (inst.instance_id.clone(), inst))
+            .collect(),
+        None => HashMap::new(),
+    };
+
+    let mut instances: Vec<InstanceEvaluation> = Vec::with_capacity(results.len());
+    let mut resolved_by_run: HashMap<RunSlotKey, bool> = HashMap::new();
+    let mut image_names_seen: std::collections::BTreeSet<String> =
+        std::collections::BTreeSet::new();
+
+    for (id, r) in results {
+        let runs = effective_runs(r);
+        let patch_submitted = r.outcome.as_deref() == Some(outcome::SUBMITTED) && r.patch_present;
+
+        if !patch_submitted {
+            instances.push(InstanceEvaluation {
+                instance_id: id.to_owned(),
+                resolved: false,
+                runs,
+                resolved_count: 0,
+                pass_at_1: false,
+                tests_passed: vec![],
+                tests_failed: vec![],
+                eval_exit_reason: EvalExitReason::SkippedNoPatch,
+                eval_log_path: None,
+                patch_stats: None,
+                patch_error_log: None,
+            });
+            continue;
+        }
+
+        // Look up the dataset entry for this instance to find image + test lists.
+        let Some(inst_data) = dataset_map.get(id) else {
+            // No dataset provided or instance not found → can't determine image.
+            instances.push(InstanceEvaluation {
+                instance_id: id.to_owned(),
+                resolved: false,
+                runs,
+                resolved_count: 0,
+                pass_at_1: false,
+                tests_passed: vec![],
+                tests_failed: vec![],
+                eval_exit_reason: EvalExitReason::SkippedNoImage,
+                eval_log_path: None,
+                patch_stats: None,
+                patch_error_log: None,
+            });
+            continue;
+        };
+
+        // Determine the Docker image for this instance.
+        // Check explicit fields first, then fall back to the conventional SWE-bench
+        // image name.  With --pull=never a missing image produces EvalError (which is
+        // more informative than SkippedNoImage for misconfigured environments).
+        let image: String = inst_data
+            .image
+            .clone()
+            .or_else(|| {
+                ["image", "image_name", "docker_image"]
+                    .iter()
+                    .find_map(|k| {
+                        inst_data
+                            .other
+                            .get(*k)
+                            .and_then(serde_json::Value::as_str)
+                            .map(ToOwned::to_owned)
+                    })
+            })
+            .unwrap_or_else(|| format!("swebench/sweb.eval.x86_64.{id}"));
+
+        image_names_seen.insert(image.clone());
+
+        // Extract FAIL_TO_PASS and PASS_TO_PASS test lists.
+        let fail_to_pass = extract_test_list(&inst_data.other, "FAIL_TO_PASS");
+        let pass_to_pass = extract_test_list(&inst_data.other, "PASS_TO_PASS");
+
+        // Optional oracle tests and per-repo test command from the dataset.
+        let test_patch = inst_data
+            .other
+            .get("test_patch")
+            .and_then(serde_json::Value::as_str)
+            .filter(|s| !s.trim().is_empty())
+            .map(ToOwned::to_owned);
+        let test_command = inst_data
+            .other
+            .get("test_command")
+            .and_then(serde_json::Value::as_str)
+            .filter(|s| !s.trim().is_empty())
+            .map(ToOwned::to_owned);
+
+        // Evaluate each run slot so multi-run reruns get accurate pass@k metrics.
+        let timeout = std::time::Duration::from_secs(args.timeout_per_instance_secs);
+        let mut run_verdicts: Vec<(u32, Result<DockerTestVerdict, String>)> = Vec::new();
+        for run_index in 1..=runs {
+            let patch_path = swebench::existing_patch_path_for_run(&args.sweep_dir, id, run_index);
+            let patch_content = match std::fs::read_to_string(&patch_path) {
+                Ok(c) if !c.trim().is_empty() => c,
+                _ => continue,
+            };
+            let verdict = evaluate_instance_with_docker_inner(
+                id,
+                &image,
+                &patch_content,
+                test_patch.as_deref(),
+                &fail_to_pass,
+                &pass_to_pass,
+                test_command.as_deref(),
+                timeout,
+            );
+            run_verdicts.push((run_index, verdict));
+        }
+
+        if run_verdicts.is_empty() {
+            instances.push(InstanceEvaluation {
+                instance_id: id.to_owned(),
+                resolved: false,
+                runs,
+                resolved_count: 0,
+                pass_at_1: false,
+                tests_passed: vec![],
+                tests_failed: vec![],
+                eval_exit_reason: EvalExitReason::SkippedNoPatch,
+                eval_log_path: None,
+                patch_stats: None,
+                patch_error_log: None,
+            });
+            continue;
+        }
+
+        // Aggregate across runs: build resolved_by_run and compute summary fields.
+        let mut resolved_count = 0u32;
+        let mut pass_at_1 = false;
+        let mut display_verdict: Option<&DockerTestVerdict> = None;
+        let mut had_eval_error = false;
+        let mut first_error_msg: Option<&str> = None;
+
+        for (run_index, result) in &run_verdicts {
+            match result {
+                Ok(v) => {
+                    resolved_by_run.insert(RunSlotKey::new(id, *run_index), v.resolved);
+                    if *run_index == 1 {
+                        pass_at_1 = v.resolved;
+                    }
+                    if v.resolved {
+                        resolved_count += 1;
+                        // Always prefer the first resolved verdict so that
+                        // test lists and exit reason reflect an actual success,
+                        // not a preceding failed or timed-out run.
+                        if display_verdict.is_none_or(|d: &DockerTestVerdict| !d.resolved) {
+                            display_verdict = Some(v);
+                        }
+                    } else if display_verdict.is_none() {
+                        display_verdict = Some(v);
+                    }
+                }
+                Err(msg) => {
+                    resolved_by_run.insert(RunSlotKey::new(id, *run_index), false);
+                    had_eval_error = true;
+                    if first_error_msg.is_none() {
+                        first_error_msg = Some(msg.as_str());
+                    }
+                }
+            }
+        }
+
+        let resolved = resolved_count > 0;
+        let (tests_passed, tests_failed, eval_exit_reason, patch_error_log) = match display_verdict
+        {
+            Some(v) => {
+                // If any run had an infrastructure error and nothing resolved,
+                // report EvalError so the error isn't masked by a later
+                // clean-but-unresolved run.
+                let reason = if (had_eval_error && !resolved) || v.timed_out {
+                    EvalExitReason::EvalError
+                } else if v.patch_apply_failed {
+                    EvalExitReason::PatchApplyFailed
+                } else if resolved {
+                    EvalExitReason::Resolved
+                } else {
+                    EvalExitReason::Unresolved
+                };
+                let log = if had_eval_error && !resolved {
+                    first_error_msg.map(ToOwned::to_owned)
+                } else {
+                    v.patch_error_log.clone()
+                };
+                (v.tests_passed.clone(), v.tests_failed.clone(), reason, log)
+            }
+            None => (
+                vec![],
+                vec![],
+                EvalExitReason::EvalError,
+                first_error_msg.map(ToOwned::to_owned),
+            ),
+        };
+
+        instances.push(InstanceEvaluation {
+            instance_id: id.to_owned(),
+            resolved,
+            runs,
+            resolved_count,
+            pass_at_1,
+            tests_passed,
+            tests_failed,
+            eval_exit_reason,
+            eval_log_path: None,
+            patch_stats: None,
+            patch_error_log,
+        });
+    }
+
+    instances.sort_by(|a, b| a.instance_id.cmp(&b.instance_id));
+
+    Ok(EvaluateRunOutput {
+        eval: EvaluationResults {
+            instances,
+            ..Default::default()
+        },
+        resolved_by_run,
+        effective_run_id: None,
+        docker_image_names: image_names_seen.into_iter().collect(),
+    })
+}
+
+/// Extract a test list from a dataset instance's `other` JSON map.
+/// The field may be stored as a JSON array or as a JSON-encoded string.
+fn extract_test_list(other: &serde_json::Map<String, serde_json::Value>, key: &str) -> Vec<String> {
+    let Some(val) = other.get(key) else {
+        return vec![];
+    };
+    let items: Vec<serde_json::Value> = if let Some(arr) = val.as_array() {
+        arr.clone()
+    } else if let Some(s) = val.as_str() {
+        serde_json::from_str(s).unwrap_or_default()
+    } else {
+        return vec![];
+    };
+    items
+        .into_iter()
+        .filter_map(|v| v.as_str().map(ToOwned::to_owned))
+        .collect()
+}
+
+/// Evaluate a single instance by running its tests inside a Docker container.
+///
+/// Applies `test_patch` (oracle tests) then the candidate patch, then runs
+/// FAIL_TO_PASS + PASS_TO_PASS. The container is forcibly removed on exit.
+#[allow(clippy::too_many_arguments)]
+struct DockerTestVerdict {
+    resolved: bool,
+    timed_out: bool,
+    patch_apply_failed: bool,
+    patch_error_log: Option<String>,
+    tests_passed: Vec<String>,
+    tests_failed: Vec<String>,
+}
+
+/// Inner logic: start container, apply patches, run tests, collect results.
+#[allow(clippy::too_many_lines, clippy::too_many_arguments)]
+fn evaluate_instance_with_docker_inner(
+    _instance_id: &str,
+    image: &str,
+    patch_content: &str,
+    test_patch: Option<&str>,
+    fail_to_pass: &[String],
+    pass_to_pass: &[String],
+    test_command: Option<&str>,
+    timeout: std::time::Duration,
+) -> Result<DockerTestVerdict, String> {
+    use std::process::Command;
+    use std::time::Instant;
+
+    let overall_start = Instant::now();
+
+    // 1. Start a detached container with a timeout to handle unresponsive daemons.
+    // --pull=never enforces offline operation — images must be pre-loaded locally.
+    // --network none isolates the container so candidate code cannot make external calls.
+    // Label matches `env::docker::LABEL` so cleanup_orphans() can reap stray containers.
+    let run_out = run_with_timeout(
+        Command::new("docker")
+            .args([
+                "run",
+                "-d",
+                "--rm",
+                "--pull=never",
+                "--network=none",
+                "--label",
+                "maxwells-daemon=1",
+                "-w",
+                "/testbed",
+            ])
+            .arg(image)
+            .args(["sleep", "infinity"]),
+        timeout,
+    )
+    .map_err(|_| "docker run timed out or failed".to_owned())?;
+
+    if !run_out.status.success() {
+        return Err(format!(
+            "docker run failed: {}",
+            String::from_utf8_lossy(&run_out.stderr).trim()
+        ));
+    }
+
+    let container_id = String::from_utf8_lossy(&run_out.stdout).trim().to_string();
+    if container_id.is_empty() {
+        return Err("docker run returned empty container id".into());
+    }
+
+    // Ensure the container is removed when we exit this scope.
+    let _guard = ContainerGuard(&container_id);
+
+    // 2. Write the patch to the container, bounded by the remaining deadline.
+    // -i keeps stdin open so cat receives the patch bytes instead of immediate EOF.
+    // run_with_stdin_and_timeout writes via a background thread so the poll loop
+    // is never blocked by a slow container filesystem or unresponsive daemon.
+    let remaining_inject = timeout.saturating_sub(overall_start.elapsed());
+    if remaining_inject.is_zero() {
+        return Ok(DockerTestVerdict {
+            resolved: false,
+            timed_out: true,
+            patch_apply_failed: false,
+            patch_error_log: None,
+            tests_passed: vec![],
+            tests_failed: vec![],
+        });
+    }
+    match run_with_stdin_and_timeout(
+        Command::new("docker")
+            .args(["exec", "-i", &container_id, "bash", "-c"])
+            .arg("cat > /tmp/candidate.patch"),
+        patch_content.as_bytes(),
+        remaining_inject,
+    ) {
+        Err(TimedOut) => {
+            return Ok(DockerTestVerdict {
+                resolved: false,
+                timed_out: true,
+                patch_apply_failed: false,
+                patch_error_log: None,
+                tests_passed: vec![],
+                tests_failed: vec![],
+            });
+        }
+        Ok(o) if !o.status.success() => {
+            return Err(format!(
+                "patch inject failed: {}",
+                String::from_utf8_lossy(&o.stderr).trim()
+            ));
+        }
+        Ok(_) => {}
+    }
+
+    // 3. Apply test_patch first (oracle tests needed by FAIL_TO_PASS selectors).
+    //    The official SWE-bench evaluator always applies test_patch before the
+    //    candidate patch so that new tests introduced by the issue are present.
+    if let Some(tp) = test_patch.filter(|s| !s.trim().is_empty()) {
+        let remaining_tp_inject = timeout.saturating_sub(overall_start.elapsed());
+        if remaining_tp_inject.is_zero() {
+            return Ok(DockerTestVerdict {
+                resolved: false,
+                timed_out: true,
+                patch_apply_failed: false,
+                patch_error_log: None,
+                tests_passed: vec![],
+                tests_failed: vec![],
+            });
+        }
+        match run_with_stdin_and_timeout(
+            Command::new("docker")
+                .args(["exec", "-i", &container_id, "bash", "-c"])
+                .arg("cat > /tmp/test.patch"),
+            tp.as_bytes(),
+            remaining_tp_inject,
+        ) {
+            Err(TimedOut) => {
+                return Ok(DockerTestVerdict {
+                    resolved: false,
+                    timed_out: true,
+                    patch_apply_failed: false,
+                    patch_error_log: None,
+                    tests_passed: vec![],
+                    tests_failed: vec![],
+                });
+            }
+            Ok(o) if !o.status.success() => {
+                return Err(format!(
+                    "test_patch inject failed: {}",
+                    String::from_utf8_lossy(&o.stderr).trim()
+                ));
+            }
+            Ok(_) => {}
+        }
+        {
+            let remaining_tp = timeout.saturating_sub(overall_start.elapsed());
+            if remaining_tp.is_zero() {
+                return Ok(DockerTestVerdict {
+                    resolved: false,
+                    timed_out: true,
+                    patch_apply_failed: false,
+                    patch_error_log: None,
+                    tests_passed: vec![],
+                    tests_failed: vec![],
+                });
+            }
+            let tp_result = run_with_timeout(
+                Command::new("docker").args([
+                    "exec",
+                    &container_id,
+                    "bash",
+                    "-c",
+                    "cd /testbed && git apply --ignore-whitespace /tmp/test.patch 2>&1",
+                ]),
+                remaining_tp,
+            );
+            match tp_result {
+                Err(TimedOut) => {
+                    return Ok(DockerTestVerdict {
+                        resolved: false,
+                        timed_out: true,
+                        patch_apply_failed: false,
+                        patch_error_log: None,
+                        tests_passed: vec![],
+                        tests_failed: vec![],
+                    });
+                }
+                Ok(o) if !o.status.success() => {
+                    let err = String::from_utf8_lossy(&o.stdout).trim().to_string();
+                    return Err(format!("test_patch apply failed: {err}"));
+                }
+                Ok(_) => {}
+            }
+        }
+    }
+
+    // 4. Apply the candidate patch, bounded by the remaining deadline.
+    let remaining_for_apply = timeout.saturating_sub(overall_start.elapsed());
+    if remaining_for_apply.is_zero() {
+        return Ok(DockerTestVerdict {
+            resolved: false,
+            timed_out: true,
+            patch_apply_failed: false,
+            patch_error_log: None,
+            tests_passed: vec![],
+            tests_failed: vec![],
+        });
+    }
+    let apply_result = run_with_timeout(
+        Command::new("docker").args([
+            "exec",
+            &container_id,
+            "bash",
+            "-c",
+            "cd /testbed && git apply /tmp/candidate.patch 2>&1",
+        ]),
+        remaining_for_apply,
+    );
+    let apply_out = match apply_result {
+        Ok(o) => o,
+        Err(TimedOut) => {
+            return Ok(DockerTestVerdict {
+                resolved: false,
+                timed_out: true,
+                patch_apply_failed: false,
+                patch_error_log: None,
+                tests_passed: vec![],
+                tests_failed: vec![],
+            });
+        }
+    };
+
+    if !apply_out.status.success() {
+        // Fallback: try three-way merge (mirrors the SWE-bench harness fallback).
+        let remaining_fb = timeout.saturating_sub(overall_start.elapsed());
+        let fallback_result = if remaining_fb.is_zero() {
+            None
+        } else {
+            Some(run_with_timeout(
+                Command::new("docker").args([
+                    "exec",
+                    &container_id,
+                    "bash",
+                    "-c",
+                    "cd /testbed && git apply --3way /tmp/candidate.patch 2>&1",
+                ]),
+                remaining_fb,
+            ))
+        };
+
+        let fallback_succeeded = matches!(&fallback_result, Some(Ok(o)) if o.status.success());
+
+        if !fallback_succeeded {
+            // If the fallback itself timed out, report a timeout rather than a
+            // clean patch-apply failure so callers can distinguish the two cases.
+            let timed_out = matches!(fallback_result, Some(Err(TimedOut)));
+            let stderr = String::from_utf8_lossy(&apply_out.stdout)
+                .trim()
+                .to_string();
+            return Ok(DockerTestVerdict {
+                resolved: false,
+                timed_out,
+                patch_apply_failed: !timed_out,
+                patch_error_log: Some(stderr),
+                tests_passed: vec![],
+                tests_failed: vec![],
+            });
+        }
+    }
+
+    // 5. Build the test command: run FAIL_TO_PASS + PASS_TO_PASS together.
+    let all_tests: Vec<&str> = fail_to_pass
+        .iter()
+        .chain(pass_to_pass.iter())
+        .map(String::as_str)
+        .collect();
+
+    if all_tests.is_empty() {
+        // Dataset has no FAIL_TO_PASS or PASS_TO_PASS selectors — cannot evaluate.
+        // Treating this as resolved would silently accept every patch as correct;
+        // instead surface it as an evaluator/setup error.
+        return Err(
+            "dataset row has no FAIL_TO_PASS or PASS_TO_PASS tests; cannot evaluate".to_owned(),
+        );
+    }
+
+    let tests_arg = all_tests.join(" ");
+    // Redirect output to a file to avoid pipe buffer deadlock (Linux buffer ~64KB).
+    // For custom test commands, also write the runner exit code to a sidecar file
+    // so we can use it as a fallback oracle when the output isn't pytest-format.
+    let test_cmd = if let Some(cmd) = test_command {
+        format!("cd /testbed && ({cmd}) > /tmp/pytest.output 2>&1; echo $? > /tmp/test.exitcode")
+    } else {
+        format!(
+            "cd /testbed && python -m pytest -v --tb=no --no-header -rN {tests_arg} > /tmp/pytest.output 2>&1 || true"
+        )
+    };
+
+    let remaining = timeout.saturating_sub(overall_start.elapsed());
+    if remaining.is_zero() {
+        return Ok(DockerTestVerdict {
+            resolved: false,
+            timed_out: true,
+            patch_apply_failed: false,
+            patch_error_log: None,
+            tests_passed: vec![],
+            tests_failed: vec![],
+        });
+    }
+
+    // Use a deadline-aware spawn: kill after remaining time.
+    let test_out = run_with_timeout(
+        Command::new("docker").args(["exec", &container_id, "bash", "-c", &test_cmd]),
+        remaining,
+    );
+
+    let (timed_out, output_text) = match test_out {
+        Ok(out) => {
+            // A non-success exec status means the container exited or Docker
+            // cannot exec into it — grade as EvalError, not empty output.
+            if !out.status.success() {
+                let msg = String::from_utf8_lossy(&out.stderr).trim().to_string();
+                return Err(format!("docker exec for tests failed: {msg}"));
+            }
+            // Read the redirected output file, bounded by the remaining deadline.
+            let remaining_cat = timeout.saturating_sub(overall_start.elapsed());
+            let cat_out = run_with_timeout(
+                Command::new("docker").args(["exec", &container_id, "cat", "/tmp/pytest.output"]),
+                remaining_cat,
+            )
+            .map_err(|_| "timed out reading pytest output file".to_owned())?;
+            if !cat_out.status.success() {
+                let msg = String::from_utf8_lossy(&cat_out.stderr).trim().to_string();
+                return Err(format!("failed to read pytest output file: {msg}"));
+            }
+            (false, String::from_utf8_lossy(&cat_out.stdout).into_owned())
+        }
+        Err(TimedOut) => {
+            return Ok(DockerTestVerdict {
+                resolved: false,
+                timed_out: true,
+                patch_apply_failed: false,
+                patch_error_log: None,
+                tests_passed: vec![],
+                tests_failed: vec![],
+            });
+        }
+    };
+
+    // 5. Parse pytest output to classify each test.
+    // For custom test commands, check whether the scanner found any of the
+    // requested test node IDs explicitly (not just summary words like "PASSED"
+    // that can appear in runner banners). If none match, fall back to the
+    // sidecar exit code rather than marking everything as not-run/failed.
+    let (tests_passed, tests_failed) = if test_command.is_some() {
+        let (explicit_passed, explicit_failed) = scan_pytest_result_lines(&output_text);
+        let any_selector_matched = explicit_passed
+            .iter()
+            .chain(explicit_failed.iter())
+            .any(|t| all_tests.contains(&t.as_str()));
+        if any_selector_matched {
+            // Pytest-compatible output: apply the not-run fallback for unseen tests.
+            let passed = explicit_passed;
+            let mut failed = explicit_failed;
+            for &test in &all_tests {
+                if !passed.iter().any(|p| p == test) && !failed.iter().any(|f| f == test) {
+                    failed.push(test.to_owned());
+                }
+            }
+            (passed, failed)
+        } else {
+            // No requested selectors found → use exit code oracle.
+            let runner_ok = Command::new("docker")
+                .args(["exec", &container_id, "cat", "/tmp/test.exitcode"])
+                .output()
+                .ok()
+                .and_then(|o| String::from_utf8(o.stdout).ok())
+                .and_then(|s| s.trim().parse::<i32>().ok())
+                .is_some_and(|code| code == 0);
+            if runner_ok {
+                (all_tests.iter().map(|&s| s.to_owned()).collect(), vec![])
+            } else {
+                (vec![], all_tests.iter().map(|&s| s.to_owned()).collect())
+            }
+        }
+    } else {
+        parse_pytest_output(&output_text, &all_tests)
+    };
+
+    // Resolved iff every FAIL_TO_PASS test passed and no PASS_TO_PASS test failed.
+    let ftp_all_pass = fail_to_pass
+        .iter()
+        .all(|t| tests_passed.iter().any(|p| p == t));
+    let ptp_no_fail = pass_to_pass
+        .iter()
+        .all(|t| !tests_failed.iter().any(|f| f == t));
+
+    Ok(DockerTestVerdict {
+        resolved: ftp_all_pass && ptp_no_fail && !timed_out,
+        timed_out,
+        patch_apply_failed: false,
+        patch_error_log: None,
+        tests_passed,
+        tests_failed,
+    })
+}
+
+struct TimedOut;
+
+/// Run a `Command` with stdin data and a wall-clock timeout.
+/// Writes `stdin_data` from a background thread so the timeout loop is never
+/// blocked by a slow container filesystem or unresponsive Docker daemon.
+fn run_with_stdin_and_timeout(
+    cmd: &mut std::process::Command,
+    stdin_data: &[u8],
+    timeout: std::time::Duration,
+) -> Result<std::process::Output, TimedOut> {
+    use std::time::Instant;
+
+    let mut child = cmd
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|_| TimedOut)?;
+
+    if let Some(mut stdin) = child.stdin.take() {
+        let data = stdin_data.to_vec();
+        std::thread::spawn(move || {
+            use std::io::Write as _;
+            let _ = stdin.write_all(&data);
+        });
+    }
+
+    let deadline = Instant::now() + timeout;
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => return child.wait_with_output().map_err(|_| TimedOut),
+            Ok(None) => {
+                if Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(TimedOut);
+                }
+                std::thread::sleep(std::time::Duration::from_millis(200));
+            }
+            Err(_) => return Err(TimedOut),
+        }
+    }
+}
+
+/// Run a `Command` with a wall-clock timeout. Returns `Err(TimedOut)` on expiry.
+fn run_with_timeout(
+    cmd: &mut std::process::Command,
+    timeout: std::time::Duration,
+) -> Result<std::process::Output, TimedOut> {
+    use std::time::Instant;
+
+    let mut child = cmd
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|_| TimedOut)?;
+
+    let deadline = Instant::now() + timeout;
+    loop {
+        match child.try_wait() {
+            Ok(Some(_status)) => {
+                return child.wait_with_output().map_err(|_| TimedOut);
+            }
+            Ok(None) => {
+                if Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(TimedOut);
+                }
+                std::thread::sleep(std::time::Duration::from_millis(200));
+            }
+            Err(_) => return Err(TimedOut),
+        }
+    }
+}
+
+/// RAII guard: forcibly removes the Docker container on drop.
+struct ContainerGuard<'a>(&'a str);
+
+impl Drop for ContainerGuard<'_> {
+    fn drop(&mut self) {
+        let _ = std::process::Command::new("docker")
+            .args(["rm", "-f", self.0])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
+    }
+}
+
+/// Scan `pytest -v` output for explicit result tokens on each line.
+/// Returns (passed, failed) with only lines that contain a status suffix —
+/// the "not run" fallback is NOT applied. Use `parse_pytest_output` for the
+/// full parse including the fallback.
+fn scan_pytest_result_lines(output: &str) -> (Vec<String>, Vec<String>) {
+    let mut passed = Vec::new();
+    let mut failed = Vec::new();
+    for line in output.lines() {
+        let line = line.trim();
+        // Use rfind so status words embedded in parametrized node IDs
+        // (e.g. "test_foo[PASSED-val] FAILED") don't fool the parser.
+        if let Some(idx) = line.rfind(" PASSED") {
+            let test_id = line[..idx].trim().to_owned();
+            if !test_id.is_empty() {
+                passed.push(test_id);
+            }
+        } else if let Some(idx) = line.rfind(" FAILED") {
+            let test_id = line[..idx].trim();
+            let test_id = test_id.split(" - ").next().unwrap_or(test_id).to_owned();
+            if !test_id.is_empty() {
+                failed.push(test_id);
+            }
+        } else if let Some(idx) = line.rfind(" ERROR") {
+            let test_id = line[..idx].trim().to_owned();
+            if !test_id.is_empty() {
+                failed.push(test_id);
+            }
+        }
+    }
+    (passed, failed)
+}
+
+/// Parse `pytest -v --tb=no` output and classify each test as passed or failed.
+/// Handles lines like `tests/test_foo.py::test_bar PASSED [ 50%]` (status as suffix).
+/// Tests in `all_tests` not seen in any result line are added to `failed` (conservative).
+fn parse_pytest_output(output: &str, all_tests: &[&str]) -> (Vec<String>, Vec<String>) {
+    let (passed, mut failed) = scan_pytest_result_lines(output);
+
+    // Any test in all_tests that doesn't appear in passed or failed was not run;
+    // count it as failed (conservative).
+    for &test in all_tests {
+        if !passed.iter().any(|p| p == test) && !failed.iter().any(|f| f == test) {
+            failed.push(test.to_owned());
+        }
+    }
+
+    (passed, failed)
 }
 
 fn run_sb_cli(
@@ -1233,6 +2080,7 @@ fn run_sb_cli(
             eval: merge_rerun_reports_with_results(results, &reports),
             resolved_by_run,
             effective_run_id: Some(run_id),
+            docker_image_names: vec![],
         });
     }
 
@@ -1246,6 +2094,7 @@ fn run_sb_cli(
         eval: merge_with_results(results, &parsed),
         resolved_by_run,
         effective_run_id: Some(run_id),
+        docker_image_names: vec![],
     })
 }
 
@@ -1454,6 +2303,7 @@ fn parse_generic_eval_row(v: &serde_json::Value) -> Option<InstanceEvaluation> {
         "patch_apply_failed" => EvalExitReason::PatchApplyFailed,
         "eval_error" => EvalExitReason::EvalError,
         "skipped_no_patch" => EvalExitReason::SkippedNoPatch,
+        "skipped_no_image" => EvalExitReason::SkippedNoImage,
         _ => {
             if resolved {
                 EvalExitReason::Resolved
@@ -3080,6 +3930,7 @@ mod tests {
             "2026-01-01T00:00:00Z".into(),
             None,
             None,
+            vec![],
         );
         assert_eq!(prov.backend, "none");
         assert!(prov.backend_version.is_none());
@@ -3118,6 +3969,7 @@ mod tests {
             "2026-01-01T00:00:00Z".into(),
             None,
             None,
+            vec![],
         );
         assert_eq!(prov.run_id.as_deref(), Some("generated-123"));
     }
@@ -3404,5 +4256,113 @@ mod tests {
             unresolved.patch_error_log.is_none(),
             "patch_error_log must be None for unresolved rows (not patch_apply_failed)"
         );
+    }
+
+    // ── parse_pytest_output ───────────────────────────────────────────────────
+
+    #[test]
+    fn parse_pytest_output_standard_suffix_format() {
+        let output =
+            "tests/test_foo.py::test_bar PASSED [ 50%]\ntests/test_foo.py::test_baz FAILED [ 100%]";
+        let all_tests = &["tests/test_foo.py::test_bar", "tests/test_foo.py::test_baz"];
+        let (passed, failed) = parse_pytest_output(output, all_tests);
+        assert_eq!(passed, vec!["tests/test_foo.py::test_bar"]);
+        assert_eq!(failed, vec!["tests/test_foo.py::test_baz"]);
+    }
+
+    #[test]
+    fn parse_pytest_output_error_lines_classified_as_failed() {
+        let output = "tests/test_x.py::test_setup ERROR\ntests/test_x.py::test_ok PASSED";
+        let all_tests = &["tests/test_x.py::test_setup", "tests/test_x.py::test_ok"];
+        let (passed, failed) = parse_pytest_output(output, all_tests);
+        assert_eq!(passed, vec!["tests/test_x.py::test_ok"]);
+        assert_eq!(failed, vec!["tests/test_x.py::test_setup"]);
+    }
+
+    #[test]
+    fn parse_pytest_output_unrun_tests_counted_as_failed() {
+        let output = "";
+        let all_tests = &["tests/test_x.py::test_a", "tests/test_x.py::test_b"];
+        let (passed, failed) = parse_pytest_output(output, all_tests);
+        assert!(passed.is_empty());
+        assert_eq!(
+            failed,
+            vec!["tests/test_x.py::test_a", "tests/test_x.py::test_b"]
+        );
+    }
+
+    #[test]
+    fn parse_pytest_output_failed_with_reason_suffix_stripped() {
+        let output = "tests/test_foo.py::test_bar FAILED - AssertionError: wrong";
+        let all_tests = &["tests/test_foo.py::test_bar"];
+        let (passed, failed) = parse_pytest_output(output, all_tests);
+        assert!(passed.is_empty());
+        assert_eq!(failed, vec!["tests/test_foo.py::test_bar"]);
+    }
+
+    #[test]
+    fn parse_pytest_output_empty_output_all_tests_fail() {
+        let all_tests = &["a::b", "c::d"];
+        let (passed, failed) = parse_pytest_output("", all_tests);
+        assert!(passed.is_empty());
+        assert_eq!(failed.len(), 2);
+    }
+
+    #[test]
+    fn parse_pytest_output_already_counted_test_not_duplicated() {
+        let output = "tests/a.py::t PASSED [ 100%]";
+        let all_tests = &["tests/a.py::t"];
+        let (passed, failed) = parse_pytest_output(output, all_tests);
+        assert_eq!(passed, vec!["tests/a.py::t"]);
+        assert!(failed.is_empty());
+    }
+
+    // ── extract_test_list ────────────────────────────────────────────────────
+
+    #[test]
+    fn extract_test_list_json_array_form() {
+        let mut other = serde_json::Map::new();
+        other.insert(
+            "FAIL_TO_PASS".to_owned(),
+            serde_json::json!(["test_a", "test_b"]),
+        );
+        let result = extract_test_list(&other, "FAIL_TO_PASS");
+        assert_eq!(result, vec!["test_a", "test_b"]);
+    }
+
+    #[test]
+    fn extract_test_list_json_encoded_string_form() {
+        let mut other = serde_json::Map::new();
+        other.insert(
+            "FAIL_TO_PASS".to_owned(),
+            serde_json::json!(r#"["test_x", "test_y"]"#),
+        );
+        let result = extract_test_list(&other, "FAIL_TO_PASS");
+        assert_eq!(result, vec!["test_x", "test_y"]);
+    }
+
+    #[test]
+    fn extract_test_list_missing_key_returns_empty() {
+        let other = serde_json::Map::new();
+        assert!(extract_test_list(&other, "FAIL_TO_PASS").is_empty());
+    }
+
+    #[test]
+    fn extract_test_list_wrong_type_returns_empty() {
+        let mut other = serde_json::Map::new();
+        other.insert("FAIL_TO_PASS".to_owned(), serde_json::json!(42));
+        assert!(extract_test_list(&other, "FAIL_TO_PASS").is_empty());
+    }
+
+    #[test]
+    fn extract_test_list_pass_to_pass_key() {
+        let mut other = serde_json::Map::new();
+        other.insert(
+            "PASS_TO_PASS".to_owned(),
+            serde_json::json!(["p::t1", "p::t2", "p::t3"]),
+        );
+        let result = extract_test_list(&other, "PASS_TO_PASS");
+        assert_eq!(result.len(), 3);
+        assert_eq!(result[0], "p::t1");
     }
 }
