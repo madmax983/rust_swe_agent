@@ -102,17 +102,15 @@ fn read_single_keystroke() -> Option<ConfirmDecision> {
     if crossterm::terminal::enable_raw_mode().is_err() {
         return None;
     }
-    let decision = loop {
-        match crossterm::event::read() {
-            Ok(Event::Key(key)) => {
-                if let Some(d) = key_event_to_decision(key) {
-                    break d;
-                }
+    let mut decision = ConfirmDecision::Abort;
+    while let Ok(event) = crossterm::event::read() {
+        if let Event::Key(key) = event {
+            if let Some(d) = key_event_to_decision(key) {
+                decision = d;
+                break;
             }
-            Ok(_) => {}
-            Err(_) => break ConfirmDecision::Abort,
         }
-    };
+    }
     let _ = crossterm::terminal::disable_raw_mode();
     Some(decision)
 }

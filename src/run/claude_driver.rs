@@ -541,18 +541,16 @@ pub async fn drive(
             let mut retained: Vec<u8> = Vec::new();
             let mut tmp = [0u8; 8192];
             let mut stderr = stderr;
-            loop {
-                match stderr.read(&mut tmp).await {
-                    Ok(0) | Err(_) => break,
-                    Ok(n) => {
-                        if retained.len() < CAP {
-                            let take = (CAP - retained.len()).min(n);
-                            retained.extend_from_slice(&tmp[..take]);
-                        }
-                        // Continue reading (and discarding) past the cap so
-                        // the child's write end is never blocked.
-                    }
+            while let Ok(n) = stderr.read(&mut tmp).await {
+                if n == 0 {
+                    break;
                 }
+                if retained.len() < CAP {
+                    let take = (CAP - retained.len()).min(n);
+                    retained.extend_from_slice(&tmp[..take]);
+                }
+                // Continue reading (and discarding) past the cap so
+                // the child's write end is never blocked.
             }
             String::from_utf8_lossy(&retained).into_owned()
         })
