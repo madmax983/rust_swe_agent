@@ -71,6 +71,8 @@ pub struct SkillSetDrift {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InstanceSkillRecord {
     pub instance_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub run: Option<u32>,
     pub active_skills: BTreeMap<String, String>, // name -> reason
 }
 
@@ -90,8 +92,8 @@ pub struct SkillCoverageReport {
 
 #[derive(Debug)]
 struct InstanceSkillData {
-    id: String,
     parent_instance_id: String,
+    run_index: Option<u32>,
     bucket: OutcomeBucket,
     active_skills_unique: Vec<crate::skills::ActiveSkillManifest>,
     active_skills_all: Vec<crate::skills::ActiveSkillManifest>,
@@ -305,6 +307,20 @@ fn failure_category_label(c: FailureCategory) -> &'static str {
         FailureCategory::Unknown => "unknown",
         FailureCategory::ReadOnlyViolation => "read_only_violation",
     }
+}
+
+fn find_sweep_provenance_base(sweep_dir: &Path) -> PathBuf {
+    let sweep_dir = sweep_dir
+        .canonicalize()
+        .unwrap_or_else(|_| sweep_dir.to_path_buf());
+    let mut current = sweep_dir.as_path();
+    while let Some(parent) = current.parent() {
+        if current.file_name().and_then(|s| s.to_str()) == Some(".swebench") {
+            return parent.to_path_buf();
+        }
+        current = parent;
+    }
+    sweep_dir.parent().unwrap_or(&sweep_dir).to_path_buf()
 }
 
 fn resolve_trajectory_paths(sweep: &Path, instance_id: &str) -> Vec<PathBuf> {
@@ -598,6 +614,36 @@ fn build_report(args: &SkillCoverageArgs) -> Result<SkillCoverageReport, Error> 
         load_resolved_by_run(&args.sweep_dir, filter_run_id, filter_subset, filter_split)?;
     let mut instance_data: Vec<InstanceSkillData> = Vec::new();
     let mut skill_descriptions = HashMap::new();
+    let mut all_raw_skills: BTreeMap<String, SkillUniverseEntry> = BTreeMap::new();
+
+    let base = find_sweep_provenance_base(&args.sweep_dir);
+
+    // If global skills are enabled, scan the global paths to ensure the configured universe is always present
+    if enabled {
+        let expanded_paths = global_skill_paths
+            .iter()
+            .map(|p| {
+                let expanded = crate::skills::expand_skill_path_pub(p);
+                if expanded.is_relative() {
+                    base.join(expanded)
+                } else {
+                    expanded
+                }
+            })
+            .collect::<Vec<_>>();
+        if let Ok(registry) = crate::skills::SkillRegistry::scan_paths(expanded_paths) {
+            for manifest in registry.manifests() {
+                skill_descriptions.insert(manifest.name.clone(), manifest.description.clone());
+                all_raw_skills.insert(
+                    manifest.name.clone(),
+                    SkillUniverseEntry {
+                        name: manifest.name.clone(),
+                        description: manifest.description.clone(),
+                    },
+                );
+            }
+        }
+    }
 
     for id in &sorted_ids {
         let instance = &sweep.instances[id];
@@ -642,12 +688,10 @@ fn build_report(args: &SkillCoverageArgs) -> Result<SkillCoverageReport, Error> 
 
             // Parse instance config override
             if let Some(manifest) = &traj.info.manifest {
-                if let Ok(root_cfg) = serde_json::from_value::<crate::config::schema::RootCfg>(
-                    manifest.config_redacted.clone(),
-                ) {
-                    instance_enabled = root_cfg.skills.enabled;
-                    instance_skill_paths.clone_from(&root_cfg.skills.paths);
-                }
+                let root_cfg: crate::config::schema::RootCfg =
+                    serde_json::from_value(manifest.config_redacted.clone())?;
+                instance_enabled = root_cfg.skills.enabled;
+                instance_skill_paths.clone_from(&root_cfg.skills.paths);
             }
 
             // Parse active skills from trajectory other metadata
@@ -674,7 +718,14 @@ fn build_report(args: &SkillCoverageArgs) -> Result<SkillCoverageReport, Error> 
                 };
                 let expanded_paths = paths_to_scan
                     .iter()
-                    .map(crate::skills::expand_skill_path_pub)
+                    .map(|p| {
+                        let expanded = crate::skills::expand_skill_path_pub(p);
+                        if expanded.is_relative() {
+                            base.join(expanded)
+                        } else {
+                            expanded
+                        }
+                    })
                     .collect::<Vec<_>>();
                 let registry = crate::skills::SkillRegistry::scan_paths(expanded_paths)?;
                 for manifest in registry.manifests() {
@@ -718,15 +769,13 @@ fn build_report(args: &SkillCoverageArgs) -> Result<SkillCoverageReport, Error> 
                 OutcomeBucket::Unresolved
             };
 
-            let run_id = if total_traj_paths > 1 {
-                format!("{id}-run-{run_index}")
-            } else {
-                id.clone()
-            };
-
             instance_data.push(InstanceSkillData {
-                id: run_id,
                 parent_instance_id: id.clone(),
+                run_index: if total_traj_paths > 1 {
+                    Some(run_index)
+                } else {
+                    None
+                },
                 bucket: run_bucket,
                 active_skills_unique,
                 active_skills_all,
@@ -737,9 +786,10 @@ fn build_report(args: &SkillCoverageArgs) -> Result<SkillCoverageReport, Error> 
         }
     }
 
-    // If skills subsystem is disabled or empty across all scanned instances, return empty report
+    // If skills subsystem is disabled globally AND across all scanned instances, AND no active skills are present, return empty report
     let any_enabled = instance_data.iter().any(|d| d.skills_enabled);
-    if !any_enabled
+    if !enabled
+        && !any_enabled
         && instance_data
             .iter()
             .all(|d| d.active_skills_unique.is_empty())
@@ -755,7 +805,6 @@ fn build_report(args: &SkillCoverageArgs) -> Result<SkillCoverageReport, Error> 
     }
 
     // Gather raw skill names and descriptions
-    let mut all_raw_skills: BTreeMap<String, SkillUniverseEntry> = BTreeMap::new();
     for d in &instance_data {
         for active in &d.active_skills_unique {
             all_raw_skills.insert(
@@ -1073,11 +1122,16 @@ fn build_report(args: &SkillCoverageArgs) -> Result<SkillCoverageReport, Error> 
                 active_skills.insert(redacted, reason_str.to_owned());
             }
             records.push(InstanceSkillRecord {
-                instance_id: d.id.clone(),
+                instance_id: d.parent_instance_id.clone(),
+                run: d.run_index,
                 active_skills,
             });
         }
-        records.sort_by(|a, b| a.instance_id.cmp(&b.instance_id));
+        records.sort_by(|a, b| {
+            a.instance_id
+                .cmp(&b.instance_id)
+                .then_with(|| a.run.cmp(&b.run))
+        });
         Some(records)
     } else {
         None

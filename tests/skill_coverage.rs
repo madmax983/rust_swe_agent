@@ -1182,3 +1182,246 @@ fn cli_handles_missing_resolved_in_evaluator_report() {
     let a_unresolved = &skill_a_metrics["by_outcome"]["unresolved"];
     assert_eq!(a_unresolved["instances_activated"].as_u64().unwrap(), 1);
 }
+
+#[test]
+fn cli_resolves_relative_skill_paths_from_provenance() {
+    let temp = tempfile::tempdir().unwrap();
+    let repo_dir = temp.path();
+    let sweep_dir = repo_dir
+        .join(".swebench")
+        .join("sweeps")
+        .join("current-sweep");
+    fs::create_dir_all(&sweep_dir).unwrap();
+
+    let skills_dir = repo_dir.join("skills");
+    let skill_a_dir = skills_dir.join("skill_a");
+    fs::create_dir_all(&skill_a_dir).unwrap();
+
+    let skill_md_content = r#"---
+name: skill_a
+description: "Resolves relatively"
+---
+Some content
+"#;
+    fs::write(skill_a_dir.join("SKILL.md"), skill_md_content).unwrap();
+
+    let results = serde_json::json!({
+        "total": 1,
+        "sweep_status": "completed",
+        "submitted": 1,
+        "skipped": 0,
+        "errored": 0,
+        "instances": [
+            {
+                "instance_id": "inst_1",
+                "exit_reason": "submitted",
+                "resolved_count": 1,
+                "runs": 1,
+                "pass_at_1": true
+            }
+        ],
+        "filter_spec": {},
+        "manifest": {
+            "harness": { "name": "max", "version": "1.0", "git_resolution": "clean" },
+            "dataset": { "path": "x", "sha256": "x", "instance_count": 1 },
+            "prompt_template": { "source": "x", "sha256": "x" },
+            "config": {
+                "resolved": "[skills]\nenabled=true\npaths=[\"skills\"]",
+                "overlay_paths": []
+            },
+            "model": { "name": "claude-3-5", "backend": "anthropic" },
+            "runtime": { "started_at_utc": "2026-06-06T00:00:00Z", "finished_at_utc": "2026-06-06T00:01:00Z", "host_os": "linux" },
+            "cli": { "argv": [] }
+        }
+    });
+    write_json_file(&sweep_dir.join("results.json"), &results);
+
+    let traj = mock_trajectory("task 1", "skill_a", "skills/skill_a");
+    let inst_dir = sweep_dir.join("inst_1");
+    fs::create_dir_all(&inst_dir).unwrap();
+    write_json_file(&inst_dir.join("run-1.traj.json"), &traj);
+
+    let out = run_skill_coverage(&sweep_dir, &["--format", "json"]);
+    assert!(
+        out.status.success(),
+        "Stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let report: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+
+    let universe = report["skill_universe"].as_array().unwrap();
+    let found = universe
+        .iter()
+        .any(|entry| entry["name"].as_str() == Some("skill_a"));
+    assert!(found, "skill_a was not found in universe: {universe:?}");
+}
+
+#[test]
+fn cli_per_instance_records_include_run_and_joinable_ids() {
+    let sweep = tempfile::tempdir().unwrap();
+
+    let results = serde_json::json!({
+        "total": 1,
+        "sweep_status": "completed",
+        "submitted": 1,
+        "skipped": 0,
+        "errored": 0,
+        "instances": [
+            {
+                "instance_id": "inst_1",
+                "exit_reason": "submitted",
+                "resolved_count": 1,
+                "runs": 2,
+                "pass_at_1": true
+            }
+        ],
+        "filter_spec": {},
+        "manifest": {
+            "harness": { "name": "max", "version": "1.0", "git_resolution": "clean" },
+            "dataset": { "path": "x", "sha256": "x", "instance_count": 1 },
+            "prompt_template": { "source": "x", "sha256": "x" },
+            "config": {
+                "resolved": "[skills]\nenabled=true\npaths=[]",
+                "overlay_paths": []
+            },
+            "model": { "name": "claude-3-5", "backend": "anthropic" },
+            "runtime": { "started_at_utc": "2026-06-06T00:00:00Z", "finished_at_utc": "2026-06-06T00:01:00Z", "host_os": "linux" },
+            "cli": { "argv": [] }
+        }
+    });
+    write_json_file(&sweep.path().join("results.json"), &results);
+
+    let traj_1 = mock_trajectory("task 1", "skill_a", "/path/a");
+    let traj_2 = mock_trajectory("task 1", "skill_b", "/path/b");
+    let inst_dir = sweep.path().join("inst_1");
+    fs::create_dir_all(&inst_dir).unwrap();
+    write_json_file(&inst_dir.join("run-1.traj.json"), &traj_1);
+    write_json_file(&inst_dir.join("run-2.traj.json"), &traj_2);
+
+    let out = run_skill_coverage(sweep.path(), &["--format", "json", "--per-instance"]);
+    assert!(
+        out.status.success(),
+        "Stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let report: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let per_instance = report["per_instance"].as_array().unwrap();
+
+    assert_eq!(per_instance.len(), 2);
+
+    assert_eq!(per_instance[0]["instance_id"].as_str().unwrap(), "inst_1");
+    assert_eq!(per_instance[0]["run"].as_u64().unwrap(), 1);
+    assert!(per_instance[0]["active_skills"].get("skill_a").is_some());
+
+    assert_eq!(per_instance[1]["instance_id"].as_str().unwrap(), "inst_1");
+    assert_eq!(per_instance[1]["run"].as_u64().unwrap(), 2);
+    assert!(per_instance[1]["active_skills"].get("skill_b").is_some());
+}
+
+#[test]
+fn cli_fails_on_corrupt_config_redacted() {
+    let sweep = tempfile::tempdir().unwrap();
+
+    let results = mock_sweep_results(true);
+    write_json_file(&sweep.path().join("results.json"), &results);
+
+    let mut traj = mock_trajectory("task 1", "skill_a", "/path/a");
+    traj["info"]["manifest"] = serde_json::json!({
+        "harness_binary_version": "1.0",
+        "started_at_utc": "2026-06-06T00:00:00Z",
+        "env_kind": "local",
+        "config_sha256": "hash",
+        "config_redacted": "not a RootCfg",
+        "cli_invocation": [],
+        "extra_context_present": false,
+        "step_limit": 50,
+        "model_name": "claude-3",
+        "redaction_policy_id": "id",
+        "deterministic_mode": false
+    });
+    let inst_dir = sweep.path().join("inst_1");
+    fs::create_dir_all(&inst_dir).unwrap();
+    write_json_file(&inst_dir.join("run-1.traj.json"), &traj);
+
+    let out = run_skill_coverage(sweep.path(), &["--format", "json"]);
+    assert!(!out.status.success());
+}
+
+#[test]
+fn cli_preserves_configured_universe_on_empty_filter() {
+    let sweep = tempfile::tempdir().unwrap();
+
+    let skills_dir = tempfile::tempdir().unwrap();
+    let skill_a_dir = skills_dir.path().join("skill_a");
+    fs::create_dir_all(&skill_a_dir).unwrap();
+    fs::write(
+        skill_a_dir.join("SKILL.md"),
+        "---\nname: skill_a\ndescription: \"desc\"\n---\n",
+    )
+    .unwrap();
+
+    let global_skills_dir_str = skills_dir.path().display().to_string().replace('\\', "/");
+    let results = serde_json::json!({
+        "total": 1,
+        "sweep_status": "completed",
+        "submitted": 1,
+        "skipped": 0,
+        "errored": 0,
+        "instances": [
+            {
+                "instance_id": "inst_1",
+                "exit_reason": "submitted",
+                "resolved_count": 0,
+                "runs": 1,
+                "pass_at_1": false
+            }
+        ],
+        "filter_spec": {},
+        "manifest": {
+            "harness": { "name": "max", "version": "1.0", "git_resolution": "clean" },
+            "dataset": { "path": "x", "sha256": "x", "instance_count": 1 },
+            "prompt_template": { "source": "x", "sha256": "x" },
+            "config": {
+                "resolved": format!("[skills]\nenabled=true\npaths=[\"{}\"]", global_skills_dir_str),
+                "overlay_paths": []
+            },
+            "model": { "name": "claude-3-5", "backend": "anthropic" },
+            "runtime": { "started_at_utc": "2026-06-06T00:00:00Z", "finished_at_utc": "2026-06-06T00:01:00Z", "host_os": "linux" },
+            "cli": { "argv": [] }
+        }
+    });
+    write_json_file(&sweep.path().join("results.json"), &results);
+
+    let traj = mock_trajectory("task 1", "skill_a", "/path/a");
+    let inst_dir = sweep.path().join("inst_1");
+    fs::create_dir_all(&inst_dir).unwrap();
+    write_json_file(&inst_dir.join("run-1.traj.json"), &traj);
+
+    let out = run_skill_coverage(
+        sweep.path(),
+        &["--format", "json", "--filter", "resolved=true"],
+    );
+    assert!(
+        out.status.success(),
+        "Stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let report: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+
+    let universe = report["skill_universe"].as_array().unwrap();
+    let found = universe
+        .iter()
+        .any(|entry| entry["name"].as_str() == Some("skill_a"));
+    assert!(
+        found,
+        "skill_a was not found in universe on empty filter: {universe:?}"
+    );
+
+    let by_skill = &report["by_skill"];
+    let skill_a_metrics = &by_skill["skill_a"];
+    assert_eq!(skill_a_metrics["total_activations"].as_u64().unwrap(), 0);
+    assert_eq!(skill_a_metrics["instances_activated"].as_u64().unwrap(), 0);
+
+    let resolved_bucket = &skill_a_metrics["by_outcome"]["resolved"];
+    assert_eq!(resolved_bucket["instances_total"].as_u64().unwrap(), 0);
+}
