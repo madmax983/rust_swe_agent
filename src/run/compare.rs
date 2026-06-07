@@ -2919,6 +2919,34 @@ fn compare_evaluator_provenance(
         }
     }
 
+    if b.backend == "docker-tests" && c.backend == "docker-tests" {
+        match (&b.docker_tests, &c.docker_tests) {
+            (Some(b_dt), Some(c_dt)) => {
+                if b_dt.timeout_per_instance_secs != c_dt.timeout_per_instance_secs {
+                    warnings.push(format!(
+                        "evaluator provenance: docker_tests timeout_per_instance_secs differs (baseline={}, candidate={})",
+                        b_dt.timeout_per_instance_secs, c_dt.timeout_per_instance_secs
+                    ));
+                }
+                if b_dt.parallel != c_dt.parallel {
+                    warnings.push(format!(
+                        "evaluator provenance: docker_tests parallel differs (baseline={}, candidate={})",
+                        b_dt.parallel, c_dt.parallel
+                    ));
+                }
+            }
+            (None, Some(_)) => warnings.push(
+                "evaluator provenance: baseline docker-tests details unavailable (legacy artifact)"
+                    .into(),
+            ),
+            (Some(_), None) => warnings.push(
+                "evaluator provenance: candidate docker-tests details unavailable (legacy artifact)"
+                    .into(),
+            ),
+            (None, None) => {}
+        }
+    }
+
     if warnings.is_empty() {
         (EvaluatorProvenanceStatus::Matching, Vec::new())
     } else if has_legacy_missing_hash && warnings.len() == 1 {

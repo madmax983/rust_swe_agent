@@ -435,9 +435,7 @@ pub fn run(args: &EvaluateArgs) -> Result<EvaluationResults, Error> {
         }
         EvaluateBackend::SbCli => run_sb_cli(args, &results)?,
         EvaluateBackend::Rehearsal => run_rehearsal_eval(args, &results)?,
-        EvaluateBackend::DockerTests => {
-            EvaluateRunOutput::without_run_resolution(run_docker_tests(args, &results)?)
-        }
+        EvaluateBackend::DockerTests => run_docker_tests(args, &results)?
     };
     let EvaluateRunOutput {
         mut eval,
@@ -1240,7 +1238,7 @@ fn none_eval_for_result(id: &str, r: &InstanceResult) -> InstanceEvaluation {
 fn run_docker_tests(
     args: &EvaluateArgs,
     results: &HashMap<String, InstanceResult>,
-) -> Result<EvaluationResults, Error> {
+) -> Result<EvaluateRunOutput, Error> {
     // Load dataset to get image names and test lists.
     // Propagate load errors when a path is given — a malformed or missing dataset
     // would otherwise silently classify every instance as SkippedNoImage.
@@ -1253,6 +1251,7 @@ fn run_docker_tests(
     };
 
     let mut instances: Vec<InstanceEvaluation> = Vec::with_capacity(results.len());
+    let mut resolved_by_run: HashMap<RunSlotKey, bool> = HashMap::new();
 
     for (id, r) in results {
         let runs = effective_runs(r);
@@ -1332,48 +1331,127 @@ fn run_docker_tests(
             .filter(|s| !s.trim().is_empty())
             .map(ToOwned::to_owned);
 
-        // Find the patch for run 1 (multi-run reruns use run 1 by default for offline eval).
-        let patch_path = swebench::existing_patch_path_for_run(&args.sweep_dir, id, 1);
+        // Evaluate each run slot so multi-run reruns get accurate pass@k metrics.
+        let timeout = std::time::Duration::from_secs(args.timeout_per_instance_secs);
+        let mut run_verdicts: Vec<(u32, Result<DockerTestVerdict, String>)> = Vec::new();
+        for run_index in 1..=runs {
+            let patch_path =
+                swebench::existing_patch_path_for_run(&args.sweep_dir, id, run_index);
+            let patch_content = match std::fs::read_to_string(&patch_path) {
+                Ok(c) if !c.trim().is_empty() => c,
+                _ => continue,
+            };
+            let verdict = evaluate_instance_with_docker_inner(
+                id,
+                &image,
+                &patch_content,
+                test_patch.as_deref(),
+                &fail_to_pass,
+                &pass_to_pass,
+                test_command.as_deref(),
+                timeout,
+            );
+            run_verdicts.push((run_index, verdict));
+        }
 
-        let patch_content = match std::fs::read_to_string(&patch_path) {
-            Ok(c) if !c.trim().is_empty() => c,
-            _ => {
-                instances.push(InstanceEvaluation {
-                    instance_id: id.to_owned(),
-                    resolved: false,
-                    runs,
-                    resolved_count: 0,
-                    pass_at_1: false,
-                    tests_passed: vec![],
-                    tests_failed: vec![],
-                    eval_exit_reason: EvalExitReason::SkippedNoPatch,
-                    eval_log_path: None,
-                    patch_stats: None,
-                    patch_error_log: None,
-                });
-                continue;
+        if run_verdicts.is_empty() {
+            instances.push(InstanceEvaluation {
+                instance_id: id.to_owned(),
+                resolved: false,
+                runs,
+                resolved_count: 0,
+                pass_at_1: false,
+                tests_passed: vec![],
+                tests_failed: vec![],
+                eval_exit_reason: EvalExitReason::SkippedNoPatch,
+                eval_log_path: None,
+                patch_stats: None,
+                patch_error_log: None,
+            });
+            continue;
+        }
+
+        // Aggregate across runs: build resolved_by_run and compute summary fields.
+        let mut resolved_count = 0u32;
+        let mut pass_at_1 = false;
+        let mut display_verdict: Option<&DockerTestVerdict> = None;
+        let mut last_error: Option<&str> = None;
+
+        for (run_index, result) in &run_verdicts {
+            match result {
+                Ok(v) => {
+                    resolved_by_run.insert(RunSlotKey::new(id, *run_index), v.resolved);
+                    if *run_index == 1 {
+                        pass_at_1 = v.resolved;
+                    }
+                    if v.resolved {
+                        resolved_count += 1;
+                        if display_verdict.is_none() {
+                            display_verdict = Some(v);
+                        }
+                    } else if display_verdict.is_none() {
+                        display_verdict = Some(v);
+                    }
+                }
+                Err(msg) => {
+                    resolved_by_run.insert(RunSlotKey::new(id, *run_index), false);
+                    last_error = Some(msg.as_str());
+                }
             }
-        };
+        }
 
-        let eval = evaluate_instance_with_docker(
-            id,
+        let resolved = resolved_count > 0;
+        let (tests_passed, tests_failed, eval_exit_reason, patch_error_log) =
+            match display_verdict {
+                Some(v) => {
+                    let reason = if v.timed_out {
+                        EvalExitReason::EvalError
+                    } else if v.patch_apply_failed {
+                        EvalExitReason::PatchApplyFailed
+                    } else if resolved {
+                        EvalExitReason::Resolved
+                    } else {
+                        EvalExitReason::Unresolved
+                    };
+                    (
+                        v.tests_passed.clone(),
+                        v.tests_failed.clone(),
+                        reason,
+                        v.patch_error_log.clone(),
+                    )
+                }
+                None => (
+                    vec![],
+                    vec![],
+                    EvalExitReason::EvalError,
+                    last_error.map(ToOwned::to_owned),
+                ),
+            };
+
+        instances.push(InstanceEvaluation {
+            instance_id: id.to_owned(),
+            resolved,
             runs,
-            &image,
-            &patch_content,
-            test_patch.as_deref(),
-            &fail_to_pass,
-            &pass_to_pass,
-            test_command.as_deref(),
-            args.timeout_per_instance_secs,
-        );
-        instances.push(eval);
+            resolved_count,
+            pass_at_1,
+            tests_passed,
+            tests_failed,
+            eval_exit_reason,
+            eval_log_path: None,
+            patch_stats: None,
+            patch_error_log,
+        });
     }
 
     instances.sort_by(|a, b| a.instance_id.cmp(&b.instance_id));
 
-    Ok(EvaluationResults {
-        instances,
-        ..Default::default()
+    Ok(EvaluateRunOutput {
+        eval: EvaluationResults {
+            instances,
+            ..Default::default()
+        },
+        resolved_by_run,
+        effective_run_id: None,
     })
 }
 
@@ -1401,72 +1479,6 @@ fn extract_test_list(other: &serde_json::Map<String, serde_json::Value>, key: &s
 /// Applies `test_patch` (oracle tests) then the candidate patch, then runs
 /// FAIL_TO_PASS + PASS_TO_PASS. The container is forcibly removed on exit.
 #[allow(clippy::too_many_arguments)]
-fn evaluate_instance_with_docker(
-    instance_id: &str,
-    runs: u32,
-    image: &str,
-    patch_content: &str,
-    test_patch: Option<&str>,
-    fail_to_pass: &[String],
-    pass_to_pass: &[String],
-    test_command: Option<&str>,
-    timeout_secs: u64,
-) -> InstanceEvaluation {
-    use std::time::Duration;
-
-    let timeout = Duration::from_secs(timeout_secs);
-
-    match evaluate_instance_with_docker_inner(
-        instance_id,
-        image,
-        patch_content,
-        test_patch,
-        fail_to_pass,
-        pass_to_pass,
-        test_command,
-        timeout,
-    ) {
-        Ok(verdict) => {
-            let resolved = verdict.resolved;
-            let resolved_count = u32::from(resolved);
-            InstanceEvaluation {
-                instance_id: instance_id.to_owned(),
-                resolved,
-                runs,
-                resolved_count,
-                pass_at_1: resolved,
-                tests_passed: verdict.tests_passed,
-                tests_failed: verdict.tests_failed,
-                eval_exit_reason: if verdict.timed_out {
-                    EvalExitReason::EvalError
-                } else if verdict.patch_apply_failed {
-                    EvalExitReason::PatchApplyFailed
-                } else if resolved {
-                    EvalExitReason::Resolved
-                } else {
-                    EvalExitReason::Unresolved
-                },
-                eval_log_path: None,
-                patch_stats: None,
-                patch_error_log: verdict.patch_error_log,
-            }
-        }
-        Err(err_msg) => InstanceEvaluation {
-            instance_id: instance_id.to_owned(),
-            resolved: false,
-            runs,
-            resolved_count: 0,
-            pass_at_1: false,
-            tests_passed: vec![],
-            tests_failed: vec![],
-            eval_exit_reason: EvalExitReason::EvalError,
-            eval_log_path: None,
-            patch_stats: None,
-            patch_error_log: Some(err_msg),
-        },
-    }
-}
-
 struct DockerTestVerdict {
     resolved: bool,
     timed_out: bool,
