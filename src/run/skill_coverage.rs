@@ -308,38 +308,47 @@ fn failure_category_label(c: FailureCategory) -> &'static str {
 }
 
 fn resolve_trajectory_paths(sweep: &Path, instance_id: &str) -> Vec<PathBuf> {
-    let nested = sweep.join(instance_id).join("trajectory.json");
-    if nested.exists() {
-        return vec![nested];
-    }
-
+    let mut paths = Vec::new();
     let instance_dir = sweep.join(instance_id);
     if instance_dir.is_dir() {
-        let run_paths: Vec<PathBuf> = std::fs::read_dir(&instance_dir)
-            .map(|entries| {
-                let mut paths: Vec<PathBuf> = entries
-                    .flatten()
-                    .map(|e| e.path())
-                    .filter(|p| {
-                        p.file_name()
-                            .and_then(|n| n.to_str())
-                            .is_some_and(|n| n.starts_with("run-") && n.ends_with(".traj.json"))
-                    })
-                    .collect();
-                paths.sort_by_key(|p| {
+        if let Ok(entries) = std::fs::read_dir(&instance_dir) {
+            let mut run_paths: Vec<PathBuf> = entries
+                .flatten()
+                .map(|e| e.path())
+                .filter(|p| {
                     p.file_name()
                         .and_then(|n| n.to_str())
-                        .and_then(|n| n.strip_prefix("run-"))
-                        .and_then(|n| n.strip_suffix(".traj.json"))
-                        .and_then(|n| n.parse::<u64>().ok())
-                        .unwrap_or(u64::MAX)
-                });
-                paths
-            })
-            .unwrap_or_default();
-        if !run_paths.is_empty() {
-            return run_paths;
+                        .is_some_and(|n| n.starts_with("run-") && n.ends_with(".traj.json"))
+                })
+                .collect();
+            run_paths.sort_by_key(|p| {
+                p.file_name()
+                    .and_then(|n| n.to_str())
+                    .and_then(|n| n.strip_prefix("run-"))
+                    .and_then(|n| n.strip_suffix(".traj.json"))
+                    .and_then(|n| n.parse::<u64>().ok())
+                    .unwrap_or(u64::MAX)
+            });
+            paths.extend(run_paths);
         }
+
+        // Check if legacy trajectory.json exists
+        let nested = instance_dir.join("trajectory.json");
+        if nested.exists() {
+            let has_run_1 = paths.iter().any(|p| {
+                p.file_name()
+                    .and_then(|n| n.to_str())
+                    .is_some_and(|n| n == "run-1.traj.json")
+            });
+            if !has_run_1 {
+                // Insert trajectory.json at the beginning (representing run-1)
+                paths.insert(0, nested);
+            }
+        }
+    }
+
+    if !paths.is_empty() {
+        return paths;
     }
 
     let flat = sweep.join(format!("{instance_id}.traj.json"));
@@ -442,10 +451,11 @@ fn parse_report_outcomes(
     match &val {
         serde_json::Value::Array(rows) => {
             for row in rows {
-                if let (Some(inst_id), Some(resolved)) = (
-                    row.get("instance_id").and_then(serde_json::Value::as_str),
-                    row.get("resolved").and_then(serde_json::Value::as_bool),
-                ) {
+                if let Some(inst_id) = row.get("instance_id").and_then(serde_json::Value::as_str) {
+                    let resolved = row
+                        .get("resolved")
+                        .and_then(serde_json::Value::as_bool)
+                        .unwrap_or(false);
                     resolved_by_run.insert(
                         RunSlotKey {
                             instance_id: inst_id.to_owned(),
@@ -459,10 +469,13 @@ fn parse_report_outcomes(
         serde_json::Value::Object(obj) => {
             if let Some(rows) = obj.get("instances").and_then(serde_json::Value::as_array) {
                 for row in rows {
-                    if let (Some(inst_id), Some(resolved)) = (
-                        row.get("instance_id").and_then(serde_json::Value::as_str),
-                        row.get("resolved").and_then(serde_json::Value::as_bool),
-                    ) {
+                    if let Some(inst_id) =
+                        row.get("instance_id").and_then(serde_json::Value::as_str)
+                    {
+                        let resolved = row
+                            .get("resolved")
+                            .and_then(serde_json::Value::as_bool)
+                            .unwrap_or(false);
                         resolved_by_run.insert(
                             RunSlotKey {
                                 instance_id: inst_id.to_owned(),
@@ -687,7 +700,8 @@ fn build_report(args: &SkillCoverageArgs) -> Result<SkillCoverageReport, Error> 
                         } else if run_index == 1 {
                             pass_at_1
                         } else {
-                            resolved_count == runs || (run_index == runs)
+                            resolved_count == runs
+                                || (run_index == runs && resolved_count > 0 && !pass_at_1)
                         }
                     } else {
                         false
@@ -696,7 +710,9 @@ fn build_report(args: &SkillCoverageArgs) -> Result<SkillCoverageReport, Error> 
 
             let run_bucket = if is_run_resolved {
                 OutcomeBucket::Resolved
-            } else if traj.info.outcome.as_deref() == Some(crate::trajectory::outcome::ERROR) {
+            } else if traj.info.outcome.as_deref() == Some(crate::trajectory::outcome::ERROR)
+                || (traj.info.outcome.is_none() && instance.outcome.as_deref() == Some("error"))
+            {
                 OutcomeBucket::Errored
             } else {
                 OutcomeBucket::Unresolved

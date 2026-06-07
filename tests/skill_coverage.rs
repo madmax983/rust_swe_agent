@@ -1033,3 +1033,152 @@ fn cli_fails_when_sb_cli_report_fails_to_parse() {
     let out = run_skill_coverage(sweep.path(), &["--format", "json"]);
     assert!(!out.status.success());
 }
+
+#[test]
+fn cli_handles_mixed_trajectories_double_counting_and_errored_fallbacks() {
+    let sweep = tempfile::tempdir().unwrap();
+
+    // results.json with one legacy inst_1 (outcome errored) and one retry inst_2 (2 runs, pass_at_1=true, resolved_count=1)
+    let results = serde_json::json!({
+        "total": 2,
+        "sweep_status": "completed",
+        "submitted": 1,
+        "skipped": 0,
+        "errored": 1,
+        "instances": [
+            {
+                "instance_id": "inst_1",
+                "exit_reason": "errored",
+                "outcome": "error",
+                "resolved_count": 0,
+                "runs": 1,
+                "pass_at_1": false
+            },
+            {
+                "instance_id": "inst_2",
+                "exit_reason": "submitted",
+                "resolved_count": 1,
+                "runs": 2,
+                "pass_at_1": true
+            }
+        ],
+        "filter_spec": {},
+        "manifest": {
+            "harness": { "name": "max", "version": "1.0", "git_resolution": "clean" },
+            "dataset": { "path": "x", "sha256": "x", "instance_count": 2 },
+            "prompt_template": { "source": "x", "sha256": "x" },
+            "config": {
+                "resolved": "[skills]\nenabled=true\npaths=[]",
+                "overlay_paths": []
+            },
+            "model": { "name": "claude-3-5", "backend": "anthropic" },
+            "runtime": { "started_at_utc": "2026-06-06T00:00:00Z", "finished_at_utc": "2026-06-06T00:01:00Z", "host_os": "linux" },
+            "cli": { "argv": [] }
+        }
+    });
+    write_json_file(&sweep.path().join("results.json"), &results);
+
+    // inst_1 is legacy/errored, trajectory has no outcome field to verify fallback to results.json row outcome: "error"
+    let mut traj_1 = mock_trajectory("task 1", "skill_a", "/path/a");
+    // remove outcome
+    traj_1["info"].as_object_mut().unwrap().remove("outcome");
+    let inst_dir_1 = sweep.path().join("inst_1");
+    fs::create_dir_all(&inst_dir_1).unwrap();
+    write_json_file(&inst_dir_1.join("trajectory.json"), &traj_1);
+
+    // inst_2 has legacy trajectory.json (representing run 1) and run-2.traj.json (representing run 2)
+    // both have skill_a activated. This validates that we resolve both when mixed together in the directory!
+    let traj_2_run_1 = mock_trajectory("task 2", "skill_a", "/path/a");
+    let traj_2_run_2 = mock_trajectory("task 2", "skill_a", "/path/a");
+    let inst_dir_2 = sweep.path().join("inst_2");
+    fs::create_dir_all(&inst_dir_2).unwrap();
+    write_json_file(&inst_dir_2.join("trajectory.json"), &traj_2_run_1);
+    write_json_file(&inst_dir_2.join("run-2.traj.json"), &traj_2_run_2);
+
+    // We do NOT write sb_cli_reports JSON, so skill-coverage falls back to the heuristic
+    // For inst_2 (pass_at_1=true, resolved_count=1, runs=2):
+    // run 1 should be Resolved (because pass_at_1=true)
+    // run 2 should NOT be Resolved (double-counting prevention check!)
+
+    let out = run_skill_coverage(sweep.path(), &["--format", "json"]);
+    assert!(
+        out.status.success(),
+        "Stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let report: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let by_skill = &report["by_skill"];
+    let skill_a_metrics = &by_skill["skill_a"];
+
+    // inst_1 outcome "error" fallback test
+    // skill_a should be activated in errored bucket
+    let a_errored = &skill_a_metrics["by_outcome"]["errored"];
+    assert_eq!(a_errored["instances_activated"].as_u64().unwrap(), 1);
+
+    // inst_2 double-counting fallback test
+    // run-2 should NOT be resolved, so resolved rate when active in unresolved bucket should be 0.0
+    let a_unresolved = &skill_a_metrics["by_outcome"]["unresolved"];
+    assert_eq!(a_unresolved["instances_activated"].as_u64().unwrap(), 1);
+    assert_eq!(
+        a_unresolved["resolved_rate_when_active"].as_f64().unwrap(),
+        0.0
+    );
+}
+
+#[test]
+fn cli_handles_missing_resolved_in_evaluator_report() {
+    let sweep = tempfile::tempdir().unwrap();
+
+    // results.json
+    let results = mock_sweep_results(true);
+    write_json_file(&sweep.path().join("results.json"), &results);
+
+    // evaluation.json with provenance matching our report
+    let evaluation = serde_json::json!({
+        "instances": [
+            { "instance_id": "inst_1", "resolved": false, "eval_exit_reason": "unresolved" }
+        ],
+        "provenance": {
+            "backend": "sb-cli",
+            "run_id": "current-run",
+            "dataset_subset": "swe-bench",
+            "dataset_split": "test"
+        }
+    });
+    write_json_file(&sweep.path().join("evaluation.json"), &evaluation);
+
+    // sb_cli_reports directory
+    let report_dir = sweep.path().join("sb_cli_reports");
+    fs::create_dir_all(&report_dir).unwrap();
+
+    // current run report: row lacks resolved boolean entirely, but has instance_id
+    let report = serde_json::json!([
+        { "instance_id": "inst_1", "eval_exit_reason": "unresolved" }
+    ]);
+    write_json_file(
+        &report_dir.join("swe-bench__test__current-run-run-1.json"),
+        &report,
+    );
+
+    // trajectory
+    let traj_1 = mock_trajectory("task 1", "skill_a", "/path/a");
+    let inst_dir = sweep.path().join("inst_1");
+    fs::create_dir_all(&inst_dir).unwrap();
+    write_json_file(&inst_dir.join("run-1.traj.json"), &traj_1);
+
+    // Running the command should succeed (missing resolved is treated as false)
+    let out = run_skill_coverage(sweep.path(), &["--format", "json"]);
+    assert!(
+        out.status.success(),
+        "Stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let report: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let by_skill = &report["by_skill"];
+    let skill_a_metrics = &by_skill["skill_a"];
+
+    // unresolved bucket metrics:
+    // since resolved was omitted (treated as false), the run-1 outcome bucket is Unresolved.
+    let a_unresolved = &skill_a_metrics["by_outcome"]["unresolved"];
+    assert_eq!(a_unresolved["instances_activated"].as_u64().unwrap(), 1);
+}
