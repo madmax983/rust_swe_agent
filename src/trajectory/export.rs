@@ -53,7 +53,33 @@ pub struct MermaidExporter;
 #[cfg(feature = "html-export")]
 pub struct HtmlExporter;
 
+#[cfg(feature = "jsonl-export")]
+pub struct JsonlExporter;
+
 use std::fmt::Write;
+
+#[cfg(feature = "jsonl-export")]
+impl TrajectoryExporter for JsonlExporter {
+    fn export(trajectory: &Trajectory) -> String {
+        let redactor = Redactor::default_enabled();
+        let mut jsonl = String::new();
+
+        for msg in &trajectory.messages {
+            // We clone to safely redact the content without mutating the original
+            let mut safe_msg = msg.clone();
+            safe_msg.content = redactor
+                .redact_text(&safe_msg.content, surface::EXPORT)
+                .text;
+
+            // For a single line JSON, serde_json::to_string does exactly what we want
+            if let Ok(line) = serde_json::to_string(&safe_msg) {
+                let _ = writeln!(jsonl, "{line}");
+            }
+        }
+
+        jsonl
+    }
+}
 
 #[cfg(feature = "csv-export")]
 impl TrajectoryExporter for CsvExporter {
@@ -319,6 +345,31 @@ mod tests {
         assert!(mermaid.contains("U->>A: Hello \"user\""));
 
         assert!(mermaid.contains("Note over S,T: Outcome: submitted"));
+    }
+
+    #[cfg(feature = "jsonl-export")]
+    #[test]
+    fn test_jsonl_export_format() {
+        let mut t = Trajectory::new();
+        t.info.task = Some("Add a feature".to_string());
+        t.info.outcome = Some(outcome::SUBMITTED.to_string());
+
+        t.record_message(&Message::system("System prompt"));
+        t.record_message(&Message::user("Hello agent\nMulti-line"));
+
+        let jsonl = JsonlExporter::export(&t);
+
+        let lines: Vec<&str> = jsonl.lines().collect();
+        assert_eq!(lines.len(), 2);
+
+        let sys_line = lines[0];
+        let user_line = lines[1];
+
+        assert!(sys_line.contains(r#""role":"system""#));
+        assert!(sys_line.contains(r#""content":"System prompt""#));
+
+        assert!(user_line.contains(r#""role":"user""#));
+        assert!(user_line.contains(r#""content":"Hello agent\nMulti-line""#));
     }
 
     #[cfg(feature = "html-export")]
