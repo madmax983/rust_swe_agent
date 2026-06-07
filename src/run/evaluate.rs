@@ -1760,9 +1760,10 @@ fn evaluate_instance_with_docker_inner(
 
     let tests_arg = all_tests.join(" ");
     // Redirect output to a file to avoid pipe buffer deadlock (Linux buffer ~64KB).
-    // Use the dataset-specified test command when available; fall back to pytest.
+    // For custom test commands, also write the runner exit code to a sidecar file
+    // so we can use it as a fallback oracle when the output isn't pytest-format.
     let test_cmd = if let Some(cmd) = test_command {
-        format!("cd /testbed && ({cmd}) > /tmp/pytest.output 2>&1 || true")
+        format!("cd /testbed && ({cmd}) > /tmp/pytest.output 2>&1; echo $? > /tmp/test.exitcode")
     } else {
         format!(
             "cd /testbed && python -m pytest -v --tb=no --no-header -rN {tests_arg} > /tmp/pytest.output 2>&1 || true"
@@ -1795,11 +1796,13 @@ fn evaluate_instance_with_docker_inner(
                 let msg = String::from_utf8_lossy(&out.stderr).trim().to_string();
                 return Err(format!("docker exec for tests failed: {msg}"));
             }
-            // Read the redirected output file from inside the container.
-            let cat_out = Command::new("docker")
-                .args(["exec", &container_id, "cat", "/tmp/pytest.output"])
-                .output()
-                .map_err(|e| format!("failed to read pytest output: {e}"))?;
+            // Read the redirected output file, bounded by the remaining deadline.
+            let remaining_cat = timeout.saturating_sub(overall_start.elapsed());
+            let cat_out = run_with_timeout(
+                Command::new("docker").args(["exec", &container_id, "cat", "/tmp/pytest.output"]),
+                remaining_cat,
+            )
+            .map_err(|_| "timed out reading pytest output file".to_owned())?;
             if !cat_out.status.success() {
                 let msg = String::from_utf8_lossy(&cat_out.stderr).trim().to_string();
                 return Err(format!("failed to read pytest output file: {msg}"));
@@ -1819,7 +1822,29 @@ fn evaluate_instance_with_docker_inner(
     };
 
     // 5. Parse pytest output to classify each test.
-    let (tests_passed, tests_failed) = parse_pytest_output(&output_text, &all_tests);
+    // For custom test commands whose runners don't emit pytest verbose lines,
+    // fall back to the sidecar exit code: exit 0 → all tests passed.
+    let has_result_lines = output_text.contains(" PASSED")
+        || output_text.contains(" FAILED")
+        || output_text.contains(" ERROR");
+
+    let (tests_passed, tests_failed) = if test_command.is_some() && !has_result_lines {
+        // Non-pytest runner: read the exit code we saved to the sidecar file.
+        let runner_ok = Command::new("docker")
+            .args(["exec", &container_id, "cat", "/tmp/test.exitcode"])
+            .output()
+            .ok()
+            .and_then(|o| String::from_utf8(o.stdout).ok())
+            .and_then(|s| s.trim().parse::<i32>().ok())
+            .is_some_and(|code| code == 0);
+        if runner_ok {
+            (all_tests.iter().map(|&s| s.to_owned()).collect(), vec![])
+        } else {
+            (vec![], all_tests.iter().map(|&s| s.to_owned()).collect())
+        }
+    } else {
+        parse_pytest_output(&output_text, &all_tests)
+    };
 
     // Resolved iff every FAIL_TO_PASS test passed and no PASS_TO_PASS test failed.
     let ftp_all_pass = fail_to_pass
