@@ -564,7 +564,9 @@ fn evaluate_via_docker_tests(
 /// Both warrant exit code 3 (`HasErrored`); a plain unresolved verdict
 /// (gold patch submitted but not resolved) warrants exit code 4 (`HasUnresolved`).
 fn is_errored_reason(reason: &str) -> bool {
-    reason == EXIT_REASON_GOLD_PATCH_MISSING || reason.starts_with(EXIT_REASON_EVALUATOR_FAILED)
+    reason == EXIT_REASON_GOLD_PATCH_MISSING
+        || reason.starts_with(EXIT_REASON_EVALUATOR_FAILED)
+        || reason == "skipped_no_image"
 }
 
 fn compute_totals(results: &[SelftestInstanceResult]) -> SelftestTotals {
@@ -819,6 +821,8 @@ mod tests {
         assert!(is_errored_reason(
             "evaluator_failed: sb-cli exited with status 1"
         ));
+        // docker-tests: no image found — infrastructure problem, not a model verdict
+        assert!(is_errored_reason("skipped_no_image"));
         // unresolved verdict — not an infrastructure error
         assert!(!is_errored_reason("unresolved"));
         assert!(!is_errored_reason("patch_apply_failed"));

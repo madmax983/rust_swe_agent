@@ -1514,8 +1514,9 @@ fn evaluate_instance_with_docker_inner(
     let _guard = ContainerGuard(&container_id);
 
     // 2. Write the patch to the container.
+    // -i keeps stdin open so cat receives the patch bytes instead of immediate EOF.
     let patch_inject = Command::new("docker")
-        .args(["exec", &container_id, "bash", "-c"])
+        .args(["exec", "-i", &container_id, "bash", "-c"])
         .arg("cat > /tmp/candidate.patch")
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::null())
@@ -1595,15 +1596,12 @@ fn evaluate_instance_with_docker_inner(
         .collect();
 
     if all_tests.is_empty() {
-        // No tests defined — treat as resolved (no tests to fail).
-        return Ok(DockerTestVerdict {
-            resolved: true,
-            timed_out: false,
-            patch_apply_failed: false,
-            patch_error_log: None,
-            tests_passed: vec![],
-            tests_failed: vec![],
-        });
+        // Dataset has no FAIL_TO_PASS or PASS_TO_PASS selectors — cannot evaluate.
+        // Treating this as resolved would silently accept every patch as correct;
+        // instead surface it as an evaluator/setup error.
+        return Err(
+            "dataset row has no FAIL_TO_PASS or PASS_TO_PASS tests; cannot evaluate".to_owned(),
+        );
     }
 
     let tests_arg = all_tests.join(" ");
