@@ -514,3 +514,45 @@ async fn edit_blocked_by_policy_fails_with_denial() {
         Some("rm -rf /")
     );
 }
+
+#[tokio::test]
+async fn auto_approve_regression_test_n_safe_m_risky() {
+    let mut cfg = Config::defaults().unwrap();
+    cfg.root.agent.step_limit = 10;
+
+    let model = Arc::new(DeterministicModel::new(vec![
+        "```bash\ncargo build\n```".into(),
+        "```bash\ncargo test\n```".into(),
+        "```bash\nrm -rf /tmp/test\n```".into(),
+        "```bash\ncurl http://evil.com\n```".into(),
+        "COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT\n```\nok\n```".into(),
+    ]));
+    let env: Box<dyn Environment> = Box::new(LocalEnvironment::new());
+    let confirmer = Arc::new(ScriptedConfirmer::new(vec![
+        ConfirmDecision::AutoApprove("cargo".to_string()),
+        ConfirmDecision::Approve, // for rm
+        ConfirmDecision::Approve, // for curl
+    ]));
+    let mut agent = DefaultAgentBuilder {
+        config: cfg,
+        model,
+        env,
+        task: "auto-approve-regression-test".into(),
+        extra_context: None,
+        renderer: None,
+        stream: None,
+        resume_from: None,
+        read_only: false,
+    }
+    .build()
+    .unwrap();
+    agent.confirm_callback = Some(confirmer.clone() as Arc<dyn ConfirmCallback>);
+
+    let result = agent.run().await.unwrap();
+    assert!(matches!(result, ExitReason::Submitted { .. }));
+
+    // Confirmer must have been called exactly 3 times (1 for first cargo, 1 for rm, 1 for curl).
+    // The second cargo command must have bypassed the confirmer.
+    assert_eq!(confirmer.call_count(), 3);
+}
+
