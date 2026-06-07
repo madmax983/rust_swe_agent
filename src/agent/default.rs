@@ -1262,6 +1262,7 @@ impl Agent for DefaultAgent {
             if let Some(decision) = self.confirm_operator_action(&tool_name, &tool_input).await {
                 match decision {
                     super::ConfirmDecision::Approve => {}
+                    super::ConfirmDecision::AutoApprove(_) => {}
                     super::ConfirmDecision::Reject(feedback) => {
                         self.record_interactive_rejection(&tool_name, &tool_input, feedback);
                         self.last_measurement_end = Instant::now();

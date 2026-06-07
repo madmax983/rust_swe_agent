@@ -33,6 +33,22 @@ pub struct ConfirmContext {
     pub cache_marker: &'static str,
 }
 
+impl ConfirmContext {
+    /// Extracts the scope (program name for bash, tool name for others).
+    #[must_use]
+    pub fn derive_scope(&self) -> String {
+        if self.tool_name == "bash" {
+            self.command
+                .split_whitespace()
+                .next()
+                .unwrap_or("")
+                .to_string()
+        } else {
+            self.tool_name.clone()
+        }
+    }
+}
+
 /// The operator's decision returned by `ConfirmCallback::confirm`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ConfirmDecision {
@@ -44,6 +60,8 @@ pub enum ConfirmDecision {
     Abort,
     /// Edit the proposed command/input.
     Edit(String),
+    /// Automatically approve the action for a given scope.
+    AutoApprove(String),
 }
 
 impl ConfirmDecision {
@@ -55,6 +73,7 @@ impl ConfirmDecision {
             Self::Reject(_) => "reject",
             Self::Abort => "abort",
             Self::Edit(_) => "edit",
+            Self::AutoApprove(_) => "auto-approve",
         }
     }
 }
@@ -163,5 +182,34 @@ mod tests {
             ConfirmDecision::Edit("foo".to_owned())
         );
         assert_eq!(c.call_count(), 1);
+    }
+
+    #[test]
+    fn confirm_context_derives_correct_scope() {
+        let ctx_bash = ConfirmContext {
+            tool_name: "bash".into(),
+            command: "cargo test --all".into(),
+            step: 0,
+            step_limit: 10,
+            cost_usd: 0.0,
+            cache_marker: "cache:auto-or-none",
+        };
+        assert_eq!(ctx_bash.derive_scope(), "cargo");
+
+        let ctx_tool = ConfirmContext {
+            tool_name: "read_file".into(),
+            command: "src/lib.rs".into(),
+            step: 0,
+            step_limit: 10,
+            cost_usd: 0.0,
+            cache_marker: "cache:auto-or-none",
+        };
+        assert_eq!(ctx_tool.derive_scope(), "read_file");
+    }
+
+    #[test]
+    fn auto_approve_decision_has_label() {
+        let d = ConfirmDecision::AutoApprove("cargo".to_string());
+        assert_eq!(d.label(), "auto-approve");
     }
 }
