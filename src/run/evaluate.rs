@@ -1385,7 +1385,10 @@ fn run_docker_tests(
                     }
                     if v.resolved {
                         resolved_count += 1;
-                        if display_verdict.is_none() {
+                        // Always prefer the first resolved verdict so that
+                        // test lists and exit reason reflect an actual success,
+                        // not a preceding failed or timed-out run.
+                        if display_verdict.is_none_or(|d: &DockerTestVerdict| !d.resolved) {
                             display_verdict = Some(v);
                         }
                     } else if display_verdict.is_none() {
@@ -1704,32 +1707,34 @@ fn evaluate_instance_with_docker_inner(
     if !apply_out.status.success() {
         // Fallback: try three-way merge (mirrors the SWE-bench harness fallback).
         let remaining_fb = timeout.saturating_sub(overall_start.elapsed());
-        let fallback_succeeded = if remaining_fb.is_zero() {
-            false
+        let fallback_result = if remaining_fb.is_zero() {
+            None
         } else {
-            matches!(
-                run_with_timeout(
-                    Command::new("docker").args([
-                        "exec",
-                        &container_id,
-                        "bash",
-                        "-c",
-                        "cd /testbed && git apply --3way /tmp/candidate.patch 2>&1",
-                    ]),
-                    remaining_fb,
-                ),
-                Ok(o) if o.status.success()
-            )
+            Some(run_with_timeout(
+                Command::new("docker").args([
+                    "exec",
+                    &container_id,
+                    "bash",
+                    "-c",
+                    "cd /testbed && git apply --3way /tmp/candidate.patch 2>&1",
+                ]),
+                remaining_fb,
+            ))
         };
 
+        let fallback_succeeded = matches!(&fallback_result, Some(Ok(o)) if o.status.success());
+
         if !fallback_succeeded {
+            // If the fallback itself timed out, report a timeout rather than a
+            // clean patch-apply failure so callers can distinguish the two cases.
+            let timed_out = matches!(fallback_result, Some(Err(TimedOut)));
             let stderr = String::from_utf8_lossy(&apply_out.stdout)
                 .trim()
                 .to_string();
             return Ok(DockerTestVerdict {
                 resolved: false,
-                timed_out: false,
-                patch_apply_failed: true,
+                timed_out,
+                patch_apply_failed: !timed_out,
                 patch_error_log: Some(stderr),
                 tests_passed: vec![],
                 tests_failed: vec![],
@@ -1783,12 +1788,22 @@ fn evaluate_instance_with_docker_inner(
     );
 
     let (timed_out, output_text) = match test_out {
-        Ok(_) => {
+        Ok(out) => {
+            // A non-success exec status means the container exited or Docker
+            // cannot exec into it — grade as EvalError, not empty output.
+            if !out.status.success() {
+                let msg = String::from_utf8_lossy(&out.stderr).trim().to_string();
+                return Err(format!("docker exec for tests failed: {msg}"));
+            }
             // Read the redirected output file from inside the container.
             let cat_out = Command::new("docker")
                 .args(["exec", &container_id, "cat", "/tmp/pytest.output"])
                 .output()
                 .map_err(|e| format!("failed to read pytest output: {e}"))?;
+            if !cat_out.status.success() {
+                let msg = String::from_utf8_lossy(&cat_out.stderr).trim().to_string();
+                return Err(format!("failed to read pytest output file: {msg}"));
+            }
             (false, String::from_utf8_lossy(&cat_out.stdout).into_owned())
         }
         Err(TimedOut) => {
@@ -1921,19 +1936,22 @@ fn parse_pytest_output(output: &str, all_tests: &[&str]) -> (Vec<String>, Vec<St
 
     for line in output.lines() {
         let line = line.trim();
-        if let Some(idx) = line.find(" PASSED") {
+        // Use rfind so that status words embedded in parametrized node IDs
+        // (e.g. "test_foo[PASSED-val] FAILED") don't fool the parser; the
+        // rightmost occurrence is always the actual verbose-output status token.
+        if let Some(idx) = line.rfind(" PASSED") {
             let test_id = line[..idx].trim().to_owned();
             if !test_id.is_empty() {
                 passed.push(test_id);
             }
-        } else if let Some(idx) = line.find(" FAILED") {
+        } else if let Some(idx) = line.rfind(" FAILED") {
             let test_id = line[..idx].trim();
             // Strip trailing " - <reason>" that pytest sometimes appends.
             let test_id = test_id.split(" - ").next().unwrap_or(test_id).to_owned();
             if !test_id.is_empty() {
                 failed.push(test_id);
             }
-        } else if let Some(idx) = line.find(" ERROR") {
+        } else if let Some(idx) = line.rfind(" ERROR") {
             let test_id = line[..idx].trim().to_owned();
             if !test_id.is_empty() {
                 failed.push(test_id);
