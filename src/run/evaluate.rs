@@ -1531,56 +1531,86 @@ fn evaluate_instance_with_docker_inner(
     // Ensure the container is removed when we exit this scope.
     let _guard = ContainerGuard(&container_id);
 
-    // 2. Write the patch to the container.
+    // 2. Write the patch to the container, bounded by the remaining deadline.
     // -i keeps stdin open so cat receives the patch bytes instead of immediate EOF.
-    let patch_inject = Command::new("docker")
-        .args(["exec", "-i", &container_id, "bash", "-c"])
-        .arg("cat > /tmp/candidate.patch")
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .and_then(|mut child| {
-            use std::io::Write as _;
-            if let Some(ref mut stdin) = child.stdin {
-                let _ = stdin.write_all(patch_content.as_bytes());
-            }
-            child.wait_with_output()
-        })
-        .map_err(|e| format!("patch inject failed: {e}"))?;
-
-    if !patch_inject.status.success() {
-        return Err(format!(
-            "patch inject failed: {}",
-            String::from_utf8_lossy(&patch_inject.stderr).trim()
-        ));
+    // run_with_stdin_and_timeout writes via a background thread so the poll loop
+    // is never blocked by a slow container filesystem or unresponsive daemon.
+    let remaining_inject = timeout.saturating_sub(overall_start.elapsed());
+    if remaining_inject.is_zero() {
+        return Ok(DockerTestVerdict {
+            resolved: false,
+            timed_out: true,
+            patch_apply_failed: false,
+            patch_error_log: None,
+            tests_passed: vec![],
+            tests_failed: vec![],
+        });
+    }
+    match run_with_stdin_and_timeout(
+        Command::new("docker")
+            .args(["exec", "-i", &container_id, "bash", "-c"])
+            .arg("cat > /tmp/candidate.patch"),
+        patch_content.as_bytes(),
+        remaining_inject,
+    ) {
+        Err(TimedOut) => {
+            return Ok(DockerTestVerdict {
+                resolved: false,
+                timed_out: true,
+                patch_apply_failed: false,
+                patch_error_log: None,
+                tests_passed: vec![],
+                tests_failed: vec![],
+            });
+        }
+        Ok(o) if !o.status.success() => {
+            return Err(format!(
+                "patch inject failed: {}",
+                String::from_utf8_lossy(&o.stderr).trim()
+            ));
+        }
+        Ok(_) => {}
     }
 
     // 3. Apply test_patch first (oracle tests needed by FAIL_TO_PASS selectors).
     //    The official SWE-bench evaluator always applies test_patch before the
     //    candidate patch so that new tests introduced by the issue are present.
     if let Some(tp) = test_patch.filter(|s| !s.trim().is_empty()) {
-        let tp_inject = Command::new("docker")
-            .args(["exec", "-i", &container_id, "bash", "-c"])
-            .arg("cat > /tmp/test.patch")
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::piped())
-            .spawn()
-            .and_then(|mut child| {
-                use std::io::Write as _;
-                if let Some(ref mut stdin) = child.stdin {
-                    let _ = stdin.write_all(tp.as_bytes());
-                }
-                child.wait_with_output()
-            })
-            .map_err(|e| format!("test_patch inject failed: {e}"))?;
-
-        if !tp_inject.status.success() {
-            return Err(format!(
-                "test_patch inject failed: {}",
-                String::from_utf8_lossy(&tp_inject.stderr).trim()
-            ));
+        let remaining_tp_inject = timeout.saturating_sub(overall_start.elapsed());
+        if remaining_tp_inject.is_zero() {
+            return Ok(DockerTestVerdict {
+                resolved: false,
+                timed_out: true,
+                patch_apply_failed: false,
+                patch_error_log: None,
+                tests_passed: vec![],
+                tests_failed: vec![],
+            });
+        }
+        match run_with_stdin_and_timeout(
+            Command::new("docker")
+                .args(["exec", "-i", &container_id, "bash", "-c"])
+                .arg("cat > /tmp/test.patch"),
+            tp.as_bytes(),
+            remaining_tp_inject,
+        ) {
+            Err(TimedOut) => {
+                return Ok(DockerTestVerdict {
+                    resolved: false,
+                    timed_out: true,
+                    patch_apply_failed: false,
+                    patch_error_log: None,
+                    tests_passed: vec![],
+                    tests_failed: vec![],
+                });
+            }
+            Ok(o) if !o.status.success() => {
+                return Err(format!(
+                    "test_patch inject failed: {}",
+                    String::from_utf8_lossy(&o.stderr).trim()
+                ));
+            }
+            Ok(_) => {}
         }
         {
             let remaining_tp = timeout.saturating_sub(overall_start.elapsed());
@@ -1784,6 +1814,48 @@ fn evaluate_instance_with_docker_inner(
 }
 
 struct TimedOut;
+
+/// Run a `Command` with stdin data and a wall-clock timeout.
+/// Writes `stdin_data` from a background thread so the timeout loop is never
+/// blocked by a slow container filesystem or unresponsive Docker daemon.
+fn run_with_stdin_and_timeout(
+    cmd: &mut std::process::Command,
+    stdin_data: &[u8],
+    timeout: std::time::Duration,
+) -> Result<std::process::Output, TimedOut> {
+    use std::time::Instant;
+
+    let mut child = cmd
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|_| TimedOut)?;
+
+    if let Some(mut stdin) = child.stdin.take() {
+        let data = stdin_data.to_vec();
+        std::thread::spawn(move || {
+            use std::io::Write as _;
+            let _ = stdin.write_all(&data);
+        });
+    }
+
+    let deadline = Instant::now() + timeout;
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => return child.wait_with_output().map_err(|_| TimedOut),
+            Ok(None) => {
+                if Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(TimedOut);
+                }
+                std::thread::sleep(std::time::Duration::from_millis(200));
+            }
+            Err(_) => return Err(TimedOut),
+        }
+    }
+}
 
 /// Run a `Command` with a wall-clock timeout. Returns `Err(TimedOut)` on expiry.
 fn run_with_timeout(
