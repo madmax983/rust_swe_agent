@@ -113,7 +113,7 @@ fn read_single_keystroke(ctx: &ConfirmContext) -> Option<ConfirmDecision> {
                     if let Some(edited) = run_inline_editor(&mut err, &ctx.command) {
                         break ConfirmDecision::Edit(edited);
                     }
-                    let _ = err.write_all(render_banner(ctx).as_bytes());
+                    let _ = err.write_all(render_banner(ctx).replace('\n', "\r\n").as_bytes());
                     let _ = err.flush();
                     continue;
                 }
@@ -135,7 +135,7 @@ fn run_inline_editor(err: &mut std::io::Stderr, initial_cmd: &str) -> Option<Str
     let prompt = "[interactive] edit: ";
 
     // Initially print \n[interactive] edit: <command>
-    let _ = err.write_all(format!("\n{prompt}{initial_cmd}").as_bytes());
+    let _ = err.write_all(format!("\r\n{prompt}{initial_cmd}").as_bytes());
     let _ = err.flush();
 
     loop {
@@ -149,7 +149,7 @@ fn run_inline_editor(err: &mut std::io::Stderr, initial_cmd: &str) -> Option<Str
         let _ = crossterm::queue!(
             err,
             crossterm::cursor::MoveToColumn(
-                u16::try_from(prompt.len() + cursor_pos).unwrap_or(u16::MAX)
+                u16::try_from(prompt.chars().count() + cursor_pos).unwrap_or(u16::MAX)
             ),
         );
         let _ = err.flush();

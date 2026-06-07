@@ -664,11 +664,25 @@ fn draw_modal(
                 .fg(Color::LightYellow)
                 .add_modifier(Modifier::BOLD),
         )));
-        lines.push(Line::from(vec![
-            Span::styled(" > ", Style::default().fg(Color::Green)),
-            Span::styled(buffer.clone(), Style::default().fg(Color::White)),
-            Span::styled("█", Style::default().fg(Color::Green)),
-        ]));
+        let edit_lines: Vec<&str> = buffer
+            .split('\n')
+            .map(|line| line.strip_suffix('\r').unwrap_or(line))
+            .collect();
+        for (i, line) in edit_lines.iter().enumerate() {
+            let prefix = if i == 0 { " > " } else { "   " };
+            if i == edit_lines.len() - 1 {
+                lines.push(Line::from(vec![
+                    Span::styled(prefix, Style::default().fg(Color::Green)),
+                    Span::styled((*line).to_string(), Style::default().fg(Color::White)),
+                    Span::styled("█", Style::default().fg(Color::Green)),
+                ]));
+            } else {
+                lines.push(Line::from(vec![
+                    Span::styled(prefix, Style::default().fg(Color::Green)),
+                    Span::styled((*line).to_string(), Style::default().fg(Color::White)),
+                ]));
+            }
+        }
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(
             "[Enter] execute edit   [Esc] cancel",
@@ -1367,6 +1381,46 @@ mod tests {
         assert!(
             text.contains("step 2/5"),
             "modal should show step counter; got:\n{text}"
+        );
+    }
+
+    #[test]
+    fn draw_modal_renders_multiline_edit_buffer() {
+        let d = make_dashboard();
+        {
+            let (tx, _rx) = oneshot::channel();
+            let mut s = d
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            s.pending = Some(PendingPrompt {
+                ctx: ConfirmContext {
+                    tool_name: "bash".into(),
+                    command: "x".into(),
+                    step: 0,
+                    step_limit: 1,
+                    cost_usd: 0.0,
+                    cache_marker: "cache:auto-or-none",
+                },
+                responder: tx,
+            });
+            s.edit_input = Some("first line\nsecond line\nthird line".to_string());
+        }
+        let s = snap(&d);
+        let buf = render_to_buffer(&s, 100, 30);
+        let text = buffer_text(&buf);
+
+        assert!(
+            text.contains(" > first line"),
+            "modal should format first line with ' > '; got:\n{text}"
+        );
+        assert!(
+            text.contains("   second line"),
+            "modal should format second line with '   '; got:\n{text}"
+        );
+        assert!(
+            text.contains("   third line█"),
+            "modal should format third line with '   ' and append cursor; got:\n{text}"
         );
     }
 
