@@ -70,7 +70,7 @@ async fn reject_records_synthetic_observation_and_event() {
         "COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT\n```\nrecovered\n```".into(),
     ]));
     let env: Box<dyn Environment> = Box::new(LocalEnvironment::new());
-    let confirmer = Arc::new(ScriptedConfirmer::new(vec![ConfirmDecision::Reject]));
+    let confirmer = Arc::new(ScriptedConfirmer::new(vec![ConfirmDecision::Reject(None)]));
     let mut agent = DefaultAgentBuilder {
         config: cfg,
         model,
@@ -162,7 +162,7 @@ async fn scripted_approve_reject_approve_abort_sequence() {
     let env: Box<dyn Environment> = Box::new(LocalEnvironment::new());
     let confirmer = Arc::new(ScriptedConfirmer::new(vec![
         ConfirmDecision::Approve,
-        ConfirmDecision::Reject,
+        ConfirmDecision::Reject(None),
         ConfirmDecision::Approve,
         ConfirmDecision::Abort,
     ]));
@@ -299,4 +299,62 @@ async fn confirm_context_carries_command_and_step_metadata() {
     assert_eq!(ctx.step_limit, 7);
     assert_eq!(ctx.step, 0);
     assert!(ctx.cost_usd >= 0.0);
+}
+
+#[tokio::test]
+async fn reject_with_feedback_records_synthetic_observation_and_event() {
+    let mut cfg = Config::defaults().unwrap();
+    cfg.root.agent.step_limit = 5;
+    let model = Arc::new(DeterministicModel::new(vec![
+        "```bash\nrm -rf /tmp/should-never-run\n```".into(),
+        "COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT\n```\nrecovered\n```".into(),
+    ]));
+    let env: Box<dyn Environment> = Box::new(LocalEnvironment::new());
+    let confirmer = Arc::new(ScriptedConfirmer::new(vec![ConfirmDecision::Reject(Some(
+        "please use ls instead".into(),
+    ))]));
+    let mut agent = DefaultAgentBuilder {
+        config: cfg,
+        model,
+        env,
+        task: "reject-feedback-test".into(),
+        extra_context: None,
+        renderer: None,
+        stream: None,
+        resume_from: None,
+        read_only: false,
+    }
+    .build()
+    .unwrap();
+    agent.confirm_callback = Some(confirmer.clone() as Arc<dyn ConfirmCallback>);
+
+    let result = agent.run().await.unwrap();
+    assert!(matches!(result, ExitReason::Submitted { .. }));
+    assert_eq!(confirmer.call_count(), 1);
+
+    // Check that the observation contains the feedback
+    let user_msg = agent
+        .trajectory
+        .messages
+        .iter()
+        .find(|m| m.role == "user" && m.content.contains("Command rejected by operator"));
+    assert!(user_msg.is_some(), "expected rejection user message");
+    let content = &user_msg.unwrap().content;
+    assert!(
+        content.contains("please use ls instead"),
+        "expected feedback in user message, got: {content}"
+    );
+
+    // Check that trajectory's MessageExtra has "interactive_feedback"
+    let has_feedback = agent.trajectory.messages.iter().any(|m| {
+        m.extra
+            .other
+            .get("interactive_feedback")
+            .and_then(|v| v.as_str())
+            == Some("please use ls instead")
+    });
+    assert!(
+        has_feedback,
+        "expected interactive_feedback in MessageExtra"
+    );
 }
