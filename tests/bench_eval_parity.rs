@@ -105,6 +105,8 @@ fn all_agree_produces_full_agreement_rate() {
         sample: None,
         instances: None,
         recheck: 0,
+        dataset_path: None,
+        sb_subset: None,
     };
     let stub = EvalParityStubConfig {
         verdicts,
@@ -162,6 +164,8 @@ fn partial_agreement_rate_correct() {
         sample: None,
         instances: None,
         recheck: 0,
+        dataset_path: None,
+        sb_subset: None,
     };
     let stub = EvalParityStubConfig {
         verdicts,
@@ -181,7 +185,10 @@ fn partial_agreement_rate_correct() {
     assert_eq!(report.disagreements.len(), 1);
     assert_eq!(report.disagreements[0].instance_id, "inst-c");
     assert_eq!(report.disagreements[0].offline_verdict, Verdict::Resolved);
-    assert_eq!(report.disagreements[0].canonical_verdict, Verdict::Unresolved);
+    assert_eq!(
+        report.disagreements[0].canonical_verdict,
+        Verdict::Unresolved
+    );
 }
 
 // ── AC6: disagreements are sorted deterministically by instance_id ─────────────
@@ -223,6 +230,8 @@ fn disagreements_sorted_by_instance_id() {
         sample: None,
         instances: None,
         recheck: 0,
+        dataset_path: None,
+        sb_subset: None,
     };
     let stub = EvalParityStubConfig {
         verdicts,
@@ -261,6 +270,8 @@ fn agreement_rate_above_threshold_is_sufficient() {
         sample: None,
         instances: None,
         recheck: 0,
+        dataset_path: None,
+        sb_subset: None,
     };
     let stub = EvalParityStubConfig {
         verdicts,
@@ -302,6 +313,8 @@ fn agreement_rate_below_threshold_is_detectable() {
         sample: None,
         instances: None,
         recheck: 0,
+        dataset_path: None,
+        sb_subset: None,
     };
     let stub = EvalParityStubConfig {
         verdicts,
@@ -347,6 +360,8 @@ fn sample_bounds_instances_evaluated() {
         sample: Some(2),
         instances: None,
         recheck: 0,
+        dataset_path: None,
+        sb_subset: None,
     };
     let stub = EvalParityStubConfig {
         verdicts,
@@ -394,6 +409,8 @@ fn no_sample_means_no_sample_size_recorded() {
         sample: None,
         instances: None,
         recheck: 0,
+        dataset_path: None,
+        sb_subset: None,
     };
     let stub = EvalParityStubConfig {
         verdicts,
@@ -431,6 +448,8 @@ fn report_records_backend_identifiers() {
         sample: None,
         instances: None,
         recheck: 0,
+        dataset_path: None,
+        sb_subset: None,
     };
     let stub = EvalParityStubConfig {
         verdicts,
@@ -440,8 +459,14 @@ fn report_records_backend_identifiers() {
     };
     let report = run_with_stub(&args, &stub).unwrap();
 
-    assert!(!report.offline_backend.is_empty(), "offline_backend must be set");
-    assert!(!report.canonical_backend.is_empty(), "canonical_backend must be set");
+    assert!(
+        !report.offline_backend.is_empty(),
+        "offline_backend must be set"
+    );
+    assert!(
+        !report.canonical_backend.is_empty(),
+        "canonical_backend must be set"
+    );
     assert_eq!(
         report.offline_backend_version.as_deref(),
         Some("0.5.0"),
@@ -479,6 +504,8 @@ fn report_records_dataset_sha256() {
         sample: None,
         instances: None,
         recheck: 0,
+        dataset_path: None,
+        sb_subset: None,
     };
     let stub = EvalParityStubConfig {
         verdicts,
@@ -519,6 +546,8 @@ fn report_contains_flakiness_note() {
         sample: None,
         instances: None,
         recheck: 0,
+        dataset_path: None,
+        sb_subset: None,
     };
     let stub = EvalParityStubConfig {
         verdicts,
@@ -537,7 +566,10 @@ fn report_contains_flakiness_note() {
     );
     assert!(
         report.flakiness_note.to_lowercase().contains("eval-flake")
-            || report.flakiness_note.to_lowercase().contains("bench eval-flake"),
+            || report
+                .flakiness_note
+                .to_lowercase()
+                .contains("bench eval-flake"),
         "flakiness_note should reference eval-flake; got: {}",
         report.flakiness_note
     );
@@ -568,6 +600,8 @@ fn artifact_written_to_sweep_dir() {
         sample: None,
         instances: None,
         recheck: 0,
+        dataset_path: None,
+        sb_subset: None,
     };
     let stub = EvalParityStubConfig {
         verdicts,
@@ -612,6 +646,8 @@ fn total_cost_usd_is_zero() {
         sample: None,
         instances: None,
         recheck: 0,
+        dataset_path: None,
+        sb_subset: None,
     };
     let stub = EvalParityStubConfig {
         verdicts,
@@ -651,6 +687,8 @@ fn instances_without_patch_skipped() {
         sample: None,
         instances: None,
         recheck: 0,
+        dataset_path: None,
+        sb_subset: None,
     };
     let stub = EvalParityStubConfig {
         verdicts,
@@ -695,6 +733,8 @@ fn json_report_contains_required_fields() {
         sample: None,
         instances: None,
         recheck: 0,
+        dataset_path: None,
+        sb_subset: None,
     };
     let stub = EvalParityStubConfig {
         verdicts,
@@ -706,20 +746,43 @@ fn json_report_contains_required_fields() {
     let val: serde_json::Value = serde_json::from_str(&content).unwrap();
 
     // Required top-level fields per AC2
-    assert!(val.get("instances_compared").is_some() || val["summary"]["instances_compared"].is_number(),
-        "must have instances_compared");
-    assert!(val["summary"]["agreed"].is_number(), "must have agreed count");
-    assert!(val["summary"]["disagreed"].is_number(), "must have disagreed count");
-    assert!(val["summary"]["agreement_rate"].is_number(), "must have agreement_rate");
-    assert!(val["disagreements"].is_array(), "must have disagreements array");
+    assert!(
+        val.get("instances_compared").is_some() || val["summary"]["instances_compared"].is_number(),
+        "must have instances_compared"
+    );
+    assert!(
+        val["summary"]["agreed"].is_number(),
+        "must have agreed count"
+    );
+    assert!(
+        val["summary"]["disagreed"].is_number(),
+        "must have disagreed count"
+    );
+    assert!(
+        val["summary"]["agreement_rate"].is_number(),
+        "must have agreement_rate"
+    );
+    assert!(
+        val["disagreements"].is_array(),
+        "must have disagreements array"
+    );
 
     // Per-disagreement entry shape
     let disagreements = val["disagreements"].as_array().unwrap();
     assert_eq!(disagreements.len(), 1);
     let d = &disagreements[0];
-    assert!(d["instance_id"].is_string(), "disagreement must have instance_id");
-    assert!(d["offline_verdict"].is_string(), "disagreement must have offline_verdict");
-    assert!(d["canonical_verdict"].is_string(), "disagreement must have canonical_verdict");
+    assert!(
+        d["instance_id"].is_string(),
+        "disagreement must have instance_id"
+    );
+    assert!(
+        d["offline_verdict"].is_string(),
+        "disagreement must have offline_verdict"
+    );
+    assert!(
+        d["canonical_verdict"].is_string(),
+        "disagreement must have canonical_verdict"
+    );
 }
 
 // ── AC3: render_summary produces human-readable output ───────────────────────
@@ -752,6 +815,8 @@ fn render_summary_contains_key_metrics() {
         sample: None,
         instances: None,
         recheck: 0,
+        dataset_path: None,
+        sb_subset: None,
     };
     let stub = EvalParityStubConfig {
         verdicts,

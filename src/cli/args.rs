@@ -1434,6 +1434,14 @@ pub struct EvalParityCmd {
     /// flakiness from true systematic disagreement. Default: 0 (single-shot).
     #[arg(long, default_value_t = 0, value_name = "N")]
     pub recheck: usize,
+
+    /// Path to dataset JSONL passed to the offline (docker-tests) evaluator.
+    #[arg(long, value_name = "PATH")]
+    pub dataset_path: Option<PathBuf>,
+
+    /// SWE-bench subset selector passed to `sb-cli` (e.g. `swe-bench-m`).
+    #[arg(long, value_name = "SUBSET")]
+    pub sb_subset: Option<String>,
 }
 
 /// `bench dataset-stats` — preview SWE-bench dataset composition pre-sweep.

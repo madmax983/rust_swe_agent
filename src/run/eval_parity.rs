@@ -11,6 +11,7 @@
 //! Zero new model calls. `total_cost_usd` is always `0.0`.
 
 use std::collections::HashMap;
+use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -99,6 +100,10 @@ pub struct EvalParityArgs {
     /// Re-check disagreeing instances this many additional times to distinguish
     /// flakiness from true systematic disagreement.
     pub recheck: usize,
+    /// Path to the dataset JSONL passed to the offline (docker-tests) evaluator.
+    pub dataset_path: Option<PathBuf>,
+    /// SWE-bench subset selector passed to `sb-cli` (e.g. `"swe-bench-m"`).
+    pub sb_subset: Option<String>,
 }
 
 // ── Test stub types ────────────────────────────────────────────────────────────
@@ -177,8 +182,7 @@ fn apply_filters(
     instances_filter: Option<&str>,
 ) -> (Vec<String>, Option<usize>, Option<String>) {
     if let Some(filter) = instances_filter {
-        let selected: std::collections::HashSet<&str> =
-            filter.split(',').map(str::trim).collect();
+        let selected: std::collections::HashSet<&str> = filter.split(',').map(str::trim).collect();
         instance_ids.retain(|id| selected.contains(id.as_str()));
     }
 
@@ -235,17 +239,21 @@ fn collect_disagreements(
     (agreed, disagreements)
 }
 
+struct BackendInfo {
+    offline: &'static str,
+    offline_version: Option<String>,
+    canonical: &'static str,
+    canonical_version: Option<String>,
+    dataset_sha256: Option<String>,
+}
+
 fn build_report(
     instance_ids: &[String],
     agreed: usize,
     disagreements: Vec<ParityDisagreement>,
     sample_size: Option<usize>,
     sample_method: Option<String>,
-    dataset_sha256: Option<String>,
-    offline_backend: &str,
-    offline_backend_version: Option<String>,
-    canonical_backend: &str,
-    canonical_backend_version: Option<String>,
+    backend: BackendInfo,
 ) -> EvalParityReport {
     let total = instance_ids.len();
     let disagreed = disagreements.len();
@@ -263,11 +271,11 @@ fn build_report(
             sample_size,
             sample_method,
         },
-        dataset_sha256,
-        offline_backend: offline_backend.to_owned(),
-        offline_backend_version,
-        canonical_backend: canonical_backend.to_owned(),
-        canonical_backend_version,
+        dataset_sha256: backend.dataset_sha256,
+        offline_backend: backend.offline.to_owned(),
+        offline_backend_version: backend.offline_version,
+        canonical_backend: backend.canonical.to_owned(),
+        canonical_backend_version: backend.canonical_version,
         flakiness_note: FLAKINESS_NOTE.to_owned(),
         total_cost_usd: 0.0,
     }
@@ -314,11 +322,13 @@ pub fn run_with_stub(
         disagreements,
         sample_size,
         sample_method,
-        stub.dataset_sha256.clone(),
-        "docker-tests",
-        stub.offline_backend_version.clone(),
-        "sb-cli",
-        stub.canonical_backend_version.clone(),
+        BackendInfo {
+            offline: "docker-tests",
+            offline_version: stub.offline_backend_version.clone(),
+            canonical: "sb-cli",
+            canonical_version: stub.canonical_backend_version.clone(),
+            dataset_sha256: stub.dataset_sha256.clone(),
+        },
     );
 
     let output_path = effective_output_path(args);
@@ -326,12 +336,36 @@ pub fn run_with_stub(
     Ok(report)
 }
 
+fn results_to_verdict_map(
+    result: &crate::run::evaluate::EvaluationResults,
+) -> HashMap<String, Verdict> {
+    result
+        .instances
+        .iter()
+        .map(|i| {
+            (
+                i.instance_id.clone(),
+                eval_exit_reason_to_verdict(&i.eval_exit_reason),
+            )
+        })
+        .collect()
+}
+
+fn eval_exit_reason_to_verdict(reason: &crate::run::evaluate::EvalExitReason) -> Verdict {
+    use crate::run::evaluate::EvalExitReason;
+    match reason {
+        EvalExitReason::Resolved => Verdict::Resolved,
+        EvalExitReason::Unresolved => Verdict::Unresolved,
+        _ => Verdict::Errored,
+    }
+}
+
 // ── Real evaluator run ─────────────────────────────────────────────────────────
 
 /// Run eval-parity against a real sweep by invoking both evaluator backends.
 pub fn run(args: &EvalParityArgs) -> Result<EvalParityReport, Error> {
     use crate::run::compare::load_sweep;
-    use crate::run::evaluate::{BreakdownSelection, EvalExitReason, EvaluateArgs, EvaluateBackend};
+    use crate::run::evaluate::{BreakdownSelection, EvaluateArgs, EvaluateBackend};
 
     let loaded = load_sweep(&args.sweep_dir).map_err(|e| {
         Error::Trajectory(format!(
@@ -351,24 +385,27 @@ pub fn run(args: &EvalParityArgs) -> Result<EvalParityReport, Error> {
         .collect();
     instance_ids.sort();
 
+    let (instance_ids, sample_size, sample_method) =
+        apply_filters(instance_ids, args.sample, args.instances.as_deref());
+
     if instance_ids.is_empty() {
         tracing::warn!(
             sweep_dir = %args.sweep_dir.display(),
-            "eval-parity: no patch files found; nothing to evaluate"
+            "eval-parity: no instances to compare after applying filters; \
+             check --instances / --sample arguments"
         );
     }
 
-    let (instance_ids, sample_size, sample_method) =
-        apply_filters(instance_ids, args.sample, args.instances.as_deref());
+    let sb_subset = args.sb_subset.clone().unwrap_or_default();
 
     // Run offline backend.
     let offline_result = crate::run::evaluate::run(&EvaluateArgs {
         sweep_dir: args.sweep_dir.clone(),
-        dataset_path: None,
+        dataset_path: args.dataset_path.clone(),
         backend: EvaluateBackend::DockerTests,
         timeout_per_instance_secs: 1800,
         parallel: args.concurrency,
-        sb_subset: String::new(),
+        sb_subset: sb_subset.clone(),
         sb_split: "test".to_owned(),
         run_id: Some("eval-parity-offline".to_owned()),
         breakdown: BreakdownSelection::none(),
@@ -378,33 +415,19 @@ pub fn run(args: &EvalParityArgs) -> Result<EvalParityReport, Error> {
     // Run canonical backend.
     let canonical_result = crate::run::evaluate::run(&EvaluateArgs {
         sweep_dir: args.sweep_dir.clone(),
-        dataset_path: None,
+        dataset_path: args.dataset_path.clone(),
         backend: EvaluateBackend::SbCli,
         timeout_per_instance_secs: 1800,
         parallel: args.concurrency,
-        sb_subset: String::new(),
+        sb_subset,
         sb_split: "test".to_owned(),
         run_id: Some("eval-parity-canonical".to_owned()),
         breakdown: BreakdownSelection::none(),
         cost_attribution: false,
     })?;
 
-    let to_verdict = |reason: EvalExitReason| match reason {
-        EvalExitReason::Resolved => Verdict::Resolved,
-        EvalExitReason::Unresolved => Verdict::Unresolved,
-        _ => Verdict::Errored,
-    };
-
-    let offline_map: HashMap<String, Verdict> = offline_result
-        .instances
-        .iter()
-        .map(|i| (i.instance_id.clone(), to_verdict(i.eval_exit_reason.clone())))
-        .collect();
-    let canonical_map: HashMap<String, Verdict> = canonical_result
-        .instances
-        .iter()
-        .map(|i| (i.instance_id.clone(), to_verdict(i.eval_exit_reason.clone())))
-        .collect();
+    let offline_map = results_to_verdict_map(&offline_result);
+    let canonical_map = results_to_verdict_map(&canonical_result);
 
     let (agreed, disagreements) =
         collect_disagreements(&instance_ids, &offline_map, &canonical_map);
@@ -428,11 +451,13 @@ pub fn run(args: &EvalParityArgs) -> Result<EvalParityReport, Error> {
         disagreements,
         sample_size,
         sample_method,
-        dataset_sha256,
-        "docker-tests",
-        offline_backend_version,
-        "sb-cli",
-        canonical_backend_version,
+        BackendInfo {
+            offline: "docker-tests",
+            offline_version: offline_backend_version,
+            canonical: "sb-cli",
+            canonical_version: canonical_backend_version,
+            dataset_sha256,
+        },
     );
 
     let output_path = effective_output_path(args);
@@ -454,28 +479,34 @@ pub fn run(args: &EvalParityArgs) -> Result<EvalParityReport, Error> {
 pub fn render_summary(report: &EvalParityReport) -> String {
     let s = &report.summary;
     let mut out = String::from("eval-parity summary\n");
-    out.push_str(&format!("  instances compared : {}\n", s.instances_compared));
-    out.push_str(&format!("  agreed             : {}\n", s.agreed));
-    out.push_str(&format!("  disagreed          : {}\n", s.disagreed));
-    out.push_str(&format!(
-        "  agreement rate     : {:.4} ({:.2}%)\n",
+    writeln!(out, "  instances compared : {}", s.instances_compared).ok();
+    writeln!(out, "  agreed             : {}", s.agreed).ok();
+    writeln!(out, "  disagreed          : {}", s.disagreed).ok();
+    writeln!(
+        out,
+        "  agreement rate     : {:.4} ({:.2}%)",
         s.agreement_rate,
         s.agreement_rate * 100.0
-    ));
+    )
+    .ok();
     if let Some(size) = s.sample_size {
-        out.push_str(&format!(
-            "  sample size        : {} ({})\n",
+        writeln!(
+            out,
+            "  sample size        : {} ({})",
             size,
             s.sample_method.as_deref().unwrap_or("unknown")
-        ));
+        )
+        .ok();
     }
     if !report.disagreements.is_empty() {
         out.push_str("\ndisagreements (offline | canonical):\n");
         for d in &report.disagreements {
-            out.push_str(&format!(
-                "  {} : {:?} | {:?}\n",
+            writeln!(
+                out,
+                "  {} : {:?} | {:?}",
                 d.instance_id, d.offline_verdict, d.canonical_verdict
-            ));
+            )
+            .ok();
         }
     }
     out

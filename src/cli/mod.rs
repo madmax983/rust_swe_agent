@@ -5954,6 +5954,13 @@ fn bench_eval_flake(f: args::EvalFlakeCmd) -> Result<(), Error> {
 }
 
 fn bench_eval_parity(p: args::EvalParityCmd) -> Result<(), Error> {
+    if let Some(min) = p.min_agreement {
+        if min.is_nan() || !(0.0..=1.0).contains(&min) {
+            return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+                "--min-agreement must be in [0.0, 1.0], got {min}"
+            ))));
+        }
+    }
     let args = crate::run::eval_parity::EvalParityArgs {
         sweep_dir: p.sweep,
         output: p.output,
@@ -5962,13 +5969,12 @@ fn bench_eval_parity(p: args::EvalParityCmd) -> Result<(), Error> {
         sample: p.sample,
         instances: p.instances,
         recheck: p.recheck,
+        dataset_path: p.dataset_path,
+        sb_subset: p.sb_subset,
     };
     let report = crate::run::eval_parity::run(&args)?;
     let summary = &report.summary;
-    eprint!(
-        "{}",
-        crate::run::eval_parity::render_summary(&report)
-    );
+    eprint!("{}", crate::run::eval_parity::render_summary(&report));
     eprintln!("eval-parity: total_cost_usd=0.00 (evaluator wallclock only)");
     println!(
         "{}",
