@@ -777,6 +777,218 @@ fn import_rejects_existing_output_directory() {
     );
 }
 
+// ── --evaluate tests (issue #507) ────────────────────────────────────────────
+
+/// AC: `bench import --evaluate` no longer returns `not_yet_implemented`.
+/// With `--backend none` the command must exit 0.
+#[test]
+fn import_evaluate_none_backend_exits_zero() {
+    let tmp = tempfile::tempdir().unwrap();
+    let out = tmp.path().join("imported");
+
+    let output = Command::new(binary_path())
+        .args([
+            "bench",
+            "import",
+            "--predictions",
+            predictions_path(),
+            "--dataset-path",
+            dataset_path(),
+            "--output",
+            out.to_str().unwrap(),
+            "--evaluate",
+            "--backend",
+            "none",
+        ])
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "bench import --evaluate --backend none should exit 0; stderr: {stderr}"
+    );
+}
+
+/// AC: `bench import --evaluate --backend none` writes `evaluation.json` to the
+/// output sweep directory.
+#[test]
+fn import_evaluate_none_backend_writes_evaluation_json() {
+    let tmp = tempfile::tempdir().unwrap();
+    let out = tmp.path().join("imported");
+
+    let status = Command::new(binary_path())
+        .args([
+            "bench",
+            "import",
+            "--predictions",
+            predictions_path(),
+            "--dataset-path",
+            dataset_path(),
+            "--output",
+            out.to_str().unwrap(),
+            "--evaluate",
+            "--backend",
+            "none",
+        ])
+        .status()
+        .unwrap();
+    assert!(status.success(), "bench import --evaluate should succeed");
+
+    let eval_path = out.join("evaluation.json");
+    assert!(
+        eval_path.exists(),
+        "evaluation.json must exist in sweep dir after --evaluate"
+    );
+
+    let eval_bytes = std::fs::read(&eval_path).unwrap();
+    let eval_json: serde_json::Value = serde_json::from_slice(&eval_bytes).unwrap();
+    assert_eq!(
+        eval_json.get("artifact_kind").and_then(|v| v.as_str()),
+        Some("evaluation_results"),
+        "evaluation.json must carry correct artifact_kind"
+    );
+    assert!(
+        eval_json.get("instances").is_some(),
+        "evaluation.json must contain instances array"
+    );
+}
+
+/// AC: `results.json` must still be written even when `--evaluate` is requested
+/// (sweep dir is preserved regardless of whether evaluate succeeds).
+#[test]
+fn import_evaluate_none_backend_preserves_results_json() {
+    let tmp = tempfile::tempdir().unwrap();
+    let out = tmp.path().join("imported");
+
+    let status = Command::new(binary_path())
+        .args([
+            "bench",
+            "import",
+            "--predictions",
+            predictions_path(),
+            "--dataset-path",
+            dataset_path(),
+            "--output",
+            out.to_str().unwrap(),
+            "--evaluate",
+            "--backend",
+            "none",
+        ])
+        .status()
+        .unwrap();
+    assert!(status.success());
+
+    assert!(
+        out.join("results.json").exists(),
+        "results.json must still be written when --evaluate is set"
+    );
+}
+
+/// AC: `bench import --evaluate` help text must NOT mention "not yet implemented".
+#[test]
+fn import_evaluate_help_no_longer_says_not_implemented() {
+    let output = Command::new(binary_path())
+        .args(["bench", "import", "--help"])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        !stdout.to_lowercase().contains("not yet implemented"),
+        "--help should not say 'not yet implemented'; got:\n{stdout}"
+    );
+}
+
+/// AC: `bench import --evaluate` with `--backend none` forwards evaluator knobs.
+/// The `evaluation.json` provenance must record `backend = "none"`.
+#[test]
+fn import_evaluate_none_backend_provenance_is_none() {
+    let tmp = tempfile::tempdir().unwrap();
+    let out = tmp.path().join("imported");
+
+    Command::new(binary_path())
+        .args([
+            "bench",
+            "import",
+            "--predictions",
+            predictions_path(),
+            "--dataset-path",
+            dataset_path(),
+            "--output",
+            out.to_str().unwrap(),
+            "--evaluate",
+            "--backend",
+            "none",
+        ])
+        .status()
+        .unwrap();
+
+    let eval_bytes = std::fs::read(out.join("evaluation.json")).unwrap();
+    let eval_json: serde_json::Value = serde_json::from_slice(&eval_bytes).unwrap();
+    let provenance_backend = eval_json
+        .get("provenance")
+        .and_then(|p| p.get("backend"))
+        .and_then(|b| b.as_str());
+    assert_eq!(
+        provenance_backend,
+        Some("none"),
+        "provenance.backend must be 'none'; got: {provenance_backend:?}"
+    );
+}
+
+/// AC: `--help` must expose the new evaluator-forwarding flags alongside `--evaluate`.
+#[test]
+fn import_help_exposes_evaluator_forwarding_flags() {
+    let output = Command::new(binary_path())
+        .args(["bench", "import", "--help"])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("--backend"), "should expose --backend");
+    assert!(stdout.contains("--sb-subset"), "should expose --sb-subset");
+    assert!(stdout.contains("--sb-split"), "should expose --sb-split");
+    assert!(
+        stdout.contains("--timeout-per-instance"),
+        "should expose --timeout-per-instance"
+    );
+    assert!(stdout.contains("--parallel"), "should expose --parallel");
+    assert!(stdout.contains("--run-id"), "should expose --run-id");
+}
+
+/// AC: `--backend rehearsal` must be rejected — rehearsal needs trajectory files
+/// that imported sweeps never have.
+#[test]
+fn import_evaluate_rehearsal_backend_rejected() {
+    let tmp = tempfile::tempdir().unwrap();
+    let out = tmp.path().join("imported");
+
+    let output = Command::new(binary_path())
+        .args([
+            "bench",
+            "import",
+            "--predictions",
+            predictions_path(),
+            "--dataset-path",
+            dataset_path(),
+            "--output",
+            out.to_str().unwrap(),
+            "--evaluate",
+            "--backend",
+            "rehearsal",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        !output.status.success(),
+        "bench import --evaluate --backend rehearsal should exit non-zero"
+    );
+    // The sweep directory must NOT have been created — backend validated before I/O.
+    assert!(
+        !out.join("results.json").exists(),
+        "results.json must not be written when backend validation fails before import"
+    );
+}
+
 /// AC: passing a malformed dataset file (rows without instance_id) must fail clearly.
 #[test]
 fn import_rejects_dataset_missing_instance_id() {

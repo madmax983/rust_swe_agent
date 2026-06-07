@@ -4575,6 +4575,12 @@ fn bench_import(i: args::ImportCmd) -> Result<(), Error> {
         dataset_path: i.dataset_path,
         output: i.output,
         evaluate: i.evaluate,
+        backend: i.backend,
+        sb_subset: i.sb_subset,
+        sb_split: i.sb_split,
+        timeout_per_instance_secs: i.timeout_per_instance,
+        parallel: i.parallel,
+        run_id: i.run_id,
         format,
     };
     let summary = crate::run::import::run(&args)?;
@@ -4587,6 +4593,44 @@ fn bench_import(i: args::ImportCmd) -> Result<(), Error> {
         }
         crate::run::import::ImportFormat::Text => {
             print!("{}", crate::run::import::format_summary_text(&summary));
+            if let Some(eval) = &summary.evaluation {
+                let sweep_dir = std::path::PathBuf::from(&summary.output_path);
+                let loaded_sweep = crate::run::compare::load_sweep(&sweep_dir)?;
+                let eval_summary = crate::run::evaluate::summarize_with_model(
+                    eval,
+                    &loaded_sweep.instances,
+                    loaded_sweep
+                        .manifest
+                        .as_ref()
+                        .map(|m| m.model.name.as_str()),
+                );
+                println!("\n=== evaluation ===");
+                print!(
+                    "{}",
+                    crate::run::evaluate::render_summary_table(&eval_summary)
+                );
+                if let Some(latency) = &eval.latency_summary {
+                    print!("{}", crate::run::evaluate::render_latency_summary(latency));
+                }
+                let elision_text = crate::run::evaluate::render_elision_stats(&eval.behavioral);
+                if !elision_text.is_empty() {
+                    print!("{elision_text}");
+                }
+                if let Some(prov) = &eval.provenance {
+                    println!(
+                        "evaluator_provenance: backend={} subset={} split={}",
+                        prov.backend,
+                        prov.dataset_subset.as_deref().unwrap_or(""),
+                        prov.dataset_split.as_deref().unwrap_or(""),
+                    );
+                }
+                if !eval.breakdown.is_empty() {
+                    print!(
+                        "{}",
+                        crate::run::evaluate::render_breakdown_table(&eval.breakdown)
+                    );
+                }
+            }
         }
     }
     Ok(())

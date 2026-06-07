@@ -8,10 +8,28 @@ with all downstream `bench` tooling (`bench compare`, `bench triage`,
 ## Synopsis
 
 ```bash
+# Import only — resolved flags left at false until a separate `bench evaluate` pass
 max bench import \
   --predictions experiments/mini-swe-agent-v1.0.jsonl \
   --dataset-path data/swe-bench-verified.jsonl \
   --output runs/imported/mini-swe-agent-v1.0
+
+# Fused import + evaluate in one command (--backend none for zero-cost smoke mode)
+max bench import \
+  --predictions experiments/mini-swe-agent-v1.0.jsonl \
+  --dataset-path data/swe-bench-verified.jsonl \
+  --output runs/imported/mini-swe-agent-v1.0 \
+  --evaluate \
+  --backend none
+
+# Fused import + evaluate against sb-cli
+max bench import \
+  --predictions mini.jsonl \
+  --dataset-path swe-bench.jsonl \
+  --output runs/mini \
+  --evaluate \
+  --sb-subset swe-bench_verified \
+  --sb-split test
 
 # Print import summary as JSON (useful for CI or scripting)
 max bench import \
@@ -28,7 +46,13 @@ max bench import \
 | `--predictions <PATH>` | yes | Path to the SWE-bench predictions file (JSONL or JSON array). |
 | `--dataset-path <PATH>` | yes | Path to the matching SWE-bench dataset JSONL. Used to validate instance IDs and populate dataset metadata. |
 | `--output <DIR>` | yes | Output directory for the normalised sweep. Created if it does not exist. |
-| `--evaluate` | no | Reserved: run the evaluator pipeline after import. **Not yet implemented**; use `bench evaluate` separately. |
+| `--evaluate` | no | Run the evaluator pipeline after import to populate `pass_at_1` / `resolved_count`. The sweep directory is written first; if the evaluate stage fails it is left intact for a manual `bench evaluate` re-run. |
+| `--backend sb-cli\|none\|rehearsal\|docker-tests` | no | Evaluator backend used when `--evaluate` is set. Default: `sb-cli`. Matches `bench evaluate --backend`. |
+| `--sb-subset <NAME>` | no | SWE-bench subset for sb-cli when `--evaluate` is set. Default: `swe-bench-m`. Matches `bench evaluate --sb-subset`. |
+| `--sb-split <NAME>` | no | SWE-bench split when `--evaluate` is set. Default: `dev`. Matches `bench evaluate --sb-split`. |
+| `--timeout-per-instance <SECS>` | no | Per-instance evaluation timeout in seconds when `--evaluate` is set. Default: `600`. |
+| `--parallel <N>` | no | Parallel worker count for the evaluation backend when `--evaluate` is set. Default: `4`. |
+| `--run-id <ID>` | no | Optional sb-cli run id when `--evaluate` is set. |
 | `--format text\|json` | no | Output format for the stdout summary. Default: `text`. |
 
 ## Input Format
@@ -125,16 +149,42 @@ path or hash programmatically.
 
 ## Populating Resolution Results
 
-`bench import` sets `pass_at_1 = false` for all instances by default (the
-zero-cost guarantee). To evaluate the imported sweep with the standard
-evaluator backend run:
+`bench import` without `--evaluate` sets `pass_at_1 = false` for all instances
+(the zero-cost guarantee). There are two ways to get a fully evaluated sweep:
+
+**Option A — Fused one-shot (recommended):** Use `--evaluate` to run the
+evaluator immediately after import:
 
 ```bash
-max bench evaluate \
-  --sweep runs/imported/mini-swe-agent-v1.0 \
+max bench import \
+  --predictions mini.jsonl \
+  --dataset-path swe-bench.jsonl \
+  --output runs/mini \
+  --evaluate \
   --sb-subset swe-bench_verified \
   --sb-split test
 ```
+
+This produces `results.json` *and* `evaluation.json` in a single invocation.
+
+**Option B — Two-step:** Import first, then evaluate separately:
+
+```bash
+max bench import \
+  --predictions mini.jsonl \
+  --dataset-path swe-bench.jsonl \
+  --output runs/mini
+
+max bench evaluate \
+  --sweep runs/mini \
+  --sb-subset swe-bench_verified \
+  --sb-split test
+```
+
+When `--evaluate` is used, the sweep directory is written before the evaluator
+runs. If the evaluate stage fails (e.g. sb-cli/network error), `results.json`
+is already on disk and the operator can re-run `bench evaluate` without
+re-importing.
 
 ## Round-Trip Comparison
 
@@ -163,6 +213,7 @@ auditing:
 
 | Code | Meaning |
 |------|---------|
-| `0` | Import succeeded; `results.json` written. |
-| `1` (config/usage) | `--predictions`, `--dataset-path`, or `--output` are missing or invalid; `--evaluate` was specified (not yet implemented). |
+| `0` | Import succeeded; `results.json` written. When `--evaluate` is set, `evaluation.json` is also written. |
+| `1` (config/usage) | `--predictions`, `--dataset-path`, or `--output` are missing or invalid; `--backend` value is unrecognised. |
 | `1` (I/O) | Predictions file could not be read or `results.json` could not be written. |
+| `1` (evaluate) | Import succeeded (sweep dir on disk) but the evaluate stage failed (e.g. sb-cli/network error). Re-run `bench evaluate --sweep <OUTPUT>` to retry evaluation without re-importing. |
