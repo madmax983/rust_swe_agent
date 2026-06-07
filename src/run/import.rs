@@ -101,6 +101,9 @@ pub struct ImportSummary {
     pub output_path: String,
     /// `sha256:<lowercase-hex>` content digest of the source predictions file.
     pub source_hash: String,
+    /// Evaluation results when `--evaluate` was passed; `None` otherwise.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub evaluation: Option<crate::run::evaluate::EvaluationResults>,
 }
 
 /// One skip reason entry.
@@ -528,7 +531,7 @@ pub fn run(args: &ImportArgs) -> Result<ImportSummary, Error> {
     // 11. Optionally run the evaluator pipeline against the freshly imported sweep.
     //     The sweep directory has already been written; a failure here leaves it intact
     //     so the operator can re-run `bench evaluate` without re-importing.
-    if args.evaluate {
+    let evaluation = if args.evaluate {
         let backend = parse_evaluate_backend(&args.backend)?;
         let eval_args = crate::run::evaluate::EvaluateArgs {
             sweep_dir: canonical_output.clone(),
@@ -542,8 +545,10 @@ pub fn run(args: &ImportArgs) -> Result<ImportSummary, Error> {
             breakdown: crate::run::evaluate::BreakdownSelection::default_axes(),
             cost_attribution: true,
         };
-        crate::run::evaluate::run(&eval_args)?;
-    }
+        Some(crate::run::evaluate::run(&eval_args)?)
+    } else {
+        None
+    };
 
     let summary = ImportSummary {
         records_imported: total,
@@ -551,6 +556,7 @@ pub fn run(args: &ImportArgs) -> Result<ImportSummary, Error> {
         skip_reasons,
         output_path: canonical_output.display().to_string(),
         source_hash: predictions_sha256,
+        evaluation,
     };
 
     Ok(summary)

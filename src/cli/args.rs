@@ -1919,7 +1919,7 @@ pub struct ImportCmd {
 
     /// Evaluation backend used when `--evaluate` is set: `sb-cli` (default), `none`,
     /// `rehearsal`, or `docker-tests`. Matches `bench evaluate --backend`.
-    #[arg(long, default_value = "sb-cli")]
+    #[arg(long, default_value = "sb-cli", value_parser = ["sb-cli", "none", "rehearsal", "docker-tests"])]
     pub backend: String,
 
     /// SWE-bench subset for sb-cli when `--evaluate` is set (e.g. `swe-bench-m`).
