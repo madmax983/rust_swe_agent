@@ -1198,6 +1198,8 @@ pub enum BenchCmd {
     Behavior(BehaviorCmd),
     /// Measure MCP tool usage and correlate with outcome across a sweep.
     ToolCoverage(ToolCoverageCmd),
+    /// Measure agent skill activation and correlate with outcome across a sweep.
+    SkillCoverage(SkillCoverageCmd),
     /// Measure sweep policy impact on outcomes.
     PolicyImpact(PolicyImpactCmd),
     /// Systematic per-tool removal ablation: baseline plus one arm per removed tool.
@@ -3208,6 +3210,32 @@ pub struct ToolCoverageCmd {
     pub min_invocations: usize,
 
     /// Emit per-instance tool call counts in the JSON output and artifact.
+    #[arg(long, default_value_t = false)]
+    pub per_instance: bool,
+
+    /// Output format: `text` (default) or `json`.
+    #[arg(long, default_value = "text")]
+    pub format: String,
+}
+
+/// `bench skill-coverage` — measure agent skill activation by outcome bucket.
+#[derive(Debug, Args, Clone)]
+pub struct SkillCoverageCmd {
+    /// Completed sweep directory produced by `bench swebench`.
+    #[arg(long)]
+    pub sweep: PathBuf,
+
+    /// Restrict output to one outcome bucket: `resolved`, `unresolved`,
+    /// `errored`, or `all`.
+    #[arg(long)]
+    pub bucket: Option<String>,
+
+    /// Filter instances using the same syntax as `bench inspect --filter`.
+    /// Example: `failure_category=model_parse`.
+    #[arg(long)]
+    pub filter: Option<String>,
+
+    /// Emit per-instance skill activation counts in the JSON output and artifact.
     #[arg(long, default_value_t = false)]
     pub per_instance: bool,
 

@@ -59,6 +59,7 @@ pub mod reproduce;
 pub mod retry;
 pub mod scriptability_check;
 pub mod self_check;
+pub mod skill_coverage;
 pub mod skills_preview;
 pub mod stability;
 pub mod stagnation_report;
