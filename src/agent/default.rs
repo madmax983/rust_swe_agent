@@ -436,6 +436,8 @@ pub struct DefaultAgent {
     /// tool/bash action is gated on the operator's y/n/a decision
     /// between PreToolUse hooks and `env.run`.
     pub confirm_callback: Option<std::sync::Arc<dyn super::confirm::ConfirmCallback>>,
+    /// Active auto-approve rules.
+    pub auto_approve_rules: std::sync::Mutex<std::collections::HashSet<String>>,
     /// When true, tool execution is blocked and any attempted tool action
     /// terminates the run with a read-only failure.
     pub read_only: bool,
@@ -649,6 +651,7 @@ impl DefaultAgentBuilder {
             stagnation_detector,
             checkpoint_path: None,
             confirm_callback: None,
+            auto_approve_rules: std::sync::Mutex::new(std::collections::HashSet::new()),
             read_only: self.read_only,
         })
     }
@@ -1254,6 +1257,7 @@ impl Agent for DefaultAgent {
         }
 
         let mut interactive_edit: Option<(String, String, String)> = None;
+        let mut auto_approve_metadata: Option<(String, String, bool)> = None;
 
         // 5d. Operator confirmation gate (issue #312). Skipped when the
         // PreToolUse hook layer already blocked the tool — the operator
@@ -1262,7 +1266,20 @@ impl Agent for DefaultAgent {
             if let Some(decision) = self.confirm_operator_action(&tool_name, &tool_input).await {
                 match decision {
                     super::ConfirmDecision::Approve => {}
-                    super::ConfirmDecision::AutoApprove(_) => {}
+                    super::ConfirmDecision::AutoApprove(scope) => {
+                        if let Ok(mut rules) = self.auto_approve_rules.lock() {
+                            if !rules.contains(&scope) {
+                                rules.insert(scope.clone());
+                                self.stream.emit(StreamEvent::AutoApproveRuleCreated {
+                                    scope: scope.clone(),
+                                });
+                                auto_approve_metadata = Some(("approve".to_string(), scope, true));
+                            } else {
+                                auto_approve_metadata =
+                                    Some(("auto-approve".to_string(), scope, false));
+                            }
+                        }
+                    }
                     super::ConfirmDecision::Reject(feedback) => {
                         self.record_interactive_rejection(&tool_name, &tool_input, feedback);
                         self.last_measurement_end = Instant::now();
@@ -1592,6 +1609,39 @@ impl Agent for DefaultAgent {
             obs_extra.other.insert(
                 "interactive_timestamp".into(),
                 serde_json::Value::String(ts.clone()),
+            );
+        }
+        if let Some((ref decision_str, ref scope, is_new)) = auto_approve_metadata {
+            obs_extra.other.insert(
+                "interactive_decision".into(),
+                serde_json::Value::String(decision_str.clone()),
+            );
+            if is_new {
+                obs_extra.other.insert(
+                    "interactive_rule_created".into(),
+                    serde_json::Value::String(scope.clone()),
+                );
+            } else {
+                obs_extra.other.insert(
+                    "interactive_rule_matched".into(),
+                    serde_json::Value::String(scope.clone()),
+                );
+            }
+            obs_extra.other.insert(
+                "interactive_proposed_command".into(),
+                serde_json::Value::String(
+                    self.redactor
+                        .redact_text(&tool_input, surface::TRAJECTORY)
+                        .text,
+                ),
+            );
+            obs_extra.other.insert(
+                "interactive_tool_name".into(),
+                serde_json::Value::String(tool_name.clone()),
+            );
+            obs_extra.other.insert(
+                "interactive_timestamp".into(),
+                serde_json::Value::String(chrono::Utc::now().to_rfc3339()),
             );
         }
         // Mark chaos-injected results so `bench inspect` can distinguish a
@@ -1969,6 +2019,12 @@ impl DefaultAgent {
                 "cache:auto-or-none"
             },
         };
+        let scope = ctx.derive_scope();
+        if let Ok(rules) = self.auto_approve_rules.lock() {
+            if rules.contains(&scope) {
+                return Some(super::ConfirmDecision::AutoApprove(scope));
+            }
+        }
         Some(cb.confirm(&ctx).await)
     }
 
@@ -2629,6 +2685,7 @@ fn truncate_for_hook_env(value: &str) -> String {
 mod tests {
     #![allow(clippy::unwrap_used)]
     use super::*;
+    use crate::agent::{ConfirmDecision, ScriptedConfirmer};
     use crate::env::LocalEnvironment;
     use crate::model::fallback::FallbackModel;
     use crate::model::{DeterministicModel, ModelResponse, ModelUsage, QueryOpts};
@@ -3481,5 +3538,64 @@ mod tests {
              total={total_with_all_elided} max={max_bytes} failed={}",
             info.compaction_failed
         );
+    }
+
+    #[tokio::test]
+    async fn auto_approve_bypasses_confirm_prompt_and_records_correctly() {
+        // Create a scripted confirmer that first returns AutoApprove("cargo"), then Approve.
+        // Since the first tool use will create the auto-approve rule for "cargo", the second
+        // cargo command should NOT call the confirmer and be executed automatically.
+        // A third non-cargo command (e.g. "git") should still call the confirmer and be approved.
+        let confirmer = Arc::new(ScriptedConfirmer::new([
+            ConfirmDecision::AutoApprove("cargo".to_string()),
+            ConfirmDecision::Approve, // for the non-cargo command
+        ]));
+
+        let responses = vec![
+            "run command\nTOOL_CALL: bash\n```bash\ncargo build\n```".into(),
+            "run command\nTOOL_CALL: bash\n```bash\ncargo test\n```".into(),
+            "run command\nTOOL_CALL: bash\n```bash\ngit status\n```".into(),
+            "done\nCOMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT\n```\nfinal\n```".into(),
+        ];
+        let mut agent = make_agent(responses);
+        agent.confirm_callback = Some(confirmer.clone());
+
+        let outcome = agent.run().await.unwrap();
+        assert!(matches!(outcome, ExitReason::Submitted { .. }));
+
+        // confirmer should only have been called twice (once for the first cargo build, and once for the git status).
+        // The second cargo command (cargo test) should have been auto-approved and bypassed the prompt.
+        assert_eq!(confirmer.call_count(), 2);
+
+        // Verify trajectory records the events correctly:
+        // Find messages with interactive_decision.
+        let traj_json = agent.trajectory.to_json_pretty().unwrap();
+        let value: serde_json::Value = serde_json::from_str(&traj_json).unwrap();
+
+        // Inspect the messages in trajectory. Verify "interactive_decision" is "approve" (with rule created)
+        // for the first command, and "auto-approve" for the second command.
+        let mut decisions = Vec::new();
+        let mut rule_created = None;
+        let mut rule_matched = None;
+        if let Some(messages) = value["messages"].as_array() {
+            for msg in messages {
+                if let Some(extra) = msg["extra"].as_object() {
+                    if let Some(dec) = extra.get("interactive_decision") {
+                        decisions.push(dec.as_str().unwrap().to_string());
+                    }
+                    if let Some(created) = extra.get("interactive_rule_created") {
+                        rule_created = Some(created.as_str().unwrap().to_string());
+                    }
+                    if let Some(matched) = extra.get("interactive_rule_matched") {
+                        rule_matched = Some(matched.as_str().unwrap().to_string());
+                    }
+                }
+            }
+        }
+        println!("TRAJECTORY JSON: {}", traj_json);
+        println!("DECISIONS: {:?}", decisions);
+        assert_eq!(decisions, vec!["approve", "auto-approve"]);
+        assert_eq!(rule_created, Some("cargo".to_string()));
+        assert_eq!(rule_matched, Some("cargo".to_string()));
     }
 }

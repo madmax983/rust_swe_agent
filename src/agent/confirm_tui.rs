@@ -265,6 +265,12 @@ impl StreamSink for RatatuiDashboard {
                     format!("run ended: {exit_reason} (steps={steps} cost=${total_cost_usd:.4})"),
                 );
             }
+            StreamEvent::AutoApproveRuleCreated { scope } => {
+                self.append(
+                    LineKind::Info,
+                    format!("auto-approve rule created for scope: {scope}"),
+                );
+            }
         }
     }
 }
