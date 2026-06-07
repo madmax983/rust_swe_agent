@@ -1578,18 +1578,42 @@ fn evaluate_instance_with_docker_inner(
 
         if tp_inject.status.success() {
             let remaining_tp = timeout.saturating_sub(overall_start.elapsed());
-            if !remaining_tp.is_zero() {
-                // Best-effort: ignore apply failures (test_patch may overlap candidate).
-                let _ = run_with_timeout(
-                    Command::new("docker").args([
-                        "exec",
-                        &container_id,
-                        "bash",
-                        "-c",
-                        "cd /testbed && git apply --ignore-whitespace /tmp/test.patch 2>&1 || true",
-                    ]),
-                    remaining_tp,
-                );
+            if remaining_tp.is_zero() {
+                return Ok(DockerTestVerdict {
+                    resolved: false,
+                    timed_out: true,
+                    patch_apply_failed: false,
+                    patch_error_log: None,
+                    tests_passed: vec![],
+                    tests_failed: vec![],
+                });
+            }
+            let tp_result = run_with_timeout(
+                Command::new("docker").args([
+                    "exec",
+                    &container_id,
+                    "bash",
+                    "-c",
+                    "cd /testbed && git apply --ignore-whitespace /tmp/test.patch 2>&1",
+                ]),
+                remaining_tp,
+            );
+            match tp_result {
+                Err(TimedOut) => {
+                    return Ok(DockerTestVerdict {
+                        resolved: false,
+                        timed_out: true,
+                        patch_apply_failed: false,
+                        patch_error_log: None,
+                        tests_passed: vec![],
+                        tests_failed: vec![],
+                    });
+                }
+                Ok(o) if !o.status.success() => {
+                    let err = String::from_utf8_lossy(&o.stdout).trim().to_string();
+                    return Err(format!("test_patch apply failed: {err}"));
+                }
+                Ok(_) => {}
             }
         }
     }
@@ -1631,17 +1655,39 @@ fn evaluate_instance_with_docker_inner(
     };
 
     if !apply_out.status.success() {
-        let stderr = String::from_utf8_lossy(&apply_out.stdout)
-            .trim()
-            .to_string();
-        return Ok(DockerTestVerdict {
-            resolved: false,
-            timed_out: false,
-            patch_apply_failed: true,
-            patch_error_log: Some(stderr),
-            tests_passed: vec![],
-            tests_failed: vec![],
-        });
+        // Fallback: try three-way merge (mirrors the SWE-bench harness fallback).
+        let remaining_fb = timeout.saturating_sub(overall_start.elapsed());
+        let fallback_succeeded = if remaining_fb.is_zero() {
+            false
+        } else {
+            matches!(
+                run_with_timeout(
+                    Command::new("docker").args([
+                        "exec",
+                        &container_id,
+                        "bash",
+                        "-c",
+                        "cd /testbed && git apply --3way /tmp/candidate.patch 2>&1",
+                    ]),
+                    remaining_fb,
+                ),
+                Ok(o) if o.status.success()
+            )
+        };
+
+        if !fallback_succeeded {
+            let stderr = String::from_utf8_lossy(&apply_out.stdout)
+                .trim()
+                .to_string();
+            return Ok(DockerTestVerdict {
+                resolved: false,
+                timed_out: false,
+                patch_apply_failed: true,
+                patch_error_log: Some(stderr),
+                tests_passed: vec![],
+                tests_failed: vec![],
+            });
+        }
     }
 
     // 5. Build the test command: run FAIL_TO_PASS + PASS_TO_PASS together.
