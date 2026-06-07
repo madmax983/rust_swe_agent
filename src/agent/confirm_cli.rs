@@ -55,6 +55,12 @@ fn prompt_blocking(ctx: &ConfirmContext) -> ConfirmDecision {
         None => read_line_buffered(),
     };
 
+    if let ConfirmDecision::AutoApprove(ref mut scope) = decision {
+        if scope.is_empty() {
+            *scope = ctx.derive_scope();
+        }
+    }
+
     if let ConfirmDecision::Reject(_) = decision {
         if std::io::stdin().is_terminal() {
             let _ = err.write_all(b"Provide corrective feedback (optional): ");
@@ -78,13 +84,14 @@ fn render_banner(ctx: &ConfirmContext) -> String {
         "\n[interactive] step {}/{}  cost ${:.4}  {}\n\
          [interactive] tool: {}\n\
          [interactive] command:\n{}\n\
-         [interactive] (y)approve / (n)reject / (e)edit / (a)abort? ",
+         [interactive] (y)approve / (n)reject / (e)edit / (a)abort / (A)auto-approve {}? ",
         ctx.step,
         ctx.step_limit,
         ctx.cost_usd,
         ctx.cache_marker,
         ctx.tool_name,
         indent_command(&ctx.command),
+        ctx.derive_scope(),
     )
 }
 
@@ -103,7 +110,7 @@ fn read_single_keystroke(ctx: &ConfirmContext) -> Option<ConfirmDecision> {
         return None;
     }
     let mut err = std::io::stderr();
-    let decision = loop {
+    let mut decision = loop {
         match crossterm::event::read() {
             Ok(Event::Key(key)) => {
                 if key.kind == KeyEventKind::Press
@@ -126,6 +133,9 @@ fn read_single_keystroke(ctx: &ConfirmContext) -> Option<ConfirmDecision> {
         }
     };
     let _ = crossterm::terminal::disable_raw_mode();
+    if let ConfirmDecision::AutoApprove(ref mut scope) = decision {
+        *scope = ctx.derive_scope();
+    }
     Some(decision)
 }
 
@@ -228,7 +238,8 @@ fn key_event_to_decision(key: KeyEvent) -> Option<ConfirmDecision> {
     match key.code {
         KeyCode::Char('y' | 'Y') => Some(ConfirmDecision::Approve),
         KeyCode::Char('n' | 'N') => Some(ConfirmDecision::Reject(None)),
-        KeyCode::Char('a' | 'A') | KeyCode::Esc => Some(ConfirmDecision::Abort),
+        KeyCode::Char('A') => Some(ConfirmDecision::AutoApprove(String::new())),
+        KeyCode::Char('a') | KeyCode::Esc => Some(ConfirmDecision::Abort),
         _ => None,
     }
 }
@@ -254,8 +265,12 @@ fn read_line_buffered() -> ConfirmDecision {
 /// Map a line of operator input into a `ConfirmDecision`. EOF and empty
 /// input map to `Abort` so a closed/piped stdin never silently approves.
 pub fn parse_line_decision(input: &str) -> ConfirmDecision {
-    let trimmed = input.trim().to_ascii_lowercase();
-    match trimmed.as_str() {
+    let trimmed = input.trim();
+    if trimmed == "A" || trimmed.to_ascii_lowercase() == "auto" {
+        return ConfirmDecision::AutoApprove(String::new());
+    }
+    let lower = trimmed.to_ascii_lowercase();
+    match lower.as_str() {
         "y" | "yes" => ConfirmDecision::Approve,
         "n" | "no" => ConfirmDecision::Reject(None),
         _ => ConfirmDecision::Abort,
@@ -308,14 +323,18 @@ mod tests {
         assert!(banner.contains("cache:explicit"));
         assert!(banner.contains("tool: bash"));
         assert!(banner.contains("    echo hi"));
-        assert!(banner.contains("(y)approve / (n)reject / (e)edit / (a)abort?"));
+        assert!(
+            banner.contains("(y)approve / (n)reject / (e)edit / (a)abort / (A)auto-approve echo?")
+        );
     }
 
     #[test]
     fn render_banner_contains_edit_option() {
         let banner = render_banner(&ctx_for("echo hi"));
         assert!(banner.contains("(e)edit"));
-        assert!(banner.contains("[interactive] (y)approve / (n)reject / (e)edit / (a)abort?"));
+        assert!(banner.contains(
+            "[interactive] (y)approve / (n)reject / (e)edit / (a)abort / (A)auto-approve echo?"
+        ));
     }
 
     #[test]
@@ -421,5 +440,33 @@ mod tests {
         let d = c.confirm(&ctx).await;
         MOCK_STDIN_EOF.store(false, std::sync::atomic::Ordering::Relaxed);
         assert_eq!(d, ConfirmDecision::Abort);
+    }
+
+    #[test]
+    fn parse_line_decision_matches_auto_approve() {
+        assert_eq!(
+            parse_line_decision("A"),
+            ConfirmDecision::AutoApprove("".to_string())
+        );
+        assert_eq!(
+            parse_line_decision("auto"),
+            ConfirmDecision::AutoApprove("".to_string())
+        );
+    }
+
+    #[test]
+    fn key_event_to_decision_maps_a_to_auto_approve() {
+        let key = KeyEvent::new(KeyCode::Char('A'), KeyModifiers::SHIFT);
+        assert_eq!(
+            key_event_to_decision(key),
+            Some(ConfirmDecision::AutoApprove("".to_string()))
+        );
+
+        // Lowercase 'a' still aborts
+        let key_lower = KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE);
+        assert_eq!(
+            key_event_to_decision(key_lower),
+            Some(ConfirmDecision::Abort)
+        );
     }
 }
