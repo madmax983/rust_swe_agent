@@ -3322,6 +3322,11 @@ pub struct SkillCoverageCmd {
     #[arg(long)]
     pub filter: Option<String>,
 
+    /// Hide skills with fewer than N total activations from the text table.
+    /// The JSON artifact always contains all skills.
+    #[arg(long, default_value_t = 0)]
+    pub min_invocations: usize,
+
     /// Emit per-instance skill activation counts in the JSON output and artifact.
     #[arg(long, default_value_t = false)]
     pub per_instance: bool,

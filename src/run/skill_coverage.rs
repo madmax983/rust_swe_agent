@@ -135,7 +135,11 @@ pub fn run(args: &SkillCoverageArgs) -> Result<SkillCoverageReport, Error> {
 // ── text rendering ────────────────────────────────────────────────────────────
 
 #[allow(clippy::too_many_lines)]
-pub fn render_text(report: &SkillCoverageReport, bucket_filter: Option<&str>) -> String {
+pub fn render_text(
+    report: &SkillCoverageReport,
+    bucket_filter: Option<&str>,
+    min_invocations: usize,
+) -> String {
     use comfy_table::Table;
     use comfy_table::modifiers::UTF8_ROUND_CORNERS;
     use comfy_table::presets::UTF8_FULL;
@@ -175,6 +179,7 @@ pub fn render_text(report: &SkillCoverageReport, bucket_filter: Option<&str>) ->
     let mut rows: Vec<(&str, &SkillMetrics)> = report
         .by_skill
         .iter()
+        .filter(|(_, m)| m.total_activations >= min_invocations)
         .map(|(name, m)| (name.as_str(), m))
         .collect();
 

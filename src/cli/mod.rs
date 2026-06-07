@@ -4771,7 +4771,7 @@ fn bench_skill_coverage(t: args::SkillCoverageCmd) -> Result<(), Error> {
     } else {
         print!(
             "{}",
-            crate::run::skill_coverage::render_text(&report, bucket.as_deref())
+            crate::run::skill_coverage::render_text(&report, bucket.as_deref(), t.min_invocations)
         );
     }
     Ok(())
