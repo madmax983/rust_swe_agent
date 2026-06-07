@@ -54,7 +54,7 @@ The scanner walks the tree and inspects these file kinds:
   see `docs/spec-event-log.md`)
 - `*.output.txt`
 - `*.patch` (submitted patches — first-class, frequently-shared artifacts)
-- exported `*.md`, `*.html`, `*.csv`, `*.mermaid`
+- exported `*.md`, `*.html`, `*.csv`, `*.mermaid`, `*.jsonl`
 - `*.tar.gz` / `*.tgz` bundles — extracted to a temp dir and scanned member by
   member. Findings inside a bundle are labelled `archive.tar.gz!inner/path`.
 

@@ -53,6 +53,9 @@ pub struct MermaidExporter;
 #[cfg(feature = "html-export")]
 pub struct HtmlExporter;
 
+#[cfg(feature = "jsonl-export")]
+pub struct JsonlExporter;
+
 use std::fmt::Write;
 
 #[cfg(feature = "csv-export")]
@@ -80,6 +83,28 @@ impl TrajectoryExporter for CsvExporter {
         }
 
         csv
+    }
+}
+
+#[cfg(feature = "jsonl-export")]
+impl TrajectoryExporter for JsonlExporter {
+    fn export(trajectory: &Trajectory) -> String {
+        let redactor = Redactor::default_enabled();
+        let mut jsonl = String::new();
+
+        for msg in &trajectory.messages {
+            let role = msg.role.as_str();
+            let content = redactor.redact_text(&msg.content, surface::EXPORT).text;
+            let val = serde_json::json!({
+                "role": role,
+                "content": content
+            });
+            if let Ok(s) = serde_json::to_string(&val) {
+                let _ = writeln!(jsonl, "{s}");
+            }
+        }
+
+        jsonl
     }
 }
 
@@ -319,6 +344,25 @@ mod tests {
         assert!(mermaid.contains("U->>A: Hello \"user\""));
 
         assert!(mermaid.contains("Note over S,T: Outcome: submitted"));
+    }
+
+    #[cfg(feature = "jsonl-export")]
+    #[test]
+    fn test_jsonl_export_format() {
+        let mut t = Trajectory::new();
+        t.info.task = Some("Add a feature".to_string());
+        t.info.outcome = Some(outcome::SUBMITTED.to_string());
+
+        t.record_message(&Message::system("System prompt"));
+        t.record_message(&Message::user("Hello agent\nMulti-line"));
+
+        let jsonl = JsonlExporter::export(&t);
+        let lines: Vec<&str> = jsonl.lines().collect();
+        assert_eq!(lines.len(), 2);
+        assert!(lines[0].contains("\"role\":\"system\""));
+        assert!(lines[0].contains("\"content\":\"System prompt\""));
+        assert!(lines[1].contains("\"role\":\"user\""));
+        assert!(lines[1].contains("\"content\":\"Hello agent\\nMulti-line\""));
     }
 
     #[cfg(feature = "html-export")]
