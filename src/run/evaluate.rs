@@ -1576,7 +1576,13 @@ fn evaluate_instance_with_docker_inner(
             })
             .map_err(|e| format!("test_patch inject failed: {e}"))?;
 
-        if tp_inject.status.success() {
+        if !tp_inject.status.success() {
+            return Err(format!(
+                "test_patch inject failed: {}",
+                String::from_utf8_lossy(&tp_inject.stderr).trim()
+            ));
+        }
+        {
             let remaining_tp = timeout.saturating_sub(overall_start.elapsed());
             if remaining_tp.is_zero() {
                 return Ok(DockerTestVerdict {
