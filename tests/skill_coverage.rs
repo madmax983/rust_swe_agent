@@ -819,14 +819,188 @@ fn mock_sweep_results(finished: bool) -> serde_json::Value {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)]
 fn cli_attributes_retry_activations_with_stale_reports_and_duplicate_activations() {
+    let sweep = tempfile::tempdir().unwrap();
+
+    // results.json with two instances inst_1 and inst_2
+    let results = serde_json::json!({
+        "total": 2,
+        "sweep_status": "completed",
+        "submitted": 2,
+        "skipped": 0,
+        "errored": 0,
+        "instances": [
+            {
+                "instance_id": "inst_1",
+                "exit_reason": "submitted",
+                "resolved_count": 1,
+                "runs": 2,
+                "pass_at_1": false
+            },
+            {
+                "instance_id": "inst_2",
+                "exit_reason": "submitted",
+                "resolved_count": 1,
+                "runs": 2,
+                "pass_at_1": false
+            }
+        ],
+        "filter_spec": {},
+        "manifest": {
+            "harness": { "name": "max", "version": "1.0", "git_resolution": "clean" },
+            "dataset": { "path": "x", "sha256": "x", "instance_count": 2 },
+            "prompt_template": { "source": "x", "sha256": "x" },
+            "config": {
+                "resolved": "[skills]\nenabled=true\npaths=[\"/dummy/path/a\"]",
+                "overlay_paths": []
+            },
+            "model": { "name": "claude-3-5", "backend": "anthropic" },
+            "runtime": { "started_at_utc": "2026-06-06T00:00:00Z", "finished_at_utc": "2026-06-06T00:01:00Z", "host_os": "linux" },
+            "cli": { "argv": [] }
+        }
+    });
+    write_json_file(&sweep.path().join("results.json"), &results);
+
+    // evaluation.json with provenance
+    let evaluation = serde_json::json!({
+        "instances": [
+            { "instance_id": "inst_1", "resolved": true, "eval_exit_reason": "resolved" },
+            { "instance_id": "inst_2", "resolved": true, "eval_exit_reason": "resolved" }
+        ],
+        "provenance": {
+            "backend": "sb-cli",
+            "run_id": "current-run",
+            "dataset_subset": "swe-bench",
+            "dataset_split": "test"
+        }
+    });
+    write_json_file(&sweep.path().join("evaluation.json"), &evaluation);
+
+    // sb_cli_reports directory
+    let report_dir = sweep.path().join("sb_cli_reports");
+    fs::create_dir_all(&report_dir).unwrap();
+
+    // current run reports
+    // report_1 uses top-level Array format to test array-shaped evaluator reports
+    let report_1 = serde_json::json!([
+        { "instance_id": "inst_1", "resolved": false },
+        { "instance_id": "inst_2", "resolved": false }
+    ]);
+    write_json_file(
+        &report_dir.join("swe-bench__test__current-run-run-1.json"),
+        &report_1,
+    );
+
+    let report_2 = serde_json::json!({
+        "instances": [
+            { "instance_id": "inst_1", "resolved": true },
+            { "instance_id": "inst_2", "resolved": true }
+        ]
+    });
+    write_json_file(
+        &report_dir.join("swe-bench__test__current-run-run-2.json"),
+        &report_2,
+    );
+
+    // stale run report (run-2 unresolved) - if this was read, it would overwrite run-2's outcome or corrupt it
+    let stale_report = serde_json::json!({
+        "instances": [
+            { "instance_id": "inst_1", "resolved": false },
+            { "instance_id": "inst_2", "resolved": false }
+        ]
+    });
+    write_json_file(
+        &report_dir.join("swe-bench__test__stale-run-run-2.json"),
+        &stale_report,
+    );
+
+    // trajectories for inst_1 (run-1 and run-2)
+    // both have skill_a activated, so it is activated on both runs of the same parent instance!
+    let traj_1 = mock_trajectory("task 1", "skill_a", "/path/a");
+    let inst_dir_1 = sweep.path().join("inst_1");
+    fs::create_dir_all(&inst_dir_1).unwrap();
+    write_json_file(&inst_dir_1.join("run-1.traj.json"), &traj_1);
+    write_json_file(&inst_dir_1.join("run-2.traj.json"), &traj_1);
+
+    // trajectories for inst_2 (run-1 and run-2)
+    // inst_2 has overridden config to trigger drift detection, but same skill_a is active
+    let mut traj_2 = mock_trajectory("task 2", "skill_a", "/path/a");
+    traj_2["info"]["manifest"] = serde_json::json!({
+        "harness_binary_version": "1.0",
+        "started_at_utc": "2026-06-06T00:00:00Z",
+        "env_kind": "local",
+        "config_sha256": "hash",
+        "config_redacted": {
+            "skills": {
+                "enabled": true,
+                "paths": ["/dummy/path/b"] // Different configuration overlay!
+            }
+        },
+        "cli_invocation": [],
+        "extra_context_present": false,
+        "step_limit": 50,
+        "model_name": "claude-3",
+        "redaction_policy_id": "id",
+        "deterministic_mode": false
+    });
+    let inst_dir_2 = sweep.path().join("inst_2");
+    fs::create_dir_all(&inst_dir_2).unwrap();
+    write_json_file(&inst_dir_2.join("run-1.traj.json"), &traj_2);
+    write_json_file(&inst_dir_2.join("run-2.traj.json"), &traj_2);
+
+    let out = run_skill_coverage(sweep.path(), &["--format", "json"]);
+    assert!(
+        out.status.success(),
+        "Stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let report: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+
+    let by_skill = &report["by_skill"];
+
+    // skill_a instances_activated should be 2 (one for inst_1, one for inst_2)
+    let skill_a_metrics = &by_skill["skill_a"];
+    assert_eq!(skill_a_metrics["instances_activated"].as_u64().unwrap(), 2);
+
+    // resolved bucket metrics:
+    // inst_1 and inst_2 both have run-2 resolved, so resolved bucket instances_activated should be 2
+    let a_resolved = &skill_a_metrics["by_outcome"]["resolved"];
+    assert_eq!(a_resolved["instances_activated"].as_u64().unwrap(), 2);
+    // and resolved rate when active in resolved bucket should be 1.0 (since they all resolved in this bucket)
+    assert_eq!(
+        a_resolved["resolved_rate_when_active"].as_f64().unwrap(),
+        1.0
+    );
+
+    // unresolved bucket metrics:
+    // inst_1 and inst_2 both have run-1 unresolved, so unresolved bucket instances_activated should be 2
+    let a_unresolved = &skill_a_metrics["by_outcome"]["unresolved"];
+    assert_eq!(a_unresolved["instances_activated"].as_u64().unwrap(), 2);
+    // but resolved rate when active in unresolved bucket should be 0.0 (since they did NOT resolve in this bucket)
+    assert_eq!(
+        a_unresolved["resolved_rate_when_active"].as_f64().unwrap(),
+        0.0
+    );
+
+    // Verify drift groups
+    let drift = &report["skill_set_drift"];
+    let groups = drift["groups"].as_array().unwrap();
+    assert_eq!(groups.len(), 2);
+    // Each group should have instance_count exactly equal to 1 (distinct parent instances), NOT 2 (runs)
+    assert_eq!(groups[0]["instance_count"].as_u64().unwrap(), 1);
+    assert_eq!(groups[1]["instance_count"].as_u64().unwrap(), 1);
+}
+
+#[test]
+fn cli_fails_when_sb_cli_report_fails_to_parse() {
     let sweep = tempfile::tempdir().unwrap();
 
     // results.json
     let results = mock_sweep_results(true);
     write_json_file(&sweep.path().join("results.json"), &results);
 
-    // evaluation.json with provenance
+    // evaluation.json with provenance matching our report
     let evaluation = serde_json::json!({
         "instances": [
             { "instance_id": "inst_1", "resolved": true, "eval_exit_reason": "resolved" }
@@ -844,65 +1018,18 @@ fn cli_attributes_retry_activations_with_stale_reports_and_duplicate_activations
     let report_dir = sweep.path().join("sb_cli_reports");
     fs::create_dir_all(&report_dir).unwrap();
 
-    // current run reports
-    let report_1 = serde_json::json!({
-        "instances": [
-            { "instance_id": "inst_1", "resolved": false }
-        ]
-    });
-    write_json_file(
-        &report_dir.join("swe-bench__test__current-run-run-1.json"),
-        &report_1,
-    );
+    // current run report is malformed (invalid JSON syntax)
+    let malformed_report_path = report_dir.join("swe-bench__test__current-run-run-1.json");
+    let mut file = File::create(&malformed_report_path).unwrap();
+    writeln!(file, "{{ malformed json").unwrap();
 
-    let report_2 = serde_json::json!({
-        "instances": [
-            { "instance_id": "inst_1", "resolved": true }
-        ]
-    });
-    write_json_file(
-        &report_dir.join("swe-bench__test__current-run-run-2.json"),
-        &report_2,
-    );
-
-    // stale run report (run-2 unresolved) - if this was read, it would overwrite run-2's outcome or corrupt it
-    let stale_report = serde_json::json!({
-        "instances": [
-            { "instance_id": "inst_1", "resolved": false }
-        ]
-    });
-    write_json_file(
-        &report_dir.join("swe-bench__test__stale-run-run-2.json"),
-        &stale_report,
-    );
-
-    // trajectories (run-1 and run-2)
-    // both have skill_a activated, so it is activated on both runs of the same parent instance!
+    // trajectory
     let traj_1 = mock_trajectory("task 1", "skill_a", "/path/a");
     let inst_dir = sweep.path().join("inst_1");
     fs::create_dir_all(&inst_dir).unwrap();
     write_json_file(&inst_dir.join("run-1.traj.json"), &traj_1);
 
-    let traj_2 = mock_trajectory("task 1", "skill_a", "/path/a");
-    write_json_file(&inst_dir.join("run-2.traj.json"), &traj_2);
-
+    // Running the command should fail with exit code 1 or similar
     let out = run_skill_coverage(sweep.path(), &["--format", "json"]);
-    assert!(
-        out.status.success(),
-        "Stderr: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    let report: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
-
-    let by_skill = &report["by_skill"];
-
-    // skill_a instances_activated should be 1, NOT 2 (duplicate activations on the same parent instance)
-    let skill_a_metrics = &by_skill["skill_a"];
-    assert_eq!(skill_a_metrics["instances_activated"].as_u64().unwrap(), 1);
-
-    // skill_a should be activated in resolved (since current-run-run-2 is resolved) and unresolved (since current-run-run-1 is unresolved)
-    let a_resolved = &skill_a_metrics["by_outcome"]["resolved"];
-    assert_eq!(a_resolved["instances_activated"].as_u64().unwrap(), 1);
-    let a_unresolved = &skill_a_metrics["by_outcome"]["unresolved"];
-    assert_eq!(a_unresolved["instances_activated"].as_u64().unwrap(), 1);
+    assert!(!out.status.success());
 }

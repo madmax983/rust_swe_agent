@@ -380,57 +380,56 @@ fn load_resolved_by_run(
     filter_run_id: Option<&str>,
     filter_subset: Option<&str>,
     filter_split: Option<&str>,
-) -> HashMap<RunSlotKey, bool> {
+) -> Result<HashMap<RunSlotKey, bool>, Error> {
     let mut resolved_by_run = HashMap::new();
     let report_dir = sweep_dir.join("sb_cli_reports");
     if report_dir.is_dir() {
-        if let Ok(entries) = std::fs::read_dir(report_dir) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if path.extension().and_then(|s| s.to_str()) == Some("json") {
-                    let filename = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
-                    let parts: Vec<&str> = filename.split("__").collect();
-                    let (subset, split, run_id_part) = if parts.len() == 3 {
-                        (Some(parts[0]), Some(parts[1]), parts[2])
-                    } else {
-                        (None, None, filename)
-                    };
+        for entry in std::fs::read_dir(report_dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            if path.extension().and_then(|s| s.to_str()) == Some("json") {
+                let filename = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+                let parts: Vec<&str> = filename.split("__").collect();
+                let (subset, split, run_id_part) = if parts.len() == 3 {
+                    (Some(parts[0]), Some(parts[1]), parts[2])
+                } else {
+                    (None, None, filename)
+                };
 
-                    let (run_id, run_index) = if let Some(idx_pos) = run_id_part.rfind("-run-") {
-                        let (base, suffix) = run_id_part.split_at(idx_pos);
-                        let index_str = &suffix[5..]; // skip "-run-"
-                        let idx = index_str.parse::<u32>().unwrap_or(1);
-                        (base, idx)
-                    } else {
-                        (run_id_part, 1)
-                    };
+                let (run_id, run_index) = if let Some(idx_pos) = run_id_part.rfind("-run-") {
+                    let (base, suffix) = run_id_part.split_at(idx_pos);
+                    let index_str = &suffix[5..]; // skip "-run-"
+                    let idx = index_str.parse::<u32>().unwrap_or(1);
+                    (base, idx)
+                } else {
+                    (run_id_part, 1)
+                };
 
-                    if let Some(f_run_id) = filter_run_id {
-                        if run_id != f_run_id {
+                if let Some(f_run_id) = filter_run_id {
+                    if run_id != f_run_id {
+                        continue;
+                    }
+                }
+                if let Some(f_subset) = filter_subset {
+                    if let Some(sub) = subset {
+                        if sub != f_subset {
                             continue;
                         }
                     }
-                    if let Some(f_subset) = filter_subset {
-                        if let Some(sub) = subset {
-                            if sub != f_subset {
-                                continue;
-                            }
-                        }
-                    }
-                    if let Some(f_split) = filter_split {
-                        if let Some(spl) = split {
-                            if spl != f_split {
-                                continue;
-                            }
-                        }
-                    }
-
-                    let _ = parse_report_outcomes(&path, run_index, &mut resolved_by_run);
                 }
+                if let Some(f_split) = filter_split {
+                    if let Some(spl) = split {
+                        if spl != f_split {
+                            continue;
+                        }
+                    }
+                }
+
+                parse_report_outcomes(&path, run_index, &mut resolved_by_run)?;
             }
         }
     }
-    resolved_by_run
+    Ok(resolved_by_run)
 }
 
 fn parse_report_outcomes(
@@ -440,61 +439,82 @@ fn parse_report_outcomes(
 ) -> Result<(), Error> {
     let text = std::fs::read_to_string(path)?;
     let val = serde_json::from_str::<serde_json::Value>(&text)?;
-    if let Some(instances) = val.get("instances").and_then(serde_json::Value::as_array) {
-        for inst in instances {
-            if let (Some(inst_id), Some(resolved)) = (
-                inst.get("instance_id").and_then(serde_json::Value::as_str),
-                inst.get("resolved").and_then(serde_json::Value::as_bool),
-            ) {
-                resolved_by_run.insert(
-                    RunSlotKey {
-                        instance_id: inst_id.to_owned(),
-                        run_index,
-                    },
-                    resolved,
-                );
+    match &val {
+        serde_json::Value::Array(rows) => {
+            for row in rows {
+                if let (Some(inst_id), Some(resolved)) = (
+                    row.get("instance_id").and_then(serde_json::Value::as_str),
+                    row.get("resolved").and_then(serde_json::Value::as_bool),
+                ) {
+                    resolved_by_run.insert(
+                        RunSlotKey {
+                            instance_id: inst_id.to_owned(),
+                            run_index,
+                        },
+                        resolved,
+                    );
+                }
             }
         }
-    } else {
-        // sb-cli report shape: resolved_ids and submitted_ids
-        let resolved_ids = val
-            .get("resolved_ids")
-            .and_then(serde_json::Value::as_array)
-            .map(|xs| {
-                xs.iter()
-                    .filter_map(|v| v.as_str().map(ToOwned::to_owned))
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
-        let submitted_ids = val
-            .get("submitted_ids")
-            .and_then(serde_json::Value::as_array)
-            .map(|xs| {
-                xs.iter()
-                    .filter_map(|v| v.as_str().map(ToOwned::to_owned))
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
-        for id in &submitted_ids {
-            resolved_by_run.insert(
-                RunSlotKey {
-                    instance_id: id.clone(),
-                    run_index,
-                },
-                resolved_ids.contains(id),
-            );
-        }
-        if submitted_ids.is_empty() {
-            for id in resolved_ids {
-                resolved_by_run.insert(
-                    RunSlotKey {
-                        instance_id: id,
-                        run_index,
-                    },
-                    true,
-                );
+        serde_json::Value::Object(obj) => {
+            if let Some(rows) = obj.get("instances").and_then(serde_json::Value::as_array) {
+                for row in rows {
+                    if let (Some(inst_id), Some(resolved)) = (
+                        row.get("instance_id").and_then(serde_json::Value::as_str),
+                        row.get("resolved").and_then(serde_json::Value::as_bool),
+                    ) {
+                        resolved_by_run.insert(
+                            RunSlotKey {
+                                instance_id: inst_id.to_owned(),
+                                run_index,
+                            },
+                            resolved,
+                        );
+                    }
+                }
+            } else {
+                // sb-cli report shape: resolved_ids and submitted_ids
+                let resolved_ids = obj
+                    .get("resolved_ids")
+                    .and_then(serde_json::Value::as_array)
+                    .map(|xs| {
+                        xs.iter()
+                            .filter_map(|v| v.as_str().map(ToOwned::to_owned))
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default();
+                let submitted_ids = obj
+                    .get("submitted_ids")
+                    .and_then(serde_json::Value::as_array)
+                    .map(|xs| {
+                        xs.iter()
+                            .filter_map(|v| v.as_str().map(ToOwned::to_owned))
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default();
+                for id in &submitted_ids {
+                    resolved_by_run.insert(
+                        RunSlotKey {
+                            instance_id: id.clone(),
+                            run_index,
+                        },
+                        resolved_ids.contains(id),
+                    );
+                }
+                if submitted_ids.is_empty() {
+                    for id in resolved_ids {
+                        resolved_by_run.insert(
+                            RunSlotKey {
+                                instance_id: id,
+                                run_index,
+                            },
+                            true,
+                        );
+                    }
+                }
             }
         }
+        _ => {}
     }
     Ok(())
 }
@@ -562,7 +582,7 @@ fn build_report(args: &SkillCoverageArgs) -> Result<SkillCoverageReport, Error> 
     };
 
     let resolved_by_run =
-        load_resolved_by_run(&args.sweep_dir, filter_run_id, filter_subset, filter_split);
+        load_resolved_by_run(&args.sweep_dir, filter_run_id, filter_subset, filter_split)?;
     let mut instance_data: Vec<InstanceSkillData> = Vec::new();
     let mut skill_descriptions = HashMap::new();
 
@@ -774,7 +794,7 @@ fn build_report(args: &SkillCoverageArgs) -> Result<SkillCoverageReport, Error> 
     let skill_universe: Vec<SkillUniverseEntry> = skill_universe_map.values().cloned().collect();
 
     // Group configurations to detect drift
-    let mut config_groups: HashMap<String, (Vec<String>, Vec<String>)> = HashMap::new(); // fingerprint -> (instance_ids, paths)
+    let mut config_groups: HashMap<String, (HashSet<String>, Vec<String>)> = HashMap::new(); // fingerprint -> (parent_instance_ids, paths)
     for d in &instance_data {
         let mut sorted_paths = d.eligible_paths.clone();
         sorted_paths.sort();
@@ -782,16 +802,16 @@ fn build_report(args: &SkillCoverageArgs) -> Result<SkillCoverageReport, Error> 
         let fingerprint = format!("enabled={}:{}", d.skills_enabled, paths_str);
         let entry = config_groups
             .entry(fingerprint)
-            .or_insert_with(|| (Vec::new(), d.eligible_paths.clone()));
-        entry.0.push(d.id.clone());
+            .or_insert_with(|| (HashSet::new(), d.eligible_paths.clone()));
+        entry.0.insert(d.parent_instance_id.clone());
     }
 
     let skill_set_drift = if config_groups.len() > 1 {
         let mut groups: Vec<SkillSetDriftGroup> = config_groups
             .into_iter()
-            .map(|(fp, (instances, paths))| SkillSetDriftGroup {
+            .map(|(fp, (parent_instances, paths))| SkillSetDriftGroup {
                 fingerprint: fp,
-                instance_count: instances.len(),
+                instance_count: parent_instances.len(),
                 paths,
             })
             .collect();
@@ -838,7 +858,7 @@ fn build_report(args: &SkillCoverageArgs) -> Result<SkillCoverageReport, Error> 
                 .active_skills_unique
                 .iter()
                 .any(|s| redactor.redact_text(&s.name, surface::TRAJECTORY).text == redacted_name);
-            let is_parent_resolved = resolved_set.contains(&d.parent_instance_id);
+            let is_run_resolved = d.bucket == OutcomeBucket::Resolved;
 
             global_total_instances.insert(d.parent_instance_id.clone());
             if is_active {
@@ -870,7 +890,7 @@ fn build_report(args: &SkillCoverageArgs) -> Result<SkillCoverageReport, Error> 
                     .or_default()
                     .insert(d.parent_instance_id.clone());
 
-                if is_parent_resolved {
+                if is_run_resolved {
                     per_bucket_resolved_total_instances
                         .entry(bname)
                         .or_default()
@@ -883,7 +903,7 @@ fn build_report(args: &SkillCoverageArgs) -> Result<SkillCoverageReport, Error> 
                         .or_default()
                         .insert(d.parent_instance_id.clone());
 
-                    if is_parent_resolved {
+                    if is_run_resolved {
                         per_bucket_resolved_active_instances
                             .entry(bname)
                             .or_default()
