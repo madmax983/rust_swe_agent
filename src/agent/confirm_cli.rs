@@ -47,7 +47,7 @@ fn prompt_blocking(ctx: &ConfirmContext) -> ConfirmDecision {
     let _ = err.write_all(render_banner(ctx).as_bytes());
     let _ = err.flush();
 
-    let mut decision = match read_single_keystroke() {
+    let mut decision = match read_single_keystroke(ctx) {
         Some(decision) => {
             let _ = err.write_all(b"\n");
             decision
@@ -78,7 +78,7 @@ fn render_banner(ctx: &ConfirmContext) -> String {
         "\n[interactive] step {}/{}  cost ${:.4}  {}\n\
          [interactive] tool: {}\n\
          [interactive] command:\n{}\n\
-         [interactive] (y)approve / (n)reject / (a)abort? ",
+         [interactive] (y)approve / (n)reject / (e)edit / (a)abort? ",
         ctx.step,
         ctx.step_limit,
         ctx.cost_usd,
@@ -95,16 +95,28 @@ fn indent_command(cmd: &str) -> String {
         .join("\n")
 }
 
-fn read_single_keystroke() -> Option<ConfirmDecision> {
+fn read_single_keystroke(ctx: &ConfirmContext) -> Option<ConfirmDecision> {
     if !std::io::stdin().is_terminal() {
         return None;
     }
     if crossterm::terminal::enable_raw_mode().is_err() {
         return None;
     }
+    let mut err = std::io::stderr();
     let decision = loop {
         match crossterm::event::read() {
             Ok(Event::Key(key)) => {
+                if key.kind == KeyEventKind::Press
+                    && key.modifiers.is_empty()
+                    && matches!(key.code, KeyCode::Char('e' | 'E'))
+                {
+                    if let Some(edited) = run_inline_editor(&mut err, &ctx.command) {
+                        break ConfirmDecision::Edit(edited);
+                    }
+                    let _ = err.write_all(render_banner(ctx).as_bytes());
+                    let _ = err.flush();
+                    continue;
+                }
                 if let Some(d) = key_event_to_decision(key) {
                     break d;
                 }
@@ -115,6 +127,90 @@ fn read_single_keystroke() -> Option<ConfirmDecision> {
     };
     let _ = crossterm::terminal::disable_raw_mode();
     Some(decision)
+}
+
+fn run_inline_editor(err: &mut std::io::Stderr, initial_cmd: &str) -> Option<String> {
+    let mut edited_chars: Vec<char> = initial_cmd.chars().collect();
+    let mut cursor_pos = edited_chars.len();
+    let prompt = "[interactive] edit: ";
+
+    // Initially print \n[interactive] edit: <command>
+    let _ = err.write_all(format!("\n{prompt}{initial_cmd}").as_bytes());
+    let _ = err.flush();
+
+    loop {
+        let current_text: String = edited_chars.iter().collect();
+        let _ = crossterm::queue!(
+            err,
+            crossterm::cursor::MoveToColumn(0),
+            crossterm::terminal::Clear(crossterm::terminal::ClearType::CurrentLine),
+        );
+        let _ = err.write_all(format!("{prompt}{current_text}").as_bytes());
+        let _ = crossterm::queue!(
+            err,
+            crossterm::cursor::MoveToColumn(
+                u16::try_from(prompt.len() + cursor_pos).unwrap_or(u16::MAX)
+            ),
+        );
+        let _ = err.flush();
+
+        match crossterm::event::read() {
+            Ok(Event::Key(key)) => {
+                if key.kind != KeyEventKind::Press {
+                    continue;
+                }
+                if key.modifiers.contains(KeyModifiers::CONTROL)
+                    && matches!(key.code, KeyCode::Char('c' | 'C'))
+                {
+                    return None;
+                }
+                match key.code {
+                    KeyCode::Enter => {
+                        let trimmed = current_text.trim();
+                        if trimmed.is_empty() {
+                            return None;
+                        }
+                        return Some(trimmed.to_string());
+                    }
+                    KeyCode::Esc => {
+                        return None;
+                    }
+                    KeyCode::Backspace => {
+                        if cursor_pos > 0 {
+                            edited_chars.remove(cursor_pos - 1);
+                            cursor_pos -= 1;
+                        }
+                    }
+                    KeyCode::Delete => {
+                        if cursor_pos < edited_chars.len() {
+                            edited_chars.remove(cursor_pos);
+                        }
+                    }
+                    KeyCode::Left => {
+                        cursor_pos = cursor_pos.saturating_sub(1);
+                    }
+                    KeyCode::Right => {
+                        if cursor_pos < edited_chars.len() {
+                            cursor_pos += 1;
+                        }
+                    }
+                    KeyCode::Home => {
+                        cursor_pos = 0;
+                    }
+                    KeyCode::End => {
+                        cursor_pos = edited_chars.len();
+                    }
+                    KeyCode::Char(c) => {
+                        edited_chars.insert(cursor_pos, c);
+                        cursor_pos += 1;
+                    }
+                    _ => {}
+                }
+            }
+            Ok(_) => {}
+            Err(_) => return None,
+        }
+    }
 }
 
 /// Map a crossterm key event to a `ConfirmDecision`. Returns `None` for
@@ -212,7 +308,14 @@ mod tests {
         assert!(banner.contains("cache:explicit"));
         assert!(banner.contains("tool: bash"));
         assert!(banner.contains("    echo hi"));
-        assert!(banner.contains("(y)approve / (n)reject / (a)abort?"));
+        assert!(banner.contains("(y)approve / (n)reject / (e)edit / (a)abort?"));
+    }
+
+    #[test]
+    fn render_banner_contains_edit_option() {
+        let banner = render_banner(&ctx_for("echo hi"));
+        assert!(banner.contains("(e)edit"));
+        assert!(banner.contains("[interactive] (y)approve / (n)reject / (e)edit / (a)abort?"));
     }
 
     #[test]
@@ -287,7 +390,7 @@ mod tests {
         // `cargo test` redirects stdin away from the TTY, so this is the
         // production non-interactive path and should bail out cleanly
         // rather than blocking on raw-mode reads.
-        assert!(read_single_keystroke().is_none());
+        assert!(read_single_keystroke(&ctx_for("echo hi")).is_none());
     }
 
     #[test]
