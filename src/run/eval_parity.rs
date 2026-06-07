@@ -362,6 +362,29 @@ fn eval_exit_reason_to_verdict(reason: &crate::run::evaluate::EvalExitReason) ->
 
 // ── Real evaluator run ─────────────────────────────────────────────────────────
 
+/// Return `true` when `row` was actually submitted and has at least one
+/// non-empty patch file across all run slots.
+///
+/// Checking `outcome == "submitted"` prevents unsubmitted or redacted rows
+/// from entering the parity denominator (both backends skip them, inflating
+/// agreement with spurious `Errored`/`Errored` matches). Scanning all run
+/// slots (1..=effective_runs) handles multi-run/pass@k sweeps where run 1
+/// may have an empty patch but a later run carries the actual solution.
+fn has_evaluatable_patch(
+    sweep_dir: &Path,
+    instance_id: &str,
+    row: &crate::run::swebench::InstanceResult,
+) -> bool {
+    if row.outcome.as_deref() != Some(crate::trajectory::outcome::SUBMITTED) {
+        return false;
+    }
+    let runs = crate::run::swebench::effective_runs(row);
+    (1..=runs).any(|run_idx| {
+        let p = crate::run::swebench::existing_patch_path_for_run(sweep_dir, instance_id, run_idx);
+        p.exists() && std::fs::metadata(&p).is_ok_and(|m| m.len() > 0)
+    })
+}
+
 /// Run eval-parity against a real sweep by invoking both evaluator backends.
 pub fn run(args: &EvalParityArgs) -> Result<EvalParityReport, Error> {
     use crate::run::compare::load_sweep;
@@ -376,12 +399,9 @@ pub fn run(args: &EvalParityArgs) -> Result<EvalParityReport, Error> {
 
     let mut instance_ids: Vec<String> = loaded
         .instances
-        .keys()
-        .filter(|id| {
-            let p = crate::run::swebench::existing_patch_path_for_run(&args.sweep_dir, id, 1);
-            p.exists() && std::fs::metadata(&p).is_ok_and(|m| m.len() > 0)
-        })
-        .cloned()
+        .iter()
+        .filter(|(id, row)| has_evaluatable_patch(&args.sweep_dir, id, row))
+        .map(|(id, _)| id.clone())
         .collect();
     instance_ids.sort();
 
