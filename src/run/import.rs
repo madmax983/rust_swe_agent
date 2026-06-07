@@ -589,7 +589,25 @@ fn parse_evaluate_backend(backend: &str) -> Result<crate::run::evaluate::Evaluat
     }
 }
 
+/// Format the import summary as a human-readable text block.
+pub fn format_summary_text(summary: &ImportSummary) -> String {
+    let mut s = String::new();
+    let _ = writeln!(s, "=== bench import ===");
+    let _ = writeln!(s, "Records imported:   {}", summary.records_imported);
+    let _ = writeln!(s, "Records skipped:    {}", summary.records_skipped);
+    let _ = writeln!(s, "Output:             {}", summary.output_path);
+    let _ = writeln!(s, "Source hash:        {}", summary.source_hash);
+    if !summary.skip_reasons.is_empty() {
+        let _ = writeln!(s, "\nSkipped records:");
+        for sr in &summary.skip_reasons {
+            let _ = writeln!(s, "  [{}] {}", sr.record_index, sr.reason);
+        }
+    }
+    s
+}
+
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
     use crate::run::evaluate::EvaluateBackend;
@@ -633,21 +651,4 @@ mod tests {
             "error should mention the invalid value; got: {msg}"
         );
     }
-}
-
-/// Format the import summary as a human-readable text block.
-pub fn format_summary_text(summary: &ImportSummary) -> String {
-    let mut s = String::new();
-    let _ = writeln!(s, "=== bench import ===");
-    let _ = writeln!(s, "Records imported:   {}", summary.records_imported);
-    let _ = writeln!(s, "Records skipped:    {}", summary.records_skipped);
-    let _ = writeln!(s, "Output:             {}", summary.output_path);
-    let _ = writeln!(s, "Source hash:        {}", summary.source_hash);
-    if !summary.skip_reasons.is_empty() {
-        let _ = writeln!(s, "\nSkipped records:");
-        for sr in &summary.skip_reasons {
-            let _ = writeln!(s, "  [{}] {}", sr.record_index, sr.reason);
-        }
-    }
-    s
 }
