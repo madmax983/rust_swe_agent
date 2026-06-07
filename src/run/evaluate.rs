@@ -1295,33 +1295,42 @@ fn run_docker_tests(
         };
 
         // Determine the Docker image for this instance.
-        let image = inst_data.image.as_deref().or_else(|| {
-            inst_data
-                .other
-                .get("image")
-                .and_then(serde_json::Value::as_str)
-        });
-
-        let Some(image) = image else {
-            instances.push(InstanceEvaluation {
-                instance_id: id.to_owned(),
-                resolved: false,
-                runs,
-                resolved_count: 0,
-                pass_at_1: false,
-                tests_passed: vec![],
-                tests_failed: vec![],
-                eval_exit_reason: EvalExitReason::SkippedNoImage,
-                eval_log_path: None,
-                patch_stats: None,
-                patch_error_log: None,
-            });
-            continue;
-        };
+        // Check explicit fields first, then fall back to the conventional SWE-bench
+        // image name.  With --pull=never a missing image produces EvalError (which is
+        // more informative than SkippedNoImage for misconfigured environments).
+        let image: String = inst_data
+            .image
+            .clone()
+            .or_else(|| {
+                ["image", "image_name", "docker_image"]
+                    .iter()
+                    .find_map(|k| {
+                        inst_data
+                            .other
+                            .get(*k)
+                            .and_then(serde_json::Value::as_str)
+                            .map(ToOwned::to_owned)
+                    })
+            })
+            .unwrap_or_else(|| format!("swebench/sweb.eval.x86_64.{id}"));
 
         // Extract FAIL_TO_PASS and PASS_TO_PASS test lists.
         let fail_to_pass = extract_test_list(&inst_data.other, "FAIL_TO_PASS");
         let pass_to_pass = extract_test_list(&inst_data.other, "PASS_TO_PASS");
+
+        // Optional oracle tests and per-repo test command from the dataset.
+        let test_patch = inst_data
+            .other
+            .get("test_patch")
+            .and_then(serde_json::Value::as_str)
+            .filter(|s| !s.trim().is_empty())
+            .map(ToOwned::to_owned);
+        let test_command = inst_data
+            .other
+            .get("test_command")
+            .and_then(serde_json::Value::as_str)
+            .filter(|s| !s.trim().is_empty())
+            .map(ToOwned::to_owned);
 
         // Find the patch for run 1 (multi-run reruns use run 1 by default for offline eval).
         let patch_path = swebench::existing_patch_path_for_run(&args.sweep_dir, id, 1);
@@ -1349,10 +1358,12 @@ fn run_docker_tests(
         let eval = evaluate_instance_with_docker(
             id,
             runs,
-            image,
+            &image,
             &patch_content,
+            test_patch.as_deref(),
             &fail_to_pass,
             &pass_to_pass,
+            test_command.as_deref(),
             args.timeout_per_instance_secs,
         );
         instances.push(eval);
@@ -1387,15 +1398,18 @@ fn extract_test_list(other: &serde_json::Map<String, serde_json::Value>, key: &s
 
 /// Evaluate a single instance by running its tests inside a Docker container.
 ///
-/// Applies the patch to /testbed, runs FAIL_TO_PASS + PASS_TO_PASS via pytest,
-/// and returns the verdict. The container is forcibly removed on exit.
+/// Applies `test_patch` (oracle tests) then the candidate patch, then runs
+/// FAIL_TO_PASS + PASS_TO_PASS. The container is forcibly removed on exit.
+#[allow(clippy::too_many_arguments)]
 fn evaluate_instance_with_docker(
     instance_id: &str,
     runs: u32,
     image: &str,
     patch_content: &str,
+    test_patch: Option<&str>,
     fail_to_pass: &[String],
     pass_to_pass: &[String],
+    test_command: Option<&str>,
     timeout_secs: u64,
 ) -> InstanceEvaluation {
     use std::time::Duration;
@@ -1406,8 +1420,10 @@ fn evaluate_instance_with_docker(
         instance_id,
         image,
         patch_content,
+        test_patch,
         fail_to_pass,
         pass_to_pass,
+        test_command,
         timeout,
     ) {
         Ok(verdict) => {
@@ -1460,14 +1476,16 @@ struct DockerTestVerdict {
     tests_failed: Vec<String>,
 }
 
-/// Inner logic: start container, apply patch, run tests, collect results.
-#[allow(clippy::too_many_lines)]
+/// Inner logic: start container, apply patches, run tests, collect results.
+#[allow(clippy::too_many_lines, clippy::too_many_arguments)]
 fn evaluate_instance_with_docker_inner(
     _instance_id: &str,
     image: &str,
     patch_content: &str,
+    test_patch: Option<&str>,
     fail_to_pass: &[String],
     pass_to_pass: &[String],
+    test_command: Option<&str>,
     timeout: std::time::Duration,
 ) -> Result<DockerTestVerdict, String> {
     use std::process::Command;
@@ -1538,7 +1556,45 @@ fn evaluate_instance_with_docker_inner(
         ));
     }
 
-    // 3. Apply the patch with git apply, bounded by the remaining deadline.
+    // 3. Apply test_patch first (oracle tests needed by FAIL_TO_PASS selectors).
+    //    The official SWE-bench evaluator always applies test_patch before the
+    //    candidate patch so that new tests introduced by the issue are present.
+    if let Some(tp) = test_patch.filter(|s| !s.trim().is_empty()) {
+        let tp_inject = Command::new("docker")
+            .args(["exec", "-i", &container_id, "bash", "-c"])
+            .arg("cat > /tmp/test.patch")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .and_then(|mut child| {
+                use std::io::Write as _;
+                if let Some(ref mut stdin) = child.stdin {
+                    let _ = stdin.write_all(tp.as_bytes());
+                }
+                child.wait_with_output()
+            })
+            .map_err(|e| format!("test_patch inject failed: {e}"))?;
+
+        if tp_inject.status.success() {
+            let remaining_tp = timeout.saturating_sub(overall_start.elapsed());
+            if !remaining_tp.is_zero() {
+                // Best-effort: ignore apply failures (test_patch may overlap candidate).
+                let _ = run_with_timeout(
+                    Command::new("docker").args([
+                        "exec",
+                        &container_id,
+                        "bash",
+                        "-c",
+                        "cd /testbed && git apply --ignore-whitespace /tmp/test.patch 2>&1 || true",
+                    ]),
+                    remaining_tp,
+                );
+            }
+        }
+    }
+
+    // 4. Apply the candidate patch, bounded by the remaining deadline.
     let remaining_for_apply = timeout.saturating_sub(overall_start.elapsed());
     if remaining_for_apply.is_zero() {
         return Ok(DockerTestVerdict {
@@ -1588,7 +1644,7 @@ fn evaluate_instance_with_docker_inner(
         });
     }
 
-    // 4. Build the test command: run FAIL_TO_PASS + PASS_TO_PASS together.
+    // 5. Build the test command: run FAIL_TO_PASS + PASS_TO_PASS together.
     let all_tests: Vec<&str> = fail_to_pass
         .iter()
         .chain(pass_to_pass.iter())
@@ -1605,11 +1661,15 @@ fn evaluate_instance_with_docker_inner(
     }
 
     let tests_arg = all_tests.join(" ");
-    // Redirect pytest output to a file inside the container to avoid pipe buffer
-    // deadlock when test suites produce large output (Linux pipe buffer ~64KB).
-    let pytest_cmd = format!(
-        "cd /testbed && python -m pytest -v --tb=no --no-header -rN {tests_arg} > /tmp/pytest.output 2>&1 || true"
-    );
+    // Redirect output to a file to avoid pipe buffer deadlock (Linux buffer ~64KB).
+    // Use the dataset-specified test command when available; fall back to pytest.
+    let test_cmd = if let Some(cmd) = test_command {
+        format!("cd /testbed && ({cmd}) > /tmp/pytest.output 2>&1 || true")
+    } else {
+        format!(
+            "cd /testbed && python -m pytest -v --tb=no --no-header -rN {tests_arg} > /tmp/pytest.output 2>&1 || true"
+        )
+    };
 
     let remaining = timeout.saturating_sub(overall_start.elapsed());
     if remaining.is_zero() {
@@ -1625,7 +1685,7 @@ fn evaluate_instance_with_docker_inner(
 
     // Use a deadline-aware spawn: kill after remaining time.
     let test_out = run_with_timeout(
-        Command::new("docker").args(["exec", &container_id, "bash", "-c", &pytest_cmd]),
+        Command::new("docker").args(["exec", &container_id, "bash", "-c", &test_cmd]),
         remaining,
     );
 

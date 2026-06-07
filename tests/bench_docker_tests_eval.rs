@@ -244,9 +244,12 @@ fn instance_without_dataset_image_info_is_skipped_not_unresolved() {
     );
 }
 
-/// AC3: Instance whose dataset entry has no `image` field → SkippedNoImage.
+///// AC3 (revised): Instance whose dataset entry has no explicit `image` field gets the
+/// conventional SWE-bench image name derived and Docker is attempted.
+/// With no Docker daemon (or image) available the result is EvalError, which is more
+/// informative than SkippedNoImage for operators who pre-pull standard images.
 #[test]
-fn instance_with_dataset_but_no_image_field_is_skipped() {
+fn instance_with_dataset_but_no_image_field_derives_conventional_name() {
     let dir = tempfile::tempdir().unwrap();
     write_results(dir.path(), vec![minimal_instance_result("task-a")]);
 
@@ -274,10 +277,19 @@ fn instance_with_dataset_but_no_image_field_is_skipped() {
 
     assert_eq!(eval.instances.len(), 1);
     let inst = &eval.instances[0];
-    assert_eq!(
+    // The backend derives swebench/sweb.eval.x86_64.task-a and attempts docker run.
+    // Without a real Docker daemon or a pre-pulled image the result is EvalError.
+    assert!(
+        inst.eval_exit_reason == EvalExitReason::EvalError
+            || inst.eval_exit_reason == EvalExitReason::Unresolved
+            || inst.eval_exit_reason == EvalExitReason::Resolved,
+        "expected EvalError/Unresolved/Resolved when derived image is attempted, got {:?}",
+        inst.eval_exit_reason
+    );
+    assert_ne!(
         inst.eval_exit_reason,
         EvalExitReason::SkippedNoImage,
-        "instance with no image field in dataset should be SkippedNoImage"
+        "should not be SkippedNoImage when a conventional image name can be derived"
     );
 }
 
