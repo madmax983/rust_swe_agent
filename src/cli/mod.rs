@@ -136,6 +136,7 @@ pub async fn run() -> Result<(), Error> {
             args::BenchCmd::NearMiss(n) => bench_near_miss(n),
             args::BenchCmd::Assert(a) => bench_assert(a),
             args::BenchCmd::Subset(s) => bench_subset(s),
+            args::BenchCmd::EvalParity(p) => bench_eval_parity(p),
         },
         Command::Agent { cmd } => match *cmd {
             args::AgentCmd::SkillsPreview(s) => agent_skills_preview_cmd(&s),
@@ -5949,6 +5950,47 @@ fn bench_eval_flake(f: args::EvalFlakeCmd) -> Result<(), Error> {
         "{}",
         serde_json::to_string_pretty(&report).map_err(Error::Json)?
     );
+    Ok(())
+}
+
+fn bench_eval_parity(p: args::EvalParityCmd) -> Result<(), Error> {
+    if let Some(min) = p.min_agreement {
+        if min.is_nan() || !(0.0..=1.0).contains(&min) {
+            return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+                "--min-agreement must be in [0.0, 1.0], got {min}"
+            ))));
+        }
+    }
+    let args = crate::run::eval_parity::EvalParityArgs {
+        sweep_dir: p.sweep,
+        output: p.output,
+        concurrency: p.concurrency,
+        min_agreement: p.min_agreement,
+        sample: p.sample,
+        instances: p.instances,
+        recheck: p.recheck,
+        dataset_path: p.dataset_path,
+        sb_subset: p.sb_subset,
+    };
+    let report = crate::run::eval_parity::run(&args)?;
+    let summary = &report.summary;
+    eprint!("{}", crate::run::eval_parity::render_summary(&report));
+    eprintln!("eval-parity: total_cost_usd=0.00 (evaluator wallclock only)");
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&report).map_err(Error::Json)?
+    );
+    if let Some(min) = args.min_agreement {
+        if summary.agreement_rate < min {
+            exit_with_outcome(
+                ExitCode::EvalParityGateFailure,
+                &format!(
+                    "eval-parity: agreement_rate {:.4} is below --min-agreement {min:.4}",
+                    summary.agreement_rate
+                ),
+            );
+        }
+    }
     Ok(())
 }
 

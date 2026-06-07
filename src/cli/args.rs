@@ -1253,6 +1253,8 @@ pub enum BenchCmd {
     Assert(AssertCmd),
     /// Export a sampled dataset slice as a pinned JSONL artifact and provenance manifest.
     Subset(SubsetCmd),
+    /// Compare offline and canonical evaluator verdicts to measure parity and gate CI.
+    EvalParity(EvalParityCmd),
 }
 
 /// `bench assert` — evaluate operator-declared SLO rules against a completed sweep.
@@ -1385,6 +1387,61 @@ pub struct EvalFlakeCmd {
     /// Maximum parallel evaluator workers. Mirrors `bench evaluate --concurrency`.
     #[arg(long, default_value_t = 4)]
     pub concurrency: usize,
+}
+
+/// `bench eval-parity` — compare offline and canonical evaluator verdicts.
+///
+/// Runs both the offline backend (`docker-tests`) and the canonical `sb-cli`
+/// backend over the same patches and emits a parity report with agreement rate,
+/// per-instance disagreements, and dataset/backend identity for reproducibility.
+///
+/// Use `--min-agreement` to gate CI on the measured rate. Use `--sample` for a
+/// cheap spot-check. Use `--recheck` to re-check disagreements and distinguish
+/// true systematic differences from evaluator flakiness.
+///
+/// Zero new model calls. `total_cost_usd` is always `0.0`.
+#[derive(Debug, Args, Clone)]
+pub struct EvalParityCmd {
+    /// Completed sweep directory produced by `bench swebench` (must contain
+    /// per-instance `.patch` files and a `results.json`).
+    #[arg(long)]
+    pub sweep: PathBuf,
+
+    /// Output file for the `eval-parity.json` artifact.
+    /// Defaults to `<sweep>/eval-parity.json`.
+    #[arg(long, value_name = "PATH")]
+    pub output: Option<PathBuf>,
+
+    /// Maximum parallel evaluator workers.
+    #[arg(long, default_value_t = 4)]
+    pub concurrency: usize,
+
+    /// Exit non-zero (exit code 43) when the measured agreement rate is below
+    /// this threshold. Suitable for CI parity gating. Range: 0.0–1.0.
+    #[arg(long, value_name = "FLOAT")]
+    pub min_agreement: Option<f64>,
+
+    /// Evaluate at most N instances (stable head selection). The report records
+    /// the sample size and selection method; any truncation is logged.
+    #[arg(long, value_name = "N")]
+    pub sample: Option<usize>,
+
+    /// Comma-separated instance IDs to evaluate (subset filter).
+    #[arg(long, value_name = "IDS")]
+    pub instances: Option<String>,
+
+    /// Re-check disagreeing instances this many additional times to distinguish
+    /// flakiness from true systematic disagreement. Default: 0 (single-shot).
+    #[arg(long, default_value_t = 0, value_name = "N")]
+    pub recheck: usize,
+
+    /// Path to dataset JSONL passed to the offline (docker-tests) evaluator.
+    #[arg(long, value_name = "PATH")]
+    pub dataset_path: Option<PathBuf>,
+
+    /// SWE-bench subset selector passed to `sb-cli` (e.g. `swe-bench-m`).
+    #[arg(long, value_name = "SUBSET")]
+    pub sb_subset: Option<String>,
 }
 
 /// `bench dataset-stats` — preview SWE-bench dataset composition pre-sweep.

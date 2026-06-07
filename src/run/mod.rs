@@ -26,6 +26,7 @@ pub mod dataset_verify;
 pub mod diff_config;
 pub mod env_preview;
 pub mod eval_flake;
+pub mod eval_parity;
 pub mod evaluate;
 pub mod evaluator_selftest;
 pub mod export_ci;

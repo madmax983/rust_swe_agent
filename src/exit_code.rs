@@ -178,6 +178,12 @@ pub enum ExitCode {
     /// exit allows CI to gate on silent override detection. Exit 0 when the
     /// resolved config matches operator intent (no hazards detected).
     ConfigOverrideWarning = 42,
+    /// 43 — `bench eval-parity --min-agreement <F>` measured an agreement rate
+    /// below the operator-declared threshold. The report was written; the
+    /// non-zero exit gates CI on offline-vs-canonical parity. Distinct from
+    /// `slo_rule_failure` (27) so automation can route "evaluator parity
+    /// degraded" separately from generic SLO failures.
+    EvalParityGateFailure = 43,
     /// 130 — user interruption (graceful SIGINT / Ctrl-C; 128 + SIGINT(2)).
     Interrupted = 130,
     /// 137 — forced kill (SIGKILL escalation after graceful-cancel deadline; 128 + SIGKILL(9)).
@@ -241,6 +247,7 @@ impl ExitCode {
             Self::DatasetVerifyMismatch => "dataset_verify_mismatch",
             Self::BestOfAllFailed => "best_of_all_failed",
             Self::ConfigOverrideWarning => "config_override_warning",
+            Self::EvalParityGateFailure => "eval_parity_gate_failure",
             Self::Interrupted => "interrupted",
             Self::Killed => "killed",
         }
