@@ -1270,6 +1270,11 @@ impl Agent for DefaultAgent {
                         self.finalize_cancelled();
                         return Ok(StepOutcome::Terminate(ExitReason::UserInterrupt));
                     }
+                    super::ConfirmDecision::Edit(_) => {
+                        todo!(
+                            "Task 1 only requires confirm.rs edits and scripted tests to pass first"
+                        );
+                    }
                 }
             }
         }

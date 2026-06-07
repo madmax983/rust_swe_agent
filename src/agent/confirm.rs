@@ -42,6 +42,8 @@ pub enum ConfirmDecision {
     Reject(Option<String>),
     /// Terminate the run cleanly with `ExitReason::UserInterrupt`.
     Abort,
+    /// Edit the proposed command/input.
+    Edit(String),
 }
 
 impl ConfirmDecision {
@@ -52,6 +54,7 @@ impl ConfirmDecision {
             Self::Approve => "approve",
             Self::Reject(_) => "reject",
             Self::Abort => "abort",
+            Self::Edit(_) => "edit",
         }
     }
 }
@@ -141,5 +144,24 @@ mod tests {
             "reject"
         );
         assert_eq!(ConfirmDecision::Abort.label(), "abort");
+        assert_eq!(ConfirmDecision::Edit("foo".to_owned()).label(), "edit");
+    }
+
+    #[tokio::test]
+    async fn scripted_handles_edit_decision() {
+        let c = ScriptedConfirmer::new([ConfirmDecision::Edit("foo".to_owned())]);
+        let ctx = ConfirmContext {
+            tool_name: "bash".into(),
+            command: "x".into(),
+            step: 0,
+            step_limit: 1,
+            cost_usd: 0.0,
+            cache_marker: "cache:auto-or-none",
+        };
+        assert_eq!(
+            c.confirm(&ctx).await,
+            ConfirmDecision::Edit("foo".to_owned())
+        );
+        assert_eq!(c.call_count(), 1);
     }
 }
