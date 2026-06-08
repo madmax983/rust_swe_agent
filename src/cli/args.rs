@@ -1257,6 +1257,32 @@ pub enum BenchCmd {
     EvalParity(EvalParityCmd),
     /// Report sweep concurrency efficiency (effective parallelism, utilization, idle waste).
     Utilization(UtilizationCmd),
+    /// Backfill OTLP traces from a completed sweep directory to a collector (zero model cost: reads only on-disk artifacts).
+    ExportOtlp(ExportOtlpCmd),
+}
+
+/// `bench export-otlp` — re-export reconstructed sweep + instance spans from a
+/// completed sweep directory to an OTLP/HTTP collector.
+///
+/// OTLP trace export is otherwise live-only; this command backfills runs done
+/// without a collector (or during an outage) using the same span shape and the
+/// same deterministic trace/span IDs the live exporter would have produced.
+/// Reads only on-disk artifacts; never re-runs instances or mutates the sweep.
+#[derive(Debug, Args)]
+pub struct ExportOtlpCmd {
+    /// Completed sweep directory produced by `bench swebench`.
+    #[arg(long)]
+    pub sweep: std::path::PathBuf,
+
+    /// OTLP/HTTP collector base URL (e.g. `http://localhost:4318`). Takes
+    /// precedence over `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` and
+    /// `OTEL_EXPORTER_OTLP_ENDPOINT`.
+    #[arg(long, value_name = "URL")]
+    pub otlp_endpoint: Option<String>,
+
+    /// Reconstruct and count spans, print the summary, and open no socket.
+    #[arg(long)]
+    pub dry_run: bool,
 }
 
 /// `bench utilization` — report how efficiently a sweep used its configured

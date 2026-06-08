@@ -104,6 +104,7 @@ coarse sweep-level result.
 | `agent redact-audit`            | `success`, `usage_error`, `redact_audit_findings`, `redact_audit_scan_error`, `internal_error` |
 | `bench assert`                  | `success`, `usage_error`, `slo_rule_failure`, `internal_error` |
 | `agent apply`                   | `success`, `usage_error`, `apply_check_failed`, `apply_redacted_refused`, `apply_dirty_tree_refused`, `internal_error` |
+| `bench export-otlp`             | `success`, `usage_error`, `preflight_failure`, `internal_error` (see `docs/spec-export-otlp.md`) |
 
 > **Note:** `hello-world` does not produce distinct outcome classes beyond
 > `success` / `internal_error`; it is an interactive debugging surface.
