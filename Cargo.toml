@@ -44,6 +44,7 @@ indicatif = "0.18.4"
 # a ratatui dashboard when `--ui ratatui` is selected (issue #312).
 crossterm = { version = "0.28", features = ["event-stream"] }
 ratatui = "0.29"
+unicode-width = "0.2"
 
 # HTTP fallback (used inside `LitellmBackend` for headers, and as a thin
 # escape hatch if any backend needs raw HTTP).

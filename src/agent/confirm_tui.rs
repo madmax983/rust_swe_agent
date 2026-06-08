@@ -113,6 +113,21 @@ impl RatatuiDashboardHandle {
     }
 
     pub async fn shutdown(mut self) {
+        loop {
+            let (finished, should_exit) = {
+                let s = self
+                    .inner
+                    .state
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                (s.finished.is_some(), s.should_exit)
+            };
+            if !finished || should_exit {
+                break;
+            }
+            self.inner.notify.notified().await;
+        }
+
         if let Some(tx) = self.shutdown_tx.take() {
             let _ = tx.send(());
         }
@@ -543,28 +558,43 @@ fn handle_key(dash: &Arc<RatatuiDashboard>, key: KeyEvent) {
 
         match key.code {
             KeyCode::Up => {
-                s.scroll_offset = current_offset.saturating_sub(1);
-                s.auto_follow = false;
+                let next_offset = current_offset.saturating_sub(1);
+                if next_offset != current_offset {
+                    s.scroll_offset = next_offset;
+                    s.auto_follow = false;
+                }
                 dash.notify.notify_waiters();
             }
             KeyCode::Down => {
-                s.scroll_offset = (current_offset + 1).min(max_scroll);
-                s.auto_follow = false;
+                let next_offset = (current_offset + 1).min(max_scroll);
+                if next_offset != current_offset {
+                    s.scroll_offset = next_offset;
+                    s.auto_follow = false;
+                }
                 dash.notify.notify_waiters();
             }
             KeyCode::PageUp => {
-                s.scroll_offset = current_offset.saturating_sub(s.last_log_height);
-                s.auto_follow = false;
+                let next_offset = current_offset.saturating_sub(s.last_log_height);
+                if next_offset != current_offset {
+                    s.scroll_offset = next_offset;
+                    s.auto_follow = false;
+                }
                 dash.notify.notify_waiters();
             }
             KeyCode::PageDown => {
-                s.scroll_offset = (current_offset + s.last_log_height).min(max_scroll);
-                s.auto_follow = false;
+                let next_offset = (current_offset + s.last_log_height).min(max_scroll);
+                if next_offset != current_offset {
+                    s.scroll_offset = next_offset;
+                    s.auto_follow = false;
+                }
                 dash.notify.notify_waiters();
             }
             KeyCode::Home => {
-                s.scroll_offset = 0;
-                s.auto_follow = false;
+                let next_offset = 0;
+                if next_offset != current_offset {
+                    s.scroll_offset = next_offset;
+                    s.auto_follow = false;
+                }
                 dash.notify.notify_waiters();
             }
             KeyCode::End => {
@@ -944,6 +974,10 @@ fn count_wrapped_lines(text: &str, width: usize) -> usize {
     total_lines
 }
 
+fn char_width(c: char) -> usize {
+    unicode_width::UnicodeWidthChar::width(c).unwrap_or(0)
+}
+
 fn count_wrapped_line(line: &str, width: usize) -> usize {
     if line.is_empty() {
         return 1;
@@ -984,10 +1018,11 @@ fn count_wrapped_line(line: &str, width: usize) -> usize {
                 }
                 space_width = 0;
             }
-            word_width += 1;
+            let c_width = char_width(c);
+            word_width += c_width;
             if word_width > width {
                 total_lines += 1;
-                word_width = 1;
+                word_width = c_width;
                 current_width = 0;
             }
         }
@@ -1046,6 +1081,8 @@ mod tests {
         assert_eq!(count_wrapped_lines("hello\nworld", 10), 2);
         assert_eq!(count_wrapped_lines("supercalifragilistic", 5), 4);
         assert_eq!(count_wrapped_lines("  hello", 5), 2);
+        assert_eq!(count_wrapped_lines("🦀🦀", 5), 1);
+        assert_eq!(count_wrapped_lines("🦀🦀", 3), 2);
     }
 
     #[test]
@@ -1118,6 +1155,13 @@ mod tests {
         }
 
         handle_key(&d, KeyEvent::new(KeyCode::End, KeyModifiers::NONE));
+        {
+            let s = d.state.lock().unwrap();
+            assert!(s.auto_follow);
+            assert_eq!(s.scroll_offset, 3);
+        }
+
+        handle_key(&d, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
         {
             let s = d.state.lock().unwrap();
             assert!(s.auto_follow);
