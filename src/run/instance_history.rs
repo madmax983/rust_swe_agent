@@ -740,7 +740,15 @@ pub fn render_text(
 }
 
 fn truncate(s: &str, max: usize) -> &str {
-    if s.len() <= max { s } else { &s[..max] }
+    if s.len() <= max {
+        s
+    } else {
+        let mut end = max;
+        while end > 0 && !s.is_char_boundary(end) {
+            end -= 1;
+        }
+        &s[..end]
+    }
 }
 
 // ── write output ──────────────────────────────────────────────────────────────
@@ -764,6 +772,11 @@ pub fn write_output(report: &InstanceHistoryReport, path: &Path) -> Result<(), E
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn truncate_panics_on_non_char_boundary() {
+        assert_eq!(truncate("こんにちは世界", 2), "");
+    }
 
     #[test]
     fn classify_default_threshold() {
