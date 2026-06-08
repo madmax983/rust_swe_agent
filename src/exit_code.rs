@@ -184,6 +184,12 @@ pub enum ExitCode {
     /// `slo_rule_failure` (27) so automation can route "evaluator parity
     /// degraded" separately from generic SLO failures.
     EvalParityGateFailure = 43,
+    /// 44 — `bench utilization --min-utilization <PCT>` measured a concurrency
+    /// utilization below the operator-declared floor. The report was written;
+    /// the non-zero exit gates CI on sweep concurrency efficiency. Distinct from
+    /// `slo_rule_failure` (27) so automation can route "concurrency
+    /// under-utilized" separately from generic SLO failures.
+    UtilizationGateFailure = 44,
     /// 130 — user interruption (graceful SIGINT / Ctrl-C; 128 + SIGINT(2)).
     Interrupted = 130,
     /// 137 — forced kill (SIGKILL escalation after graceful-cancel deadline; 128 + SIGKILL(9)).
@@ -248,6 +254,7 @@ impl ExitCode {
             Self::BestOfAllFailed => "best_of_all_failed",
             Self::ConfigOverrideWarning => "config_override_warning",
             Self::EvalParityGateFailure => "eval_parity_gate_failure",
+            Self::UtilizationGateFailure => "utilization_gate_failure",
             Self::Interrupted => "interrupted",
             Self::Killed => "killed",
         }
@@ -541,6 +548,15 @@ mod tests {
         assert_eq!(
             ExitCode::RedactAuditScanError.outcome_class(),
             "redact_audit_scan_error"
+        );
+    }
+
+    #[test]
+    fn utilization_gate_failure_exit_code_is_44() {
+        assert_eq!(ExitCode::UtilizationGateFailure.as_i32(), 44);
+        assert_eq!(
+            ExitCode::UtilizationGateFailure.outcome_class(),
+            "utilization_gate_failure"
         );
     }
 }

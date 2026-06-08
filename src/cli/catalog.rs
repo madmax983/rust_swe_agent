@@ -452,6 +452,12 @@ pub fn entries() -> &'static [CatalogEntry] {
             stage: "analyze",
         },
         CatalogEntry {
+            path: "bench utilization",
+            summary: "Report sweep concurrency efficiency: effective parallelism, utilization, idle waste",
+            cost_tier: "free",
+            stage: "analyze",
+        },
+        CatalogEntry {
             path: "bench watch",
             summary: "Attach to a single in-flight instance and stream its turns live",
             cost_tier: "free",
