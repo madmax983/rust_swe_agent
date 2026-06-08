@@ -138,6 +138,7 @@ pub async fn run() -> Result<(), Error> {
             args::BenchCmd::Subset(s) => bench_subset(s),
             args::BenchCmd::EvalParity(p) => bench_eval_parity(p),
             args::BenchCmd::Utilization(u) => bench_utilization(u),
+            args::BenchCmd::ExportOtlp(c) => Box::pin(bench_export_otlp(c)).await,
         },
         Command::Agent { cmd } => match *cmd {
             args::AgentCmd::SkillsPreview(s) => agent_skills_preview_cmd(&s),
@@ -6081,6 +6082,17 @@ fn bench_utilization(u: args::UtilizationCmd) -> Result<(), Error> {
             ),
         );
     }
+    Ok(())
+}
+
+async fn bench_export_otlp(c: args::ExportOtlpCmd) -> Result<(), Error> {
+    let summary = crate::run::export_otlp::run(&crate::run::export_otlp::ExportOtlpArgs {
+        sweep_dir: c.sweep,
+        otlp_endpoint: c.otlp_endpoint,
+        dry_run: c.dry_run,
+    })
+    .await?;
+    print!("{}", crate::run::export_otlp::render_text(&summary));
     Ok(())
 }
 

@@ -1457,6 +1457,27 @@ fn default_attempts() -> u32 {
     1
 }
 
+/// Derive the stable sweep-level ID used to seed every OTLP trace/span ID for a
+/// run. Hashes the output-directory path together with the sweep's
+/// `started_at_utc` timestamp so the value is deterministic for a given sweep
+/// directory yet distinct across re-runs into the same path.
+///
+/// Both the live exporter (`run_swebench`) and the post-hoc backfill command
+/// (`bench export-otlp`, issue #513) call this so a re-exported run and a
+/// live-exported run produce byte-identical trace/span IDs.
+#[must_use]
+pub fn compute_sweep_id(output_dir: &std::path::Path, started_at_utc: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    h.update(output_dir.display().to_string().as_bytes());
+    h.update(started_at_utc.as_bytes());
+    let hash = h.finalize();
+    format!(
+        "{:016x}",
+        u64::from_be_bytes(hash[..8].try_into().unwrap_or([0u8; 8]))
+    )
+}
+
 /// Path where `run_one` writes the trajectory for an instance. Centralized so
 /// the resume-skip check stays in lockstep with the writer.
 #[must_use]
@@ -1502,7 +1523,7 @@ fn legacy_patch_path_for(output_dir: &std::path::Path, instance_id: &str) -> Pat
     output_dir.join(format!("{instance_id}.patch"))
 }
 
-fn existing_trajectory_path_for_run(
+pub fn existing_trajectory_path_for_run(
     output_dir: &std::path::Path,
     instance_id: &str,
     run_index: u32,
@@ -1859,18 +1880,9 @@ pub async fn run(mut args: SwebenchArgs) -> Result<SweepResults, Error> {
                 span_export_dropped.clone(),
             ))
         });
-    // Stable sweep-level ID derived from the output directory path.
-    let sweep_id = {
-        use sha2::{Digest, Sha256};
-        let mut h = Sha256::new();
-        h.update(args.output_dir.display().to_string().as_bytes());
-        h.update(started_at_utc.as_bytes());
-        let hash = h.finalize();
-        format!(
-            "{:016x}",
-            u64::from_be_bytes(hash[..8].try_into().unwrap_or([0u8; 8]))
-        )
-    };
+    // Stable sweep-level ID derived from the output directory path. Shared with
+    // `bench export-otlp` so post-hoc backfill reproduces identical IDs.
+    let sweep_id = compute_sweep_id(&args.output_dir, &started_at_utc);
     let sweep_start_nanos = u64::try_from(
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)

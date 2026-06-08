@@ -30,6 +30,7 @@ pub mod eval_parity;
 pub mod evaluate;
 pub mod evaluator_selftest;
 pub mod export_ci;
+pub mod export_otlp;
 pub mod failure_digest;
 pub mod forecast;
 pub mod fork;
