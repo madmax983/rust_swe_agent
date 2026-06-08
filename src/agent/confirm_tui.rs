@@ -473,6 +473,65 @@ fn handle_key_edit_input(
     }
 }
 
+fn perform_scroll(s: &mut DashboardState, code: KeyCode) -> bool {
+    let total = total_wrapped_lines_deque(&s.log, s.last_log_width);
+    let max_scroll = total.saturating_sub(s.last_log_height);
+    let current_offset = if s.auto_follow {
+        max_scroll
+    } else {
+        s.scroll_offset
+    };
+
+    match code {
+        KeyCode::Up => {
+            let next_offset = current_offset.saturating_sub(1);
+            if next_offset != current_offset {
+                s.scroll_offset = next_offset;
+                s.auto_follow = false;
+            }
+            true
+        }
+        KeyCode::Down => {
+            let next_offset = (current_offset + 1).min(max_scroll);
+            if next_offset != current_offset {
+                s.scroll_offset = next_offset;
+                s.auto_follow = false;
+            }
+            true
+        }
+        KeyCode::PageUp => {
+            let next_offset = current_offset.saturating_sub(s.last_log_height);
+            if next_offset != current_offset {
+                s.scroll_offset = next_offset;
+                s.auto_follow = false;
+            }
+            true
+        }
+        KeyCode::PageDown => {
+            let next_offset = (current_offset + s.last_log_height).min(max_scroll);
+            if next_offset != current_offset {
+                s.scroll_offset = next_offset;
+                s.auto_follow = false;
+            }
+            true
+        }
+        KeyCode::Home => {
+            let next_offset = 0;
+            if next_offset != current_offset {
+                s.scroll_offset = next_offset;
+                s.auto_follow = false;
+            }
+            true
+        }
+        KeyCode::End => {
+            s.scroll_offset = max_scroll;
+            s.auto_follow = true;
+            true
+        }
+        _ => false,
+    }
+}
+
 fn handle_key_normal(
     dash: &RatatuiDashboard,
     s: &mut DashboardState,
@@ -483,6 +542,13 @@ fn handle_key_normal(
         s.pending = Some(pending);
         return;
     }
+
+    if perform_scroll(s, key.code) {
+        s.pending = Some(pending);
+        dash.notify.notify_waiters();
+        return;
+    }
+
     match key.code {
         KeyCode::Char('y' | 'Y') => {
             let _ = pending.responder.send(ConfirmDecision::Approve);
@@ -550,67 +616,9 @@ fn handle_key(dash: &Arc<RatatuiDashboard>, key: KeyEvent) {
             }
         }
 
-        let total = total_wrapped_lines_deque(&s.log, s.last_log_width);
-        let max_scroll = total.saturating_sub(s.last_log_height);
-        let current_offset = if s.auto_follow {
-            max_scroll
-        } else {
-            s.scroll_offset
-        };
-
-        match key.code {
-            KeyCode::Up => {
-                let next_offset = current_offset.saturating_sub(1);
-                if next_offset != current_offset {
-                    s.scroll_offset = next_offset;
-                    s.auto_follow = false;
-                }
-                drop(s);
-                dash.notify.notify_waiters();
-            }
-            KeyCode::Down => {
-                let next_offset = (current_offset + 1).min(max_scroll);
-                if next_offset != current_offset {
-                    s.scroll_offset = next_offset;
-                    s.auto_follow = false;
-                }
-                drop(s);
-                dash.notify.notify_waiters();
-            }
-            KeyCode::PageUp => {
-                let next_offset = current_offset.saturating_sub(s.last_log_height);
-                if next_offset != current_offset {
-                    s.scroll_offset = next_offset;
-                    s.auto_follow = false;
-                }
-                drop(s);
-                dash.notify.notify_waiters();
-            }
-            KeyCode::PageDown => {
-                let next_offset = (current_offset + s.last_log_height).min(max_scroll);
-                if next_offset != current_offset {
-                    s.scroll_offset = next_offset;
-                    s.auto_follow = false;
-                }
-                drop(s);
-                dash.notify.notify_waiters();
-            }
-            KeyCode::Home => {
-                let next_offset = 0;
-                if next_offset != current_offset {
-                    s.scroll_offset = next_offset;
-                    s.auto_follow = false;
-                }
-                drop(s);
-                dash.notify.notify_waiters();
-            }
-            KeyCode::End => {
-                s.scroll_offset = max_scroll;
-                s.auto_follow = true;
-                drop(s);
-                dash.notify.notify_waiters();
-            }
-            _ => {}
+        if perform_scroll(&mut s, key.code) {
+            drop(s);
+            dash.notify.notify_waiters();
         }
     }
 }
@@ -1199,6 +1207,75 @@ mod tests {
             drop(s);
             assert!(auto_follow);
             assert_eq!(scroll_offset, 3);
+        }
+    }
+
+    #[test]
+    fn test_scroll_navigation_keys_when_modal_open() {
+        let d = make_dashboard();
+        let _rx = make_pending(&d);
+        {
+            let mut s = d.state.lock().unwrap();
+            s.last_log_height = 5;
+            s.last_log_width = 10;
+            s.log.push_back(LogLine {
+                kind: LineKind::Info,
+                text: "line1".into(),
+            });
+            s.log.push_back(LogLine {
+                kind: LineKind::Info,
+                text: "line2".into(),
+            });
+            s.log.push_back(LogLine {
+                kind: LineKind::Info,
+                text: "line3".into(),
+            });
+            s.log.push_back(LogLine {
+                kind: LineKind::Info,
+                text: "line4".into(),
+            });
+            s.log.push_back(LogLine {
+                kind: LineKind::Info,
+                text: "line5".into(),
+            });
+            s.log.push_back(LogLine {
+                kind: LineKind::Info,
+                text: "line6".into(),
+            });
+            s.log.push_back(LogLine {
+                kind: LineKind::Info,
+                text: "line7".into(),
+            });
+            s.log.push_back(LogLine {
+                kind: LineKind::Info,
+                text: "line8".into(),
+            });
+        }
+
+        // Send PageUp key. It should scroll the log but keep s.pending (modal) intact!
+        handle_key(&d, KeyEvent::new(KeyCode::PageUp, KeyModifiers::NONE));
+        {
+            let s = d.state.lock().unwrap();
+            let auto_follow = s.auto_follow;
+            let scroll_offset = s.scroll_offset;
+            let pending_is_some = s.pending.is_some();
+            drop(s);
+            assert!(!auto_follow);
+            assert_eq!(scroll_offset, 0); // scrolled up from 3 by height 5, clamped to 0
+            assert!(pending_is_some); // Modal is still open!
+        }
+
+        // Send End key. It should re-engage auto-follow and keep modal intact!
+        handle_key(&d, KeyEvent::new(KeyCode::End, KeyModifiers::NONE));
+        {
+            let s = d.state.lock().unwrap();
+            let auto_follow = s.auto_follow;
+            let scroll_offset = s.scroll_offset;
+            let pending_is_some = s.pending.is_some();
+            drop(s);
+            assert!(auto_follow);
+            assert_eq!(scroll_offset, 3);
+            assert!(pending_is_some); // Modal is still open!
         }
     }
 
