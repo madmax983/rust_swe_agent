@@ -25,7 +25,7 @@ use serde::{Deserialize, Serialize};
 use crate::error::{ConfigError, Error};
 use crate::run::compare::load_sweep;
 use crate::run::swebench::{
-    DEFAULT_PARALLEL, InstanceResult, ProvenanceManifest, SWEEP_STATUS_COMPLETED,
+    DEFAULT_PARALLEL, InstanceResult, ProvenanceManifest, SWEEP_STATUS_COMPLETED, effective_runs,
 };
 
 /// Stable schema version for the JSON artifact. Bump only on breaking changes.
@@ -161,13 +161,22 @@ pub fn compute(args: &UtilizationArgs) -> Result<UtilizationReport, Error> {
     let idle_waste_secs = (wallclock_secs - theoretical_min_wallclock_secs).max(0.0);
     let idle_waste_pct = (idle_waste_secs / wallclock_secs) * 100.0;
 
+    // "Retry-merged" here means within-run API-retries that undercount time:
+    // run_one records duration_secs from the *terminal* attempt only while a
+    // retried run still consumed wallclock for the earlier attempts. Detect that
+    // via a slot whose attempts exceed its run count (each run slot contributes
+    // at least one attempt, so attempts > runs ⟺ some slot retried) or any
+    // recorded retry reason. Plain --rerun/--samples sweeps are NOT flagged:
+    // aggregate_run_results SUMS duration_secs across run slots, so their total
+    // is full work, not terminal-only, and remains measurable and gateable.
     let retry_merged = instances
         .iter()
-        .any(|i| i.attempts > 1 || i.runs > 1 || !i.retry_reasons.is_empty());
+        .any(|i| i.attempts > effective_runs(i) || !i.retry_reasons.is_empty());
     let retry_merged_note = retry_merged.then(|| {
-        "one or more instances retried or ran multiple samples; duration_secs \
-         reflects only the terminal attempt, so effective parallelism is an \
-         approximation (exact reconstruction is out of scope)"
+        "one or more instances retried within a run (multiple API-retry attempts); \
+         duration_secs reflects only the terminal attempt of each retried run, so \
+         effective parallelism is an approximation (exact reconstruction is out of \
+         scope)"
             .to_owned()
     });
 
@@ -178,11 +187,12 @@ pub fn compute(args: &UtilizationArgs) -> Result<UtilizationReport, Error> {
     // kept its workers busy. Refuse to gate rather than emit a misleading verdict.
     if args.min_utilization.is_some() && retry_merged {
         return Err(invalid(
-            "utilization: --min-utilization cannot be evaluated on a retry-merged \
-             sweep (one or more instances retried or ran multiple samples); \
-             duration_secs reflects only terminal attempts, so the gate would compare \
-             an underestimate against the floor. Re-run a single-shot sweep to gate \
-             utilization, or drop --min-utilization to get the approximate report"
+            "utilization: --min-utilization cannot be evaluated on a sweep with \
+             within-run retries (one or more instances had a run that retried); \
+             duration_secs reflects only the terminal attempt, so the gate would \
+             compare an underestimate against the floor. Re-run without within-run \
+             API retries (e.g. --max-retries 0) to gate utilization, or drop \
+             --min-utilization to get the approximate report"
                 .to_owned(),
         ));
     }

@@ -107,7 +107,7 @@ only in a backward-compatible manner; breaking changes bump `schema_version`.
 | `theoretical_min_wallclock_secs` | number | `D / P` |
 | `idle_waste_secs` | number | `max(0, W − theoretical_min)` |
 | `idle_waste_pct` | number | `(idle_waste_secs / W) × 100` |
-| `retry_merged` | boolean | `true` when the sweep contains retried / multi-sample instances (see [Approximations](#approximations)) |
+| `retry_merged` | boolean | `true` when a run retried within itself (within-run API retries undercount time — see [Approximations](#approximations)). Plain `--rerun`/`--samples` sweeps are **not** flagged: their `duration_secs` is summed across run slots and stays measurable |
 | `retry_merged_note` | string | Present only when `retry_merged` is `true`: human-readable caveat |
 | `min_utilization` | number | Present only when `--min-utilization` was passed: the floor |
 | `min_utilization_met` | boolean | Present only when `--min-utilization` was passed: whether `utilization_pct ≥ min_utilization` |
@@ -133,19 +133,24 @@ number:
   their prior `duration_secs` (and may appear as `skipped_resume`) while the
   manifest wallclock covers only the resumed run — so summing every duration
   against the resumed wallclock would overstate effective parallelism.
-- **`--min-utilization` on a retry-merged sweep.** The (flagged, approximate)
-  report is still produced, but the **gate** is refused: `duration_secs` reflects
-  only terminal attempts, so earlier attempts and retry backoff consume worker
-  time without contributing to the sum, and the gate could fail a sweep that
-  actually kept its workers busy. Drop `--min-utilization` for the approximate
-  report, or re-run a single-shot sweep to gate.
+- **`--min-utilization` on a sweep with within-run retries.** The (flagged,
+  approximate) report is still produced, but the **gate** is refused:
+  `duration_secs` reflects only the terminal attempt of each retried run, so
+  earlier attempts and retry backoff consume worker time without contributing to
+  the sum, and the gate could fail a sweep that actually kept its workers busy.
+  Drop `--min-utilization` for the approximate report, or re-run without
+  within-run API retries (e.g. `--max-retries 0`) to gate. **Plain
+  `--rerun`/`--samples` sweeps are gateable** — their durations are summed across
+  run slots, so the total is full work, not an underestimate.
 
 ## Approximations
 
-- **Retry-merged sweeps.** When instances retried or ran multiple samples,
-  `duration_secs` reflects only the terminal attempt. The command **flags**
-  this (`retry_merged: true` plus a note) and reports an approximate figure
-  rather than attempting exact reconstruction of per-attempt timing.
+- **Within-run retries.** When a run retried itself (multiple API-retry
+  attempts), `duration_secs` reflects only the terminal attempt. The command
+  **flags** this (`retry_merged: true` plus a note) and reports an approximate
+  figure rather than attempting exact reconstruction of per-attempt timing.
+  (Plain `--rerun`/`--samples` sweeps are not affected: their durations are
+  summed across run slots, so the total is full work.)
 - **Instances missing a duration.** Excluded from `D` and counted in
   `instances_missing_duration`; they do not contribute misleading zeros to the
   sum.

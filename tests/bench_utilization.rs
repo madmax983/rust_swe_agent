@@ -701,5 +701,35 @@ fn retry_merged_sweep_blocks_the_gate_but_not_the_report() {
         min_utilization: Some(40.0),
     })
     .unwrap_err();
-    assert!(err.to_string().contains("retry-merged"), "got: {err}");
+    assert!(err.to_string().contains("within-run retries"), "got: {err}");
+}
+
+#[test]
+fn rerun_only_sweep_is_measurable_and_gateable() {
+    // A clean --rerun/--samples sweep: aggregate_run_results sums duration_secs
+    // across run slots and sums attempts (1 per slot → attempts == runs). It is
+    // NOT a within-run retry, so it must stay measurable and gateable.
+    let work = tempfile::tempdir().unwrap();
+    let durations = vec![Some(300.0); 8];
+    write_sweep(
+        work.path(),
+        &SweepSpec {
+            durations: &durations,
+            parallel_argv: Some(8),
+            attempts: 2,
+            runs: 2,
+            ..SweepSpec::default()
+        },
+    );
+
+    let report = compute(&UtilizationArgs {
+        sweep_dir: work.path().to_path_buf(),
+        min_utilization: Some(40.0),
+    })
+    .unwrap();
+    assert!(
+        !report.retry_merged,
+        "plain reruns (attempts == runs) must not be flagged as retry-merged"
+    );
+    assert_eq!(report.min_utilization_met, Some(true));
 }
