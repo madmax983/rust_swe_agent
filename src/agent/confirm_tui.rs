@@ -31,7 +31,6 @@ use crate::stream::{StreamEvent, StreamSink};
 
 const MAX_LOG_LINES: usize = 400;
 
-#[derive(Default)]
 struct DashboardState {
     task: Option<String>,
     model: Option<String>,
@@ -45,6 +44,35 @@ struct DashboardState {
     feedback_input: Option<String>,
     edit_input: Option<String>,
     active_rules: Vec<String>,
+    scroll_offset: usize,
+    auto_follow: bool,
+    last_log_width: usize,
+    last_log_height: usize,
+    should_exit: bool,
+}
+
+impl Default for DashboardState {
+    fn default() -> Self {
+        Self {
+            task: None,
+            model: None,
+            started_at: None,
+            cost_usd: 0.0,
+            step: 0,
+            step_limit: 0,
+            log: VecDeque::new(),
+            pending: None,
+            finished: None,
+            feedback_input: None,
+            edit_input: None,
+            active_rules: Vec::new(),
+            scroll_offset: 0,
+            auto_follow: true,
+            last_log_width: 80,
+            last_log_height: 20,
+            should_exit: false,
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -85,6 +113,22 @@ impl RatatuiDashboardHandle {
     }
 
     pub async fn shutdown(mut self) {
+        loop {
+            let notification = self.inner.notify.notified();
+            let (finished, should_exit) = {
+                let s = self
+                    .inner
+                    .state
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                (s.finished.is_some(), s.should_exit)
+            };
+            if !finished || should_exit {
+                break;
+            }
+            notification.await;
+        }
+
         if let Some(tx) = self.shutdown_tx.take() {
             let _ = tx.send(());
         }
@@ -316,6 +360,17 @@ async fn renderer_loop(
     let mut events = EventStream::new();
     let mut tick = tokio::time::interval(Duration::from_millis(150));
     loop {
+        let exit = {
+            let s = dash
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            s.should_exit
+        };
+        if exit {
+            break;
+        }
+
         if let Err(err) = draw_frame(&dash, &mut terminal) {
             tracing::warn!(?err, "ratatui draw failed");
         }
@@ -418,6 +473,65 @@ fn handle_key_edit_input(
     }
 }
 
+fn perform_scroll(s: &mut DashboardState, code: KeyCode) -> bool {
+    let total = total_wrapped_lines_deque(&s.log, s.last_log_width);
+    let max_scroll = total.saturating_sub(s.last_log_height);
+    let current_offset = if s.auto_follow {
+        max_scroll
+    } else {
+        s.scroll_offset
+    };
+
+    match code {
+        KeyCode::Up => {
+            let next_offset = current_offset.saturating_sub(1);
+            if next_offset != current_offset {
+                s.scroll_offset = next_offset;
+                s.auto_follow = false;
+            }
+            true
+        }
+        KeyCode::Down => {
+            let next_offset = (current_offset + 1).min(max_scroll);
+            if next_offset != current_offset {
+                s.scroll_offset = next_offset;
+                s.auto_follow = false;
+            }
+            true
+        }
+        KeyCode::PageUp => {
+            let next_offset = current_offset.saturating_sub(s.last_log_height);
+            if next_offset != current_offset {
+                s.scroll_offset = next_offset;
+                s.auto_follow = false;
+            }
+            true
+        }
+        KeyCode::PageDown => {
+            let next_offset = (current_offset + s.last_log_height).min(max_scroll);
+            if next_offset != current_offset {
+                s.scroll_offset = next_offset;
+                s.auto_follow = false;
+            }
+            true
+        }
+        KeyCode::Home => {
+            let next_offset = 0;
+            if next_offset != current_offset {
+                s.scroll_offset = next_offset;
+                s.auto_follow = false;
+            }
+            true
+        }
+        KeyCode::End => {
+            s.scroll_offset = max_scroll;
+            s.auto_follow = true;
+            true
+        }
+        _ => false,
+    }
+}
+
 fn handle_key_normal(
     dash: &RatatuiDashboard,
     s: &mut DashboardState,
@@ -428,6 +542,13 @@ fn handle_key_normal(
         s.pending = Some(pending);
         return;
     }
+
+    if perform_scroll(s, key.code) {
+        s.pending = Some(pending);
+        dash.notify.notify_waiters();
+        return;
+    }
+
     match key.code {
         KeyCode::Char('y' | 'Y') => {
             let _ = pending.responder.send(ConfirmDecision::Approve);
@@ -463,37 +584,70 @@ fn handle_key(dash: &Arc<RatatuiDashboard>, key: KeyEvent) {
         .state
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let Some(pending) = s.pending.take() else {
-        return;
-    };
+
     let ctrl_c = key.modifiers.contains(KeyModifiers::CONTROL)
         && matches!(key.code, KeyCode::Char('c' | 'C'));
-    if ctrl_c {
-        s.feedback_input = None;
-        s.edit_input = None;
-        let _ = pending.responder.send(ConfirmDecision::Abort);
-        return;
-    }
 
-    if let Some(buffer) = s.feedback_input.take() {
-        handle_key_feedback_input(dash, &mut s, pending, key.code, buffer);
-    } else if let Some(buffer) = s.edit_input.take() {
-        handle_key_edit_input(dash, &mut s, pending, key.code, buffer);
+    if let Some(pending) = s.pending.take() {
+        if ctrl_c {
+            s.feedback_input = None;
+            s.edit_input = None;
+            drop(s);
+            let _ = pending.responder.send(ConfirmDecision::Abort);
+            return;
+        }
+
+        if let Some(buffer) = s.feedback_input.take() {
+            handle_key_feedback_input(dash, &mut s, pending, key.code, buffer);
+        } else if let Some(buffer) = s.edit_input.take() {
+            handle_key_edit_input(dash, &mut s, pending, key.code, buffer);
+        } else {
+            handle_key_normal(dash, &mut s, pending, key);
+        }
     } else {
-        handle_key_normal(dash, &mut s, pending, key);
+        // No modal open
+        if s.finished.is_some() {
+            let close_key = matches!(key.code, KeyCode::Char('q' | 'Q') | KeyCode::Esc) || ctrl_c;
+            if close_key {
+                s.should_exit = true;
+                drop(s);
+                dash.notify.notify_waiters();
+                return;
+            }
+        }
+
+        if perform_scroll(&mut s, key.code) {
+            drop(s);
+            dash.notify.notify_waiters();
+        }
     }
-    drop(s);
 }
 
 fn draw_frame(
     dash: &Arc<RatatuiDashboard>,
     terminal: &mut Terminal<CrosstermBackend<Stdout>>,
 ) -> std::io::Result<()> {
+    let size = terminal.size()?;
+    let area = Rect::new(0, 0, size.width, size.height);
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3),
+            Constraint::Min(0),
+            Constraint::Length(3),
+        ])
+        .split(area);
+    let log_chunk = chunks[1];
+    let log_width = log_chunk.width.saturating_sub(2) as usize;
+    let log_height = log_chunk.height.saturating_sub(2) as usize;
+
     let snapshot = {
-        let s = dash
+        let mut s = dash
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        s.last_log_width = log_width;
+        s.last_log_height = log_height;
         DashboardSnapshot {
             task: s.task.clone(),
             model: s.model.clone(),
@@ -506,6 +660,10 @@ fn draw_frame(
             feedback_input: s.feedback_input.clone(),
             edit_input: s.edit_input.clone(),
             active_rules: s.active_rules.clone(),
+            scroll_offset: s.scroll_offset,
+            auto_follow: s.auto_follow,
+            last_log_width: s.last_log_width,
+            last_log_height: s.last_log_height,
         }
     };
     terminal.draw(|frame| draw(frame, &snapshot))?;
@@ -524,6 +682,10 @@ struct DashboardSnapshot {
     feedback_input: Option<String>,
     edit_input: Option<String>,
     active_rules: Vec<String>,
+    scroll_offset: usize,
+    auto_follow: bool,
+    last_log_width: usize,
+    last_log_height: usize,
 }
 
 fn draw(frame: &mut ratatui::Frame, snap: &DashboardSnapshot) {
@@ -608,21 +770,41 @@ fn log_paragraph(snap: &DashboardSnapshot) -> Paragraph<'_> {
             Line::from(Span::styled(l.text.clone(), style))
         })
         .collect();
+
+    let total = total_wrapped_lines_slice(&snap.log, snap.last_log_width);
+    let max_scroll = total.saturating_sub(snap.last_log_height);
+    let scroll_y = if snap.auto_follow {
+        max_scroll
+    } else {
+        snap.scroll_offset.min(max_scroll)
+    };
+
+    let title = if snap.auto_follow {
+        " trajectory [LIVE] "
+    } else {
+        " trajectory [SCROLLED] "
+    };
+
+    #[allow(clippy::cast_possible_truncation)]
+    let scroll_y_u16 = scroll_y.min(u16::MAX as usize) as u16;
+
     Paragraph::new(lines)
-        .block(Block::default().borders(Borders::ALL).title(" trajectory "))
+        .block(Block::default().borders(Borders::ALL).title(title))
         .wrap(Wrap { trim: false })
+        .scroll((scroll_y_u16, 0))
 }
 
 fn footer_paragraph(snap: &DashboardSnapshot) -> Paragraph<'_> {
     let hint = if snap.finished.is_some() {
-        "run complete — press 'q' or Ctrl-C to close".to_string()
+        "run complete — press 'q', Esc, or Ctrl-C to close  [scroll: ↑/↓/PgUp/PgDn/Home/End]"
+            .to_string()
     } else if snap.edit_input.is_some() {
         "[Enter] execute edit   [Esc] cancel".to_string()
     } else if let Some(pending) = &snap.pending {
         let scope = pending.derive_scope();
         format!("(y) approve   (n) reject   (e) edit   (a) abort   (A) auto-approve {scope}")
     } else {
-        "waiting for next agent step…".to_string()
+        "waiting for next agent step…  [scroll: ↑/↓/PgUp/PgDn/Home/End]".to_string()
     };
     Paragraph::new(Line::from(Span::styled(
         hint,
@@ -783,10 +965,493 @@ fn summarize_stream(stdout: &str, stderr: &str) -> String {
     }
 }
 
+fn total_wrapped_lines_deque(log: &VecDeque<LogLine>, width: usize) -> usize {
+    let mut total = 0;
+    for line in log {
+        total += count_wrapped_lines(&line.text, width);
+    }
+    total
+}
+
+fn total_wrapped_lines_slice(log: &[LogLine], width: usize) -> usize {
+    let mut total = 0;
+    for line in log {
+        total += count_wrapped_lines(&line.text, width);
+    }
+    total
+}
+
+fn count_wrapped_lines(text: &str, width: usize) -> usize {
+    if width == 0 {
+        return 0;
+    }
+    let mut total_lines = 0;
+    for line in text.split('\n') {
+        let line = line.strip_suffix('\r').unwrap_or(line);
+        total_lines += count_wrapped_line(line, width);
+    }
+    total_lines
+}
+
+fn count_wrapped_line(line: &str, width: usize) -> usize {
+    use unicode_segmentation::UnicodeSegmentation;
+    use unicode_width::UnicodeWidthStr;
+
+    if line.is_empty() {
+        return 1;
+    }
+    let mut total_lines = 0;
+    let mut current_width = 0;
+    let mut word_width = 0;
+    let mut space_width = 0;
+
+    for g in line.graphemes(true) {
+        if g == " " {
+            if word_width > 0 {
+                if current_width + word_width <= width {
+                    current_width += word_width;
+                } else {
+                    total_lines += 1;
+                    current_width = word_width;
+                }
+                word_width = 0;
+            }
+            space_width += 1;
+        } else {
+            if space_width > 0 {
+                let remaining_on_line = width - current_width;
+                if space_width <= remaining_on_line {
+                    current_width += space_width;
+                } else {
+                    total_lines += 1;
+                    let mut rem = space_width - remaining_on_line;
+                    rem = rem.saturating_sub(1);
+                    while rem > width {
+                        total_lines += 1;
+                        rem = rem.saturating_sub(width + 1);
+                    }
+                    current_width = rem;
+                }
+                space_width = 0;
+            }
+            let g_width = g.width();
+            if g_width > width {
+                continue;
+            }
+            word_width += g_width;
+            if word_width > width {
+                total_lines += 1;
+                word_width = g_width;
+                current_width = 0;
+            }
+        }
+    }
+
+    if space_width > 0 {
+        let remaining_on_line = width - current_width;
+        if space_width <= remaining_on_line {
+            current_width += space_width;
+        } else {
+            total_lines += 1;
+            let mut rem = space_width - remaining_on_line;
+            rem = rem.saturating_sub(1);
+            while rem > width {
+                total_lines += 1;
+                rem = rem.saturating_sub(width + 1);
+            }
+            current_width = rem;
+        }
+    } else if word_width > 0 {
+        if current_width + word_width <= width {
+            current_width += word_width;
+        } else {
+            total_lines += 1;
+            current_width = word_width;
+        }
+    }
+
+    if current_width > 0 {
+        total_lines += 1;
+    }
+    total_lines
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used)]
     use super::*;
+
+    #[test]
+    fn test_dashboard_state_defaults() {
+        let state = DashboardState::default();
+        assert_eq!(state.scroll_offset, 0);
+        assert!(state.auto_follow);
+        assert_eq!(state.last_log_width, 80);
+        assert_eq!(state.last_log_height, 20);
+        assert!(!state.should_exit);
+    }
+
+    #[test]
+    fn test_count_wrapped_lines_greedy() {
+        assert_eq!(count_wrapped_lines("", 10), 1);
+        assert_eq!(count_wrapped_lines("hello", 10), 1);
+        assert_eq!(count_wrapped_lines("hello", 5), 1);
+        assert_eq!(count_wrapped_lines("hello world", 5), 2);
+        assert_eq!(count_wrapped_lines("hello world", 8), 2);
+        assert_eq!(count_wrapped_lines("hello world", 11), 1);
+        assert_eq!(count_wrapped_lines("hello\nworld", 10), 2);
+        assert_eq!(count_wrapped_lines("supercalifragilistic", 5), 4);
+        assert_eq!(count_wrapped_lines("  hello", 5), 2);
+        assert_eq!(count_wrapped_lines("🦀🦀", 5), 1);
+        assert_eq!(count_wrapped_lines("🦀🦀", 3), 2);
+        assert_eq!(count_wrapped_lines("👨‍👩‍👧‍👦", 5), 1);
+        assert_eq!(count_wrapped_lines("👨‍👩‍👧‍👦👨‍👩‍👧‍👦", 3), 2);
+    }
+
+    #[test]
+    fn test_scroll_navigation_keys() {
+        let d = make_dashboard();
+        {
+            let mut s = d.state.lock().unwrap();
+            s.last_log_height = 5;
+            s.last_log_width = 10;
+            s.log.push_back(LogLine {
+                kind: LineKind::Info,
+                text: "line1".into(),
+            });
+            s.log.push_back(LogLine {
+                kind: LineKind::Info,
+                text: "line2".into(),
+            });
+            s.log.push_back(LogLine {
+                kind: LineKind::Info,
+                text: "line3".into(),
+            });
+            s.log.push_back(LogLine {
+                kind: LineKind::Info,
+                text: "line4".into(),
+            });
+            s.log.push_back(LogLine {
+                kind: LineKind::Info,
+                text: "line5".into(),
+            });
+            s.log.push_back(LogLine {
+                kind: LineKind::Info,
+                text: "line6".into(),
+            });
+            s.log.push_back(LogLine {
+                kind: LineKind::Info,
+                text: "line7".into(),
+            });
+            s.log.push_back(LogLine {
+                kind: LineKind::Info,
+                text: "line8".into(),
+            });
+        }
+
+        handle_key(&d, KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+        {
+            let s = d.state.lock().unwrap();
+            let auto_follow = s.auto_follow;
+            let scroll_offset = s.scroll_offset;
+            drop(s);
+            assert!(!auto_follow);
+            assert_eq!(scroll_offset, 2);
+        }
+
+        handle_key(&d, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        {
+            let s = d.state.lock().unwrap();
+            let auto_follow = s.auto_follow;
+            let scroll_offset = s.scroll_offset;
+            drop(s);
+            assert!(!auto_follow);
+            assert_eq!(scroll_offset, 3);
+        }
+
+        handle_key(&d, KeyEvent::new(KeyCode::Home, KeyModifiers::NONE));
+        {
+            let s = d.state.lock().unwrap();
+            let auto_follow = s.auto_follow;
+            let scroll_offset = s.scroll_offset;
+            drop(s);
+            assert!(!auto_follow);
+            assert_eq!(scroll_offset, 0);
+        }
+
+        handle_key(&d, KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE));
+        {
+            let s = d.state.lock().unwrap();
+            let auto_follow = s.auto_follow;
+            let scroll_offset = s.scroll_offset;
+            drop(s);
+            assert!(!auto_follow);
+            assert_eq!(scroll_offset, 3);
+        }
+
+        handle_key(&d, KeyEvent::new(KeyCode::End, KeyModifiers::NONE));
+        {
+            let s = d.state.lock().unwrap();
+            let auto_follow = s.auto_follow;
+            let scroll_offset = s.scroll_offset;
+            drop(s);
+            assert!(auto_follow);
+            assert_eq!(scroll_offset, 3);
+        }
+
+        handle_key(&d, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        {
+            let s = d.state.lock().unwrap();
+            let auto_follow = s.auto_follow;
+            let scroll_offset = s.scroll_offset;
+            drop(s);
+            assert!(auto_follow);
+            assert_eq!(scroll_offset, 3);
+        }
+    }
+
+    #[test]
+    fn test_scroll_navigation_keys_when_modal_open() {
+        let d = make_dashboard();
+        let _rx = make_pending(&d);
+        {
+            let mut s = d.state.lock().unwrap();
+            s.last_log_height = 5;
+            s.last_log_width = 10;
+            s.log.push_back(LogLine {
+                kind: LineKind::Info,
+                text: "line1".into(),
+            });
+            s.log.push_back(LogLine {
+                kind: LineKind::Info,
+                text: "line2".into(),
+            });
+            s.log.push_back(LogLine {
+                kind: LineKind::Info,
+                text: "line3".into(),
+            });
+            s.log.push_back(LogLine {
+                kind: LineKind::Info,
+                text: "line4".into(),
+            });
+            s.log.push_back(LogLine {
+                kind: LineKind::Info,
+                text: "line5".into(),
+            });
+            s.log.push_back(LogLine {
+                kind: LineKind::Info,
+                text: "line6".into(),
+            });
+            s.log.push_back(LogLine {
+                kind: LineKind::Info,
+                text: "line7".into(),
+            });
+            s.log.push_back(LogLine {
+                kind: LineKind::Info,
+                text: "line8".into(),
+            });
+        }
+
+        // Send PageUp key. It should scroll the log but keep s.pending (modal) intact!
+        handle_key(&d, KeyEvent::new(KeyCode::PageUp, KeyModifiers::NONE));
+        {
+            let s = d.state.lock().unwrap();
+            let auto_follow = s.auto_follow;
+            let scroll_offset = s.scroll_offset;
+            let pending_is_some = s.pending.is_some();
+            drop(s);
+            assert!(!auto_follow);
+            assert_eq!(scroll_offset, 0); // scrolled up from 3 by height 5, clamped to 0
+            assert!(pending_is_some); // Modal is still open!
+        }
+
+        // Send End key. It should re-engage auto-follow and keep modal intact!
+        handle_key(&d, KeyEvent::new(KeyCode::End, KeyModifiers::NONE));
+        {
+            let s = d.state.lock().unwrap();
+            let auto_follow = s.auto_follow;
+            let scroll_offset = s.scroll_offset;
+            let pending_is_some = s.pending.is_some();
+            drop(s);
+            assert!(auto_follow);
+            assert_eq!(scroll_offset, 3);
+            assert!(pending_is_some); // Modal is still open!
+        }
+    }
+
+    #[test]
+    fn test_close_keys_when_finished() {
+        let d = make_dashboard();
+        {
+            let mut s = d.state.lock().unwrap();
+            s.finished = Some("completed".into());
+        }
+
+        handle_key(&d, KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE));
+        {
+            let s = d.state.lock().unwrap();
+            let should_exit = s.should_exit;
+            drop(s);
+            assert!(should_exit);
+        }
+
+        {
+            let mut s = d.state.lock().unwrap();
+            s.should_exit = false;
+        }
+        handle_key(&d, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        {
+            let s = d.state.lock().unwrap();
+            let should_exit = s.should_exit;
+            drop(s);
+            assert!(should_exit);
+        }
+    }
+
+    #[test]
+    fn test_render_scrolled_vs_live() {
+        let d = make_dashboard();
+        {
+            let mut s = d.state.lock().unwrap();
+            s.last_log_height = 3;
+            s.last_log_width = 10;
+            s.log.push_back(LogLine {
+                kind: LineKind::Info,
+                text: "line1".into(),
+            });
+            s.log.push_back(LogLine {
+                kind: LineKind::Info,
+                text: "line2".into(),
+            });
+            s.log.push_back(LogLine {
+                kind: LineKind::Info,
+                text: "line3".into(),
+            });
+            s.log.push_back(LogLine {
+                kind: LineKind::Info,
+                text: "line4".into(),
+            });
+            s.log.push_back(LogLine {
+                kind: LineKind::Info,
+                text: "line5".into(),
+            });
+        }
+
+        let s_live = snap(&d);
+        let buf_live = render_to_buffer(&s_live, 40, 9);
+        let text_live = buffer_text(&buf_live);
+        assert!(text_live.contains("[LIVE]"));
+        assert!(!text_live.contains("[SCROLLED]"));
+
+        {
+            let mut s = d.state.lock().unwrap();
+            s.auto_follow = false;
+            s.scroll_offset = 1;
+        }
+        let s_scrolled = snap(&d);
+        let buf_scrolled = render_to_buffer(&s_scrolled, 40, 9);
+        let text_scrolled = buffer_text(&buf_scrolled);
+        assert!(text_scrolled.contains("[SCROLLED]"));
+        assert!(!text_scrolled.contains("[LIVE]"));
+    }
+
+    #[test]
+    fn test_scrollback_success_metric() {
+        let d = make_dashboard();
+        {
+            let s = d.state.lock().unwrap();
+            let auto_follow = s.auto_follow;
+            let scroll_offset = s.scroll_offset;
+            drop(s);
+            assert!(auto_follow);
+            assert_eq!(scroll_offset, 0);
+        }
+
+        {
+            let mut s = d.state.lock().unwrap();
+            s.last_log_height = 5;
+            s.last_log_width = 80;
+        }
+
+        d.emit(StreamEvent::RunStarted {
+            task: "testing e2e".into(),
+            model: "claude-3-5".into(),
+            started_at: "t".into(),
+        });
+        for i in 1..=10 {
+            d.emit(StreamEvent::Observation {
+                step: i,
+                content: format!("observation content {i}"),
+                timestamp: "t".into(),
+            });
+        }
+
+        {
+            let s = snap(&d);
+            let buf = render_to_buffer(&s, 80, 11);
+            let text = buffer_text(&buf);
+            assert!(text.contains("[LIVE]"));
+        }
+
+        handle_key(&d, KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+        {
+            let s = d.state.lock().unwrap();
+            let auto_follow = s.auto_follow;
+            let scroll_offset = s.scroll_offset;
+            drop(s);
+            assert!(!auto_follow);
+            assert_eq!(scroll_offset, 5);
+        }
+
+        d.emit(StreamEvent::Observation {
+            step: 11,
+            content: "new scrolled-away event".into(),
+            timestamp: "t".into(),
+        });
+        {
+            let s = d.state.lock().unwrap();
+            let auto_follow = s.auto_follow;
+            let scroll_offset = s.scroll_offset;
+            drop(s);
+            assert!(!auto_follow);
+            assert_eq!(scroll_offset, 5);
+        }
+
+        handle_key(&d, KeyEvent::new(KeyCode::End, KeyModifiers::NONE));
+        {
+            let s = d.state.lock().unwrap();
+            let auto_follow = s.auto_follow;
+            let scroll_offset = s.scroll_offset;
+            drop(s);
+            assert!(auto_follow);
+            assert_eq!(scroll_offset, 7);
+        }
+
+        d.emit(StreamEvent::RunEnded {
+            exit_reason: "success".into(),
+            failure_category: None,
+            final_output: None,
+            steps: 12,
+            total_cost_usd: 0.0,
+            ended_at: "t".into(),
+        });
+        {
+            let s = d.state.lock().unwrap();
+            let finished_is_some = s.finished.is_some();
+            let should_exit = s.should_exit;
+            drop(s);
+            assert!(finished_is_some);
+            assert!(!should_exit);
+        }
+
+        handle_key(&d, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        {
+            let s = d.state.lock().unwrap();
+            let should_exit = s.should_exit;
+            drop(s);
+            assert!(should_exit);
+        }
+    }
 
     #[test]
     fn first_lines_caps_count_and_length() {
@@ -861,6 +1526,10 @@ mod tests {
             feedback_input: s.feedback_input.clone(),
             edit_input: s.edit_input.clone(),
             active_rules: s.active_rules.clone(),
+            scroll_offset: s.scroll_offset,
+            auto_follow: s.auto_follow,
+            last_log_width: s.last_log_width,
+            last_log_height: s.last_log_height,
         }
     }
 
