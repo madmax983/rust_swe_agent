@@ -233,6 +233,9 @@ pub enum InteractiveMode {
     /// Same as `StderrPrompt` but render the prompt inside a full-screen
     /// ratatui dashboard that also streams trajectory events.
     Ratatui,
+    /// Full-screen ratatui dashboard that shows trajectory events without
+    /// prompts for approval (`--yolo --ui ratatui`).
+    RatatuiMonitor,
 }
 
 /// Derive a stable, non-secret identifier for the active redaction policy.
@@ -1437,11 +1440,26 @@ fn build_interactive_pieces(mode: InteractiveMode) -> Result<InteractivePieces, 
                         .into(),
                 )));
             }
-            let handle = crate::agent::RatatuiDashboard::start().map_err(|e| {
+            let handle = crate::agent::RatatuiDashboard::start(false).map_err(|e| {
                 Error::Trajectory(format!("failed to start ratatui dashboard: {e}"))
             })?;
             let cb = handle.confirm_callback();
             Ok((Some(cb), Some(handle)))
+        }
+        InteractiveMode::RatatuiMonitor => {
+            if !std::io::IsTerminal::is_terminal(&std::io::stdin())
+                || !std::io::IsTerminal::is_terminal(&std::io::stdout())
+            {
+                return Err(Error::Config(ConfigError::Invalid(
+                    "ratatui monitor mode requires a TTY on stdin and stdout; \
+                     pass --yolo for unattended runs"
+                        .into(),
+                )));
+            }
+            let handle = crate::agent::RatatuiDashboard::start(true).map_err(|e| {
+                Error::Trajectory(format!("failed to start ratatui dashboard: {e}"))
+            })?;
+            Ok((None, Some(handle)))
         }
     }
 }
