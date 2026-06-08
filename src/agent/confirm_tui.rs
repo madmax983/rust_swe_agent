@@ -985,11 +985,10 @@ fn count_wrapped_lines(text: &str, width: usize) -> usize {
     total_lines
 }
 
-fn char_width(c: char) -> usize {
-    unicode_width::UnicodeWidthChar::width(c).unwrap_or(0)
-}
-
 fn count_wrapped_line(line: &str, width: usize) -> usize {
+    use unicode_segmentation::UnicodeSegmentation;
+    use unicode_width::UnicodeWidthStr;
+
     if line.is_empty() {
         return 1;
     }
@@ -998,8 +997,8 @@ fn count_wrapped_line(line: &str, width: usize) -> usize {
     let mut word_width = 0;
     let mut space_width = 0;
 
-    for c in line.chars() {
-        if c == ' ' {
+    for g in line.graphemes(true) {
+        if g == " " {
             if word_width > 0 {
                 if current_width + word_width <= width {
                     current_width += word_width;
@@ -1027,11 +1026,14 @@ fn count_wrapped_line(line: &str, width: usize) -> usize {
                 }
                 space_width = 0;
             }
-            let c_width = char_width(c);
-            word_width += c_width;
+            let g_width = g.width();
+            if g_width > width {
+                continue;
+            }
+            word_width += g_width;
             if word_width > width {
                 total_lines += 1;
-                word_width = c_width;
+                word_width = g_width;
                 current_width = 0;
             }
         }
@@ -1094,6 +1096,8 @@ mod tests {
         assert_eq!(count_wrapped_lines("  hello", 5), 2);
         assert_eq!(count_wrapped_lines("🦀🦀", 5), 1);
         assert_eq!(count_wrapped_lines("🦀🦀", 3), 2);
+        assert_eq!(count_wrapped_lines("👨‍👩‍👧‍👦", 5), 1);
+        assert_eq!(count_wrapped_lines("👨‍👩‍👧‍👦👨‍👩‍👧‍👦", 3), 2);
     }
 
     #[test]
