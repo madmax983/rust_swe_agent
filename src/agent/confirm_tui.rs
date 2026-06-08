@@ -114,6 +114,7 @@ impl RatatuiDashboardHandle {
 
     pub async fn shutdown(mut self) {
         loop {
+            let notification = self.inner.notify.notified();
             let (finished, should_exit) = {
                 let s = self
                     .inner
@@ -125,7 +126,7 @@ impl RatatuiDashboardHandle {
             if !finished || should_exit {
                 break;
             }
-            self.inner.notify.notified().await;
+            notification.await;
         }
 
         if let Some(tx) = self.shutdown_tx.take() {
@@ -521,11 +522,11 @@ fn handle_key(dash: &Arc<RatatuiDashboard>, key: KeyEvent) {
     let ctrl_c = key.modifiers.contains(KeyModifiers::CONTROL)
         && matches!(key.code, KeyCode::Char('c' | 'C'));
 
-    if s.pending.is_some() {
-        let pending = s.pending.take().unwrap();
+    if let Some(pending) = s.pending.take() {
         if ctrl_c {
             s.feedback_input = None;
             s.edit_input = None;
+            drop(s);
             let _ = pending.responder.send(ConfirmDecision::Abort);
             return;
         }
@@ -543,6 +544,7 @@ fn handle_key(dash: &Arc<RatatuiDashboard>, key: KeyEvent) {
             let close_key = matches!(key.code, KeyCode::Char('q' | 'Q') | KeyCode::Esc) || ctrl_c;
             if close_key {
                 s.should_exit = true;
+                drop(s);
                 dash.notify.notify_waiters();
                 return;
             }
@@ -563,6 +565,7 @@ fn handle_key(dash: &Arc<RatatuiDashboard>, key: KeyEvent) {
                     s.scroll_offset = next_offset;
                     s.auto_follow = false;
                 }
+                drop(s);
                 dash.notify.notify_waiters();
             }
             KeyCode::Down => {
@@ -571,6 +574,7 @@ fn handle_key(dash: &Arc<RatatuiDashboard>, key: KeyEvent) {
                     s.scroll_offset = next_offset;
                     s.auto_follow = false;
                 }
+                drop(s);
                 dash.notify.notify_waiters();
             }
             KeyCode::PageUp => {
@@ -579,6 +583,7 @@ fn handle_key(dash: &Arc<RatatuiDashboard>, key: KeyEvent) {
                     s.scroll_offset = next_offset;
                     s.auto_follow = false;
                 }
+                drop(s);
                 dash.notify.notify_waiters();
             }
             KeyCode::PageDown => {
@@ -587,6 +592,7 @@ fn handle_key(dash: &Arc<RatatuiDashboard>, key: KeyEvent) {
                     s.scroll_offset = next_offset;
                     s.auto_follow = false;
                 }
+                drop(s);
                 dash.notify.notify_waiters();
             }
             KeyCode::Home => {
@@ -595,11 +601,13 @@ fn handle_key(dash: &Arc<RatatuiDashboard>, key: KeyEvent) {
                     s.scroll_offset = next_offset;
                     s.auto_follow = false;
                 }
+                drop(s);
                 dash.notify.notify_waiters();
             }
             KeyCode::End => {
                 s.scroll_offset = max_scroll;
                 s.auto_follow = true;
+                drop(s);
                 dash.notify.notify_waiters();
             }
             _ => {}
@@ -769,10 +777,13 @@ fn log_paragraph(snap: &DashboardSnapshot) -> Paragraph<'_> {
         " trajectory [SCROLLED] "
     };
 
+    #[allow(clippy::cast_possible_truncation)]
+    let scroll_y_u16 = scroll_y.min(u16::MAX as usize) as u16;
+
     Paragraph::new(lines)
         .block(Block::default().borders(Borders::ALL).title(title))
         .wrap(Wrap { trim: false })
-        .scroll((scroll_y as u16, 0))
+        .scroll((scroll_y_u16, 0))
 }
 
 fn footer_paragraph(snap: &DashboardSnapshot) -> Paragraph<'_> {
@@ -1001,20 +1012,18 @@ fn count_wrapped_line(line: &str, width: usize) -> usize {
             space_width += 1;
         } else {
             if space_width > 0 {
-                if current_width > 0 {
-                    if current_width + space_width <= width {
-                        current_width += space_width;
-                    } else {
-                        total_lines += 1;
-                        current_width = 0;
-                    }
+                let remaining_on_line = width - current_width;
+                if space_width <= remaining_on_line {
+                    current_width += space_width;
                 } else {
-                    if space_width <= width {
-                        current_width = space_width;
-                    } else {
-                        total_lines += space_width / width;
-                        current_width = space_width % width;
+                    total_lines += 1;
+                    let mut rem = space_width - remaining_on_line;
+                    rem = rem.saturating_sub(1);
+                    while rem > width {
+                        total_lines += 1;
+                        rem = rem.saturating_sub(width + 1);
                     }
+                    current_width = rem;
                 }
                 space_width = 0;
             }
@@ -1029,16 +1038,18 @@ fn count_wrapped_line(line: &str, width: usize) -> usize {
     }
 
     if space_width > 0 {
-        if current_width > 0 {
-            if current_width + space_width <= width {
-                current_width += space_width;
-            } else {
-                total_lines += 1;
-                current_width = 0;
-            }
+        let remaining_on_line = width - current_width;
+        if space_width <= remaining_on_line {
+            current_width += space_width;
         } else {
-            total_lines += space_width / width;
-            current_width = space_width % width;
+            total_lines += 1;
+            let mut rem = space_width - remaining_on_line;
+            rem = rem.saturating_sub(1);
+            while rem > width {
+                total_lines += 1;
+                rem = rem.saturating_sub(width + 1);
+            }
+            current_width = rem;
         }
     } else if word_width > 0 {
         if current_width + word_width <= width {
@@ -1129,43 +1140,61 @@ mod tests {
         handle_key(&d, KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
         {
             let s = d.state.lock().unwrap();
-            assert!(!s.auto_follow);
-            assert_eq!(s.scroll_offset, 2);
+            let auto_follow = s.auto_follow;
+            let scroll_offset = s.scroll_offset;
+            drop(s);
+            assert!(!auto_follow);
+            assert_eq!(scroll_offset, 2);
         }
 
         handle_key(&d, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
         {
             let s = d.state.lock().unwrap();
-            assert!(!s.auto_follow);
-            assert_eq!(s.scroll_offset, 3);
+            let auto_follow = s.auto_follow;
+            let scroll_offset = s.scroll_offset;
+            drop(s);
+            assert!(!auto_follow);
+            assert_eq!(scroll_offset, 3);
         }
 
         handle_key(&d, KeyEvent::new(KeyCode::Home, KeyModifiers::NONE));
         {
             let s = d.state.lock().unwrap();
-            assert!(!s.auto_follow);
-            assert_eq!(s.scroll_offset, 0);
+            let auto_follow = s.auto_follow;
+            let scroll_offset = s.scroll_offset;
+            drop(s);
+            assert!(!auto_follow);
+            assert_eq!(scroll_offset, 0);
         }
 
         handle_key(&d, KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE));
         {
             let s = d.state.lock().unwrap();
-            assert!(!s.auto_follow);
-            assert_eq!(s.scroll_offset, 3);
+            let auto_follow = s.auto_follow;
+            let scroll_offset = s.scroll_offset;
+            drop(s);
+            assert!(!auto_follow);
+            assert_eq!(scroll_offset, 3);
         }
 
         handle_key(&d, KeyEvent::new(KeyCode::End, KeyModifiers::NONE));
         {
             let s = d.state.lock().unwrap();
-            assert!(s.auto_follow);
-            assert_eq!(s.scroll_offset, 3);
+            let auto_follow = s.auto_follow;
+            let scroll_offset = s.scroll_offset;
+            drop(s);
+            assert!(auto_follow);
+            assert_eq!(scroll_offset, 3);
         }
 
         handle_key(&d, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
         {
             let s = d.state.lock().unwrap();
-            assert!(s.auto_follow);
-            assert_eq!(s.scroll_offset, 3);
+            let auto_follow = s.auto_follow;
+            let scroll_offset = s.scroll_offset;
+            drop(s);
+            assert!(auto_follow);
+            assert_eq!(scroll_offset, 3);
         }
     }
 
@@ -1180,7 +1209,9 @@ mod tests {
         handle_key(&d, KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE));
         {
             let s = d.state.lock().unwrap();
-            assert!(s.should_exit);
+            let should_exit = s.should_exit;
+            drop(s);
+            assert!(should_exit);
         }
 
         {
@@ -1190,7 +1221,9 @@ mod tests {
         handle_key(&d, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
         {
             let s = d.state.lock().unwrap();
-            assert!(s.should_exit);
+            let should_exit = s.should_exit;
+            drop(s);
+            assert!(should_exit);
         }
     }
 
@@ -1246,8 +1279,11 @@ mod tests {
         let d = make_dashboard();
         {
             let s = d.state.lock().unwrap();
-            assert!(s.auto_follow);
-            assert_eq!(s.scroll_offset, 0);
+            let auto_follow = s.auto_follow;
+            let scroll_offset = s.scroll_offset;
+            drop(s);
+            assert!(auto_follow);
+            assert_eq!(scroll_offset, 0);
         }
 
         {
@@ -1264,7 +1300,7 @@ mod tests {
         for i in 1..=10 {
             d.emit(StreamEvent::Observation {
                 step: i,
-                content: format!("observation content {i}").into(),
+                content: format!("observation content {i}"),
                 timestamp: "t".into(),
             });
         }
@@ -1279,8 +1315,11 @@ mod tests {
         handle_key(&d, KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
         {
             let s = d.state.lock().unwrap();
-            assert!(!s.auto_follow);
-            assert_eq!(s.scroll_offset, 5);
+            let auto_follow = s.auto_follow;
+            let scroll_offset = s.scroll_offset;
+            drop(s);
+            assert!(!auto_follow);
+            assert_eq!(scroll_offset, 5);
         }
 
         d.emit(StreamEvent::Observation {
@@ -1290,15 +1329,21 @@ mod tests {
         });
         {
             let s = d.state.lock().unwrap();
-            assert!(!s.auto_follow);
-            assert_eq!(s.scroll_offset, 5);
+            let auto_follow = s.auto_follow;
+            let scroll_offset = s.scroll_offset;
+            drop(s);
+            assert!(!auto_follow);
+            assert_eq!(scroll_offset, 5);
         }
 
         handle_key(&d, KeyEvent::new(KeyCode::End, KeyModifiers::NONE));
         {
             let s = d.state.lock().unwrap();
-            assert!(s.auto_follow);
-            assert_eq!(s.scroll_offset, 7);
+            let auto_follow = s.auto_follow;
+            let scroll_offset = s.scroll_offset;
+            drop(s);
+            assert!(auto_follow);
+            assert_eq!(scroll_offset, 7);
         }
 
         d.emit(StreamEvent::RunEnded {
@@ -1311,14 +1356,19 @@ mod tests {
         });
         {
             let s = d.state.lock().unwrap();
-            assert!(s.finished.is_some());
-            assert!(!s.should_exit);
+            let finished_is_some = s.finished.is_some();
+            let should_exit = s.should_exit;
+            drop(s);
+            assert!(finished_is_some);
+            assert!(!should_exit);
         }
 
         handle_key(&d, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
         {
             let s = d.state.lock().unwrap();
-            assert!(s.should_exit);
+            let should_exit = s.should_exit;
+            drop(s);
+            assert!(should_exit);
         }
     }
 
