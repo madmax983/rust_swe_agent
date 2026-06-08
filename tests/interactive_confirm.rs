@@ -555,4 +555,3 @@ async fn auto_approve_regression_test_n_safe_m_risky() {
     // The second echo command must have bypassed the confirmer.
     assert_eq!(confirmer.call_count(), 3);
 }
-

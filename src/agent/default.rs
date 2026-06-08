@@ -3563,12 +3563,15 @@ mod tests {
             "run command\nTOOL_CALL: bash\n```bash\ngit status\n```".into(),
             "done\nCOMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT\n```\nfinal\n```".into(),
         ];
-        let mut agent = make_agent_with_run_result(responses, RunResult {
-            stdout: "ok".to_string(),
-            stderr: String::new(),
-            exit_code: 0,
-            timed_out: false,
-        });
+        let mut agent = make_agent_with_run_result(
+            responses,
+            RunResult {
+                stdout: "ok".to_string(),
+                stderr: String::new(),
+                exit_code: 0,
+                timed_out: false,
+            },
+        );
         agent.confirm_callback = Some(confirmer.clone());
 
         let outcome = agent.run().await.unwrap();
