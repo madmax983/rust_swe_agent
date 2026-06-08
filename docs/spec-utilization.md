@@ -117,8 +117,28 @@ only in a backward-compatible manner; breaking changes bump `schema_version`.
 | Code | Class | When |
 |---|---|---|
 | `0` | `success` | Report computed; gate (if any) passed |
-| `2` | `usage_error` | Missing manifest, absent/unparseable `started_at_utc`/`finished_at_utc` (in-progress or legacy sweep), non-positive wallclock, no instances, or no instance carrying a `duration_secs`. Emitted instead of misleading zeros |
+| `2` | `usage_error` | The sweep cannot be measured honestly: missing manifest; absent/unparseable `started_at_utc`/`finished_at_utc` (in-progress or legacy sweep); non-positive wallclock; no instances; no instance carrying a `duration_secs`; a non-`completed` `sweep_status` (cancelled / systemic-halt); a `--resume` sweep; or `--min-utilization` against a retry-merged sweep. Emitted instead of misleading zeros or an untrustworthy verdict |
 | `44` | `utilization_gate_failure` | `--min-utilization <PCT>` was set and `utilization_pct` fell below it |
+
+### Rejected sweeps
+
+To keep the measurement honest, the command refuses sweeps whose persisted
+inputs are not comparable, rather than emitting a plausible-looking but wrong
+number:
+
+- **Non-`completed` sweeps.** A `cancelled` or `systemic_halt` sweep still writes
+  a terminal `results.json` with `finished_at_utc`, but only the instances that
+  finished before the abort are present. `sweep_status` must be `completed`.
+- **`--resume` sweeps.** Instances carried over from the earlier invocation keep
+  their prior `duration_secs` (and may appear as `skipped_resume`) while the
+  manifest wallclock covers only the resumed run — so summing every duration
+  against the resumed wallclock would overstate effective parallelism.
+- **`--min-utilization` on a retry-merged sweep.** The (flagged, approximate)
+  report is still produced, but the **gate** is refused: `duration_secs` reflects
+  only terminal attempts, so earlier attempts and retry backoff consume worker
+  time without contributing to the sum, and the gate could fail a sweep that
+  actually kept its workers busy. Drop `--min-utilization` for the approximate
+  report, or re-run a single-shot sweep to gate.
 
 ## Approximations
 

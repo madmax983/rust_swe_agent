@@ -61,13 +61,26 @@ fn instance(id: &str, duration_secs: Option<f64>, attempts: u32, runs: u32) -> I
     }
 }
 
+#[derive(Clone, Copy)]
+enum ParallelStyle {
+    /// `--parallel N` (two argv tokens).
+    SpaceSeparated,
+    /// `--parallel=N` (single argv token).
+    Equals,
+    /// `-p N` (short flag).
+    ShortDash,
+}
+
 struct SweepSpec<'a> {
     durations: &'a [Option<f64>],
     parallel_argv: Option<usize>,
+    parallel_style: ParallelStyle,
     started: Option<&'a str>,
     finished: Option<&'a str>,
     attempts: u32,
     runs: u32,
+    sweep_status: &'a str,
+    resume: bool,
 }
 
 impl Default for SweepSpec<'_> {
@@ -75,10 +88,13 @@ impl Default for SweepSpec<'_> {
         Self {
             durations: &[],
             parallel_argv: Some(8),
+            parallel_style: ParallelStyle::SpaceSeparated,
             started: Some("2026-05-01T00:00:00Z"),
             finished: Some("2026-05-01T00:10:00Z"),
             attempts: 1,
             runs: 1,
+            sweep_status: SWEEP_STATUS_COMPLETED,
+            resume: false,
         }
     }
 }
@@ -93,8 +109,20 @@ fn write_sweep(dir: &Path, spec: &SweepSpec) {
 
     let mut argv = vec!["max".to_owned(), "bench".to_owned(), "swebench".to_owned()];
     if let Some(p) = spec.parallel_argv {
-        argv.push("--parallel".to_owned());
-        argv.push(p.to_string());
+        match spec.parallel_style {
+            ParallelStyle::SpaceSeparated => {
+                argv.push("--parallel".to_owned());
+                argv.push(p.to_string());
+            }
+            ParallelStyle::Equals => argv.push(format!("--parallel={p}")),
+            ParallelStyle::ShortDash => {
+                argv.push("-p".to_owned());
+                argv.push(p.to_string());
+            }
+        }
+    }
+    if spec.resume {
+        argv.push("--resume".to_owned());
     }
 
     let manifest = ProvenanceManifest {
@@ -136,7 +164,7 @@ fn write_sweep(dir: &Path, spec: &SweepSpec) {
             started_at_utc: spec.started.unwrap_or("").to_owned(),
             finished_at_utc: spec.finished.map(std::borrow::ToOwned::to_owned),
             host_os: "test".into(),
-            resume_mode: false,
+            resume_mode: spec.resume,
             rust_version: None,
         },
         cli: CliManifest { argv },
@@ -150,7 +178,7 @@ fn write_sweep(dir: &Path, spec: &SweepSpec) {
 
     let results = SweepResults {
         total: instances.len(),
-        sweep_status: SWEEP_STATUS_COMPLETED.into(),
+        sweep_status: spec.sweep_status.into(),
         submitted: instances.len(),
         filter_spec: FilterSpec {
             original_count: instances.len(),
@@ -500,4 +528,178 @@ fn cli_missing_timestamps_exits_nonzero() {
         .output()
         .unwrap();
     assert!(!out.status.success());
+}
+
+#[test]
+fn non_positive_wallclock_is_an_error() {
+    // finished == started → zero-length wallclock; must error rather than
+    // divide by zero and emit misleading infinities.
+    let work = tempfile::tempdir().unwrap();
+    let durations = vec![Some(300.0); 4];
+    write_sweep(
+        work.path(),
+        &SweepSpec {
+            durations: &durations,
+            started: Some("2026-05-01T00:00:00Z"),
+            finished: Some("2026-05-01T00:00:00Z"),
+            ..SweepSpec::default()
+        },
+    );
+
+    let err = compute(&UtilizationArgs {
+        sweep_dir: work.path().to_path_buf(),
+        min_utilization: None,
+    })
+    .unwrap_err();
+    assert!(err.to_string().contains("non-positive"), "got: {err}");
+}
+
+#[test]
+fn all_missing_durations_is_an_error() {
+    let work = tempfile::tempdir().unwrap();
+    let durations = vec![None; 4];
+    write_sweep(
+        work.path(),
+        &SweepSpec {
+            durations: &durations,
+            ..SweepSpec::default()
+        },
+    );
+
+    let err = compute(&UtilizationArgs {
+        sweep_dir: work.path().to_path_buf(),
+        min_utilization: None,
+    })
+    .unwrap_err();
+    assert!(err.to_string().contains("duration_secs"), "got: {err}");
+}
+
+#[test]
+fn partial_missing_durations_are_counted_not_fatal() {
+    // 2 of 4 instances carry a duration; the other two are excluded from the
+    // sum and surfaced in instances_missing_duration.
+    let work = tempfile::tempdir().unwrap();
+    let durations = vec![Some(300.0), None, Some(300.0), None];
+    write_sweep(
+        work.path(),
+        &SweepSpec {
+            durations: &durations,
+            parallel_argv: Some(8),
+            ..SweepSpec::default()
+        },
+    );
+
+    let report = compute(&UtilizationArgs {
+        sweep_dir: work.path().to_path_buf(),
+        min_utilization: None,
+    })
+    .unwrap();
+
+    assert_eq!(report.total_instances, 4);
+    assert_eq!(report.instances_with_duration, 2);
+    assert_eq!(report.instances_missing_duration, 2);
+    assert_eq!(report.sum_instance_duration_secs, 600.0);
+}
+
+#[test]
+fn parallel_count_parsed_from_equals_and_short_flag_styles() {
+    for style in [ParallelStyle::Equals, ParallelStyle::ShortDash] {
+        let work = tempfile::tempdir().unwrap();
+        let durations = vec![Some(300.0); 4];
+        write_sweep(
+            work.path(),
+            &SweepSpec {
+                durations: &durations,
+                parallel_argv: Some(6),
+                parallel_style: style,
+                ..SweepSpec::default()
+            },
+        );
+
+        let report = compute(&UtilizationArgs {
+            sweep_dir: work.path().to_path_buf(),
+            min_utilization: None,
+        })
+        .unwrap();
+
+        assert_eq!(report.configured_workers, 6);
+        assert_eq!(
+            report.configured_workers_source,
+            "manifest.cli.argv[--parallel]"
+        );
+    }
+}
+
+#[test]
+fn non_completed_sweep_is_rejected() {
+    // A cancelled sweep writes finished_at_utc but only a partial instance set.
+    let work = tempfile::tempdir().unwrap();
+    let durations = vec![Some(300.0); 4];
+    write_sweep(
+        work.path(),
+        &SweepSpec {
+            durations: &durations,
+            sweep_status: "cancelled",
+            ..SweepSpec::default()
+        },
+    );
+
+    let err = compute(&UtilizationArgs {
+        sweep_dir: work.path().to_path_buf(),
+        min_utilization: None,
+    })
+    .unwrap_err();
+    assert!(err.to_string().contains("not 'completed'"), "got: {err}");
+}
+
+#[test]
+fn resume_sweep_is_rejected() {
+    let work = tempfile::tempdir().unwrap();
+    let durations = vec![Some(300.0); 4];
+    write_sweep(
+        work.path(),
+        &SweepSpec {
+            durations: &durations,
+            resume: true,
+            ..SweepSpec::default()
+        },
+    );
+
+    let err = compute(&UtilizationArgs {
+        sweep_dir: work.path().to_path_buf(),
+        min_utilization: None,
+    })
+    .unwrap_err();
+    assert!(err.to_string().contains("--resume"), "got: {err}");
+}
+
+#[test]
+fn retry_merged_sweep_blocks_the_gate_but_not_the_report() {
+    let work = tempfile::tempdir().unwrap();
+    let durations = vec![Some(300.0); 8];
+    write_sweep(
+        work.path(),
+        &SweepSpec {
+            durations: &durations,
+            parallel_argv: Some(8),
+            attempts: 2,
+            ..SweepSpec::default()
+        },
+    );
+
+    // Without a gate, the (flagged) report is still produced.
+    let report = compute(&UtilizationArgs {
+        sweep_dir: work.path().to_path_buf(),
+        min_utilization: None,
+    })
+    .unwrap();
+    assert!(report.retry_merged);
+
+    // With a gate, the command refuses to emit a verdict on terminal-only durations.
+    let err = compute(&UtilizationArgs {
+        sweep_dir: work.path().to_path_buf(),
+        min_utilization: Some(40.0),
+    })
+    .unwrap_err();
+    assert!(err.to_string().contains("retry-merged"), "got: {err}");
 }

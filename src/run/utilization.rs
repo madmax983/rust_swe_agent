@@ -18,13 +18,15 @@
 
 #![allow(clippy::cast_precision_loss)]
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
 use crate::error::{ConfigError, Error};
 use crate::run::compare::load_sweep;
-use crate::run::swebench::{DEFAULT_PARALLEL, InstanceResult, ProvenanceManifest};
+use crate::run::swebench::{
+    DEFAULT_PARALLEL, InstanceResult, ProvenanceManifest, SWEEP_STATUS_COMPLETED,
+};
 
 /// Stable schema version for the JSON artifact. Bump only on breaking changes.
 pub const SCHEMA_VERSION: u32 = 1;
@@ -113,6 +115,8 @@ pub fn compute(args: &UtilizationArgs) -> Result<UtilizationReport, Error> {
         ))
     })?;
 
+    reject_unmeasurable_sweep(&args.sweep_dir, manifest)?;
+
     let wallclock_secs = sweep_wallclock_secs(manifest)?;
 
     let configured_workers = parallel_from_manifest(manifest).max(1);
@@ -166,6 +170,22 @@ pub fn compute(args: &UtilizationArgs) -> Result<UtilizationReport, Error> {
          approximation (exact reconstruction is out of scope)"
             .to_owned()
     });
+
+    // The report is still emitted for retry-merged sweeps (flagged above), but
+    // the --min-utilization gate must not run against terminal-only durations:
+    // earlier attempts and retry backoff consume worker time without adding to
+    // sum_instance_duration_secs, so the gate could fail a sweep that actually
+    // kept its workers busy. Refuse to gate rather than emit a misleading verdict.
+    if args.min_utilization.is_some() && retry_merged {
+        return Err(invalid(
+            "utilization: --min-utilization cannot be evaluated on a retry-merged \
+             sweep (one or more instances retried or ran multiple samples); \
+             duration_secs reflects only terminal attempts, so the gate would compare \
+             an underestimate against the floor. Re-run a single-shot sweep to gate \
+             utilization, or drop --min-utilization to get the approximate report"
+                .to_owned(),
+        ));
+    }
 
     let min_utilization_met = args.min_utilization.map(|floor| utilization_pct >= floor);
 
@@ -279,6 +299,52 @@ fn now_rfc3339() -> String {
     chrono::Utc::now().to_rfc3339()
 }
 
+/// Reject sweeps whose persisted inputs cannot be measured honestly: a
+/// non-`completed` status (cancelled / systemic-halt leaves only a partial
+/// instance population) or a `--resume` run (carried-over durations are not
+/// comparable to the resumed-only wallclock).
+fn reject_unmeasurable_sweep(sweep_dir: &Path, manifest: &ProvenanceManifest) -> Result<(), Error> {
+    // A cancelled or systemic-halt sweep still writes a terminal results.json
+    // with finished_at_utc, but only the instances that completed before the
+    // abort are present. Computing — and especially gating — utilization on that
+    // partial population is misleading, so reject any non-"completed" status.
+    if let Some(status) = read_sweep_status(sweep_dir) {
+        if status != SWEEP_STATUS_COMPLETED {
+            return Err(invalid(format!(
+                "utilization: sweep status is '{status}', not 'completed'; only \
+                 completed sweeps carry the full instance population needed for an \
+                 honest utilization measurement (a cancelled or halted sweep reports \
+                 only the instances that finished before the abort)"
+            )));
+        }
+    }
+
+    // Reject --resume sweeps. Rows carried over from the earlier invocation keep
+    // their prior duration_secs (and may appear as `skipped_resume`) while the
+    // manifest wallclock covers only the resumed run, so summing every duration
+    // against the resumed wallclock overstates effective parallelism.
+    if manifest.runtime.resume_mode || manifest.cli.argv.iter().any(|a| a == "--resume") {
+        return Err(invalid(
+            "utilization: sweep was run with --resume; carried-over instances keep \
+             their prior duration_secs while the manifest wallclock covers only the \
+             resumed invocation, so utilization would be overstated; re-run the full \
+             sweep without --resume to measure concurrency"
+                .to_owned(),
+        ));
+    }
+
+    Ok(())
+}
+
+/// Read `sweep_status` from the sweep's `results.json`, when present. Returns
+/// `None` for legacy summaries that predate the field (those fall back to the
+/// `finished_at_utc` completeness check in [`sweep_wallclock_secs`]).
+fn read_sweep_status(sweep_dir: &Path) -> Option<String> {
+    let text = std::fs::read_to_string(sweep_dir.join("results.json")).ok()?;
+    let val: serde_json::Value = serde_json::from_str(&text).ok()?;
+    val.get("sweep_status")?.as_str().map(str::to_owned)
+}
+
 /// Sweep wallclock in seconds, or an error when the timestamps are absent or
 /// unparseable (in-progress or legacy manifest), or non-positive.
 fn sweep_wallclock_secs(manifest: &ProvenanceManifest) -> Result<f64, Error> {
@@ -343,5 +409,76 @@ fn parallel_source(manifest: &ProvenanceManifest) -> String {
         "manifest.cli.argv[--parallel]".to_owned()
     } else {
         format!("default ({DEFAULT_PARALLEL})")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn base_report() -> UtilizationReport {
+        UtilizationReport {
+            schema_version: SCHEMA_VERSION,
+            sweep: "/tmp/sweep".to_owned(),
+            generated_at: "2026-05-01T00:00:00Z".to_owned(),
+            configured_workers: 8,
+            configured_workers_source: "manifest.cli.argv[--parallel]".to_owned(),
+            total_instances: 8,
+            instances_with_duration: 8,
+            instances_missing_duration: 0,
+            sum_instance_duration_secs: 2400.0,
+            wallclock_secs: 600.0,
+            effective_parallelism: 4.0,
+            utilization_pct: 50.0,
+            theoretical_min_wallclock_secs: 300.0,
+            idle_waste_secs: 300.0,
+            idle_waste_pct: 50.0,
+            retry_merged: false,
+            retry_merged_note: None,
+            min_utilization: None,
+            min_utilization_met: None,
+        }
+    }
+
+    #[test]
+    fn render_text_includes_core_metrics() {
+        let text = render_text(&base_report());
+        assert!(text.contains("Effective parallelism: 4.00 of 8 configured"));
+        assert!(text.contains("Utilization:           50.0%"));
+        assert!(text.contains("Idle waste:            300.0s (50.0% of wallclock)"));
+        // No optional sections when not applicable.
+        assert!(!text.contains("missing duration"));
+        assert!(!text.contains("retry-merged"));
+        assert!(!text.contains("Gate ("));
+    }
+
+    #[test]
+    fn render_text_notes_missing_durations() {
+        let mut report = base_report();
+        report.instances_missing_duration = 3;
+        let text = render_text(&report);
+        assert!(text.contains("missing duration:   3 — excluded from the sum"));
+    }
+
+    #[test]
+    fn render_text_warns_on_retry_merged() {
+        let mut report = base_report();
+        report.retry_merged = true;
+        report.retry_merged_note = Some("durations are approximate".to_owned());
+        let text = render_text(&report);
+        assert!(text.contains("⚠ retry-merged sweep: durations are approximate"));
+    }
+
+    #[test]
+    fn render_text_gate_pass_and_fail() {
+        let mut pass = base_report();
+        pass.min_utilization = Some(40.0);
+        pass.min_utilization_met = Some(true);
+        assert!(render_text(&pass).contains("Gate (--min-utilization 40.0%): PASS"));
+
+        let mut fail = base_report();
+        fail.min_utilization = Some(60.0);
+        fail.min_utilization_met = Some(false);
+        assert!(render_text(&fail).contains("Gate (--min-utilization 60.0%): FAIL"));
     }
 }
