@@ -92,6 +92,9 @@ pub enum StreamEvent {
         total_cost_usd: f64,
         ended_at: String,
     },
+    /// A new auto-approve rule was created for a scope.
+    #[serde(rename = "auto_approve_rule_created")]
+    AutoApproveRuleCreated { scope: String },
 }
 
 impl StreamEvent {
@@ -105,6 +108,7 @@ impl StreamEvent {
             Self::Observation { .. } => "observation",
             Self::FormatError { .. } => "format_error",
             Self::RunEnded { .. } => "run_ended",
+            Self::AutoApproveRuleCreated { .. } => "auto_approve_rule_created",
         }
     }
 }

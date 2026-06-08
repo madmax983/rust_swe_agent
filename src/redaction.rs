@@ -714,6 +714,9 @@ pub fn redact_stream_event(event: &StreamEvent, redactor: &Redactor) -> StreamEv
             total_cost_usd: *total_cost_usd,
             ended_at: ended_at.clone(),
         },
+        StreamEvent::AutoApproveRuleCreated { scope } => StreamEvent::AutoApproveRuleCreated {
+            scope: redactor.redact_text(scope, surface::STREAM).text,
+        },
     }
 }
 
