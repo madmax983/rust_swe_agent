@@ -18,10 +18,10 @@ use std::process::Command;
 use maxwells_daemon::artifact::ArtifactKind;
 use maxwells_daemon::run::swebench::{
     CliManifest, ConfigManifest, DatasetManifest, FilterSpec, HarnessManifest, InstanceResult,
-    ModelManifest, PromptTemplateManifest, ProvenanceManifest, RuntimeManifest, SweepResults,
-    SWEEP_STATUS_COMPLETED,
+    ModelManifest, PromptTemplateManifest, ProvenanceManifest, RuntimeManifest,
+    SWEEP_STATUS_COMPLETED, SweepResults,
 };
-use maxwells_daemon::run::utilization::{compute, render_text, UtilizationArgs};
+use maxwells_daemon::run::utilization::{UtilizationArgs, compute, render_text};
 use maxwells_daemon::trajectory::outcome;
 
 mod support;
@@ -403,7 +403,11 @@ fn cli_json_output_has_stable_schema() {
         ])
         .output()
         .unwrap();
-    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
 
     let value: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     for key in [
@@ -449,7 +453,10 @@ fn cli_min_utilization_gate_exits_nonzero_on_failure() {
         ])
         .output()
         .unwrap();
-    assert!(!out.status.success(), "expected non-zero exit for failed gate");
+    assert!(
+        !out.status.success(),
+        "expected non-zero exit for failed gate"
+    );
 
     // A passing floor exits zero.
     let ok = Command::new(binary_path())
@@ -463,7 +470,11 @@ fn cli_min_utilization_gate_exits_nonzero_on_failure() {
         ])
         .output()
         .unwrap();
-    assert!(ok.status.success(), "stderr: {}", String::from_utf8_lossy(&ok.stderr));
+    assert!(
+        ok.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&ok.stderr)
+    );
 }
 
 #[test]

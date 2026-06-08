@@ -157,9 +157,9 @@ pub fn compute(args: &UtilizationArgs) -> Result<UtilizationReport, Error> {
     let idle_waste_secs = (wallclock_secs - theoretical_min_wallclock_secs).max(0.0);
     let idle_waste_pct = (idle_waste_secs / wallclock_secs) * 100.0;
 
-    let retry_merged = instances.iter().any(|i| {
-        i.attempts > 1 || i.runs > 1 || !i.retry_reasons.is_empty()
-    });
+    let retry_merged = instances
+        .iter()
+        .any(|i| i.attempts > 1 || i.runs > 1 || !i.retry_reasons.is_empty());
     let retry_merged_note = retry_merged.then(|| {
         "one or more instances retried or ran multiple samples; duration_secs \
          reflects only the terminal attempt, so effective parallelism is an \
@@ -167,9 +167,7 @@ pub fn compute(args: &UtilizationArgs) -> Result<UtilizationReport, Error> {
             .to_owned()
     });
 
-    let min_utilization_met = args
-        .min_utilization
-        .map(|floor| utilization_pct >= floor);
+    let min_utilization_met = args.min_utilization.map(|floor| utilization_pct >= floor);
 
     Ok(UtilizationReport {
         schema_version: SCHEMA_VERSION,
@@ -219,7 +217,11 @@ pub fn render_text(report: &UtilizationReport) -> String {
         "  Σ instance duration:   {:.1}s",
         report.sum_instance_duration_secs
     );
-    let _ = writeln!(out, "  Sweep wallclock:       {:.1}s", report.wallclock_secs);
+    let _ = writeln!(
+        out,
+        "  Sweep wallclock:       {:.1}s",
+        report.wallclock_secs
+    );
     let _ = writeln!(out);
     let _ = writeln!(
         out,
@@ -261,10 +263,7 @@ pub fn render_text(report: &UtilizationReport) -> String {
             "FAIL"
         };
         let _ = writeln!(out);
-        let _ = writeln!(
-            out,
-            "  Gate (--min-utilization {floor:.1}%): {verdict}"
-        );
+        let _ = writeln!(out, "  Gate (--min-utilization {floor:.1}%): {verdict}");
     }
 
     out

@@ -6063,7 +6063,10 @@ fn bench_utilization(u: args::UtilizationCmd) -> Result<(), Error> {
     })?;
 
     if is_json {
-        println!("{}", serde_json::to_string_pretty(&report).map_err(Error::Json)?);
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&report).map_err(Error::Json)?
+        );
     } else {
         print!("{}", crate::run::utilization::render_text(&report));
     }
