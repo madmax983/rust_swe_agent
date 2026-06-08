@@ -559,4 +559,79 @@ mod tests {
             "utilization_gate_failure"
         );
     }
+
+    #[test]
+    fn from_error_github_is_internal_error() {
+        assert_eq!(
+            ExitCode::from_error(&Error::Github("bad git tree".into())),
+            ExitCode::InternalError
+        );
+    }
+
+    #[test]
+    fn from_error_github_issue_missing_token_is_github_issue_missing_token() {
+        assert_eq!(
+            ExitCode::from_error(&Error::GithubIssue(
+                crate::error::GithubIssueError::MissingToken("xyz".into())
+            )),
+            ExitCode::GithubIssueMissingToken
+        );
+    }
+
+    #[test]
+    fn from_error_github_issue_not_found_is_github_issue_not_found() {
+        assert_eq!(
+            ExitCode::from_error(&Error::GithubIssue(
+                crate::error::GithubIssueError::NotFound("xyz".into())
+            )),
+            ExitCode::GithubIssueNotFound
+        );
+    }
+
+    #[test]
+    fn from_error_github_issue_rate_limited_is_github_issue_rate_limited() {
+        assert_eq!(
+            ExitCode::from_error(&Error::GithubIssue(
+                crate::error::GithubIssueError::RateLimited("xyz".into())
+            )),
+            ExitCode::GithubIssueRateLimited
+        );
+    }
+
+    #[test]
+    fn from_error_github_issue_request_failed_is_task_unsuccessful() {
+        assert_eq!(
+            ExitCode::from_error(&Error::GithubIssue(
+                crate::error::GithubIssueError::RequestFailed("xyz".into())
+            )),
+            ExitCode::TaskUnsuccessful
+        );
+    }
+
+    #[test]
+    fn github_issue_missing_token_exit_code_is_34() {
+        assert_eq!(ExitCode::GithubIssueMissingToken.as_i32(), 34);
+        assert_eq!(
+            ExitCode::GithubIssueMissingToken.outcome_class(),
+            "github_issue_missing_token"
+        );
+    }
+
+    #[test]
+    fn github_issue_not_found_exit_code_is_35() {
+        assert_eq!(ExitCode::GithubIssueNotFound.as_i32(), 35);
+        assert_eq!(
+            ExitCode::GithubIssueNotFound.outcome_class(),
+            "github_issue_not_found"
+        );
+    }
+
+    #[test]
+    fn github_issue_rate_limited_exit_code_is_36() {
+        assert_eq!(ExitCode::GithubIssueRateLimited.as_i32(), 36);
+        assert_eq!(
+            ExitCode::GithubIssueRateLimited.outcome_class(),
+            "github_issue_rate_limited"
+        );
+    }
 }
