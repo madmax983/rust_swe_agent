@@ -1275,7 +1275,7 @@ impl Agent for DefaultAgent {
                             self.stream.emit(StreamEvent::AutoApproveRuleCreated {
                                 scope: scope.clone(),
                             });
-                            auto_approve_metadata = Some(("approve".to_string(), scope, true));
+                            auto_approve_metadata = Some(("auto-approve".to_string(), scope, true));
                         } else {
                             auto_approve_metadata =
                                 Some(("auto-approve".to_string(), scope, false));
@@ -3606,7 +3606,7 @@ mod tests {
                 }
             }
         }
-        assert_eq!(decisions, vec!["approve", "auto-approve"]);
+        assert_eq!(decisions, vec!["auto-approve", "auto-approve"]);
         assert_eq!(rule_created, Some("cargo".to_string()));
         assert_eq!(rule_matched, Some("cargo".to_string()));
     }
