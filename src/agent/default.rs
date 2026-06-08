@@ -1267,16 +1267,18 @@ impl Agent for DefaultAgent {
                 match decision {
                     super::ConfirmDecision::Approve => {}
                     super::ConfirmDecision::AutoApprove(scope) => {
-                        if let Ok(mut rules) = self.auto_approve_rules.lock() {
-                            if rules.insert(scope.clone()) {
-                                self.stream.emit(StreamEvent::AutoApproveRuleCreated {
-                                    scope: scope.clone(),
-                                });
-                                auto_approve_metadata = Some(("approve".to_string(), scope, true));
-                            } else {
-                                auto_approve_metadata =
-                                    Some(("auto-approve".to_string(), scope, false));
-                            }
+                        let mut rules = self
+                            .auto_approve_rules
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner);
+                        if rules.insert(scope.clone()) {
+                            self.stream.emit(StreamEvent::AutoApproveRuleCreated {
+                                scope: scope.clone(),
+                            });
+                            auto_approve_metadata = Some(("approve".to_string(), scope, true));
+                        } else {
+                            auto_approve_metadata =
+                                Some(("auto-approve".to_string(), scope, false));
                         }
                     }
                     super::ConfirmDecision::Reject(feedback) => {
@@ -2019,10 +2021,15 @@ impl DefaultAgent {
             },
         };
         let scope = ctx.derive_scope();
-        if let Ok(rules) = self.auto_approve_rules.lock() {
-            if rules.contains(&scope) {
-                return Some(super::ConfirmDecision::AutoApprove(scope));
-            }
+        let has_rule = {
+            let rules = self
+                .auto_approve_rules
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            rules.contains(&scope)
+        };
+        if has_rule {
+            return Some(super::ConfirmDecision::AutoApprove(scope));
         }
         Some(cb.confirm(&ctx).await)
     }
@@ -3556,7 +3563,12 @@ mod tests {
             "run command\nTOOL_CALL: bash\n```bash\ngit status\n```".into(),
             "done\nCOMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT\n```\nfinal\n```".into(),
         ];
-        let mut agent = make_agent(responses);
+        let mut agent = make_agent_with_run_result(responses, RunResult {
+            stdout: "ok".to_string(),
+            stderr: String::new(),
+            exit_code: 0,
+            timed_out: false,
+        });
         agent.confirm_callback = Some(confirmer.clone());
 
         let outcome = agent.run().await.unwrap();

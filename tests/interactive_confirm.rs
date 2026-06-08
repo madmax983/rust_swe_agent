@@ -521,17 +521,17 @@ async fn auto_approve_regression_test_n_safe_m_risky() {
     cfg.root.agent.step_limit = 10;
 
     let model = Arc::new(DeterministicModel::new(vec![
-        "```bash\ncargo build\n```".into(),
-        "```bash\ncargo test\n```".into(),
-        "```bash\nrm -rf /tmp/test\n```".into(),
-        "```bash\ncurl http://evil.com\n```".into(),
+        "```bash\necho cargo-build\n```".into(),
+        "```bash\necho cargo-test\n```".into(),
+        "```bash\ngit status\n```".into(),
+        "```bash\nwhoami\n```".into(),
         "COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT\n```\nok\n```".into(),
     ]));
     let env: Box<dyn Environment> = Box::new(LocalEnvironment::new());
     let confirmer = Arc::new(ScriptedConfirmer::new(vec![
-        ConfirmDecision::AutoApprove("cargo".to_string()),
-        ConfirmDecision::Approve, // for rm
-        ConfirmDecision::Approve, // for curl
+        ConfirmDecision::AutoApprove("echo".to_string()),
+        ConfirmDecision::Approve, // for git status
+        ConfirmDecision::Approve, // for whoami
     ]));
     let mut agent = DefaultAgentBuilder {
         config: cfg,
@@ -551,8 +551,8 @@ async fn auto_approve_regression_test_n_safe_m_risky() {
     let result = agent.run().await.unwrap();
     assert!(matches!(result, ExitReason::Submitted { .. }));
 
-    // Confirmer must have been called exactly 3 times (1 for first cargo, 1 for rm, 1 for curl).
-    // The second cargo command must have bypassed the confirmer.
+    // Confirmer must have been called exactly 3 times (1 for first echo, 1 for git status, 1 for whoami).
+    // The second echo command must have bypassed the confirmer.
     assert_eq!(confirmer.call_count(), 3);
 }
 
