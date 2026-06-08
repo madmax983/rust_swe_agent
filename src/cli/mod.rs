@@ -137,6 +137,7 @@ pub async fn run() -> Result<(), Error> {
             args::BenchCmd::Assert(a) => bench_assert(a),
             args::BenchCmd::Subset(s) => bench_subset(s),
             args::BenchCmd::EvalParity(p) => bench_eval_parity(p),
+            args::BenchCmd::Utilization(u) => bench_utilization(u),
         },
         Command::Agent { cmd } => match *cmd {
             args::AgentCmd::SkillsPreview(s) => agent_skills_preview_cmd(&s),
@@ -6034,6 +6035,51 @@ fn bench_eval_parity(p: args::EvalParityCmd) -> Result<(), Error> {
                 ),
             );
         }
+    }
+    Ok(())
+}
+
+fn bench_utilization(u: args::UtilizationCmd) -> Result<(), Error> {
+    let is_json = match u.format.as_str() {
+        "text" => false,
+        "json" => true,
+        other => {
+            return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+                "utilization: unknown --format `{other}` (expected `text` or `json`)"
+            ))));
+        }
+    };
+    if let Some(min) = u.min_utilization {
+        if min.is_nan() || !(0.0..=100.0).contains(&min) {
+            return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+                "utilization: --min-utilization must be in [0.0, 100.0], got {min}"
+            ))));
+        }
+    }
+
+    let report = crate::run::utilization::compute(&crate::run::utilization::UtilizationArgs {
+        sweep_dir: u.sweep,
+        min_utilization: u.min_utilization,
+    })?;
+
+    if is_json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&report).map_err(Error::Json)?
+        );
+    } else {
+        print!("{}", crate::run::utilization::render_text(&report));
+    }
+
+    if report.min_utilization_met == Some(false) {
+        exit_with_outcome(
+            ExitCode::UtilizationGateFailure,
+            &format!(
+                "utilization: utilization {:.1}% is below --min-utilization {:.1}%",
+                report.utilization_pct,
+                report.min_utilization.unwrap_or(0.0)
+            ),
+        );
     }
     Ok(())
 }

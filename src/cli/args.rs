@@ -1255,6 +1255,32 @@ pub enum BenchCmd {
     Subset(SubsetCmd),
     /// Compare offline and canonical evaluator verdicts to measure parity and gate CI.
     EvalParity(EvalParityCmd),
+    /// Report sweep concurrency efficiency (effective parallelism, utilization, idle waste).
+    Utilization(UtilizationCmd),
+}
+
+/// `bench utilization` — report how efficiently a sweep used its configured
+/// concurrency (zero-cost: reads only on-disk manifest + instance results).
+///
+/// Reports **effective parallelism** = Σ(per-instance `duration_secs`) ÷ sweep
+/// wallclock, and **utilization %** = effective parallelism ÷ configured worker
+/// count, plus the **idle waste** between observed and theoretical-minimum
+/// wallclock. Exits non-zero when required timestamps are missing or when
+/// `--min-utilization` is set and the measured utilization falls below it.
+#[derive(Debug, Args)]
+pub struct UtilizationCmd {
+    /// Completed sweep directory produced by `bench swebench`.
+    #[arg(long)]
+    pub sweep: std::path::PathBuf,
+
+    /// Output format: `text` (default) or `json`.
+    #[arg(long, default_value = "text", value_name = "FMT")]
+    pub format: String,
+
+    /// CI gate: minimum acceptable utilization percentage (0–100). When the
+    /// measured utilization falls below this floor, the command exits non-zero.
+    #[arg(long, value_name = "PCT")]
+    pub min_utilization: Option<f64>,
 }
 
 /// `bench assert` — evaluate operator-declared SLO rules against a completed sweep.
