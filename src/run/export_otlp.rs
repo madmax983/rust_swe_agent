@@ -23,7 +23,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::error::{ConfigError, Error};
 use crate::run::swebench::{
-    InstanceResult, ProvenanceManifest, SweepResults, compute_sweep_id,
+    EXIT_REASON_BUDGET_HALT, InstanceResult, ProvenanceManifest, SweepResults, compute_sweep_id,
     existing_patch_path_for_run, existing_trajectory_path_for_run,
 };
 use crate::telemetry::{
@@ -249,7 +249,8 @@ fn reconstruct_instance(
         .clone()
         .unwrap_or_else(|| new_trace_id(&ir.instance_id, sweep_id));
 
-    let repo = crate::run::evaluate::parse_repo_from_instance_id(&ir.instance_id).unwrap_or_default();
+    let repo =
+        crate::run::evaluate::parse_repo_from_instance_id(&ir.instance_id).unwrap_or_default();
 
     let traj_path = existing_trajectory_path_for_run(sweep_dir, &ir.instance_id, last_run);
     let final_patch_bytes = existing_patch_path_for_run(sweep_dir, &ir.instance_id, last_run)
@@ -277,6 +278,15 @@ fn reconstruct_instance(
         }
         span
     } else {
+        // Mirror the live exporter's no-trajectory shape: budget-halted rows
+        // never ran, so give them an instantaneous span (collapsed at the sweep
+        // finish) instead of one spanning the whole sweep — otherwise they
+        // appear as long-running failures and distort duration dashboards.
+        let (inst_start, inst_end) = if ir.exit_reason == EXIT_REASON_BUDGET_HALT {
+            (sweep_end_nanos, sweep_end_nanos)
+        } else {
+            (sweep_start_nanos, sweep_end_nanos)
+        };
         instance_span_data_from_result(
             &trace_id,
             sweep_span_id,
@@ -284,8 +294,8 @@ fn reconstruct_instance(
             &repo,
             ir,
             final_patch_bytes,
-            sweep_start_nanos,
-            sweep_end_nanos,
+            inst_start,
+            inst_end,
         )
     }
 }
@@ -327,7 +337,9 @@ pub async fn run(args: &ExportOtlpArgs) -> Result<ExportOtlpSummary, Error> {
 
     let dropped = Arc::new(AtomicU64::new(0));
     let tracer = Tracer::new(endpoint.clone(), dropped.clone());
-    tracer.export_sweep(&rec.sweep_span, &rec.instance_spans).await;
+    tracer
+        .export_sweep(&rec.sweep_span, &rec.instance_spans)
+        .await;
 
     let dropped_n = dropped.load(Ordering::Relaxed);
     if dropped_n > 0 {

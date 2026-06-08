@@ -173,8 +173,7 @@ async fn start_mock_collector() -> (
                         Ok(n) => {
                             read_bytes += n;
                             if let Some(pos) = find_subsequence(&buf[..read_bytes], b"\r\n\r\n") {
-                                let headers_part =
-                                    String::from_utf8_lossy(&buf[..pos]).to_string();
+                                let headers_part = String::from_utf8_lossy(&buf[..pos]).to_string();
                                 let mut content_len = 0;
                                 for line in headers_part.lines() {
                                     if line.to_lowercase().starts_with("content-length:") {
@@ -198,8 +197,7 @@ async fn start_mock_collector() -> (
                                         .unwrap_or("")
                                         .to_string();
                                     let _ = tx.send((path, headers_part, body));
-                                    let response =
-                                        "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{}";
+                                    let response = "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{}";
                                     let _ = stream.write_all(response.as_bytes()).await;
                                     break;
                                 }
@@ -337,8 +335,7 @@ async fn reconstruct_uses_stable_sweep_id() {
     assert_eq!(rec.sweep_id, expected);
     assert_eq!(rec.instance_spans.len(), 1);
     // Instance trace id matches the persisted/recomputed value.
-    let expected_tid =
-        maxwells_daemon::telemetry::new_trace_id("repo__REC__1", &rec.sweep_id);
+    let expected_tid = maxwells_daemon::telemetry::new_trace_id("repo__REC__1", &rec.sweep_id);
     assert_eq!(rec.instance_spans[0].trace_id, expected_tid);
 }
 
@@ -550,7 +547,10 @@ async fn endpoint_flag_beats_env() {
     .await
     .unwrap();
     // The flag endpoint must have been used, not the env var.
-    assert_eq!(summary.endpoint.as_deref(), Some(format!("{endpoint}/v1/traces").as_str()));
+    assert_eq!(
+        summary.endpoint.as_deref(),
+        Some(format!("{endpoint}/v1/traces").as_str())
+    );
     unsafe {
         std::env::remove_var("OTEL_EXPORTER_OTLP_ENDPOINT");
     }
@@ -605,7 +605,9 @@ async fn otlp_headers_from_env_are_sent() {
         std::env::remove_var("OTEL_EXPORTER_OTLP_HEADERS");
     }
     assert!(
-        headers.to_lowercase().contains("x-export-otlp-test: tok123"),
+        headers
+            .to_lowercase()
+            .contains("x-export-otlp-test: tok123"),
         "expected auth header forwarded to collector; got:\n{headers}"
     );
 }
