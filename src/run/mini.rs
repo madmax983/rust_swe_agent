@@ -430,6 +430,19 @@ fn build_mini_manifest(
 
 #[allow(clippy::too_many_lines)]
 pub async fn run(args: MiniArgs) -> Result<(), Error> {
+    let mut args = args;
+    let mut cancel_tx = None;
+    if args.cancellation.is_none()
+        && matches!(
+            args.interactive_mode,
+            InteractiveMode::Ratatui | InteractiveMode::RatatuiMonitor
+        )
+    {
+        let (tx, rx) = tokio::sync::watch::channel(false);
+        cancel_tx = Some(tx);
+        args.cancellation = Some(crate::env::CancellationToken::new(rx));
+    }
+
     // The Claude Code driver shells out to the host `claude` binary and edits
     // the host working tree directly. It cannot honor several safety contracts
     // the built-in loop enforces inside `DefaultAgent::step`, so reject the
@@ -940,7 +953,7 @@ pub async fn run(args: MiniArgs) -> Result<(), Error> {
     } else {
         None
     };
-    let (confirm_callback, dashboard) = build_interactive_pieces(args.interactive_mode)?;
+    let (confirm_callback, dashboard) = build_interactive_pieces(args.interactive_mode, cancel_tx)?;
 
     // Redact the webhook sink so secrets are stripped before each POST.
     let webhook_sink_redacted: Option<Arc<dyn StreamSink>> = webhook_sink_opt.map(|ws| {
@@ -1419,7 +1432,10 @@ type InteractivePieces = (
     Option<RatatuiDashboardHandle>,
 );
 
-fn build_interactive_pieces(mode: InteractiveMode) -> Result<InteractivePieces, Error> {
+fn build_interactive_pieces(
+    mode: InteractiveMode,
+    cancel_tx: Option<tokio::sync::watch::Sender<bool>>,
+) -> Result<InteractivePieces, Error> {
     match mode {
         InteractiveMode::Off | InteractiveMode::YoloStatusOnly => Ok((None, None)),
         InteractiveMode::StderrPrompt => {
@@ -1440,7 +1456,7 @@ fn build_interactive_pieces(mode: InteractiveMode) -> Result<InteractivePieces, 
                         .into(),
                 )));
             }
-            let handle = crate::agent::RatatuiDashboard::start(false).map_err(|e| {
+            let handle = crate::agent::RatatuiDashboard::start(false, cancel_tx).map_err(|e| {
                 Error::Trajectory(format!("failed to start ratatui dashboard: {e}"))
             })?;
             let cb = handle.confirm_callback();
@@ -1452,11 +1468,11 @@ fn build_interactive_pieces(mode: InteractiveMode) -> Result<InteractivePieces, 
             {
                 return Err(Error::Config(ConfigError::Invalid(
                     "ratatui monitor mode requires a TTY on stdin and stdout; \
-                     pass --yolo for unattended runs"
+                     omit --ui ratatui to run unattended without a TTY"
                         .into(),
                 )));
             }
-            let handle = crate::agent::RatatuiDashboard::start(true).map_err(|e| {
+            let handle = crate::agent::RatatuiDashboard::start(true, cancel_tx).map_err(|e| {
                 Error::Trajectory(format!("failed to start ratatui dashboard: {e}"))
             })?;
             Ok((None, Some(handle)))
@@ -2170,14 +2186,14 @@ mod tests {
 
     #[test]
     fn build_interactive_pieces_off_yields_no_callback() {
-        let (cb, dash) = build_interactive_pieces(InteractiveMode::Off).unwrap();
+        let (cb, dash) = build_interactive_pieces(InteractiveMode::Off, None).unwrap();
         assert!(cb.is_none());
         assert!(dash.is_none());
     }
 
     #[test]
     fn build_interactive_pieces_yolo_status_only_yields_no_callback() {
-        let (cb, dash) = build_interactive_pieces(InteractiveMode::YoloStatusOnly).unwrap();
+        let (cb, dash) = build_interactive_pieces(InteractiveMode::YoloStatusOnly, None).unwrap();
         assert!(cb.is_none());
         assert!(dash.is_none());
     }
