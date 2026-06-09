@@ -5234,9 +5234,20 @@ pub fn apply_subset(
             .filter(|id| !dataset_ids.contains(id))
             .collect();
         if !unknown.is_empty() {
+            let capacity = unknown.iter().map(|s| s.len()).sum::<usize>()
+                + unknown.len().saturating_sub(1) * 2;
+            let unknown_list =
+                unknown
+                    .into_iter()
+                    .fold(String::with_capacity(capacity), |mut acc, s| {
+                        if !acc.is_empty() {
+                            acc.push_str(", ");
+                        }
+                        acc.push_str(s);
+                        acc
+                    });
             return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
-                "--instance-ids references unknown id(s): {}",
-                unknown.into_iter().collect::<Vec<_>>().join(", ")
+                "--instance-ids references unknown id(s): {unknown_list}"
             ))));
         }
         let include: HashSet<&str> = ids.iter().map(String::as_str).collect();

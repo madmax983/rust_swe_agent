@@ -549,7 +549,14 @@ fn normalize_search_text(text: &str) -> String {
             out.push(' ');
         }
     }
-    out.split_whitespace().collect::<Vec<_>>().join(" ")
+    out.split_whitespace()
+        .fold(String::with_capacity(out.len()), |mut acc, s| {
+            if !acc.is_empty() {
+                acc.push(' ');
+            }
+            acc.push_str(s);
+            acc
+        })
 }
 
 fn is_stopword(token: &str) -> bool {
