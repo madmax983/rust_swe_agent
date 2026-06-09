@@ -2678,9 +2678,10 @@ fn resolve_interactive_mode(
     use crate::run::mini::InteractiveMode;
     match (interactive, yolo) {
         (false, false) => InteractiveMode::Off,
-        // `--interactive --yolo` short-circuits to status-line mode — the
-        // operator wants live progress on stderr without prompts.
-        (_, true) => InteractiveMode::YoloStatusOnly,
+        (_, true) => match ui {
+            args::UiKind::Stderr => InteractiveMode::YoloStatusOnly,
+            args::UiKind::Ratatui => InteractiveMode::RatatuiMonitor,
+        },
         (true, false) => match ui {
             args::UiKind::Stderr => InteractiveMode::StderrPrompt,
             args::UiKind::Ratatui => InteractiveMode::Ratatui,
@@ -7284,7 +7285,15 @@ mod tests {
         );
         assert_eq!(
             resolve_interactive_mode(true, true, args::UiKind::Ratatui),
-            crate::run::mini::InteractiveMode::YoloStatusOnly
+            crate::run::mini::InteractiveMode::RatatuiMonitor
+        );
+    }
+
+    #[test]
+    fn resolve_interactive_mode_yolo_with_ratatui_ui_resolves_to_monitor() {
+        assert_eq!(
+            resolve_interactive_mode(false, true, args::UiKind::Ratatui),
+            crate::run::mini::InteractiveMode::RatatuiMonitor
         );
     }
 

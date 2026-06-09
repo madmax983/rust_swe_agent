@@ -24,7 +24,7 @@ use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
-use tokio::sync::{Notify, oneshot};
+use tokio::sync::{Notify, oneshot, watch};
 
 use super::confirm::{ConfirmCallback, ConfirmContext, ConfirmDecision};
 use crate::stream::{StreamEvent, StreamSink};
@@ -49,6 +49,7 @@ struct DashboardState {
     last_log_width: usize,
     last_log_height: usize,
     should_exit: bool,
+    is_monitor: bool,
 }
 
 impl Default for DashboardState {
@@ -71,6 +72,7 @@ impl Default for DashboardState {
             last_log_width: 80,
             last_log_height: 20,
             should_exit: false,
+            is_monitor: false,
         }
     }
 }
@@ -150,6 +152,7 @@ impl Drop for RatatuiDashboardHandle {
 pub struct RatatuiDashboard {
     state: Mutex<DashboardState>,
     notify: Notify,
+    cancel_tx: Option<watch::Sender<bool>>,
 }
 
 impl RatatuiDashboard {
@@ -160,7 +163,10 @@ impl RatatuiDashboard {
     /// alt-screen mode. On failure the terminal is restored to cooked
     /// mode and the alt-screen is left, so the caller never observes a
     /// half-initialised terminal.
-    pub fn start() -> std::io::Result<RatatuiDashboardHandle> {
+    pub fn start(
+        is_monitor: bool,
+        cancel_tx: Option<watch::Sender<bool>>,
+    ) -> std::io::Result<RatatuiDashboardHandle> {
         enable_raw_mode()?;
         let mut stdout = std::io::stdout();
         if let Err(e) = execute!(stdout, EnterAlternateScreen) {
@@ -176,8 +182,12 @@ impl RatatuiDashboard {
             }
         };
         let dash = Arc::new(Self {
-            state: Mutex::new(DashboardState::default()),
+            state: Mutex::new(DashboardState {
+                is_monitor,
+                ..DashboardState::default()
+            }),
             notify: Notify::new(),
+            cancel_tx,
         });
         let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
         let renderer_task = tokio::spawn(renderer_loop(dash.clone(), terminal, shutdown_rx));
@@ -474,7 +484,7 @@ fn handle_key_edit_input(
 }
 
 fn perform_scroll(s: &mut DashboardState, code: KeyCode) -> bool {
-    let total = total_wrapped_lines_deque(&s.log, s.last_log_width);
+    let total = total_wrapped_lines(&s.log, s.last_log_width);
     let max_scroll = total.saturating_sub(s.last_log_height);
     let current_offset = if s.auto_follow {
         max_scroll
@@ -606,6 +616,11 @@ fn handle_key(dash: &Arc<RatatuiDashboard>, key: KeyEvent) {
         }
     } else {
         // No modal open
+        if ctrl_c && s.finished.is_none() {
+            if let Some(ref tx) = dash.cancel_tx {
+                let _ = tx.send(true);
+            }
+        }
         if s.finished.is_some() {
             let close_key = matches!(key.code, KeyCode::Char('q' | 'Q') | KeyCode::Esc) || ctrl_c;
             if close_key {
@@ -664,6 +679,7 @@ fn draw_frame(
             auto_follow: s.auto_follow,
             last_log_width: s.last_log_width,
             last_log_height: s.last_log_height,
+            is_monitor: s.is_monitor,
         }
     };
     terminal.draw(|frame| draw(frame, &snapshot))?;
@@ -686,6 +702,7 @@ struct DashboardSnapshot {
     auto_follow: bool,
     last_log_width: usize,
     last_log_height: usize,
+    is_monitor: bool,
 }
 
 fn draw(frame: &mut ratatui::Frame, snap: &DashboardSnapshot) {
@@ -741,7 +758,9 @@ fn header_paragraph(snap: &DashboardSnapshot) -> Paragraph<'_> {
             Style::default().add_modifier(Modifier::DIM),
         ),
     ]);
-    let block_title = if snap.active_rules.is_empty() {
+    let block_title = if snap.is_monitor {
+        " maxwell's daemon — monitor ".to_string()
+    } else if snap.active_rules.is_empty() {
         " maxwell's daemon — interactive ".to_string()
     } else {
         format!(
@@ -771,7 +790,7 @@ fn log_paragraph(snap: &DashboardSnapshot) -> Paragraph<'_> {
         })
         .collect();
 
-    let total = total_wrapped_lines_slice(&snap.log, snap.last_log_width);
+    let total = total_wrapped_lines(&snap.log, snap.last_log_width);
     let max_scroll = total.saturating_sub(snap.last_log_height);
     let scroll_y = if snap.auto_follow {
         max_scroll
@@ -965,20 +984,10 @@ fn summarize_stream(stdout: &str, stderr: &str) -> String {
     }
 }
 
-fn total_wrapped_lines_deque(log: &VecDeque<LogLine>, width: usize) -> usize {
-    let mut total = 0;
-    for line in log {
-        total += count_wrapped_lines(&line.text, width);
-    }
-    total
-}
-
-fn total_wrapped_lines_slice(log: &[LogLine], width: usize) -> usize {
-    let mut total = 0;
-    for line in log {
-        total += count_wrapped_lines(&line.text, width);
-    }
-    total
+fn total_wrapped_lines<'a>(log: impl IntoIterator<Item = &'a LogLine>, width: usize) -> usize {
+    log.into_iter()
+        .map(|line| count_wrapped_lines(&line.text, width))
+        .sum()
 }
 
 fn count_wrapped_lines(text: &str, width: usize) -> usize {
@@ -1506,6 +1515,7 @@ mod tests {
         Arc::new(RatatuiDashboard {
             state: Mutex::new(DashboardState::default()),
             notify: Notify::new(),
+            cancel_tx: None,
         })
     }
 
@@ -1530,6 +1540,7 @@ mod tests {
             auto_follow: s.auto_follow,
             last_log_width: s.last_log_width,
             last_log_height: s.last_log_height,
+            is_monitor: s.is_monitor,
         }
     }
 
@@ -2011,6 +2022,26 @@ mod tests {
     }
 
     #[test]
+    fn handle_key_ctrl_c_cancels_before_completion() {
+        let (tx, rx) = tokio::sync::watch::channel(false);
+        let d = Arc::new(RatatuiDashboard {
+            state: Mutex::new(DashboardState::default()),
+            notify: Notify::new(),
+            cancel_tx: Some(tx),
+        });
+
+        // 1. Initially not cancelled
+        assert!(!*rx.borrow());
+
+        // 2. Press Ctrl-C when run is not finished
+        let key = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
+        handle_key(&d, key);
+
+        // 3. Verify that cancellation was triggered
+        assert!(*rx.borrow());
+    }
+
+    #[test]
     fn draw_renders_header_log_and_footer_against_test_backend() {
         let d = make_dashboard();
         d.emit(StreamEvent::RunStarted {
@@ -2233,5 +2264,27 @@ mod tests {
 
         let decision = rx.try_recv().unwrap();
         assert_eq!(decision, ConfirmDecision::AutoApprove("x".to_string())); // "x" is the default scope for the dummy pending prompt command "x"
+    }
+
+    #[test]
+    fn header_paragraph_renders_monitor_mode_correctly() {
+        let d = make_dashboard();
+        {
+            let mut s = d.state.lock().unwrap();
+            s.is_monitor = true;
+            s.task = Some("test task".into());
+            s.model = Some("test-model".into());
+        }
+        let s = snap(&d);
+        let buf = render_to_buffer(&s, 80, 10);
+        let text = buffer_text(&buf);
+        assert!(
+            text.contains("maxwell's daemon — monitor"),
+            "expected monitor header, got: {text}"
+        );
+        assert!(
+            !text.contains("interactive"),
+            "should not contain interactive label"
+        );
     }
 }
