@@ -329,13 +329,14 @@ where
     (handle, buffer)
 }
 
-async fn read_pipe_to_buffer<R>(mut pipe: R, buffer: Arc<Mutex<Vec<u8>>>) -> Result<(), EnvError>
+async fn read_pipe_to_buffer<R>(pipe: R, buffer: Arc<Mutex<Vec<u8>>>) -> Result<(), EnvError>
 where
     R: tokio::io::AsyncRead + Unpin,
 {
+    let mut reader = tokio::io::BufReader::new(pipe).take(crate::env::MAX_OUTPUT_BYTES);
     let mut chunk = [0u8; 8192];
     loop {
-        let n = pipe.read(&mut chunk).await.map_err(EnvError::Io)?;
+        let n = reader.read(&mut chunk).await.map_err(EnvError::Io)?;
         if n == 0 {
             return Ok(());
         }

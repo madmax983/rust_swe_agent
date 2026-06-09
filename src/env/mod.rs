@@ -18,6 +18,8 @@ pub mod chaos;
 pub mod docker;
 pub mod local;
 
+pub const MAX_OUTPUT_BYTES: u64 = 16 * 1024 * 1024;
+
 /// Stderr sentinel written on a [`RunResult`] synthesized by
 /// [`chaos::ChaosEnvironment`]. The agent loop and `bench inspect` use it to
 /// recognize a chaos-injected timeout and distinguish it from a real one.
