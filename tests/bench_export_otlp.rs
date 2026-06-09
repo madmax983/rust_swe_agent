@@ -10,7 +10,8 @@
 #![allow(
     clippy::unwrap_used,
     clippy::too_many_lines,
-    clippy::await_holding_lock
+    clippy::await_holding_lock,
+    clippy::large_futures
 )]
 
 use std::collections::BTreeSet;

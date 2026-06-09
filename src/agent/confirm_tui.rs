@@ -2280,8 +2280,7 @@ mod tests {
         let text = buffer_text(&buf);
         assert!(
             text.contains("maxwell's daemon — monitor"),
-            "expected monitor header, got: {}",
-            text
+            "expected monitor header, got: {text}"
         );
         assert!(
             !text.contains("interactive"),
