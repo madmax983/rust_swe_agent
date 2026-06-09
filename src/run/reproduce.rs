@@ -476,11 +476,13 @@ fn hash_file_sha256(path: &Path) -> Option<[u8; 32]> {
     let mut hasher = Sha256::new();
     let mut buf = [0u8; 8192];
     loop {
-        match reader.read(&mut buf) {
-            Ok(0) => break,
-            Ok(n) => hasher.update(&buf[..n]),
-            Err(_) => return None,
+        let Ok(n) = reader.read(&mut buf) else {
+            return None;
+        };
+        if n == 0 {
+            break;
         }
+        hasher.update(&buf[..n]);
     }
     Some(hasher.finalize().into())
 }

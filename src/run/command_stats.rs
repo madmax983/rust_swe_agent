@@ -648,14 +648,12 @@ fn resolve_trajectory_paths(sweep: &Path, instance_id: &str) -> Vec<PathBuf> {
     let instance_dir = sweep.join(instance_id);
     if instance_dir.is_dir() {
         let mut run_paths = Vec::new();
-        let mut n = 1usize;
-        loop {
+        for n in 1.. {
             let p = instance_dir.join(format!("run-{n}.traj.json"));
             if !p.exists() {
                 break;
             }
             run_paths.push(p);
-            n += 1;
         }
         if !run_paths.is_empty() {
             return run_paths;
