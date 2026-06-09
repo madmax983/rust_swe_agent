@@ -47,6 +47,9 @@ pub struct MarkdownExporter;
 #[cfg(feature = "csv-export")]
 pub struct CsvExporter;
 
+#[cfg(feature = "json-export")]
+pub struct JsonExporter;
+
 #[cfg(feature = "mermaid-export")]
 pub struct MermaidExporter;
 
@@ -54,6 +57,47 @@ pub struct MermaidExporter;
 pub struct HtmlExporter;
 
 use std::fmt::Write;
+
+#[cfg(feature = "json-export")]
+impl TrajectoryExporter for JsonExporter {
+    fn export(trajectory: &Trajectory) -> String {
+        let redactor = Redactor::default_enabled();
+
+        let Ok(mut val) = serde_json::to_value(trajectory) else {
+            return String::new();
+        };
+
+        if let Some(info) = val.get_mut("info").and_then(|i| i.as_object_mut()) {
+            if let Some(task) = info.get("task").and_then(|t| t.as_str()) {
+                let redacted_task = redactor.redact_text(task, surface::EXPORT).text;
+                info.insert("task".to_string(), serde_json::Value::String(redacted_task));
+            }
+            if let Some(outcome) = info.get("outcome").and_then(|o| o.as_str()) {
+                let redacted_outcome = redactor.redact_text(outcome, surface::EXPORT).text;
+                info.insert(
+                    "outcome".to_string(),
+                    serde_json::Value::String(redacted_outcome),
+                );
+            }
+        }
+
+        if let Some(messages) = val.get_mut("messages").and_then(|m| m.as_array_mut()) {
+            for msg in messages {
+                if let Some(msg_obj) = msg.as_object_mut() {
+                    if let Some(content) = msg_obj.get("content").and_then(|c| c.as_str()) {
+                        let redacted_content = redactor.redact_text(content, surface::EXPORT).text;
+                        msg_obj.insert(
+                            "content".to_string(),
+                            serde_json::Value::String(redacted_content),
+                        );
+                    }
+                }
+            }
+        }
+
+        serde_json::to_string_pretty(&val).unwrap_or_default()
+    }
+}
 
 #[cfg(feature = "csv-export")]
 impl TrajectoryExporter for CsvExporter {
@@ -273,6 +317,29 @@ mod tests {
         assert!(md.contains("Hello agent"));
         assert!(md.contains("### Assistant"));
         assert!(md.contains("Hello user"));
+    }
+
+    #[cfg(feature = "json-export")]
+    #[test]
+    fn test_json_export_format() {
+        let mut t = Trajectory::new();
+        t.info.task = Some("Add a feature".to_string());
+        t.info.outcome = Some(outcome::SUBMITTED.to_string());
+
+        t.record_message(&Message::system("System prompt"));
+        t.record_message(&Message::user("Hello agent\nMulti-line"));
+        t.record_message(&Message::assistant("Hello \"user\""));
+
+        let json = JsonExporter::export(&t);
+        if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&json) {
+            assert_eq!(parsed["info"]["task"], "Add a feature");
+            assert_eq!(parsed["info"]["outcome"], outcome::SUBMITTED.to_string());
+            assert_eq!(parsed["messages"][0]["content"], "System prompt");
+            assert_eq!(parsed["messages"][1]["content"], "Hello agent\nMulti-line");
+            assert_eq!(parsed["messages"][2]["content"], "Hello \"user\"");
+        } else {
+            panic!("Failed to parse JSON export");
+        }
     }
 
     #[cfg(feature = "csv-export")]
