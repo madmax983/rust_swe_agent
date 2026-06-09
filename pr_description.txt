@@ -1,0 +1,6 @@
+💡 The Spark: Trajectories are sequential, step-by-step executions combining markdown text (assistant reasoning) and code/output (bash tools) — exactly like a Jupyter Notebook!
+🚀 The Feature: Implemented `JupyterExporter` that converts a `.traj.json` into an interactive `.ipynb` Jupyter Notebook.
+🔮 The Potential: Operators can open a run in Jupyter/VSCode, read the reasoning, and re-execute or tweak the bash steps interactively!
+⚠️ Risk: Low. Isolated behind `jupyter-export` feature flag and contained in `src/trajectory/export.rs`.
+
+*Note: Code review flagged `msg.role == "tool"` as a potential Enum vs String comparison error, but `Trajectory.messages` is composed of `MessageRecord` structs where `role` is indeed a `String`. Local `cargo check` and `cargo test` explicitly pass with this implementation.*
