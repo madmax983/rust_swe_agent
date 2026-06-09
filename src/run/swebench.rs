@@ -8328,10 +8328,11 @@ instance = "inst"
             notify_webhook_headers: vec![],
         };
 
-        let results = tokio::time::timeout(std::time::Duration::from_secs(15), run(args))
-            .await
-            .expect("sweep timed out")
-            .expect("sweep failed");
+        let Ok(Ok(results)) =
+            tokio::time::timeout(std::time::Duration::from_secs(15), run(args)).await
+        else {
+            panic!("sweep timed out or failed");
+        };
 
         assert_eq!(results.submitted, 2, "both instances must submit");
 

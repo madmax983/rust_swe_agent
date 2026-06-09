@@ -245,4 +245,18 @@ mod tests {
         let s = "no secrets here";
         assert_eq!(normalize_redaction_markers(s), s);
     }
+
+    #[test]
+    fn cap_canonical_truncates_long_string() {
+        let (s, trunc) = cap_canonical("hello world", 5);
+        assert_eq!(s, "hello[truncated]");
+        assert!(trunc);
+    }
+
+    #[test]
+    fn cap_canonical_does_not_truncate_short_string() {
+        let (s, trunc) = cap_canonical("hello", 10);
+        assert_eq!(s, "hello");
+        assert!(!trunc);
+    }
 }
