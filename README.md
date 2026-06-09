@@ -502,6 +502,12 @@ a valid trajectory in hand:
   sweeps in a root directory — the single command for answering "am I making
   progress?" across a week of prompt iteration. Includes `--baseline`, `--last`,
   `--dataset`, and three output formats (text, json, markdown).
+- [`bench utilization`](docs/spec-utilization.md): zero-cost report of how
+  efficiently a sweep used its configured concurrency — effective parallelism
+  (Σ instance `duration_secs` ÷ sweep wallclock), utilization % against the
+  configured `--parallel` worker count, and the idle-waste wallclock gap.
+  Turns the `--parallel` guess into a measured decision; `--min-utilization`
+  gates CI (exit 44) on a declared efficiency floor.
 - [`agent skills-preview`](docs/spec-skills-preview.md): zero-cost pre-run
   enumeration of which skill manifests will activate for one or more tasks —
   task hash, activation reason (`explicit_mention` vs `auto_match`), content

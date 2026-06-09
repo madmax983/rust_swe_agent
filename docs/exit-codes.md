@@ -48,6 +48,8 @@ parsing human-oriented output.
 | 40   | `dataset_verify_mismatch` | `bench dataset-verify` detected a mismatch between the candidate dataset and the canonical reference. |
 | 41   | `best_of_all_failed`     | `agent best-of` completed all runs and no run passed all verify checks. The best-scoring run was still selected and its patch emitted; `all_failed: true` is set in `best-of-results.json`. Pass `--allow-no-pass` to downgrade to exit 0 while keeping `all_failed: true`. |
 | 42   | `config_override_warning` | `agent config resolve` detected at least one clap-default override hazard: a `--config` file sets a field (`model.name` or `agent.step_limit`) that a clap default in `mini` or `bench swebench` will silently overwrite unless the corresponding flag is also passed explicitly. The resolved config was printed; exit 0 when no hazards are detected. See `docs/spec-config-resolve.md`. |
+| 43   | `eval_parity_gate_failure` | `bench eval-parity --min-agreement <F>` measured an offline-vs-canonical agreement rate below the declared threshold. The report was written; the non-zero exit gates CI on evaluator parity. Distinct from `slo_rule_failure` (27). |
+| 44   | `utilization_gate_failure` | `bench utilization --min-utilization <PCT>` measured a concurrency utilization below the declared floor. The report was printed; the non-zero exit gates CI on sweep concurrency efficiency. Distinct from `slo_rule_failure` (27) so automation can route "concurrency under-utilized" separately from generic SLO failures. See `docs/spec-utilization.md`. |
 | 130  | `interrupted`            | Graceful SIGINT / Ctrl-C cancellation (POSIX convention: 128 + SIGINT(2)). |
 | 137  | `killed`                 | SIGKILL escalation after the graceful-cancel deadline expired (128 + SIGKILL(9)). |
 
@@ -102,6 +104,7 @@ coarse sweep-level result.
 | `agent redact-audit`            | `success`, `usage_error`, `redact_audit_findings`, `redact_audit_scan_error`, `internal_error` |
 | `bench assert`                  | `success`, `usage_error`, `slo_rule_failure`, `internal_error` |
 | `agent apply`                   | `success`, `usage_error`, `apply_check_failed`, `apply_redacted_refused`, `apply_dirty_tree_refused`, `internal_error` |
+| `bench export-otlp`             | `success`, `usage_error`, `preflight_failure`, `internal_error` (see `docs/spec-export-otlp.md`) |
 
 > **Note:** `hello-world` does not produce distinct outcome classes beyond
 > `success` / `internal_error`; it is an interactive debugging surface.

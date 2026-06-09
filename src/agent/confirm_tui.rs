@@ -621,7 +621,6 @@ fn handle_key(dash: &Arc<RatatuiDashboard>, key: KeyEvent) {
                 let _ = tx.send(true);
             }
         }
-
         if s.finished.is_some() {
             let close_key = matches!(key.code, KeyCode::Char('q' | 'Q') | KeyCode::Esc) || ctrl_c;
             if close_key {
