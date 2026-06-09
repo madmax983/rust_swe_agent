@@ -3702,7 +3702,10 @@ fn bench_inspect(i: args::InspectCmd) -> Result<(), Error> {
         return Ok(());
     }
 
-    if matches!(i.format.as_str(), "markdown" | "html" | "csv" | "mermaid") {
+    if matches!(
+        i.format.as_str(),
+        "markdown" | "html" | "csv" | "mermaid" | "finetune"
+    ) {
         return bench_inspect_export(i);
     }
 
@@ -3760,7 +3763,7 @@ fn bench_inspect_export(i: args::InspectCmd) -> Result<(), Error> {
     })?;
     let instance_id = i.instance.as_deref().ok_or_else(|| {
         Error::Config(crate::error::ConfigError::Invalid(
-            "inspect: --instance is required for export formats (markdown/html/csv/mermaid)".into(),
+            "inspect: --instance is required for export formats (markdown/html/csv/mermaid/finetune)".into(),
         ))
     })?;
     let traj_path =
@@ -3782,6 +3785,7 @@ fn bench_inspect_export(i: args::InspectCmd) -> Result<(), Error> {
         "html" => inspect_export_html(&traj)?,
         "csv" => inspect_export_csv(&traj)?,
         "mermaid" => inspect_export_mermaid(&traj)?,
+        "finetune" => inspect_export_finetune(&traj)?,
         _ => unreachable!("dispatch guarded by caller"),
     };
 
@@ -3867,6 +3871,22 @@ fn inspect_export_mermaid(_traj: &crate::trajectory::Trajectory) -> Result<Strin
     Err(Error::Config(crate::error::ConfigError::Invalid(
         "format_unavailable: --format mermaid requires the `mermaid-export` Cargo feature; \
          rebuild with `--features mermaid-export`"
+            .into(),
+    )))
+}
+
+#[cfg(feature = "finetune-export")]
+#[allow(clippy::unnecessary_wraps)]
+fn inspect_export_finetune(traj: &crate::trajectory::Trajectory) -> Result<String, Error> {
+    use crate::trajectory::export::{FinetuneExporter, TrajectoryExporter};
+    Ok(FinetuneExporter::export(traj))
+}
+
+#[cfg(not(feature = "finetune-export"))]
+fn inspect_export_finetune(_traj: &crate::trajectory::Trajectory) -> Result<String, Error> {
+    Err(Error::Config(crate::error::ConfigError::Invalid(
+        "format_unavailable: --format finetune requires the `finetune-export` Cargo feature; \
+         rebuild with `--features finetune-export`"
             .into(),
     )))
 }

@@ -40,13 +40,14 @@ max bench compare --baseline <dir> --candidate <dir> --emit-diff-script <out.sh>
   | `html`     | Self-contained HTML (inline CSS, no external refs)     | `html-export`          |
   | `csv`      | Flat CSV with `role` and `content` columns             | `csv-export`           |
   | `mermaid`  | Mermaid `sequenceDiagram` of the conversation          | `mermaid-export`       |
+  | `finetune` | JSONL chat payload for OpenAI fine-tuning              | `finetune-export`      |
   | `unified`  | Unified diff (diff mode only)                          | —                      |
 
   When the binary is built without the required feature, `--format <name>` exits
   with a `format_unavailable` error naming the missing feature. See
   [`src/trajectory/export.rs`](../src/trajectory/export.rs) for exporter unit tests.
 * `--output <PATH>`: write output to a file instead of stdout. Supported with
-  `markdown`, `html`, `csv`, and `mermaid` formats in instance mode. Stdout is
+  `markdown`, `html`, `csv`, `mermaid`, and `finetune` formats in instance mode. Stdout is
   empty when `--output` is set.
 * `--full`: disable stdout/stderr truncation in transcript mode.
 * `--show-expected`: also print `PASS_TO_PASS` / `FAIL_TO_PASS` expected-test groupings read
@@ -59,7 +60,7 @@ max bench compare --baseline <dir> --candidate <dir> --emit-diff-script <out.sh>
 Exactly one of `--instance` or `--filter` is required.
 Diff mode is separate and cannot be combined with `--sweep`, `--instance`, or
 `--filter`.
-Export formats (`markdown`, `html`, `csv`, `mermaid`) require `--instance` and
+Export formats (`markdown`, `html`, `csv`, `mermaid`, `finetune`) require `--instance` and
 `--sweep`; they cannot be combined with `--filter`.
 
 ### Output redaction

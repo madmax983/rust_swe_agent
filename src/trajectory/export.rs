@@ -53,6 +53,9 @@ pub struct MermaidExporter;
 #[cfg(feature = "html-export")]
 pub struct HtmlExporter;
 
+#[cfg(feature = "finetune-export")]
+pub struct FinetuneExporter;
+
 use std::fmt::Write;
 
 #[cfg(feature = "csv-export")]
@@ -194,6 +197,29 @@ impl TrajectoryExporter for HtmlExporter {
     }
 }
 
+#[cfg(feature = "finetune-export")]
+impl TrajectoryExporter for FinetuneExporter {
+    fn export(trajectory: &Trajectory) -> String {
+        let redactor = Redactor::default_enabled();
+        let mut messages = Vec::new();
+
+        for msg in &trajectory.messages {
+            let role = msg.role.as_str();
+            let content = redactor.redact_text(&msg.content, surface::EXPORT).text;
+            messages.push(serde_json::json!({
+                "role": role,
+                "content": content
+            }));
+        }
+
+        let payload = serde_json::json!({
+            "messages": messages
+        });
+
+        serde_json::to_string(&payload).unwrap_or_else(|_| "{}".to_string())
+    }
+}
+
 #[cfg(feature = "mermaid-export")]
 impl TrajectoryExporter for MermaidExporter {
     fn export(trajectory: &Trajectory) -> String {
@@ -319,6 +345,36 @@ mod tests {
         assert!(mermaid.contains("U->>A: Hello \"user\""));
 
         assert!(mermaid.contains("Note over S,T: Outcome: submitted"));
+    }
+
+    #[cfg(feature = "finetune-export")]
+    #[test]
+    fn test_finetune_export_format() {
+        let mut t = Trajectory::new();
+        t.info.task = Some("Add a feature".to_string());
+        t.info.outcome = Some(outcome::SUBMITTED.to_string());
+
+        t.record_message(&Message::system("System prompt"));
+        t.record_message(&Message::user("Hello agent"));
+        t.record_message(&Message::assistant("Hello user"));
+
+        let finetune_json = FinetuneExporter::export(&t);
+
+        let parsed: serde_json::Value =
+            serde_json::from_str(&finetune_json).unwrap_or_else(|_| serde_json::json!({}));
+        assert!(parsed.get("messages").is_some());
+
+        let Some(msgs) = parsed.get("messages").and_then(|v| v.as_array()) else {
+            panic!("Expected messages array");
+        };
+
+        assert_eq!(msgs.len(), 3);
+        assert_eq!(msgs[0]["role"], "system");
+        assert_eq!(msgs[0]["content"], "System prompt");
+        assert_eq!(msgs[1]["role"], "user");
+        assert_eq!(msgs[1]["content"], "Hello agent");
+        assert_eq!(msgs[2]["role"], "assistant");
+        assert_eq!(msgs[2]["content"], "Hello user");
     }
 
     #[cfg(feature = "html-export")]
