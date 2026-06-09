@@ -411,6 +411,7 @@ fn record_claude_config(agent: &mut DefaultAgent, cwd: &Path, isolated: bool) {
 ///   (restrict to [`ALLOWED_TOOLS`]), and `--no-session-persistence` for a
 ///   reproducible measurement run. Note: `--bare` forces API-key-only auth, so
 ///   OAuth/keychain logins do not apply in this mode.
+#[allow(rustdoc::private_intra_doc_links)]
 #[allow(clippy::too_many_lines)]
 pub async fn drive(
     agent: &mut DefaultAgent,

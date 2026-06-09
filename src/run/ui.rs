@@ -39,7 +39,7 @@ pub struct InstanceEntry {
     pub traj_path: PathBuf,
 }
 
-/// Arguments forwarded from the CLI to [`run`].
+/// Arguments forwarded from the CLI to `run` (if the `ui-server` feature is enabled).
 pub struct UiArgs {
     pub sweep: PathBuf,
     pub port: u16,

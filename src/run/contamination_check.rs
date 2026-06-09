@@ -6,10 +6,10 @@
 //!
 //! | Signal | Description | Range |
 //! |--------|-------------|-------|
-//! | `edit_before_read_ratio` | Fraction of edited files never read before patching | [0,1] |
-//! | `patch_similarity_to_gold` | Normalised similarity between agent patch and gold patch | [0,1] |
-//! | `time_to_first_edit` | Suspicion from early first edit (step 0 → 1.0, last step → 0.0) | [0,1] |
-//! | `verbatim_recall` | Whether agent message contains ≥ N tokens from gold patch surface | {0,1} |
+//! | `edit_before_read_ratio` | Fraction of edited files never read before patching | \[0,1\] |
+//! | `patch_similarity_to_gold` | Normalised similarity between agent patch and gold patch | \[0,1\] |
+//! | `time_to_first_edit` | Suspicion from early first edit (step 0 → 1.0, last step → 0.0) | \[0,1\] |
+//! | `verbatim_recall` | Whether agent message contains ≥ N tokens from gold patch surface | \{0,1\} |
 //!
 //! # Risk tiers
 //!
