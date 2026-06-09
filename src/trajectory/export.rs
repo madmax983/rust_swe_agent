@@ -53,6 +53,9 @@ pub struct MermaidExporter;
 #[cfg(feature = "html-export")]
 pub struct HtmlExporter;
 
+#[cfg(feature = "jupyter-export")]
+pub struct JupyterExporter;
+
 use std::fmt::Write;
 
 #[cfg(feature = "csv-export")]
@@ -245,6 +248,55 @@ impl TrajectoryExporter for MermaidExporter {
     }
 }
 
+#[cfg(feature = "jupyter-export")]
+impl TrajectoryExporter for JupyterExporter {
+    fn export(trajectory: &Trajectory) -> String {
+        let redactor = Redactor::default_enabled();
+        let mut cells = Vec::new();
+
+        let mut first_cell_source = String::from("# Trajectory Export\n\n");
+        if let Some(task) = &trajectory.info.task {
+            let task = redactor.redact_text(task, surface::EXPORT).text;
+            let _ = write!(first_cell_source, "**Task:** {task}\n\n");
+        }
+        if let Some(outcome) = &trajectory.info.outcome {
+            let outcome = redactor.redact_text(outcome, surface::EXPORT).text;
+            let _ = write!(first_cell_source, "**Outcome:** {outcome}\n\n");
+        }
+        cells.push(serde_json::json!({
+            "cell_type": "markdown",
+            "metadata": {},
+            "source": [first_cell_source]
+        }));
+
+        for msg in &trajectory.messages {
+            let role_title = match msg.role.as_str() {
+                "system" => "System",
+                "user" => "User",
+                "assistant" => "Assistant",
+                "tool" => "Tool",
+                other => other,
+            };
+            let content = redactor.redact_text(&msg.content, surface::EXPORT).text;
+            let source = format!("### {role_title}\n\n{content}\n\n");
+            cells.push(serde_json::json!({
+                "cell_type": "markdown",
+                "metadata": {},
+                "source": [source]
+            }));
+        }
+
+        let notebook = serde_json::json!({
+            "cells": cells,
+            "metadata": {},
+            "nbformat": 4,
+            "nbformat_minor": 5
+        });
+
+        serde_json::to_string_pretty(&notebook).unwrap_or_default()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -339,5 +391,23 @@ mod tests {
         assert!(html.contains("submitted"));
         assert!(html.contains("Hello agent"));
         assert!(html.contains("Hello user"));
+    }
+
+    #[cfg(feature = "jupyter-export")]
+    #[test]
+    fn test_jupyter_export_format() {
+        let mut t = Trajectory::new();
+        t.info.task = Some("Add a feature".to_string());
+        t.info.outcome = Some("submitted".to_string());
+
+        t.record_message(&Message::user("Hello agent"));
+
+        let jupyter = JupyterExporter::export(&t);
+
+        assert!(jupyter.contains("\"nbformat\": 4"));
+        assert!(jupyter.contains("Add a feature"));
+        assert!(jupyter.contains("submitted"));
+        assert!(jupyter.contains("Hello agent"));
+        assert!(jupyter.contains("### User"));
     }
 }
