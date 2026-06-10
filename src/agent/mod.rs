@@ -10,10 +10,10 @@ use async_trait::async_trait;
 use crate::error::Error;
 
 pub mod confirm;
-pub mod confirm_cli;
-pub mod confirm_tui;
+pub(crate) mod confirm_cli;
+pub(crate) mod confirm_tui;
 pub mod default;
-pub mod interactive;
+pub(crate) mod interactive;
 pub mod parse;
 
 pub use confirm::{ConfirmCallback, ConfirmContext, ConfirmDecision, ScriptedConfirmer};

@@ -3,6 +3,7 @@ use crate::error::Error;
 use comfy_table::{Table, modifiers::UTF8_ROUND_CORNERS, presets::UTF8_FULL};
 use serde::Serialize;
 
+#[allow(dead_code)]
 pub const STAGES: &[&str] = &["preflight", "run", "inspect", "analyze", "publish"];
 
 #[derive(Clone, Serialize)]

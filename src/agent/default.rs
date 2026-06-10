@@ -65,7 +65,7 @@ fn wallclock_warning_before(timeout: Duration) -> Duration {
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct TruncateResult {
+pub struct TruncateResult {
     pub(crate) text: String,
     pub(crate) bytes_omitted: usize,
     pub(crate) truncated: bool,
@@ -281,7 +281,7 @@ fn elide_history_for_model(
     clippy::cast_precision_loss,
     clippy::cast_sign_loss
 )]
-pub(crate) fn truncate_observation_text(
+pub fn truncate_observation_text(
     input: &str,
     max_bytes: usize,
     head_ratio: f64,
@@ -459,11 +459,13 @@ pub struct DefaultAgentBuilder {
 }
 
 impl DefaultAgentBuilder {
+    #[allow(dead_code)]
     pub fn build(self) -> Result<DefaultAgent, Error> {
         self.build_with_tool_providers(Vec::new())
     }
 
     #[allow(clippy::too_many_lines)]
+    #[allow(dead_code)]
     pub fn build_with_tool_providers(
         self,
         tool_providers: Vec<Arc<dyn ToolProvider>>,

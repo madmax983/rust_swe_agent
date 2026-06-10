@@ -13,13 +13,13 @@
 
 use serde::Serialize;
 
-pub mod broadcast;
-pub mod event_log;
-pub mod sse;
+pub(crate) mod broadcast;
+pub(crate) mod event_log;
+pub(crate) mod sse;
 #[cfg(feature = "webhook")]
-pub mod sweep_webhook;
+pub(crate) mod sweep_webhook;
 #[cfg(feature = "webhook")]
-pub mod webhook;
+pub(crate) mod webhook;
 
 pub use broadcast::BroadcastSink;
 pub use event_log::EventLogSink;

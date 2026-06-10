@@ -133,7 +133,7 @@ pub mod outcome {
 }
 
 /// Reasons an agent run might exit unexpectedly before submitting.
-pub mod exit_reason {
+pub(crate) mod exit_reason {
     /// The run was manually cancelled by the user.
     pub const CANCELLED: &str = "cancelled";
     /// The run exceeded the maximum allowed wallclock time.
