@@ -862,68 +862,77 @@ fn render_instance_text(report: &InspectReport) -> String {
         );
     }
     s.push_str("\n=== bench inspect ===\n");
-    let _ = writeln!(
-        s,
-        "instance_id:      {}",
-        report.instance_id.as_deref().unwrap_or("?")
-    );
-    let _ = writeln!(
-        s,
-        "model:            {}",
-        report.model.as_deref().unwrap_or("?")
-    );
-    let _ = writeln!(
-        s,
-        "outcome:          {}",
-        report.outcome.as_deref().unwrap_or("?")
-    );
-    let _ = writeln!(
-        s,
-        "failure_category: {}",
-        report.failure_category.map_or("none", failure_label)
-    );
+    let mut table = Table::new();
+    table
+        .load_preset(UTF8_FULL)
+        .apply_modifier(UTF8_ROUND_CORNERS)
+        .set_header(vec!["Field", "Value"]);
+
+    table.add_row(vec![
+        "instance_id".to_string(),
+        report.instance_id.as_deref().unwrap_or("?").to_string(),
+    ]);
+    table.add_row(vec![
+        "model".to_string(),
+        report.model.as_deref().unwrap_or("?").to_string(),
+    ]);
+    table.add_row(vec![
+        "outcome".to_string(),
+        report.outcome.as_deref().unwrap_or("?").to_string(),
+    ]);
+    table.add_row(vec![
+        "failure_category".to_string(),
+        report
+            .failure_category
+            .map_or("none", failure_label)
+            .to_string(),
+    ]);
     if report.chaos_injected_steps > 0 {
-        let _ = writeln!(
-            s,
-            "chaos:            injected_steps={} recoveries={}",
-            report.chaos_injected_steps, report.chaos_recoveries
-        );
+        table.add_row(vec![
+            "chaos".to_string(),
+            format!(
+                "injected_steps={} recoveries={}",
+                report.chaos_injected_steps, report.chaos_recoveries
+            ),
+        ]);
     }
-    let _ = writeln!(
-        s,
-        "total_cost_usd:   {}",
+    table.add_row(vec![
+        "total_cost_usd".to_string(),
         report
             .total_cost_usd
-            .map_or_else(|| "?".into(), |v| format!("{v:.6}"))
-    );
+            .map_or_else(|| "?".into(), |v| format!("{v:.6}")),
+    ]);
     if report.actual_cost_usd.is_some() || report.actual_cost_source.is_some() {
         let source = report
             .actual_cost_source
             .map_or_else(|| "unknown".to_owned(), |source| source.to_string());
-        let _ = writeln!(
-            s,
-            "actual_cost_usd:  {} ({source})",
-            report
-                .actual_cost_usd
-                .map_or_else(|| "?".into(), |v| format!("{v:.6}"))
-        );
+        table.add_row(vec![
+            "actual_cost_usd".to_string(),
+            format!(
+                "{} ({source})",
+                report
+                    .actual_cost_usd
+                    .map_or_else(|| "?".into(), |v| format!("{v:.6}"))
+            ),
+        ]);
     }
     if report.baseline_cost_usd.is_some() || report.baseline_cost_model.is_some() {
         let model = report
             .baseline_cost_model
             .as_deref()
             .unwrap_or("claude-3-5-sonnet");
-        let _ = writeln!(
-            s,
-            "baseline_cost_usd: {} ({model})",
-            report
-                .baseline_cost_usd
-                .map_or_else(|| "?".into(), |v| format!("{v:.6}"))
-        );
+        table.add_row(vec![
+            "baseline_cost_usd".to_string(),
+            format!(
+                "{} ({model})",
+                report
+                    .baseline_cost_usd
+                    .map_or_else(|| "?".into(), |v| format!("{v:.6}"))
+            ),
+        ]);
     }
-    let _ = writeln!(
-        s,
-        "tokens:           {}",
+    table.add_row(vec![
+        "tokens".to_string(),
         render_token_summary(
             report.prompt_tokens,
             report.input_tokens,
@@ -931,10 +940,12 @@ fn render_instance_text(report: &InspectReport) -> String {
             report.cache_creation_tokens,
             report.completion_tokens,
         ),
-    );
+    ]);
     if let Some(r) = report.resolved {
-        let _ = writeln!(s, "resolved:         {r}");
+        table.add_row(vec!["resolved".to_string(), r.to_string()]);
     }
+    s.push_str(&table.to_string());
+    s.push('\n');
     if let Some(ft) = &report.failing_tests {
         if ft.source == "evaluator" {
             let _ = writeln!(s, "Failing tests ({}):", ft.tests.len());

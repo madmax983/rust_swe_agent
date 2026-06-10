@@ -1033,10 +1033,16 @@ fn instance_mode_renders_header_and_steps() {
     assert!(out.status.success());
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(stdout.contains("=== bench inspect ==="), "{stdout}");
-    assert!(stdout.contains("instance_id:      abc"), "{stdout}");
+    assert!(
+        stdout.contains("│ instance_id      ┆ abc                      │"),
+        "{stdout}"
+    );
     assert!(stdout.contains("[step 0] assistant"), "{stdout}");
     assert!(stdout.contains("[step 1] bash"), "{stdout}");
-    assert!(stdout.contains("resolved:         false"), "{stdout}");
+    assert!(
+        stdout.contains("│ resolved         ┆ false                    │"),
+        "{stdout}"
+    );
 }
 
 #[test]
@@ -1171,7 +1177,7 @@ fn instance_mode_reports_total_prompt_tokens_with_cache_breakdown() {
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
         stdout.contains(
-            "tokens:           prompt=950 (input=100 cache_read=800 cache_creation=50) completion=20"
+            "│ tokens           ┆ prompt=950 (input=100 cache_read=800 cache_creation=50) completion=20 │"
         ),
         "{stdout}"
     );

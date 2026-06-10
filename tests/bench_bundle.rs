@@ -104,7 +104,10 @@ fn bundle_create_verify_full_sweep_round_trips_with_fixed_layout() {
         .unwrap();
     assert_success(&out);
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(stdout.contains("instance_id:      alpha"), "{stdout}");
+    assert!(
+        stdout.contains("│ instance_id      ┆ alpha                  │"),
+        "{stdout}"
+    );
 }
 
 #[test]
