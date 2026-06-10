@@ -1233,30 +1233,7 @@ fn apply_patch(
                     .arg(literal_pathspec(f))
                     .current_dir(git_root)
                     .output();
-                if let Some((mode, sha)) = pre_staged.get(f) {
-                    // Restore the pre-apply staged state, then check out that
-                    // version into the working tree.
-                    // Use three-arg --cacheinfo form so the path is an OsStr
-                    // arg rather than embedded in a comma-delimited string.
-                    let _ = Command::new("git")
-                        .args(["update-index", "--cacheinfo", mode, sha])
-                        .arg(f)
-                        .current_dir(git_root)
-                        .output();
-                    // checkout-index takes literal file names (not pathspecs).
-                    let _ = Command::new("git")
-                        .args(["checkout-index", "--force", "--"])
-                        .arg(f)
-                        .current_dir(git_root)
-                        .output();
-                } else {
-                    // No pre-existing staged edit: restore working tree from HEAD.
-                    let _ = Command::new("git")
-                        .args(["checkout", "--"])
-                        .arg(literal_pathspec(f))
-                        .current_dir(git_root)
-                        .output();
-                }
+                restore_working_tree(git_root, f, pre_staged.get(f));
             }
         }
         let msg = String::from_utf8_lossy(&output.stderr).trim().to_owned();
@@ -1270,21 +1247,60 @@ fn apply_patch(
     // so the caller's staged work is exactly preserved.
     if three_way {
         for f in affected_files {
-            let _ = Command::new("git")
-                .args(["reset", "HEAD", "--"])
-                .arg(literal_pathspec(f))
-                .current_dir(git_root)
-                .output();
-            if let Some((mode, sha)) = pre_staged.get(f) {
-                let _ = Command::new("git")
-                    .args(["update-index", "--cacheinfo", mode, sha])
-                    .arg(f)
-                    .current_dir(git_root)
-                    .output();
-            }
+            reset_index_to_staged(git_root, f, pre_staged.get(f));
         }
     }
     Ok(())
+}
+
+fn restore_working_tree(
+    git_root: &Path,
+    f: &OsString,
+    pre_staged: Option<&(String, String)>,
+) {
+    if let Some((mode, sha)) = pre_staged {
+        // Restore the pre-apply staged state, then check out that
+        // version into the working tree.
+        // Use three-arg --cacheinfo form so the path is an OsStr
+        // arg rather than embedded in a comma-delimited string.
+        let _ = Command::new("git")
+            .args(["update-index", "--cacheinfo", mode, sha])
+            .arg(f)
+            .current_dir(git_root)
+            .output();
+        // checkout-index takes literal file names (not pathspecs).
+        let _ = Command::new("git")
+            .args(["checkout-index", "--force", "--"])
+            .arg(f)
+            .current_dir(git_root)
+            .output();
+    } else {
+        // No pre-existing staged edit: restore working tree from HEAD.
+        let _ = Command::new("git")
+            .args(["checkout", "--"])
+            .arg(literal_pathspec(f))
+            .current_dir(git_root)
+            .output();
+    }
+}
+
+fn reset_index_to_staged(
+    git_root: &Path,
+    f: &OsString,
+    pre_staged: Option<&(String, String)>,
+) {
+    let _ = Command::new("git")
+        .args(["reset", "HEAD", "--"])
+        .arg(literal_pathspec(f))
+        .current_dir(git_root)
+        .output();
+    if let Some((mode, sha)) = pre_staged {
+        let _ = Command::new("git")
+            .args(["update-index", "--cacheinfo", mode, sha])
+            .arg(f)
+            .current_dir(git_root)
+            .output();
+    }
 }
 
 /// Verify the report destination is writable *before* mutating the tree.
