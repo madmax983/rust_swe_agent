@@ -50,6 +50,7 @@ impl Renderer {
 
 /// Build a context with the keys mini-swe-agent conventionally exposes:
 /// `task`, `output`, `returncode`, plus arbitrary extras.
+#[allow(dead_code)]
 pub fn observation_context(
     output: &str,
     returncode: i32,
@@ -60,6 +61,7 @@ pub fn observation_context(
 }
 
 /// Small helper — used by `InteractiveAgent` status strings and banners.
+#[allow(dead_code)]
 pub fn render_simple(tmpl: &str, vars: &[(&str, &str)]) -> Result<String, Error> {
     let mut env = Environment::new();
     env.set_auto_escape_callback(|_| minijinja::AutoEscape::None);
@@ -69,6 +71,7 @@ pub fn render_simple(tmpl: &str, vars: &[(&str, &str)]) -> Result<String, Error>
 }
 
 /// Keep `Arc<Renderer>` cheap in hot paths.
+#[allow(dead_code)]
 pub type SharedRenderer = Arc<Renderer>;
 
 #[cfg(test)]
