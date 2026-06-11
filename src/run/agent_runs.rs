@@ -191,6 +191,8 @@ pub fn run_agent_runs(opts: &AgentRunsOpts) -> Result<AgentRunsReport, Error> {
 
 /// Collect all `.traj.json` paths under `dir`. If `recursive` is false only the
 /// immediate directory is scanned; if true the full tree is walked.
+/// I/O errors on the scan root are propagated; unreadable child subdirectories
+/// are skipped silently (analogous to malformed trajectory files).
 fn collect_traj_paths(dir: &Path, recursive: bool) -> Result<Vec<PathBuf>, Error> {
     if !dir.exists() {
         return Err(Error::Trajectory(format!(
@@ -205,19 +207,18 @@ fn collect_traj_paths(dir: &Path, recursive: bool) -> Result<Vec<PathBuf>, Error
         )));
     }
 
+    // Propagate read errors on the scan root in both recursive and non-recursive modes.
+    let root_entries = std::fs::read_dir(dir)
+        .map_err(|e| Error::Trajectory(format!("cannot read directory {}: {e}", dir.display())))?;
+
     let mut paths: Vec<PathBuf> = Vec::new();
 
-    if recursive {
-        collect_recursive(dir, &mut paths);
-    } else {
-        let entries = std::fs::read_dir(dir).map_err(|e| {
-            Error::Trajectory(format!("cannot read directory {}: {e}", dir.display()))
-        })?;
-        for entry in entries.flatten() {
-            let p = entry.path();
-            if is_traj_file(&p) {
-                paths.push(p);
-            }
+    for entry in root_entries.flatten() {
+        let p = entry.path();
+        if recursive && p.is_dir() && !p.is_symlink() {
+            walk_children(&p, &mut paths);
+        } else if is_traj_file(&p) {
+            paths.push(p);
         }
     }
 
@@ -225,7 +226,9 @@ fn collect_traj_paths(dir: &Path, recursive: bool) -> Result<Vec<PathBuf>, Error
     Ok(paths)
 }
 
-fn collect_recursive(dir: &Path, out: &mut Vec<PathBuf>) {
+/// Recursively collect `.traj.json` files under `dir`, silently skipping
+/// subdirectories that cannot be read (permission errors, etc.).
+fn walk_children(dir: &Path, out: &mut Vec<PathBuf>) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
     };
@@ -233,7 +236,7 @@ fn collect_recursive(dir: &Path, out: &mut Vec<PathBuf>) {
         let p = entry.path();
         // Skip symlinks to directories to prevent infinite recursion from cycles.
         if p.is_dir() && !p.is_symlink() {
-            collect_recursive(&p, out);
+            walk_children(&p, out);
         } else if is_traj_file(&p) {
             out.push(p);
         }
