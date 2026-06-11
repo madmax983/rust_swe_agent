@@ -53,6 +53,12 @@ pub struct MermaidExporter;
 #[cfg(feature = "html-export")]
 pub struct HtmlExporter;
 
+/// Transforms a [`Trajectory`] into a single-line JSONL format containing a `"messages"` array.
+///
+/// This format is designed for OpenAI-compatible fine-tuning, extracting only
+/// the conversation flow.
+pub struct JsonlFinetuneExporter;
+
 use std::fmt::Write;
 
 #[cfg(feature = "csv-export")]
@@ -116,6 +122,27 @@ impl TrajectoryExporter for MarkdownExporter {
         }
 
         md
+    }
+}
+
+impl TrajectoryExporter for JsonlFinetuneExporter {
+    fn export(trajectory: &Trajectory) -> String {
+        let redactor = Redactor::default_enabled();
+
+        let messages: Vec<serde_json::Value> = trajectory
+            .messages
+            .iter()
+            .map(|msg| {
+                let content = redactor.redact_text(&msg.content, surface::EXPORT).text;
+                serde_json::json!({
+                    "role": msg.role,
+                    "content": content
+                })
+            })
+            .collect();
+
+        serde_json::to_string(&serde_json::json!({ "messages": messages }))
+            .unwrap_or_else(|_| r#"{"messages":[]}"#.to_string())
     }
 }
 
@@ -319,6 +346,24 @@ mod tests {
         assert!(mermaid.contains("U->>A: Hello \"user\""));
 
         assert!(mermaid.contains("Note over S,T: Outcome: submitted"));
+    }
+    #[test]
+    fn test_jsonl_export_format() {
+        let mut t = Trajectory::new();
+        t.info.task = Some("Add a feature".to_string());
+        t.info.outcome = Some("submitted".to_string());
+
+        t.record_message(&Message::system("System prompt"));
+        t.record_message(&Message::user("Hello agent\nMulti-line"));
+        t.record_message(&Message::assistant("Hello \"user\""));
+
+        let jsonl = JsonlFinetuneExporter::export(&t);
+
+        assert!(jsonl.starts_with(r#"{"messages":["#));
+        assert!(jsonl.contains(r#"{"content":"System prompt","role":"system"}"#));
+        assert!(jsonl.contains(r#"{"content":"Hello agent\nMulti-line","role":"user"}"#));
+        assert!(jsonl.contains(r#"{"content":"Hello \"user\"","role":"assistant"}"#));
+        assert!(!jsonl.contains('\n'));
     }
 
     #[cfg(feature = "html-export")]

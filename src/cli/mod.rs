@@ -3703,13 +3703,16 @@ fn bench_inspect(i: args::InspectCmd) -> Result<(), Error> {
         return Ok(());
     }
 
-    if matches!(i.format.as_str(), "markdown" | "html" | "csv" | "mermaid") {
+    if matches!(
+        i.format.as_str(),
+        "markdown" | "html" | "csv" | "mermaid" | "jsonl"
+    ) {
         return bench_inspect_export(i);
     }
 
     if i.output.is_some() {
         return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
-            "inspect: --output is only supported with export formats (markdown/html/csv/mermaid), not `{}`",
+            "inspect: --output is only supported with export formats (markdown/html/csv/mermaid/jsonl), not `{}`",
             i.format
         ))));
     }
@@ -3719,7 +3722,7 @@ fn bench_inspect(i: args::InspectCmd) -> Result<(), Error> {
         "json" => crate::run::inspect::InspectFormat::Json,
         other => {
             return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
-                "unknown --format `{other}` (expected `text`, `json`, `markdown`, `html`, `csv`, or `mermaid`)"
+                "unknown --format `{other}` (expected `text`, `json`, `markdown`, `html`, `csv`, `mermaid`, or `jsonl`)"
             ))));
         }
     };
@@ -3761,7 +3764,8 @@ fn bench_inspect_export(i: args::InspectCmd) -> Result<(), Error> {
     })?;
     let instance_id = i.instance.as_deref().ok_or_else(|| {
         Error::Config(crate::error::ConfigError::Invalid(
-            "inspect: --instance is required for export formats (markdown/html/csv/mermaid)".into(),
+            "inspect: --instance is required for export formats (markdown/html/csv/mermaid/jsonl)"
+                .into(),
         ))
     })?;
     let traj_path =
@@ -3779,6 +3783,10 @@ fn bench_inspect_export(i: args::InspectCmd) -> Result<(), Error> {
         "markdown" => {
             use crate::trajectory::export::{MarkdownExporter, TrajectoryExporter};
             MarkdownExporter::export(&traj)
+        }
+        "jsonl" => {
+            use crate::trajectory::export::{JsonlFinetuneExporter, TrajectoryExporter};
+            JsonlFinetuneExporter::export(&traj)
         }
         "html" => inspect_export_html(&traj)?,
         "csv" => inspect_export_csv(&traj)?,
