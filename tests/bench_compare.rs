@@ -765,8 +765,8 @@ fn cli_text_output_lists_regressions() {
     );
     assert!(stdout.contains("pass->fail"), "got: {stdout}");
     assert!(stdout.contains("Regressions (1):"), "got: {stdout}");
-    assert!(stdout.contains("- b"), "got: {stdout}");
-    assert!(stdout.contains("category=step_limit"), "got: {stdout}");
+    assert!(stdout.contains("b"), "got: {stdout}");
+    assert!(stdout.contains("step_limit"), "got: {stdout}");
 }
 
 #[test]

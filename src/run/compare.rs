@@ -822,6 +822,10 @@ fn write_artifact_version_section(s: &mut String, mismatches: &[String], warning
 
 fn write_transition_matrix(s: &mut String, transitions: &BTreeMap<TransitionKind, usize>) {
     s.push_str("\nTransition matrix:\n");
+    let mut table = comfy_table::Table::new();
+    table.load_preset(comfy_table::presets::UTF8_FULL)
+        .apply_modifier(comfy_table::modifiers::UTF8_ROUND_CORNERS)
+        .set_header(vec!["Transition", "Count"]);
     for kind in [
         TransitionKind::PassPass,
         TransitionKind::PassFail,
@@ -831,8 +835,9 @@ fn write_transition_matrix(s: &mut String, transitions: &BTreeMap<TransitionKind
         TransitionKind::PresentMissing,
     ] {
         let n = transitions.get(&kind).copied().unwrap_or(0);
-        let _ = writeln!(s, "  {:<18} {n}", kind.label());
+        table.add_row(vec![kind.label().to_string(), n.to_string()]);
     }
+    let _ = writeln!(s, "{table}");
 }
 
 fn write_failure_delta_section(
@@ -850,11 +855,21 @@ fn write_failure_delta_section(
         return;
     }
     s.push_str("\nFailure category delta (candidate - baseline):\n");
+    let mut table = comfy_table::Table::new();
+    table.load_preset(comfy_table::presets::UTF8_FULL)
+        .apply_modifier(comfy_table::modifiers::UTF8_ROUND_CORNERS)
+        .set_header(vec!["Category", "Baseline", "Candidate", "Delta"]);
     for (cat, d) in nonzero {
         let b = baseline.get(&cat).copied().unwrap_or(0);
         let c = candidate.get(&cat).copied().unwrap_or(0);
-        let _ = writeln!(s, "  {:<14} {b} -> {c} ({d:+})", failure_label(cat));
+        table.add_row(vec![
+            failure_label(cat).to_string(),
+            b.to_string(),
+            c.to_string(),
+            format!("{d:+}"),
+        ]);
     }
+    let _ = writeln!(s, "{table}");
 }
 
 fn write_subset_warnings(s: &mut String, warnings: &[String]) {
@@ -872,23 +887,28 @@ fn write_breakdown_delta_section(s: &mut String, rows: &[BreakdownDeltaRow]) {
         return;
     }
     s.push_str("\nBreakdown deltas:\n");
+    let mut table = comfy_table::Table::new();
+    table.load_preset(comfy_table::presets::UTF8_FULL)
+        .apply_modifier(comfy_table::modifiers::UTF8_ROUND_CORNERS)
+        .set_header(vec![
+            "!", "Axis", "Value", "N (Base)", "N (Cand)", "Rate (Base)", "Rate (Cand)", "Delta pp",
+        ]);
     for row in rows {
-        let _ = writeln!(
-            s,
-            "  {} {}={}  n: {} -> {}  resolved_rate: {:.1}% -> {:.1}%  delta={:+.1}pp",
-            if row.exceeds_threshold { "*" } else { "-" },
+        table.add_row(vec![
+            if row.exceeds_threshold { "*" } else { "" }.to_string(),
             match row.bucket_axis {
                 BreakdownAxis::Repo => "repo",
                 BreakdownAxis::FailureCategory => "failure_category",
-            },
-            row.bucket_value,
-            row.baseline_n,
-            row.candidate_n,
-            row.baseline_resolved_rate * 100.0,
-            row.candidate_resolved_rate * 100.0,
-            row.delta_resolved_rate * 100.0
-        );
+            }.to_string(),
+            row.bucket_value.clone(),
+            row.baseline_n.to_string(),
+            row.candidate_n.to_string(),
+            format!("{:.1}%", row.baseline_resolved_rate * 100.0),
+            format!("{:.1}%", row.candidate_resolved_rate * 100.0),
+            format!("{:+.1}", row.delta_resolved_rate * 100.0),
+        ]);
     }
+    let _ = writeln!(s, "{table}");
 }
 
 fn write_cost_attribution_delta_section(
@@ -903,20 +923,25 @@ fn write_cost_attribution_delta_section(
     for warning in warnings {
         let _ = writeln!(s, "  ! {warning}");
     }
+    let mut table = comfy_table::Table::new();
+    table.load_preset(comfy_table::presets::UTF8_FULL)
+        .apply_modifier(comfy_table::modifiers::UTF8_ROUND_CORNERS)
+        .set_header(vec![
+            "!", "Bucket", "N (Base)", "N (Cand)", "USD (Base)", "USD (Cand)", "Delta USD", "Share pp \u{394}",
+        ]);
     for row in rows {
-        let _ = writeln!(
-            s,
-            "  {} bucket={}  n: {} -> {}  total_usd: ${:.4} -> ${:.4}  delta_usd={:+.4}  share_pp_delta={:+.2}",
-            if row.exceeds_threshold { "*" } else { "-" },
-            row.bucket,
-            row.n_baseline,
-            row.n_candidate,
-            row.total_usd_baseline,
-            row.total_usd_candidate,
-            row.delta_usd,
-            row.share_pp_delta
-        );
+        table.add_row(vec![
+            if row.exceeds_threshold { "*" } else { "" }.to_string(),
+            row.bucket.clone(),
+            row.n_baseline.to_string(),
+            row.n_candidate.to_string(),
+            format!("${:.4}", row.total_usd_baseline),
+            format!("${:.4}", row.total_usd_candidate),
+            format!("{:+.4}", row.delta_usd),
+            format!("{:+.2}", row.share_pp_delta),
+        ]);
     }
+    let _ = writeln!(s, "{table}");
 }
 
 fn write_regressions(s: &mut String, regressions: &[TaskTransition]) {
@@ -925,17 +950,24 @@ fn write_regressions(s: &mut String, regressions: &[TaskTransition]) {
         return;
     }
     let _ = writeln!(s, "\nRegressions ({}):", regressions.len());
+    let mut table = comfy_table::Table::new();
+    table.load_preset(comfy_table::presets::UTF8_FULL)
+        .apply_modifier(comfy_table::modifiers::UTF8_ROUND_CORNERS)
+        .set_header(vec!["Instance", "Baseline", "Candidate", "Category", "Exit Reason"]);
     for r in regressions {
         let cat = r.candidate_failure_category.map_or("none", failure_label);
         let exit = r.candidate_exit_reason.as_deref().unwrap_or("?");
         let old = r.baseline_outcome.as_deref().unwrap_or("?");
         let new = r.candidate_outcome.as_deref().unwrap_or("?");
-        let _ = writeln!(
-            s,
-            "  - {id}  {old} -> {new}  category={cat}  exit_reason={exit}",
-            id = r.instance_id
-        );
+        table.add_row(vec![
+            r.instance_id.clone(),
+            old.to_string(),
+            new.to_string(),
+            cat.to_string(),
+            exit.to_string(),
+        ]);
     }
+    let _ = writeln!(s, "{table}");
 }
 
 fn write_sampling_drift_section(s: &mut String, drift: Option<&SamplingDriftSummary>) {
@@ -3713,8 +3745,8 @@ mod tests {
         assert!(t.contains("Resolved:           2 -> 1 (-1)"));
         assert!(t.contains("pass->fail"));
         assert!(t.contains("Regressions (1):"), "got:\n{t}");
-        assert!(t.contains("- b"), "got:\n{t}");
-        assert!(t.contains("category=step_limit"), "got:\n{t}");
+        assert!(t.contains("b"), "got:\n{t}");
+        assert!(t.contains("step_limit"), "got:\n{t}");
     }
 
     #[test]
