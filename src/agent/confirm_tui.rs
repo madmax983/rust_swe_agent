@@ -692,7 +692,8 @@ fn get_max_detail_scroll(s: &DashboardState) -> usize {
         .map_or("", |line| {
             line.full_text.as_deref().unwrap_or(line.text.as_str())
         });
-    let lines_count = full_text.lines().count();
+    let wrapped_lines = wrap_text(full_text, s.detail_viewport_width as usize);
+    let lines_count = wrapped_lines.len();
     let viewport_h = s.detail_viewport_height as usize;
     lines_count.saturating_sub(viewport_h)
 }
@@ -924,12 +925,14 @@ fn draw(frame: &mut ratatui::Frame, dash: &Arc<RatatuiDashboard>, snap: &Dashboa
         frame.render_widget(Clear, detail_area);
 
         let inner_detail_height = detail_area.height.saturating_sub(2);
+        let inner_detail_width = detail_area.width.saturating_sub(2);
         {
             let mut s = dash
                 .state
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             s.detail_viewport_height = inner_detail_height;
+            s.detail_viewport_width = inner_detail_width;
         }
 
         let block = Block::default()
@@ -943,17 +946,16 @@ fn draw(frame: &mut ratatui::Frame, dash: &Arc<RatatuiDashboard>, snap: &Dashboa
                 line.full_text.as_deref().unwrap_or(line.text.as_str())
             });
 
-        let lines: Vec<&str> = full_text.lines().collect();
-        let display_lines: Vec<Line> = lines
+        let wrapped_lines = wrap_text(full_text, inner_detail_width as usize);
+        let display_lines: Vec<Line> = wrapped_lines
             .iter()
             .skip(snap.detail_scroll_top)
             .take(inner_detail_height as usize)
-            .map(|l| Line::from(*l))
+            .map(|l| Line::from(l.as_str()))
             .collect();
 
         let p = Paragraph::new(display_lines)
-            .block(block)
-            .wrap(Wrap { trim: false });
+            .block(block);
         frame.render_widget(p, detail_area);
     }
 
@@ -1340,6 +1342,128 @@ fn count_wrapped_line(line: &str, width: usize) -> usize {
         total_lines += 1;
     }
     total_lines
+}
+
+fn wrap_text(text: &str, width: usize) -> Vec<String> {
+    if width == 0 {
+        return vec![];
+    }
+    let mut wrapped = Vec::new();
+    for line in text.split('\n') {
+        let line = line.strip_suffix('\r').unwrap_or(line);
+        wrapped.extend(wrap_line(line, width));
+    }
+    wrapped
+}
+
+fn wrap_line(line: &str, width: usize) -> Vec<String> {
+    use unicode_segmentation::UnicodeSegmentation;
+    use unicode_width::UnicodeWidthStr;
+
+    if line.is_empty() {
+        return vec![String::new()];
+    }
+
+    let mut lines = Vec::new();
+    let mut current_line = String::new();
+    let mut current_width = 0;
+
+    let mut current_word = String::new();
+    let mut word_width = 0;
+
+    let mut current_spaces = String::new();
+    let mut space_width = 0;
+
+    for g in line.graphemes(true) {
+        if g == " " {
+            if word_width > 0 {
+                if current_width + word_width <= width {
+                    current_line.push_str(&current_word);
+                    current_width += word_width;
+                } else {
+                    lines.push(std::mem::take(&mut current_line));
+                    current_line = current_word.clone();
+                    current_width = word_width;
+                }
+                current_word.clear();
+                word_width = 0;
+            }
+            current_spaces.push_str(g);
+            space_width += 1;
+        } else {
+            if space_width > 0 {
+                let remaining_on_line = width - current_width;
+                if space_width <= remaining_on_line {
+                    current_line.push_str(&current_spaces);
+                    current_width += space_width;
+                } else {
+                    lines.push(std::mem::take(&mut current_line));
+                    let mut rem = space_width - remaining_on_line;
+                    rem = rem.saturating_sub(1);
+                    while rem > width {
+                        lines.push(String::new());
+                        rem = rem.saturating_sub(width + 1);
+                    }
+                    current_line = " ".repeat(rem);
+                    current_width = rem;
+                }
+                current_spaces.clear();
+                space_width = 0;
+            }
+            let g_width = g.width();
+            if g_width > width {
+                continue;
+            }
+            current_word.push_str(g);
+            word_width += g_width;
+            if word_width > width {
+                if !current_line.is_empty() {
+                    lines.push(std::mem::take(&mut current_line));
+                }
+                let mut prev_word = current_word.clone();
+                let g_len = g.len();
+                prev_word.truncate(prev_word.len() - g_len);
+
+                lines.push(prev_word);
+                current_word = g.to_string();
+                word_width = g_width;
+                current_line.clear();
+                current_width = 0;
+            }
+        }
+    }
+
+    if space_width > 0 {
+        let remaining_on_line = width - current_width;
+        if space_width <= remaining_on_line {
+            current_line.push_str(&current_spaces);
+            current_width += space_width;
+        } else {
+            lines.push(std::mem::take(&mut current_line));
+            let mut rem = space_width - remaining_on_line;
+            rem = rem.saturating_sub(1);
+            while rem > width {
+                lines.push(String::new());
+                rem = rem.saturating_sub(width + 1);
+            }
+            current_line = " ".repeat(rem);
+            current_width = rem;
+        }
+    } else if word_width > 0 {
+        if current_width + word_width <= width {
+            current_line.push_str(&current_word);
+            current_width += word_width;
+        } else {
+            lines.push(std::mem::take(&mut current_line));
+            current_line = current_word;
+            current_width = word_width;
+        }
+    }
+
+    if current_width > 0 || current_line.is_empty() && lines.is_empty() {
+        lines.push(std::mem::take(&mut current_line));
+    }
+    lines
 }
 
 #[cfg(test)]
@@ -2725,5 +2849,32 @@ mod tests {
             }
         }
         let _ = task.await;
+    }
+
+    #[test]
+    fn test_scrolling_on_wrapped_long_lines() {
+        let d = make_dashboard();
+        // A single logical line of 50 chars
+        let long_line = "a".repeat(50);
+        d.append(LineKind::Info, "summary", Some(long_line));
+
+        // Open detail view
+        handle_key(&d, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(snap(&d).detail_open);
+
+        // Set viewport width to 10 and height to 2
+        {
+            let mut s = d.state.lock().unwrap();
+            s.detail_viewport_height = 2;
+            s.detail_viewport_width = 10;
+        }
+
+        // The 50 character line wrapped to width 10 should produce 5 rows.
+        // With viewport height of 2, max scroll should be 5 - 2 = 3.
+        let max_scroll = {
+            let s = d.state.lock().unwrap();
+            get_max_detail_scroll(&s)
+        };
+        assert_eq!(max_scroll, 3);
     }
 }
