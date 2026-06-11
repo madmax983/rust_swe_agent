@@ -247,7 +247,7 @@ fn is_traj_file(p: &Path) -> bool {
     p.is_file()
         && p.file_name()
             .and_then(|n| n.to_str())
-            .map_or(false, |n| n.ends_with(".traj.json"))
+            .is_some_and(|n| n.ends_with(".traj.json"))
 }
 
 fn load_traj_row(path: &Path) -> Result<RunRow, Error> {
@@ -272,7 +272,7 @@ fn load_traj_row(path: &Path) -> Result<RunRow, Error> {
     })
 }
 
-fn sort_rows(rows: &mut Vec<RunRow>, sort: RunsSort) {
+fn sort_rows(rows: &mut [RunRow], sort: RunsSort) {
     match sort {
         RunsSort::Task => rows.sort_by(|a, b| a.path.cmp(&b.path)),
         RunsSort::Cost => rows.sort_by(|a, b| match (a.total_cost_usd, b.total_cost_usd) {
@@ -369,8 +369,8 @@ pub fn format_text(report: &AgentRunsReport) -> String {
     // Header row — outcome needs ≥20 chars (step_limit_reached=18), failure_category ≥26 (history_compaction_failed=25)
     let _ = writeln!(
         out,
-        "{:<42} {:<20} {:<26} {:>6} {:>10} {:>9} {}",
-        "task", "outcome", "failure_category", "steps", "duration", "cost_usd", "model"
+        "{:<42} {:<20} {:<26} {:>6} {:>10} {:>9} model",
+        "task", "outcome", "failure_category", "steps", "duration", "cost_usd"
     );
     let _ = writeln!(out, "{}", "─".repeat(126));
 
@@ -389,8 +389,7 @@ pub fn format_text(report: &AgentRunsReport) -> String {
 
         let _ = writeln!(
             out,
-            "{:<42} {:<20} {:<26} {:>6} {:>10} {:>9} {}",
-            task, outcome, failure, steps, dur, cost, model
+            "{task:<42} {outcome:<20} {failure:<26} {steps:>6} {dur:>10} {cost:>9} {model}"
         );
     }
 
