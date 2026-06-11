@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::artifact::{ArtifactKind, ArtifactSchemaVersion};
+use crate::artifact::ArtifactKind;
 use crate::error::Error;
 use crate::trajectory::{FailureCategory, Trajectory};
 
@@ -129,7 +129,8 @@ pub struct RunsFooter {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentRunsReport {
     pub artifact_kind: ArtifactKind,
-    pub schema_version: ArtifactSchemaVersion,
+    /// Runs-report-specific schema version ("1"). Decoupled from the global artifact version.
+    pub schema_version: String,
     /// Directory that was scanned (as supplied by the operator).
     pub scanned_dir: String,
     /// Whether subdirectories were traversed.
@@ -181,7 +182,7 @@ pub fn run_agent_runs(opts: &AgentRunsOpts) -> Result<AgentRunsReport, Error> {
 
     Ok(AgentRunsReport {
         artifact_kind: ArtifactKind::AgentRunsReport,
-        schema_version: ArtifactSchemaVersion::CURRENT,
+        schema_version: "1".to_owned(),
         scanned_dir: canonical_dir.display().to_string(),
         recursive: opts.recursive,
         rows,
@@ -375,7 +376,14 @@ pub fn format_text(report: &AgentRunsReport) -> String {
     let _ = writeln!(out, "{}", "─".repeat(126));
 
     for row in &report.rows {
-        let task = truncate(row.task.as_deref().unwrap_or(""), TASK_DISPLAY_LEN);
+        let task_raw = row
+            .task
+            .as_deref()
+            .unwrap_or("")
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+        let task = truncate(&task_raw, TASK_DISPLAY_LEN);
         let outcome = row.outcome.as_deref().unwrap_or("");
         let failure = row.failure_category.as_deref().unwrap_or("");
         let steps = row.steps.map_or_else(|| "-".to_owned(), |s| s.to_string());
@@ -629,7 +637,7 @@ mod tests {
         let json = serde_json::to_string(&report).unwrap();
         let val: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert_eq!(val["artifact_kind"], "agent_runs_report");
-        assert!(val["schema_version"].is_string() || val["schema_version"].is_object());
+        assert_eq!(val["schema_version"], "1");
         assert!(val["rows"].is_array());
     }
 
