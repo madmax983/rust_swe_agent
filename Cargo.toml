@@ -44,6 +44,8 @@ indicatif = "0.18.4"
 # a ratatui dashboard when `--ui ratatui` is selected (issue #312).
 crossterm = { version = "0.28", features = ["event-stream"] }
 ratatui = "0.29"
+unicode-width = "0.2"
+unicode-segmentation = "1.13"
 
 # HTTP fallback (used inside `LitellmBackend` for headers, and as a thin
 # escape hatch if any backend needs raw HTTP).
@@ -111,3 +113,15 @@ option_if_let_else = "allow"
 # Correctness-style lints: keep strict in lib code.
 unwrap_used = "deny"
 expect_used = "deny"
+
+[profile.dev.package.maxwells-daemon]
+debug = 0
+
+[profile.dev.package.litellm-rs]
+debug = 0
+
+[profile.test.package.maxwells-daemon]
+debug = 0
+
+[profile.test.package.litellm-rs]
+debug = 0

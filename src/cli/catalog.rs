@@ -278,6 +278,12 @@ pub fn entries() -> &'static [CatalogEntry] {
             stage: "publish",
         },
         CatalogEntry {
+            path: "bench export-otlp",
+            summary: "Backfill OTLP traces from a completed sweep to a collector with live-identical IDs",
+            cost_tier: "free",
+            stage: "publish",
+        },
+        CatalogEntry {
             path: "bench failure-digest",
             summary: "Emit a self-contained failure summary for one instance in a completed sweep",
             cost_tier: "free",
@@ -448,6 +454,12 @@ pub fn entries() -> &'static [CatalogEntry] {
         CatalogEntry {
             path: "bench triage-diff",
             summary: "Diff failure-cluster composition between two sweeps",
+            cost_tier: "free",
+            stage: "analyze",
+        },
+        CatalogEntry {
+            path: "bench utilization",
+            summary: "Report sweep concurrency efficiency: effective parallelism, utilization, idle waste",
             cost_tier: "free",
             stage: "analyze",
         },
