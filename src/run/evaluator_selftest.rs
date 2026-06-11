@@ -658,21 +658,13 @@ fn unix_to_ymd_hms(secs: u64) -> (u32, u32, u32, u32, u32, u32) {
 
     let mut year = 1970u32;
     let mut remaining = days;
-    loop {
-        let dy = days_in_year(year);
-        if remaining < dy {
-            break;
-        }
-        remaining -= dy;
+    while remaining >= days_in_year(year) {
+        remaining -= days_in_year(year);
         year += 1;
     }
     let mut month = 1u32;
-    loop {
-        let dm = days_in_month(year, month);
-        if remaining < dm {
-            break;
-        }
-        remaining -= dm;
+    while remaining >= days_in_month(year, month) {
+        remaining -= days_in_month(year, month);
         month += 1;
     }
     let day = remaining + 1;
