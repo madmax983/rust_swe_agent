@@ -375,9 +375,7 @@ pub fn format_text(report: &AgentRunsReport) -> String {
         let task = truncate(row.task.as_deref().unwrap_or(""), TASK_DISPLAY_LEN);
         let outcome = row.outcome.as_deref().unwrap_or("");
         let failure = row.failure_category.as_deref().unwrap_or("");
-        let steps = row
-            .steps
-            .map_or_else(|| "-".to_owned(), |s| s.to_string());
+        let steps = row.steps.map_or_else(|| "-".to_owned(), |s| s.to_string());
         let dur = row
             .duration_secs
             .map_or_else(|| "-".to_owned(), |d| format!("{d:.1}s"));
@@ -532,7 +530,11 @@ mod tests {
             sort: RunsSort::Task,
         };
         let report = run_agent_runs(&opts).unwrap();
-        assert_eq!(report.rows.len(), 0, "non-recursive should not find nested file");
+        assert_eq!(
+            report.rows.len(),
+            0,
+            "non-recursive should not find nested file"
+        );
     }
 
     #[test]
@@ -766,8 +768,11 @@ mod tests {
     fn red_sweep_dir_not_double_counted() {
         let dir = TempDir::new().unwrap();
         // Write a fake results.json to mark it as a sweep dir
-        std::fs::write(dir.path().join("results.json"), r#"{"sweep_status":"completed"}"#)
-            .unwrap();
+        std::fs::write(
+            dir.path().join("results.json"),
+            r#"{"sweep_status":"completed"}"#,
+        )
+        .unwrap();
         // Write one trajectory
         write_traj(
             dir.path(),
