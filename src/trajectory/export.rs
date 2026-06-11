@@ -41,6 +41,9 @@ pub trait TrajectoryExporter {
 /// ```
 pub struct MarkdownExporter;
 
+/// Transforms a [`Trajectory`] into a raw JSON string.
+pub struct JsonExporter;
+
 /// Transforms a [`Trajectory`] into a flat CSV file, with `role` and `content` columns.
 ///
 /// Note: This exporter properly handles and escapes embedded quotes and newlines in message content.
@@ -116,6 +119,12 @@ impl TrajectoryExporter for MarkdownExporter {
         }
 
         md
+    }
+}
+
+impl TrajectoryExporter for JsonExporter {
+    fn export(trajectory: &Trajectory) -> String {
+        serde_json::to_string_pretty(trajectory).unwrap_or_else(|_| "{}".to_string())
     }
 }
 
@@ -273,6 +282,18 @@ mod tests {
         assert!(md.contains("Hello agent"));
         assert!(md.contains("### Assistant"));
         assert!(md.contains("Hello user"));
+    }
+
+    #[test]
+    fn test_json_export_format() {
+        let mut t = Trajectory::new();
+        t.info.task = Some("Add a feature".to_string());
+        t.info.outcome = Some(outcome::SUBMITTED.to_string());
+
+        let json = JsonExporter::export(&t);
+
+        assert!(json.starts_with('{'));
+        assert!(json.contains("\"task\": \"Add a feature\""));
     }
 
     #[cfg(feature = "csv-export")]
