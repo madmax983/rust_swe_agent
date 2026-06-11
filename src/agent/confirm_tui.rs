@@ -2682,4 +2682,48 @@ mod tests {
             "should not contain interactive label"
         );
     }
+
+    #[tokio::test]
+    async fn test_detail_closes_on_confirm() {
+        let d = make_dashboard();
+        d.append(LineKind::Info, "summary", Some("detail".to_string()));
+        // Open detail view
+        {
+            let mut s = d.state.lock().unwrap();
+            s.selected_index = Some(0);
+            s.detail_open = true;
+        }
+        assert!(snap(&d).detail_open);
+
+        // Trigger confirm callback
+        let ctx = ConfirmContext {
+            tool_name: "bash".into(),
+            command: "x".into(),
+            step: 0,
+            step_limit: 1,
+            cost_usd: 0.0,
+            cache_marker: "cache:auto-or-none",
+        };
+        let d_clone = d.clone();
+        let task = tokio::spawn(async move { d_clone.confirm(&ctx).await });
+
+        // Wait briefly for confirm to execute and set state
+        for _ in 0..50 {
+            if snap(&d).pending.is_some() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+
+        assert!(!snap(&d).detail_open);
+
+        // Clean up: send decision to resolve confirm future
+        {
+            let mut s = d.state.lock().unwrap();
+            if let Some(pending) = s.pending.take() {
+                let _ = pending.responder.send(ConfirmDecision::Approve);
+            }
+        }
+        let _ = task.await;
+    }
 }
