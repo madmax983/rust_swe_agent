@@ -112,4 +112,63 @@ mod tests {
         assert_eq!(v["instance_id"], "mini");
         assert!(v["ts"].as_str().is_some());
     }
+
+    struct FailingWriter;
+    impl Write for FailingWriter {
+        fn write(&mut self, _buf: &[u8]) -> std::io::Result<usize> {
+            Err(std::io::Error::new(std::io::ErrorKind::Other, "write failure"))
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Err(std::io::Error::new(std::io::ErrorKind::Other, "flush failure"))
+        }
+    }
+
+    #[test]
+    fn write_failure_warns_and_continues() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("events.jsonl");
+        let mut sink = EventLogSink::new(&path, "mini".into()).unwrap();
+        sink.writer = Arc::new(Mutex::new(Box::new(FailingWriter)));
+        sink.emit(StreamEvent::RunStarted {
+            task: "t".into(),
+            model: "m".into(),
+            started_at: "s".into(),
+        });
+        assert!(sink.warned.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn reopen_failure_warns_and_increments_metric() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("events.jsonl");
+        let sink = EventLogSink::new(&path, "mini".into()).unwrap();
+        std::fs::remove_file(&path).unwrap();
+        std::fs::create_dir(&path).unwrap(); // Makes file creation fail (IsADirectory)
+        sink.request_reopen();
+        sink.emit(StreamEvent::RunStarted {
+            task: "t".into(),
+            model: "m".into(),
+            started_at: "s".into(),
+        });
+        assert_eq!(sink.dropped_reopen_failures.load(Ordering::SeqCst), 1);
+        assert!(sink.warned.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn lock_poisoning_warns() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("events.jsonl");
+        let sink = EventLogSink::new(&path, "mini".into()).unwrap();
+        let writer_clone = sink.writer.clone();
+        let _ = std::thread::spawn(move || {
+            let _guard = writer_clone.lock().unwrap();
+            panic!("poisoning lock");
+        }).join();
+        sink.emit(StreamEvent::RunStarted {
+            task: "t".into(),
+            model: "m".into(),
+            started_at: "s".into(),
+        });
+        assert!(sink.warned.load(Ordering::SeqCst));
+    }
 }
