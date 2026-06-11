@@ -103,6 +103,12 @@ pub fn entries() -> &'static [CatalogEntry] {
             stage: "inspect",
         },
         CatalogEntry {
+            path: "agent runs",
+            summary: "List and summarize single-task trajectory files in a directory",
+            cost_tier: "free",
+            stage: "inspect",
+        },
+        CatalogEntry {
             path: "agent redact-audit",
             summary: "Audit a finished sweep tree for secret leaks in stored artifacts",
             cost_tier: "free",
