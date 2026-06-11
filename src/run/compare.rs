@@ -823,7 +823,8 @@ fn write_artifact_version_section(s: &mut String, mismatches: &[String], warning
 fn write_transition_matrix(s: &mut String, transitions: &BTreeMap<TransitionKind, usize>) {
     s.push_str("\nTransition matrix:\n");
     let mut table = comfy_table::Table::new();
-    table.load_preset(comfy_table::presets::UTF8_FULL)
+    table
+        .load_preset(comfy_table::presets::UTF8_FULL)
         .apply_modifier(comfy_table::modifiers::UTF8_ROUND_CORNERS)
         .set_header(vec!["Transition", "Count"]);
     for kind in [
@@ -856,7 +857,8 @@ fn write_failure_delta_section(
     }
     s.push_str("\nFailure category delta (candidate - baseline):\n");
     let mut table = comfy_table::Table::new();
-    table.load_preset(comfy_table::presets::UTF8_FULL)
+    table
+        .load_preset(comfy_table::presets::UTF8_FULL)
         .apply_modifier(comfy_table::modifiers::UTF8_ROUND_CORNERS)
         .set_header(vec!["Category", "Baseline", "Candidate", "Delta"]);
     for (cat, d) in nonzero {
@@ -888,10 +890,18 @@ fn write_breakdown_delta_section(s: &mut String, rows: &[BreakdownDeltaRow]) {
     }
     s.push_str("\nBreakdown deltas:\n");
     let mut table = comfy_table::Table::new();
-    table.load_preset(comfy_table::presets::UTF8_FULL)
+    table
+        .load_preset(comfy_table::presets::UTF8_FULL)
         .apply_modifier(comfy_table::modifiers::UTF8_ROUND_CORNERS)
         .set_header(vec![
-            "!", "Axis", "Value", "N (Base)", "N (Cand)", "Rate (Base)", "Rate (Cand)", "Delta pp",
+            "!",
+            "Axis",
+            "Value",
+            "N (Base)",
+            "N (Cand)",
+            "Rate (Base)",
+            "Rate (Cand)",
+            "Delta pp",
         ]);
     for row in rows {
         table.add_row(vec![
@@ -899,7 +909,8 @@ fn write_breakdown_delta_section(s: &mut String, rows: &[BreakdownDeltaRow]) {
             match row.bucket_axis {
                 BreakdownAxis::Repo => "repo",
                 BreakdownAxis::FailureCategory => "failure_category",
-            }.to_string(),
+            }
+            .to_string(),
             row.bucket_value.clone(),
             row.baseline_n.to_string(),
             row.candidate_n.to_string(),
@@ -924,10 +935,18 @@ fn write_cost_attribution_delta_section(
         let _ = writeln!(s, "  ! {warning}");
     }
     let mut table = comfy_table::Table::new();
-    table.load_preset(comfy_table::presets::UTF8_FULL)
+    table
+        .load_preset(comfy_table::presets::UTF8_FULL)
         .apply_modifier(comfy_table::modifiers::UTF8_ROUND_CORNERS)
         .set_header(vec![
-            "!", "Bucket", "N (Base)", "N (Cand)", "USD (Base)", "USD (Cand)", "Delta USD", "Share pp \u{394}",
+            "!",
+            "Bucket",
+            "N (Base)",
+            "N (Cand)",
+            "USD (Base)",
+            "USD (Cand)",
+            "Delta USD",
+            "Share pp \u{394}",
         ]);
     for row in rows {
         table.add_row(vec![
@@ -951,9 +970,16 @@ fn write_regressions(s: &mut String, regressions: &[TaskTransition]) {
     }
     let _ = writeln!(s, "\nRegressions ({}):", regressions.len());
     let mut table = comfy_table::Table::new();
-    table.load_preset(comfy_table::presets::UTF8_FULL)
+    table
+        .load_preset(comfy_table::presets::UTF8_FULL)
         .apply_modifier(comfy_table::modifiers::UTF8_ROUND_CORNERS)
-        .set_header(vec!["Instance", "Baseline", "Candidate", "Category", "Exit Reason"]);
+        .set_header(vec![
+            "Instance",
+            "Baseline",
+            "Candidate",
+            "Category",
+            "Exit Reason",
+        ]);
     for r in regressions {
         let cat = r.candidate_failure_category.map_or("none", failure_label);
         let exit = r.candidate_exit_reason.as_deref().unwrap_or("?");
@@ -3745,7 +3771,7 @@ mod tests {
         assert!(t.contains("Resolved:           2 -> 1 (-1)"));
         assert!(t.contains("pass->fail"));
         assert!(t.contains("Regressions (1):"), "got:\n{t}");
-        assert!(t.contains("b"), "got:\n{t}");
+        assert!(t.contains('b'), "got:\n{t}");
         assert!(t.contains("step_limit"), "got:\n{t}");
     }
 
