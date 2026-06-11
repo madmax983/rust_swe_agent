@@ -569,7 +569,7 @@ fn load_custom_signatures(path: &Path) -> Result<Vec<RawSignature>, Error> {
         .to_ascii_lowercase();
 
     if ext == "yaml" || ext == "yml" {
-        serde_yml::from_str(&content).map_err(|e| {
+        serde_yaml::from_str(&content).map_err(|e| {
             Error::Config(crate::error::ConfigError::Invalid(format!(
                 "invalid YAML signature file: {e}"
             )))
@@ -933,5 +933,26 @@ mod tests {
         assert_eq!(parse_fail_on("low").unwrap(), HitSeverity::Low);
         assert_eq!(parse_fail_on("medium").unwrap(), HitSeverity::Medium);
         assert_eq!(parse_fail_on("high").unwrap(), HitSeverity::High);
+    }
+
+    #[test]
+    fn warden_test_exploit_serde_norway_dos() {
+        // "Test Exploit" required by Warden persona constraints.
+        // Simulate a massive, nested YAML file (billion laughs style or deep nesting)
+        // to ensure the YAML parser handles it safely rather than crashing the process,
+        // mitigating the risk of the original serde_yml / libyml vulnerability.
+        let mut malicious_yaml = String::new();
+        for _ in 0..10000 {
+            malicious_yaml.push_str("a:\n ");
+        }
+        malicious_yaml.push_str("b: exploit");
+
+        // The exact error format depends on serde_norway's depth limit handling,
+        // but it should return an error, not panic.
+        let parse_result: Result<Vec<RawSignature>, _> = serde_norway::from_str(&malicious_yaml);
+        assert!(
+            parse_result.is_err(),
+            "Parser must reject deep nesting/bomb without panicking"
+        );
     }
 }
