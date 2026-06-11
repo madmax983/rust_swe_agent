@@ -320,9 +320,10 @@ impl StreamSink for RatatuiDashboard {
                 );
             }
             StreamEvent::BashStart { step, command, .. } => {
+                let preview = first_lines(&command, 4);
                 self.append(
                     LineKind::BashRun,
-                    format!("step {step} bash: {command}"),
+                    format!("step {step} bash: {preview}"),
                     Some(command),
                 );
             }
@@ -1046,13 +1047,15 @@ fn draw(frame: &mut ratatui::Frame, dash: &Arc<RatatuiDashboard>, snap: &Dashboa
     }
 
     if let Some(ctx) = &snap.pending {
-        draw_modal(
-            frame,
-            ctx,
-            snap.feedback_input.as_ref(),
-            snap.edit_input.as_ref(),
-            area,
-        );
+        if !snap.detail_open {
+            draw_modal(
+                frame,
+                ctx,
+                snap.feedback_input.as_ref(),
+                snap.edit_input.as_ref(),
+                area,
+            );
+        }
     }
 }
 
@@ -1153,7 +1156,6 @@ fn log_paragraph(snap: &DashboardSnapshot, visible_lines: usize) -> Paragraph<'_
 
     Paragraph::new(lines)
         .block(Block::default().borders(Borders::ALL).title(title))
-        .wrap(Wrap { trim: false })
         .scroll((scroll_y_u16, 0))
 }
 
@@ -1331,12 +1333,11 @@ fn summarize_stream(stdout: &str, stderr: &str) -> String {
     }
 }
 
-fn total_wrapped_lines<'a>(log: impl IntoIterator<Item = &'a LogLine>, width: usize) -> usize {
-    log.into_iter()
-        .map(|line| count_wrapped_lines(&line.text, width))
-        .sum()
+fn total_wrapped_lines<'a>(log: impl IntoIterator<Item = &'a LogLine>, _width: usize) -> usize {
+    log.into_iter().count()
 }
 
+#[cfg(test)]
 fn count_wrapped_lines(text: &str, width: usize) -> usize {
     if width == 0 {
         return 0;
@@ -1349,6 +1350,7 @@ fn count_wrapped_lines(text: &str, width: usize) -> usize {
     total_lines
 }
 
+#[cfg(test)]
 fn count_wrapped_line(line: &str, width: usize) -> usize {
     use unicode_segmentation::UnicodeSegmentation;
     use unicode_width::UnicodeWidthStr;
@@ -3101,5 +3103,45 @@ mod tests {
             drop(s);
             assert!(should_exit);
         }
+    }
+
+    #[test]
+    fn test_confirm_modal_hidden_when_detail_open() {
+        let d = make_dashboard();
+        {
+            let (tx, _rx) = oneshot::channel();
+            let mut s = d.state.lock().unwrap();
+            s.detail_open = true;
+            s.pending = Some(PendingPrompt {
+                ctx: ConfirmContext {
+                    tool_name: "bash".into(),
+                    command: "rm -rf /tmp/dangerous".into(),
+                    step: 2,
+                    step_limit: 5,
+                    cost_usd: 0.0099,
+                    cache_marker: "cache:explicit",
+                },
+                responder: tx,
+            });
+        }
+        let s = snap(&d);
+        let buf = render_to_buffer(&s, 100, 20);
+        let text = buffer_text(&buf);
+
+        // When detail_open is true, the confirm modal should not be rendered
+        assert!(!text.contains("rm -rf /tmp/dangerous"));
+        assert!(!text.contains("confirm action"));
+    }
+
+    #[test]
+    fn test_main_feed_does_not_wrap() {
+        let d = make_dashboard();
+        let long_line = "a".repeat(50);
+        d.append(LineKind::Info, &long_line, None);
+
+        // total_wrapped_lines on main feed should return 1 (not wrapping)
+        let s = snap(&d);
+        let total = total_wrapped_lines(&s.log, 10);
+        assert_eq!(total, 1);
     }
 }
