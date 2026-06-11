@@ -540,16 +540,23 @@ fn searchable_tokens(name: &str, description: &str) -> BTreeSet<String> {
         .collect()
 }
 
+/// ⚡ Bolt: Optimizes normalization by removing intermediate vector allocations.
 fn normalize_search_text(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
+    let mut last_was_space = true;
     for ch in text.chars() {
         if ch.is_ascii_alphanumeric() || ch == '$' || ch == '@' || ch == '/' {
             out.push(ch.to_ascii_lowercase());
-        } else {
+            last_was_space = false;
+        } else if !last_was_space {
             out.push(' ');
+            last_was_space = true;
         }
     }
-    out.split_whitespace().collect::<Vec<_>>().join(" ")
+    if out.ends_with(' ') {
+        out.pop();
+    }
+    out
 }
 
 fn is_stopword(token: &str) -> bool {
