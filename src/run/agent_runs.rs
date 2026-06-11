@@ -143,7 +143,14 @@ pub struct AgentRunsReport {
 // ── core logic ────────────────────────────────────────────────────────────────
 
 pub fn run_agent_runs(opts: &AgentRunsOpts) -> Result<AgentRunsReport, Error> {
-    let paths = collect_traj_paths(&opts.dir, opts.recursive)?;
+    let canonical_dir = std::fs::canonicalize(&opts.dir).map_err(|e| {
+        Error::Trajectory(format!(
+            "cannot canonicalize directory {}: {e}",
+            opts.dir.display()
+        ))
+    })?;
+
+    let paths = collect_traj_paths(&canonical_dir, opts.recursive)?;
 
     let mut rows: Vec<RunRow> = Vec::new();
     let mut skipped: usize = 0;
@@ -151,7 +158,7 @@ pub fn run_agent_runs(opts: &AgentRunsOpts) -> Result<AgentRunsReport, Error> {
     // Determine if this is a sweep dir; if so skip `results.json` logic but
     // still load individual `.traj.json` files independently (per spec: per-file
     // independent, not silently double-counted).
-    let is_sweep_dir = opts.dir.join("results.json").exists();
+    let is_sweep_dir = canonical_dir.join("results.json").exists();
     let _ = is_sweep_dir; // noted; individual traj files are always read independently
 
     for path in &paths {
@@ -175,7 +182,7 @@ pub fn run_agent_runs(opts: &AgentRunsOpts) -> Result<AgentRunsReport, Error> {
     Ok(AgentRunsReport {
         artifact_kind: ArtifactKind::AgentRunsReport,
         schema_version: ArtifactSchemaVersion::CURRENT,
-        scanned_dir: opts.dir.display().to_string(),
+        scanned_dir: canonical_dir.display().to_string(),
         recursive: opts.recursive,
         rows,
         footer,
@@ -224,7 +231,8 @@ fn collect_recursive(dir: &Path, out: &mut Vec<PathBuf>) {
     };
     for entry in entries.flatten() {
         let p = entry.path();
-        if p.is_dir() {
+        // Skip symlinks to directories to prevent infinite recursion from cycles.
+        if p.is_dir() && !p.is_symlink() {
             collect_recursive(&p, out);
         } else if is_traj_file(&p) {
             out.push(p);
@@ -264,18 +272,18 @@ fn load_traj_row(path: &Path) -> Result<RunRow, Error> {
 fn sort_rows(rows: &mut Vec<RunRow>, sort: RunsSort) {
     match sort {
         RunsSort::Task => rows.sort_by(|a, b| a.path.cmp(&b.path)),
-        RunsSort::Cost => rows.sort_by(|a, b| {
-            a.total_cost_usd
-                .unwrap_or(0.0)
-                .partial_cmp(&b.total_cost_usd.unwrap_or(0.0))
-                .unwrap_or(std::cmp::Ordering::Equal)
+        RunsSort::Cost => rows.sort_by(|a, b| match (a.total_cost_usd, b.total_cost_usd) {
+            (None, None) => std::cmp::Ordering::Equal,
+            (None, Some(_)) => std::cmp::Ordering::Less,
+            (Some(_), None) => std::cmp::Ordering::Greater,
+            (Some(va), Some(vb)) => va.partial_cmp(&vb).unwrap_or(std::cmp::Ordering::Equal),
         }),
-        RunsSort::Steps => rows.sort_by_key(|r| r.steps.unwrap_or(0)),
-        RunsSort::Duration => rows.sort_by(|a, b| {
-            a.duration_secs
-                .unwrap_or(0.0)
-                .partial_cmp(&b.duration_secs.unwrap_or(0.0))
-                .unwrap_or(std::cmp::Ordering::Equal)
+        RunsSort::Steps => rows.sort_by_key(|r| r.steps),
+        RunsSort::Duration => rows.sort_by(|a, b| match (a.duration_secs, b.duration_secs) {
+            (None, None) => std::cmp::Ordering::Equal,
+            (None, Some(_)) => std::cmp::Ordering::Less,
+            (Some(_), None) => std::cmp::Ordering::Greater,
+            (Some(va), Some(vb)) => va.partial_cmp(&vb).unwrap_or(std::cmp::Ordering::Equal),
         }),
     }
 }
@@ -355,13 +363,13 @@ pub fn format_text(report: &AgentRunsReport) -> String {
         return out;
     }
 
-    // Header row
+    // Header row — outcome needs ≥20 chars (step_limit_reached=18), failure_category ≥26 (history_compaction_failed=25)
     let _ = writeln!(
         out,
-        "{:<42} {:<14} {:<20} {:>6} {:>10} {:>9} {}",
+        "{:<42} {:<20} {:<26} {:>6} {:>10} {:>9} {}",
         "task", "outcome", "failure_category", "steps", "duration", "cost_usd", "model"
     );
-    let _ = writeln!(out, "{}", "─".repeat(120));
+    let _ = writeln!(out, "{}", "─".repeat(126));
 
     for row in &report.rows {
         let task = truncate(row.task.as_deref().unwrap_or(""), TASK_DISPLAY_LEN);
@@ -380,13 +388,13 @@ pub fn format_text(report: &AgentRunsReport) -> String {
 
         let _ = writeln!(
             out,
-            "{:<42} {:<14} {:<20} {:>6} {:>10} {:>9} {}",
+            "{:<42} {:<20} {:<26} {:>6} {:>10} {:>9} {}",
             task, outcome, failure, steps, dur, cost, model
         );
     }
 
     // Footer
-    let _ = writeln!(out, "{}", "─".repeat(120));
+    let _ = writeln!(out, "{}", "─".repeat(126));
 
     // Outcome breakdown
     let outcome_parts: Vec<String> = report
