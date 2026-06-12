@@ -9,6 +9,7 @@ use async_trait::async_trait;
 
 use crate::error::Error;
 
+pub mod clipboard;
 pub mod confirm;
 pub mod confirm_cli;
 pub mod confirm_tui;

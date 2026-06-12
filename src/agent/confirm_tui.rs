@@ -9,7 +9,7 @@
 use std::collections::VecDeque;
 use std::io::{Stdout, Write as _};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use crossterm::event::{Event, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
@@ -26,10 +26,17 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 use tokio::sync::{Notify, oneshot, watch};
 
+use super::clipboard::{ClipboardSink, Osc52Clipboard};
 use super::confirm::{ConfirmCallback, ConfirmContext, ConfirmDecision};
 use crate::stream::{StreamEvent, StreamSink};
 
 const MAX_LOG_LINES: usize = 400;
+const NOTICE_TTL: Duration = Duration::from_secs(3);
+
+struct Notice {
+    text: String,
+    expires_at: Instant,
+}
 
 struct DashboardState {
     task: Option<String>,
@@ -50,6 +57,7 @@ struct DashboardState {
     last_log_height: usize,
     should_exit: bool,
     is_monitor: bool,
+    notice: Option<Notice>,
 }
 
 impl Default for DashboardState {
@@ -73,6 +81,7 @@ impl Default for DashboardState {
             last_log_height: 20,
             should_exit: false,
             is_monitor: false,
+            notice: None,
         }
     }
 }
@@ -153,6 +162,7 @@ pub struct RatatuiDashboard {
     state: Mutex<DashboardState>,
     notify: Notify,
     cancel_tx: Option<watch::Sender<bool>>,
+    clipboard: Arc<dyn ClipboardSink>,
 }
 
 impl RatatuiDashboard {
@@ -188,6 +198,7 @@ impl RatatuiDashboard {
             }),
             notify: Notify::new(),
             cancel_tx,
+            clipboard: Arc::new(Osc52Clipboard),
         });
         let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
         let renderer_task = tokio::spawn(renderer_loop(dash.clone(), terminal, shutdown_rx));
@@ -196,6 +207,10 @@ impl RatatuiDashboard {
             shutdown_tx: Some(shutdown_tx),
             renderer_task: Some(renderer_task),
         })
+    }
+
+    fn deliver_copy(&self, _text: &str) {
+        // TODO (red): stub — implement in green phase
     }
 
     fn append(&self, kind: LineKind, text: impl Into<String>) {
@@ -680,6 +695,7 @@ fn draw_frame(
             last_log_width: s.last_log_width,
             last_log_height: s.last_log_height,
             is_monitor: s.is_monitor,
+            notice: s.notice.as_ref().map(|n| n.text.clone()),
         }
     };
     terminal.draw(|frame| draw(frame, &snapshot))?;
@@ -703,6 +719,7 @@ struct DashboardSnapshot {
     last_log_width: usize,
     last_log_height: usize,
     is_monitor: bool,
+    notice: Option<String>,
 }
 
 fn draw(frame: &mut ratatui::Frame, snap: &DashboardSnapshot) {
@@ -1511,11 +1528,56 @@ mod tests {
     use ratatui::layout::Rect;
     use tokio::sync::oneshot;
 
+    use crate::agent::clipboard::{ClipboardSink, osc52_sequence};
+
+    struct CapturingSink {
+        copied: Mutex<Vec<String>>,
+        fail: bool,
+    }
+
+    impl CapturingSink {
+        fn new() -> Arc<Self> {
+            Arc::new(Self {
+                copied: Mutex::new(Vec::new()),
+                fail: false,
+            })
+        }
+
+        fn failing() -> Arc<Self> {
+            Arc::new(Self {
+                copied: Mutex::new(Vec::new()),
+                fail: true,
+            })
+        }
+
+        fn captured(&self) -> Vec<String> {
+            self.copied.lock().unwrap().clone()
+        }
+    }
+
+    impl ClipboardSink for CapturingSink {
+        fn copy(&self, text: &str) -> std::io::Result<()> {
+            if self.fail {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::BrokenPipe,
+                    "test failure",
+                ));
+            }
+            self.copied.lock().unwrap().push(text.to_string());
+            Ok(())
+        }
+    }
+
     fn make_dashboard() -> Arc<RatatuiDashboard> {
+        make_dashboard_with_sink(CapturingSink::new())
+    }
+
+    fn make_dashboard_with_sink(sink: Arc<dyn ClipboardSink>) -> Arc<RatatuiDashboard> {
         Arc::new(RatatuiDashboard {
             state: Mutex::new(DashboardState::default()),
             notify: Notify::new(),
             cancel_tx: None,
+            clipboard: sink,
         })
     }
 
@@ -1541,6 +1603,7 @@ mod tests {
             last_log_width: s.last_log_width,
             last_log_height: s.last_log_height,
             is_monitor: s.is_monitor,
+            notice: s.notice.as_ref().map(|n| n.text.clone()),
         }
     }
 
@@ -1762,6 +1825,13 @@ mod tests {
     }
 
     fn make_pending(d: &Arc<RatatuiDashboard>) -> oneshot::Receiver<ConfirmDecision> {
+        make_pending_with_command(d, "x")
+    }
+
+    fn make_pending_with_command(
+        d: &Arc<RatatuiDashboard>,
+        cmd: &str,
+    ) -> oneshot::Receiver<ConfirmDecision> {
         let (tx, rx) = oneshot::channel();
         let mut s = d
             .state
@@ -1770,7 +1840,7 @@ mod tests {
         s.pending = Some(PendingPrompt {
             ctx: ConfirmContext {
                 tool_name: "bash".into(),
-                command: "x".into(),
+                command: cmd.to_string(),
                 step: 0,
                 step_limit: 1,
                 cost_usd: 0.0,
@@ -2028,6 +2098,7 @@ mod tests {
             state: Mutex::new(DashboardState::default()),
             notify: Notify::new(),
             cancel_tx: Some(tx),
+            clipboard: CapturingSink::new(),
         });
 
         // 1. Initially not cancelled
@@ -2285,6 +2356,249 @@ mod tests {
         assert!(
             !text.contains("interactive"),
             "should not contain interactive label"
+        );
+    }
+
+    // ── Yank-to-clipboard tests (issue #651, red phase) ─────────────────────
+
+    #[test]
+    fn copy_key_in_modal_copies_full_command() {
+        // Command longer than the 12-line display cap, with a multibyte char
+        // so chars().count() != len() — byte-counting would give wrong N.
+        let cmd_lines: Vec<String> = (0..20).map(|i| format!("line_{i}_naïve")).collect();
+        let cmd = cmd_lines.join("\n");
+        let expected_n = cmd.chars().count();
+
+        let sink = CapturingSink::new();
+        let d = make_dashboard_with_sink(sink.clone());
+        let mut rx = make_pending_with_command(&d, &cmd);
+
+        handle_key(&d, KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE));
+
+        // Sink received the FULL un-truncated command (fails in red — deliver_copy is a no-op)
+        assert_eq!(sink.captured(), vec![cmd.clone()]);
+        // Prompt is still open (copy never resolves the decision)
+        assert!(snap(&d).pending.is_some(), "pending should still be set");
+        // No decision sent on the channel
+        assert!(
+            rx.try_recv().is_err(),
+            "copy must not send a ConfirmDecision"
+        );
+        // Notice shows char count
+        let expected_notice = format!("copied {expected_n} chars");
+        assert_eq!(
+            snap(&d).notice.as_deref(),
+            Some(expected_notice.as_str()),
+            "notice should report char count"
+        );
+        // Step/cost unchanged — copy never advances trajectory
+        let s = snap(&d);
+        assert_eq!(s.step, 0);
+        assert_eq!(s.cost_usd, 0.0);
+    }
+
+    #[test]
+    fn copy_key_success_metric_osc52_payload_matches_displayed_command() {
+        use base64::Engine as _;
+        // This is the AC success metric: base64-decode the emitted payload
+        // and compare to the displayed command.
+        let cmd = "cargo test -- --nocapture # naïve 🦀";
+
+        let sink = CapturingSink::new();
+        let d = make_dashboard_with_sink(sink.clone());
+        make_pending_with_command(&d, cmd);
+
+        // Render modal — command should appear in the buffer
+        let s_snap = snap(&d);
+        let buf = render_to_buffer(&s_snap, 100, 30);
+        let text = buffer_text(&buf);
+        assert!(
+            text.contains("naïve"),
+            "command should appear in modal; got:\n{text}"
+        );
+
+        handle_key(&d, KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE));
+
+        let captured = sink.captured();
+        assert_eq!(captured.len(), 1, "exactly one copy call expected");
+        let copied_text = &captured[0];
+
+        // Verify the emitted sequence decodes back to the displayed command
+        let seq = osc52_sequence(copied_text);
+        assert!(seq.starts_with("\x1b]52;c;"), "OSC 52 prefix required");
+        assert!(seq.ends_with('\x07'), "BEL terminator required");
+        let payload = seq
+            .strip_prefix("\x1b]52;c;")
+            .unwrap()
+            .strip_suffix('\x07')
+            .unwrap();
+        let decoded = base64::engine::general_purpose::STANDARD
+            .decode(payload)
+            .unwrap();
+        assert_eq!(
+            String::from_utf8(decoded).unwrap(),
+            cmd,
+            "decoded OSC 52 payload must match displayed command"
+        );
+    }
+
+    #[test]
+    fn copy_key_no_modal_copies_most_recent_log_line() {
+        let sink = CapturingSink::new();
+        let d = make_dashboard_with_sink(sink.clone());
+        {
+            let mut s = d.state.lock().unwrap();
+            for i in 0..5u32 {
+                s.log.push_back(LogLine {
+                    kind: LineKind::Info,
+                    text: format!("log line {i}"),
+                });
+            }
+        }
+        let scroll_before = snap(&d).scroll_offset;
+
+        handle_key(&d, KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE));
+
+        assert_eq!(sink.captured(), vec!["log line 4".to_string()]);
+        assert_eq!(snap(&d).scroll_offset, scroll_before, "scroll must not change");
+    }
+
+    #[test]
+    fn copy_key_no_modal_with_empty_log_sets_nothing_to_copy_notice() {
+        let sink = CapturingSink::new();
+        let d = make_dashboard_with_sink(sink.clone());
+        // No log lines
+
+        handle_key(&d, KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE));
+
+        assert!(sink.captured().is_empty(), "sink must not be called");
+        assert_eq!(
+            snap(&d).notice.as_deref(),
+            Some("nothing to copy"),
+            "notice must say nothing to copy"
+        );
+        let should_exit = d.state.lock().unwrap().should_exit;
+        assert!(!should_exit, "dashboard must not exit");
+    }
+
+    #[test]
+    fn copy_key_failure_sets_nonfatal_notice() {
+        let sink = CapturingSink::failing();
+        let d = make_dashboard_with_sink(sink);
+        make_pending_with_command(&d, "echo hello");
+
+        handle_key(&d, KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE));
+
+        let notice = snap(&d).notice;
+        assert!(
+            notice.as_deref().is_some_and(|n| n.starts_with("copy failed:")),
+            "notice must start with 'copy failed:'; got: {notice:?}"
+        );
+        // Prompt still open
+        assert!(snap(&d).pending.is_some(), "pending must still be set");
+        // Dashboard still renders without panic
+        let s = snap(&d);
+        let _ = render_to_buffer(&s, 80, 20);
+    }
+
+    #[test]
+    fn copy_key_inserts_char_in_feedback_input() {
+        let sink = CapturingSink::new();
+        let d = make_dashboard_with_sink(sink.clone());
+        make_pending(&d);
+
+        // Enter feedback mode
+        handle_key(&d, KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE));
+        assert!(snap(&d).feedback_input.is_some(), "should be in feedback mode");
+
+        // 'c' should type the character, not copy
+        handle_key(&d, KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE));
+        assert_eq!(
+            snap(&d).feedback_input.as_deref(),
+            Some("c"),
+            "feedback buffer should contain 'c'"
+        );
+        assert!(sink.captured().is_empty(), "sink must not be called in feedback mode");
+    }
+
+    #[test]
+    fn copy_key_inserts_char_in_edit_input() {
+        let sink = CapturingSink::new();
+        let d = make_dashboard_with_sink(sink.clone());
+        make_pending(&d);
+
+        // Enter edit mode
+        handle_key(&d, KeyEvent::new(KeyCode::Char('e'), KeyModifiers::NONE));
+        assert!(snap(&d).edit_input.is_some(), "should be in edit mode");
+
+        // 'c' should type the character, not copy
+        handle_key(&d, KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE));
+        let edit = snap(&d).edit_input.unwrap();
+        assert!(
+            edit.ends_with('c'),
+            "edit buffer should end with 'c'; got: {edit:?}"
+        );
+        assert!(sink.captured().is_empty(), "sink must not be called in edit mode");
+    }
+
+    #[test]
+    fn notice_renders_in_footer() {
+        let d = make_dashboard();
+        {
+            let mut s = d.state.lock().unwrap();
+            s.notice = Some(Notice {
+                text: "copied 5 chars".into(),
+                expires_at: std::time::Instant::now() + std::time::Duration::from_secs(10),
+            });
+        }
+        let s = snap(&d);
+        let buf = render_to_buffer(&s, 80, 8);
+        let text = buffer_text(&buf);
+        assert!(
+            text.contains("copied 5 chars"),
+            "notice must appear in footer; got:\n{text}"
+        );
+    }
+
+    #[test]
+    fn copy_key_works_in_monitor_mode() {
+        let sink = CapturingSink::new();
+        let d = make_dashboard_with_sink(sink.clone());
+        {
+            let mut s = d.state.lock().unwrap();
+            s.is_monitor = true;
+            s.log.push_back(LogLine {
+                kind: LineKind::Info,
+                text: "monitor log line".into(),
+            });
+        }
+
+        handle_key(&d, KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE));
+
+        assert_eq!(sink.captured(), vec!["monitor log line".to_string()]);
+    }
+
+    #[test]
+    fn footer_and_modal_hints_document_copy_key() {
+        // Idle footer (no pending) should mention copy key
+        let d = make_dashboard();
+        let s = snap(&d);
+        let buf = render_to_buffer(&s, 100, 10);
+        let text = buffer_text(&buf);
+        assert!(
+            text.contains("copy line") || text.contains("(c) copy"),
+            "idle footer must document copy key; got:\n{text}"
+        );
+
+        // Modal footer should also mention copy key
+        let d2 = make_dashboard();
+        make_pending(&d2);
+        let s2 = snap(&d2);
+        let buf2 = render_to_buffer(&s2, 100, 30);
+        let text2 = buffer_text(&buf2);
+        assert!(
+            text2.contains("(c) copy"),
+            "modal hint must document copy key; got:\n{text2}"
         );
     }
 }
