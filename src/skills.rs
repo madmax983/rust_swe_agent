@@ -433,7 +433,7 @@ fn strip_trailing_comment(value: &str) -> String {
 
     for (idx, ch) in value.char_indices() {
         match (quote, ch) {
-            (Some('"'), '\\') if !escaped => {
+            (Some('\'' | '"'), '\\') if !escaped => {
                 escaped = true;
                 continue;
             }
@@ -623,4 +623,160 @@ fn expand_skill_path(path: &String) -> PathBuf {
         }
     }
     PathBuf::from(path)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn should_split_frontmatter_correctly() {
+        assert_eq!(split_frontmatter("foo\n---\nbar"), Some(("foo", "bar")));
+        assert_eq!(split_frontmatter("foo\n---\r\nbar"), Some(("foo", "bar")));
+        assert_eq!(split_frontmatter("foo\n---"), Some(("foo", "")));
+        assert_eq!(split_frontmatter("foo---bar"), None);
+    }
+
+    #[test]
+    fn should_unquote_scalars_correctly() {
+        assert_eq!(unquote_scalar("\"hello\""), "hello");
+        assert_eq!(unquote_scalar("'hello'"), "hello");
+        assert_eq!(unquote_scalar("hello"), "hello");
+        assert_eq!(unquote_scalar("\"\""), "");
+        assert_eq!(unquote_scalar("''"), "");
+        assert_eq!(unquote_scalar("\"hello"), "\"hello");
+        assert_eq!(unquote_scalar("hello\""), "hello\"");
+    }
+
+    #[test]
+    fn should_detect_unescaped_quotes() {
+        assert!(ends_with_unescaped_quote("\""));
+        assert!(ends_with_unescaped_quote("abc\""));
+        assert!(!ends_with_unescaped_quote("abc\\\""));
+        assert!(ends_with_unescaped_quote("abc\\\\\""));
+        assert!(!ends_with_unescaped_quote("abc\\\\\\\""));
+    }
+
+    #[test]
+    fn should_normalize_search_text() {
+        assert_eq!(normalize_search_text("Hello World!"), "hello world");
+        assert_eq!(normalize_search_text("Foo@bar/baz$"), "foo@bar/baz$");
+        assert_eq!(normalize_search_text("  spaces \t\n tabs "), "spaces tabs");
+    }
+
+    #[test]
+    fn should_filter_stopwords_in_searchable_tokens() {
+        let tokens = searchable_tokens("Skill Name", "Uses the best tool for this work");
+        let mut expected = std::collections::BTreeSet::new();
+        expected.insert("skill".to_owned());
+        expected.insert("name".to_owned());
+        expected.insert("best".to_owned());
+        expected.insert("tool".to_owned());
+        assert_eq!(tokens, expected);
+
+        // Assert stopwords are excluded
+        assert!(!tokens.contains("uses"));
+        assert!(!tokens.contains("the"));
+        assert!(!tokens.contains("for"));
+        assert!(!tokens.contains("this"));
+        assert!(!tokens.contains("work"));
+    }
+
+    #[test]
+    fn should_detect_explicit_mentions() {
+        assert!(contains_explicit_mention("use @skill now", "@skill"));
+        assert!(!contains_explicit_mention("use @skillnow", "@skill"));
+        assert!(contains_explicit_mention("@skill", "@skill"));
+        assert!(contains_explicit_mention(" @skill ", "@skill"));
+        assert!(!contains_explicit_mention("some@skill", "@skill"));
+    }
+
+    #[test]
+    fn should_detect_explicit_mentions_in_manifest() {
+        let mut tokens = std::collections::BTreeSet::new();
+        tokens.insert("skill".to_owned());
+        let manifest = SkillManifest {
+            name: "MySkill".to_owned(),
+            description: "A skill".to_owned(),
+            path: std::path::PathBuf::from("/path"),
+            version: None,
+            normalized_name: "myskill".to_owned(),
+            search_tokens: tokens,
+        };
+
+        assert!(mentioned_explicitly("use @myskill now", &manifest));
+        assert!(mentioned_explicitly("use $myskill now", &manifest));
+        assert!(mentioned_explicitly("use /myskill now", &manifest));
+        assert!(!mentioned_explicitly("use myskill now", &manifest));
+    }
+
+    #[test]
+    fn should_calculate_match_score() {
+        let mut tokens = std::collections::BTreeSet::new();
+        tokens.insert("skill".to_owned());
+        tokens.insert("one".to_owned());
+        tokens.insert("two".to_owned());
+
+        let manifest = SkillManifest {
+            name: "MySkill".to_owned(),
+            description: "A skill".to_owned(),
+            path: std::path::PathBuf::from("/path"),
+            version: None,
+            normalized_name: "myskill".to_owned(),
+            search_tokens: tokens,
+        };
+
+        let mut task_tokens = std::collections::BTreeSet::new();
+        task_tokens.insert("skill".to_owned());
+        task_tokens.insert("two".to_owned());
+        task_tokens.insert("other".to_owned());
+
+        assert_eq!(match_score(&task_tokens, &manifest), 2);
+    }
+
+    #[test]
+    fn should_parse_frontmatter_fields() {
+        let yaml = "\
+name: My Skill # trailing comment
+description: \"A multiline
+description\"
+path: /some/path
+empty:
+invalid
+";
+        let fields = parse_frontmatter_fields(yaml);
+        assert_eq!(fields.get("name").map(std::string::String::as_str), Some("My Skill"));
+        assert_eq!(
+            fields.get("description").map(std::string::String::as_str),
+            Some("A multiline\ndescription")
+        );
+        assert_eq!(fields.get("path").map(std::string::String::as_str), Some("/some/path"));
+        assert_eq!(fields.get("empty").map(std::string::String::as_str), Some(""));
+        assert_eq!(fields.get("invalid").map(std::string::String::as_str), None);
+    }
+
+    #[test]
+    fn should_strip_trailing_comments_correctly() {
+        let cases = vec![
+            ("value", "value"),
+            ("value # comment", "value"),
+            ("value # comment # comment2", "value"),
+            ("\"value # not comment\"", "\"value # not comment\""),
+            ("'value # not comment'", "'value # not comment'"),
+            (
+                "\"value \\\" # inside\" # outside",
+                "\"value \\\" # inside\"",
+            ),
+            ("'value \\\' # inside' # outside", "'value \\\' # inside'"),
+            ("plain # comm", "plain"),
+        ];
+
+        for (input, expected) in cases {
+            assert_eq!(
+                strip_trailing_comment(input),
+                expected,
+                "failed on input: {input}"
+            );
+        }
+    }
 }
