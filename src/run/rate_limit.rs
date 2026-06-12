@@ -378,7 +378,7 @@ impl RateLimitGovernor {
     /// message string. Handles:
     /// - Numeric: `"retry-after: 30"` / `"retry_after: 30"`
     /// - HTTP-date: `"retry-after: Wed, 21 Oct 2026 12:00:00 GMT"`
-    /// Returns `None` when no recognizable pattern is found.
+    ///   Returns `None` when no recognizable pattern is found.
     #[must_use]
     pub fn parse_retry_after_from_error(msg: &str) -> Option<u64> {
         let lower = msg.to_lowercase();

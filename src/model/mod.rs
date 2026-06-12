@@ -271,7 +271,7 @@ pub trait Model: Send + Sync {
 /// if more than 4 messages carry `Breakpoint`, keep the **first** four
 /// (stable/oldest cached prefix, which is what we want for a system prompt
 /// + long-lived context) and demote the rest to `None`. Returns an iterator
-/// over `(&Message, CacheHint)`.
+///   over `(&Message, CacheHint)`.
 pub fn cap_breakpoints<const N: usize>(
     messages: &[Message],
 ) -> impl Iterator<Item = (&Message, CacheHint)> + '_ {

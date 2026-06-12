@@ -497,8 +497,8 @@ fn evaluate_via_docker_tests(
             let row = serde_json::json!({
                 "instance_id": inst.instance_id,
                 "image": inst.image,
-                "FAIL_TO_PASS": inst.other.get("FAIL_TO_PASS").cloned().unwrap_or(serde_json::Value::Array(vec![])),
-                "PASS_TO_PASS": inst.other.get("PASS_TO_PASS").cloned().unwrap_or(serde_json::Value::Array(vec![])),
+                "FAIL_TO_PASS": inst.other.get("FAIL_TO_PASS").cloned().unwrap_or_else(|| serde_json::Value::Array(vec![])),
+                "PASS_TO_PASS": inst.other.get("PASS_TO_PASS").cloned().unwrap_or_else(|| serde_json::Value::Array(vec![])),
                 // Preserve oracle-test, runner, and alternate image fields so
                 // docker-tests can resolve the image and apply oracle tests.
                 "test_patch": inst.other.get("test_patch").cloned().unwrap_or(serde_json::Value::Null),
