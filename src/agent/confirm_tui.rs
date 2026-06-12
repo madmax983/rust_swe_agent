@@ -108,7 +108,7 @@ impl Default for DashboardState {
 struct LogLine {
     kind: LineKind,
     text: String,
-    full_text: Option<String>,
+    full_text: Option<Arc<str>>,
 }
 
 #[derive(Clone, Copy)]
@@ -244,7 +244,7 @@ impl RatatuiDashboard {
         s.log.push_back(LogLine {
             kind,
             text: text.into(),
-            full_text: full_text.map(truncate_to_cap),
+            full_text: full_text.map(|t| Arc::from(truncate_to_cap(t))),
         });
 
         let auto_follow_selection = was_at_end && !s.detail_open;
@@ -346,15 +346,15 @@ impl StreamSink for RatatuiDashboard {
                     summarize_stream(&stdout, &stderr),
                 );
                 let full_content = if stdout.is_empty() && stderr.is_empty() {
-                    String::new()
+                    None
                 } else if stderr.is_empty() {
-                    stdout
+                    Some(stdout)
                 } else if stdout.is_empty() {
-                    stderr
+                    Some(stderr)
                 } else {
-                    format!("{stdout}\n--- stderr ---\n{stderr}")
+                    Some(format!("{stdout}\n--- stderr ---\n{stderr}"))
                 };
-                self.append(kind, summary, Some(full_content));
+                self.append(kind, summary, full_content);
             }
             StreamEvent::Observation { step, content, .. } => {
                 let preview = first_lines(&content, 4);
@@ -768,7 +768,7 @@ fn handle_key(dash: &Arc<RatatuiDashboard>, key: KeyEvent) {
                     dash.notify.notify_waiters();
                 }
                 _ => {
-                    handle_key_normal(dash, &mut s, pending, key);
+                    s.pending = Some(pending);
                 }
             }
         } else {
@@ -3143,5 +3143,54 @@ mod tests {
         let s = snap(&d);
         let total = total_wrapped_lines(&s.log, 10);
         assert_eq!(total, 1);
+    }
+
+    #[test]
+    fn test_ignore_confirm_keys_when_detail_open() {
+        let d = make_dashboard();
+        let mut rx = make_pending(&d);
+        {
+            let mut s = d.state.lock().unwrap();
+            s.detail_open = true;
+        }
+
+        // Press 'y' while detail is open
+        handle_key(&d, KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE));
+
+        // It should be ignored, and pending is still Some
+        assert!(snap(&d).pending.is_some());
+        assert!(rx.try_recv().is_err());
+
+        // Press 'n' while detail is open
+        handle_key(&d, KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE));
+        assert!(snap(&d).pending.is_some());
+        assert!(snap(&d).feedback_input.is_none());
+    }
+
+    #[test]
+    fn test_bash_result_empty_output_fallback() {
+        let d = make_dashboard();
+        d.emit(StreamEvent::BashResult {
+            step: 1,
+            exit_code: 0,
+            stdout: String::new(),
+            stderr: String::new(),
+            timed_out: false,
+            timestamp: "t".into(),
+        });
+
+        // Set selected_index to 0 and detail_open to true
+        {
+            let mut s = d.state.lock().unwrap();
+            s.selected_index = Some(0);
+            s.detail_open = true;
+        }
+
+        let s = snap(&d);
+        let buf = render_to_buffer(&s, 80, 10);
+        let text = buffer_text(&buf);
+
+        // It should fallback to the summary text rather than rendering an empty pane
+        assert!(text.contains("bash exit 0"));
     }
 }
