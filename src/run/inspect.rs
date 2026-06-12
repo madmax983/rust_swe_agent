@@ -773,9 +773,9 @@ pub fn inspect(args: &InspectArgs, _format: &InspectFormat) -> Result<String, Er
     Ok(render_text(&output))
 }
 
-use comfy_table::Table;
 use comfy_table::modifiers::UTF8_ROUND_CORNERS;
 use comfy_table::presets::UTF8_FULL;
+use comfy_table::{Cell, Color, Table};
 
 fn render_summary_text(report: &SummaryReport) -> String {
     let mut s = String::new();
@@ -830,17 +830,39 @@ fn render_summary_text(report: &SummaryReport) -> String {
         ]);
 
     for row in &report.rows {
+        let resolved_str = row
+            .resolved
+            .map_or("?", |v| if v { "true" } else { "false" })
+            .to_string();
+
+        let resolved_cell = if resolved_str == "true" {
+            Cell::new(resolved_str).fg(Color::Green)
+        } else if resolved_str == "false" {
+            Cell::new(resolved_str).fg(Color::Red)
+        } else {
+            Cell::new(resolved_str).fg(Color::DarkYellow)
+        };
+
+        let outcome_str = row.outcome.as_deref().unwrap_or("?").to_string();
+        let outcome_cell = if outcome_str == "Success" {
+            Cell::new(outcome_str).fg(Color::Green)
+        } else {
+            Cell::new(outcome_str)
+        };
+
         table.add_row(vec![
-            row.instance_id.clone(),
-            row.outcome.as_deref().unwrap_or("?").to_string(),
-            row.failure_category
-                .map_or("none", failure_label)
-                .to_string(),
-            row.cost_usd
-                .map_or_else(|| "?".into(), |c| format!("{c:.4}")),
-            row.resolved
-                .map_or("?", |v| if v { "true" } else { "false" })
-                .to_string(),
+            Cell::new(row.instance_id.clone()),
+            outcome_cell,
+            Cell::new(
+                row.failure_category
+                    .map_or("none", failure_label)
+                    .to_string(),
+            ),
+            Cell::new(
+                row.cost_usd
+                    .map_or_else(|| "?".into(), |c| format!("{c:.4}")),
+            ),
+            resolved_cell,
         ]);
     }
 
