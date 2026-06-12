@@ -670,6 +670,33 @@ pub enum AgentCmd {
     BestOf(Box<BestOfCmd>),
     /// Profile a single trajectory file: cost, tokens, stage latency, and action mix (issue #503).
     Profile(AgentProfileCmd),
+    /// List and summarize single-task trajectory files in a directory (issue #509).
+    Runs(AgentRunsCmd),
+}
+
+/// `agent runs` — list and summarize single-task trajectory files (issue #509).
+#[derive(Debug, Args)]
+pub struct AgentRunsCmd {
+    /// Directory to scan for `*.traj.json` files.
+    #[arg(long, default_value = "./runs")]
+    pub dir: PathBuf,
+
+    /// Recurse into subdirectories (default: top-level only).
+    #[arg(long, default_value_t = false)]
+    pub recursive: bool,
+
+    /// Output format: `text` (default, human table) or `json` (schema-versioned array).
+    #[arg(long, default_value = "text")]
+    pub format: String,
+
+    /// Filter rows by `key=value`. Supported keys: `outcome`, `failure_category`.
+    /// Repeatable. Example: `--filter outcome=submitted --filter failure_category=step_limit`.
+    #[arg(long = "filter", value_name = "KEY=VALUE")]
+    pub filters: Vec<String>,
+
+    /// Sort column: `task` (default), `cost`, `steps`, or `duration`.
+    #[arg(long, default_value = "task")]
+    pub sort: String,
 }
 
 /// `agent profile` — profile a single trajectory file (issue #503).

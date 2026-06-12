@@ -157,6 +157,7 @@ pub async fn run() -> Result<(), Error> {
             args::AgentCmd::Apply(a) => agent_apply_cmd(&a),
             args::AgentCmd::BestOf(b) => Box::pin(agent_best_of_cmd(*b)).await,
             args::AgentCmd::Profile(p) => agent_profile_cmd(&p),
+            args::AgentCmd::Runs(r) => agent_runs_cmd(&r),
         },
         Command::Catalog(c) => catalog::run_catalog(c),
         Command::Ui(u) => ui_cmd(u).await,
@@ -6710,6 +6711,53 @@ fn agent_profile_cmd(p: &args::AgentProfileCmd) -> Result<(), Error> {
             );
         }
         ProfileFormat::Text => {
+            print!("{}", format_text(&report));
+        }
+    }
+
+    Ok(())
+}
+
+fn agent_runs_cmd(r: &args::AgentRunsCmd) -> Result<(), Error> {
+    use crate::run::agent_runs::{
+        AgentRunsOpts, RunsFilter, RunsFormat, RunsSort, format_text, run_agent_runs,
+    };
+
+    let format = match r.format.as_str() {
+        "json" => RunsFormat::Json,
+        "text" | "" => RunsFormat::Text,
+        other => {
+            return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+                "--format '{other}' is not valid; use 'text' or 'json'"
+            ))));
+        }
+    };
+
+    let mut filters = Vec::new();
+    for raw in &r.filters {
+        filters.push(RunsFilter::parse(raw)?);
+    }
+
+    let sort = RunsSort::parse(&r.sort)?;
+
+    let opts = AgentRunsOpts {
+        dir: r.dir.clone(),
+        recursive: r.recursive,
+        format,
+        filters,
+        sort,
+    };
+
+    let report = run_agent_runs(&opts)?;
+
+    match format {
+        RunsFormat::Json => {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&report).map_err(Error::Json)?
+            );
+        }
+        RunsFormat::Text => {
             print!("{}", format_text(&report));
         }
     }
