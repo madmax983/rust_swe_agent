@@ -540,6 +540,9 @@ fn searchable_tokens(name: &str, description: &str) -> BTreeSet<String> {
         .collect()
 }
 
+/// Normalizes search text by converting to lowercase and replacing non-alphanumeric characters.
+/// ⚡ Bolt optimization: Pre-allocates string and uses a single loop to join tokens,
+/// completely avoiding the intermediate `Vec` heap allocation previously caused by `.collect::<Vec<_>>().join(" ")`.
 fn normalize_search_text(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     for ch in text.chars() {
@@ -549,7 +552,16 @@ fn normalize_search_text(text: &str) -> String {
             out.push(' ');
         }
     }
-    out.split_whitespace().collect::<Vec<_>>().join(" ")
+    let mut res = String::with_capacity(out.len());
+    let mut iter = out.split_whitespace();
+    if let Some(first) = iter.next() {
+        res.push_str(first);
+        for s in iter {
+            res.push(' ');
+            res.push_str(s);
+        }
+    }
+    res
 }
 
 fn is_stopword(token: &str) -> bool {

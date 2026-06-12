@@ -582,8 +582,23 @@ fn build_mismatches(
     mismatches
 }
 
+/// Joins a set of strings with a comma separator.
+/// ⚡ Bolt optimization: Pre-computes exact string capacity and joins directly,
+/// removing the intermediate `Vec` allocation from `.collect::<Vec<_>>().join(",")`.
 fn sorted_join(values: BTreeSet<&str>) -> String {
-    values.into_iter().collect::<Vec<_>>().join(",")
+    let len = values.iter().copied().map(str::len).sum::<usize>() + values.len().saturating_sub(1);
+    let mut iter = values.into_iter();
+    if let Some(first) = iter.next() {
+        let mut res = String::with_capacity(len);
+        res.push_str(first);
+        for s in iter {
+            res.push(',');
+            res.push_str(s);
+        }
+        res
+    } else {
+        String::new()
+    }
 }
 
 fn compare_field(
