@@ -8,6 +8,7 @@ use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
+use comfy_table::{Attribute, Cell, CellAlignment, Color, Table};
 use serde::{Deserialize, Serialize};
 
 use crate::artifact::ArtifactKind;
@@ -367,13 +368,23 @@ pub fn format_text(report: &AgentRunsReport) -> String {
         return out;
     }
 
-    // Header row — outcome needs ≥20 chars (step_limit_reached=18), failure_category ≥26 (history_compaction_failed=25)
-    let _ = writeln!(
-        out,
-        "{:<42} {:<20} {:<26} {:>6} {:>10} {:>9} model",
-        "task", "outcome", "failure_category", "steps", "duration", "cost_usd"
-    );
-    let _ = writeln!(out, "{}", "─".repeat(126));
+    let mut table = Table::new();
+    table.load_preset(comfy_table::presets::NOTHING);
+    table.set_header(vec![
+        Cell::new("task").add_attribute(Attribute::Bold),
+        Cell::new("outcome").add_attribute(Attribute::Bold),
+        Cell::new("failure_category").add_attribute(Attribute::Bold),
+        Cell::new("steps")
+            .add_attribute(Attribute::Bold)
+            .set_alignment(CellAlignment::Right),
+        Cell::new("duration")
+            .add_attribute(Attribute::Bold)
+            .set_alignment(CellAlignment::Right),
+        Cell::new("cost_usd")
+            .add_attribute(Attribute::Bold)
+            .set_alignment(CellAlignment::Right),
+        Cell::new("model").add_attribute(Attribute::Bold),
+    ]);
 
     for row in &report.rows {
         let task_raw = row
@@ -384,8 +395,21 @@ pub fn format_text(report: &AgentRunsReport) -> String {
             .collect::<Vec<_>>()
             .join(" ");
         let task = truncate(&task_raw, TASK_DISPLAY_LEN);
-        let outcome = row.outcome.as_deref().unwrap_or("");
+
+        let outcome_str = row.outcome.as_deref().unwrap_or("");
+        let outcome_cell = match outcome_str {
+            "submitted" | "resolved" => Cell::new(outcome_str).fg(Color::Green),
+            "error" => Cell::new(outcome_str).fg(Color::Red),
+            _ => Cell::new(outcome_str).fg(Color::DarkYellow),
+        };
+
         let failure = row.failure_category.as_deref().unwrap_or("");
+        let failure_cell = if failure.is_empty() {
+            Cell::new(failure)
+        } else {
+            Cell::new(failure).fg(Color::DarkYellow)
+        };
+
         let steps = row.steps.map_or_else(|| "-".to_owned(), |s| s.to_string());
         let dur = row
             .duration_secs
@@ -395,11 +419,18 @@ pub fn format_text(report: &AgentRunsReport) -> String {
             .map_or_else(|| "-".to_owned(), |c| format!("${c:.4}"));
         let model = row.model.as_deref().unwrap_or("");
 
-        let _ = writeln!(
-            out,
-            "{task:<42} {outcome:<20} {failure:<26} {steps:>6} {dur:>10} {cost:>9} {model}"
-        );
+        table.add_row(vec![
+            Cell::new(task),
+            outcome_cell,
+            failure_cell,
+            Cell::new(steps).set_alignment(CellAlignment::Right),
+            Cell::new(dur).set_alignment(CellAlignment::Right),
+            Cell::new(cost).set_alignment(CellAlignment::Right),
+            Cell::new(model).fg(Color::DarkGrey),
+        ]);
     }
+
+    let _ = writeln!(out, "{table}");
 
     // Footer
     let _ = writeln!(out, "{}", "─".repeat(126));
