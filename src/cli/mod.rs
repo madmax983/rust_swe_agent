@@ -3704,7 +3704,10 @@ fn bench_inspect(i: args::InspectCmd) -> Result<(), Error> {
         return Ok(());
     }
 
-    if matches!(i.format.as_str(), "markdown" | "html" | "csv" | "mermaid") {
+    if matches!(
+        i.format.as_str(),
+        "markdown" | "html" | "csv" | "mermaid" | "chatml"
+    ) {
         return bench_inspect_export(i);
     }
 
@@ -3784,6 +3787,7 @@ fn bench_inspect_export(i: args::InspectCmd) -> Result<(), Error> {
         "html" => inspect_export_html(&traj)?,
         "csv" => inspect_export_csv(&traj)?,
         "mermaid" => inspect_export_mermaid(&traj)?,
+        "chatml" => inspect_export_chatml(&traj)?,
         _ => unreachable!("dispatch guarded by caller"),
     };
 
@@ -3837,6 +3841,22 @@ fn inspect_export_html(_traj: &crate::trajectory::Trajectory) -> Result<String, 
     Err(Error::Config(crate::error::ConfigError::Invalid(
         "format_unavailable: --format html requires the `html-export` Cargo feature; \
          rebuild with `--features html-export`"
+            .into(),
+    )))
+}
+
+#[cfg(feature = "chatml-export")]
+#[allow(clippy::unnecessary_wraps)]
+fn inspect_export_chatml(traj: &crate::trajectory::Trajectory) -> Result<String, Error> {
+    use crate::trajectory::export::{ChatmlExporter, TrajectoryExporter};
+    Ok(ChatmlExporter::export(traj))
+}
+
+#[cfg(not(feature = "chatml-export"))]
+fn inspect_export_chatml(_traj: &crate::trajectory::Trajectory) -> Result<String, Error> {
+    Err(Error::Config(crate::error::ConfigError::Invalid(
+        "format_unavailable: --format chatml requires the `chatml-export` Cargo feature; \
+         rebuild with `--features chatml-export`"
             .into(),
     )))
 }

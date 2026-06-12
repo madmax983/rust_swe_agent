@@ -2378,6 +2378,75 @@ fn format_mermaid_produces_sequence_diagram() {
     );
 }
 
+#[cfg(not(feature = "chatml-export"))]
+#[test]
+fn format_chatml_without_feature_gives_format_unavailable_error() {
+    let sweep = tempfile::tempdir().unwrap();
+    write_traj(sweep.path(), "abc", false);
+
+    let out = Command::new(binary_path())
+        .args([
+            "bench",
+            "inspect",
+            "--sweep",
+            sweep.path().to_str().unwrap(),
+            "--instance",
+            "abc",
+            "--format",
+            "chatml",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        !out.status.success(),
+        "should fail when chatml-export feature is not enabled"
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("format_unavailable"),
+        "expected format_unavailable in stderr:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("chatml-export"),
+        "expected feature name in error message:\n{stderr}"
+    );
+}
+
+#[cfg(feature = "chatml-export")]
+#[test]
+fn format_chatml_produces_self_contained_chatml() {
+    let sweep = tempfile::tempdir().unwrap();
+    write_traj(sweep.path(), "abc", false);
+
+    let out = Command::new(binary_path())
+        .args([
+            "bench",
+            "inspect",
+            "--sweep",
+            sweep.path().to_str().unwrap(),
+            "--instance",
+            "abc",
+            "--format",
+            "chatml",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("<|im_start|>"),
+        "expected ChatML start token:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("<|im_end|>"),
+        "expected ChatML end token:\n{stdout}"
+    );
+}
+
 #[test]
 #[allow(clippy::too_many_lines)]
 fn inspect_displays_submission_class_and_warning_for_test_only_patches() {

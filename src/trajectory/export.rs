@@ -53,6 +53,9 @@ pub struct MermaidExporter;
 #[cfg(feature = "html-export")]
 pub struct HtmlExporter;
 
+#[cfg(feature = "chatml-export")]
+pub struct ChatmlExporter;
+
 use std::fmt::Write;
 
 #[cfg(feature = "csv-export")]
@@ -245,6 +248,22 @@ impl TrajectoryExporter for MermaidExporter {
     }
 }
 
+#[cfg(feature = "chatml-export")]
+impl TrajectoryExporter for ChatmlExporter {
+    fn export(trajectory: &Trajectory) -> String {
+        let redactor = Redactor::default_enabled();
+        let mut chatml = String::new();
+
+        for msg in &trajectory.messages {
+            let role = msg.role.as_str();
+            let content = redactor.redact_text(&msg.content, surface::EXPORT).text;
+            let _ = write!(chatml, "<|im_start|>{role}\n{content}<|im_end|>\n");
+        }
+
+        chatml
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -339,5 +358,20 @@ mod tests {
         assert!(html.contains("submitted"));
         assert!(html.contains("Hello agent"));
         assert!(html.contains("Hello user"));
+    }
+
+    #[cfg(feature = "chatml-export")]
+    #[test]
+    fn test_chatml_export_format() {
+        let mut t = Trajectory::new();
+        t.record_message(&Message::system("System prompt"));
+        t.record_message(&Message::user("Hello agent"));
+        t.record_message(&Message::assistant("Hello user"));
+
+        let chatml = ChatmlExporter::export(&t);
+
+        assert!(chatml.contains("<|im_start|>system\nSystem prompt<|im_end|>\n"));
+        assert!(chatml.contains("<|im_start|>user\nHello agent<|im_end|>\n"));
+        assert!(chatml.contains("<|im_start|>assistant\nHello user<|im_end|>\n"));
     }
 }
