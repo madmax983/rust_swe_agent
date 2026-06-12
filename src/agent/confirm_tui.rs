@@ -209,8 +209,22 @@ impl RatatuiDashboard {
         })
     }
 
-    fn deliver_copy(&self, _text: &str) {
-        // TODO (red): stub — implement in green phase
+    fn deliver_copy(&self, text: &str) {
+        let n = text.chars().count();
+        let notice_text = match self.clipboard.copy(text) {
+            Ok(()) => format!("copied {n} chars"),
+            Err(e) => format!("copy failed: {e}"),
+        };
+        let mut s = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        s.notice = Some(Notice {
+            text: notice_text,
+            expires_at: Instant::now() + NOTICE_TTL,
+        });
+        drop(s);
+        self.notify.notify_waiters();
     }
 
     fn append(&self, kind: LineKind, text: impl Into<String>) {
@@ -562,41 +576,52 @@ fn handle_key_normal(
     s: &mut DashboardState,
     pending: PendingPrompt,
     key: KeyEvent,
-) {
+) -> Option<String> {
     if !key.modifiers.is_empty() && key.modifiers != KeyModifiers::SHIFT {
         s.pending = Some(pending);
-        return;
+        return None;
     }
 
     if perform_scroll(s, key.code) {
         s.pending = Some(pending);
         dash.notify.notify_waiters();
-        return;
+        return None;
     }
 
     match key.code {
         KeyCode::Char('y' | 'Y') => {
             let _ = pending.responder.send(ConfirmDecision::Approve);
+            None
         }
         KeyCode::Char('n' | 'N') => {
             s.feedback_input = Some(String::new());
             s.pending = Some(pending);
             dash.notify.notify_waiters();
+            None
         }
         KeyCode::Char('e' | 'E') => {
             s.edit_input = Some(pending.ctx.command.clone());
             s.pending = Some(pending);
             dash.notify.notify_waiters();
+            None
         }
         KeyCode::Char('A') => {
             let scope = pending.ctx.derive_scope();
             let _ = pending.responder.send(ConfirmDecision::AutoApprove(scope));
+            None
         }
         KeyCode::Char('a') | KeyCode::Esc => {
             let _ = pending.responder.send(ConfirmDecision::Abort);
+            None
+        }
+        KeyCode::Char('c') => {
+            let text = pending.ctx.command.clone();
+            s.pending = Some(pending);
+            Some(text)
         }
         _ => {
             s.pending = Some(pending);
+            None
         }
     }
 }
@@ -622,12 +647,19 @@ fn handle_key(dash: &Arc<RatatuiDashboard>, key: KeyEvent) {
             return;
         }
 
-        if let Some(buffer) = s.feedback_input.take() {
+        let copy_text = if let Some(buffer) = s.feedback_input.take() {
             handle_key_feedback_input(dash, &mut s, pending, key.code, buffer);
+            None
         } else if let Some(buffer) = s.edit_input.take() {
             handle_key_edit_input(dash, &mut s, pending, key.code, buffer);
+            None
         } else {
-            handle_key_normal(dash, &mut s, pending, key);
+            handle_key_normal(dash, &mut s, pending, key)
+        };
+
+        drop(s);
+        if let Some(text) = copy_text {
+            dash.deliver_copy(&text);
         }
     } else {
         // No modal open
@@ -644,6 +676,22 @@ fn handle_key(dash: &Arc<RatatuiDashboard>, key: KeyEvent) {
                 dash.notify.notify_waiters();
                 return;
             }
+        }
+
+        if key.modifiers.is_empty() && matches!(key.code, KeyCode::Char('c')) {
+            if let Some(line) = s.log.back() {
+                let text = line.text.clone();
+                drop(s);
+                dash.deliver_copy(&text);
+            } else {
+                s.notice = Some(Notice {
+                    text: "nothing to copy".into(),
+                    expires_at: Instant::now() + NOTICE_TTL,
+                });
+                drop(s);
+                dash.notify.notify_waiters();
+            }
+            return;
         }
 
         if perform_scroll(&mut s, key.code) {
@@ -678,6 +726,12 @@ fn draw_frame(
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         s.last_log_width = log_width;
         s.last_log_height = log_height;
+        if s.notice
+            .as_ref()
+            .is_some_and(|n| n.expires_at <= Instant::now())
+        {
+            s.notice = None;
+        }
         DashboardSnapshot {
             task: s.task.clone(),
             model: s.model.clone(),
@@ -831,16 +885,27 @@ fn log_paragraph(snap: &DashboardSnapshot) -> Paragraph<'_> {
 }
 
 fn footer_paragraph(snap: &DashboardSnapshot) -> Paragraph<'_> {
+    if let Some(notice) = &snap.notice {
+        return Paragraph::new(Line::from(Span::styled(
+            notice.clone(),
+            Style::default()
+                .fg(Color::LightYellow)
+                .add_modifier(Modifier::BOLD),
+        )))
+        .block(Block::default().borders(Borders::ALL));
+    }
     let hint = if snap.finished.is_some() {
-        "run complete — press 'q', Esc, or Ctrl-C to close  [scroll: ↑/↓/PgUp/PgDn/Home/End]"
+        "run complete — press 'q', Esc, or Ctrl-C to close  [scroll: ↑/↓/PgUp/PgDn/Home/End] [c: copy line]"
             .to_string()
     } else if snap.edit_input.is_some() {
         "[Enter] execute edit   [Esc] cancel".to_string()
     } else if let Some(pending) = &snap.pending {
         let scope = pending.derive_scope();
-        format!("(y) approve   (n) reject   (e) edit   (a) abort   (A) auto-approve {scope}")
+        format!(
+            "(y) approve   (n) reject   (e) edit   (a) abort   (A) auto-approve {scope}   (c) copy"
+        )
     } else {
-        "waiting for next agent step…  [scroll: ↑/↓/PgUp/PgDn/Home/End]".to_string()
+        "waiting for next agent step…  [scroll: ↑/↓/PgUp/PgDn/Home/End] [c: copy line]".to_string()
     };
     Paragraph::new(Line::from(Span::styled(
         hint,
@@ -937,7 +1002,9 @@ fn draw_modal(
     } else {
         let scope = ctx.derive_scope();
         lines.push(Line::from(Span::styled(
-            format!("(y) approve   (n) reject   (e) edit   (a) abort   (A) auto-approve {scope}"),
+            format!(
+                "(y) approve   (n) reject   (e) edit   (a) abort   (A) auto-approve {scope}   (c) copy"
+            ),
             Style::default().add_modifier(Modifier::BOLD),
         )));
     }
@@ -2376,7 +2443,7 @@ mod tests {
         handle_key(&d, KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE));
 
         // Sink received the FULL un-truncated command (fails in red — deliver_copy is a no-op)
-        assert_eq!(sink.captured(), vec![cmd.clone()]);
+        assert_eq!(sink.captured(), vec![cmd]);
         // Prompt is still open (copy never resolves the decision)
         assert!(snap(&d).pending.is_some(), "pending should still be set");
         // No decision sent on the channel
@@ -2394,7 +2461,7 @@ mod tests {
         // Step/cost unchanged — copy never advances trajectory
         let s = snap(&d);
         assert_eq!(s.step, 0);
-        assert_eq!(s.cost_usd, 0.0);
+        assert!(s.cost_usd < f64::EPSILON, "cost_usd must remain zero");
     }
 
     #[test]
@@ -2446,21 +2513,22 @@ mod tests {
     fn copy_key_no_modal_copies_most_recent_log_line() {
         let sink = CapturingSink::new();
         let d = make_dashboard_with_sink(sink.clone());
-        {
-            let mut s = d.state.lock().unwrap();
-            for i in 0..5u32 {
-                s.log.push_back(LogLine {
-                    kind: LineKind::Info,
-                    text: format!("log line {i}"),
-                });
-            }
+        for i in 0..5u32 {
+            d.state.lock().unwrap().log.push_back(LogLine {
+                kind: LineKind::Info,
+                text: format!("log line {i}"),
+            });
         }
         let scroll_before = snap(&d).scroll_offset;
 
         handle_key(&d, KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE));
 
         assert_eq!(sink.captured(), vec!["log line 4".to_string()]);
-        assert_eq!(snap(&d).scroll_offset, scroll_before, "scroll must not change");
+        assert_eq!(
+            snap(&d).scroll_offset,
+            scroll_before,
+            "scroll must not change"
+        );
     }
 
     #[test]
@@ -2491,7 +2559,9 @@ mod tests {
 
         let notice = snap(&d).notice;
         assert!(
-            notice.as_deref().is_some_and(|n| n.starts_with("copy failed:")),
+            notice
+                .as_deref()
+                .is_some_and(|n| n.starts_with("copy failed:")),
             "notice must start with 'copy failed:'; got: {notice:?}"
         );
         // Prompt still open
@@ -2509,7 +2579,10 @@ mod tests {
 
         // Enter feedback mode
         handle_key(&d, KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE));
-        assert!(snap(&d).feedback_input.is_some(), "should be in feedback mode");
+        assert!(
+            snap(&d).feedback_input.is_some(),
+            "should be in feedback mode"
+        );
 
         // 'c' should type the character, not copy
         handle_key(&d, KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE));
@@ -2518,7 +2591,10 @@ mod tests {
             Some("c"),
             "feedback buffer should contain 'c'"
         );
-        assert!(sink.captured().is_empty(), "sink must not be called in feedback mode");
+        assert!(
+            sink.captured().is_empty(),
+            "sink must not be called in feedback mode"
+        );
     }
 
     #[test]
@@ -2538,7 +2614,10 @@ mod tests {
             edit.ends_with('c'),
             "edit buffer should end with 'c'; got: {edit:?}"
         );
-        assert!(sink.captured().is_empty(), "sink must not be called in edit mode");
+        assert!(
+            sink.captured().is_empty(),
+            "sink must not be called in edit mode"
+        );
     }
 
     #[test]

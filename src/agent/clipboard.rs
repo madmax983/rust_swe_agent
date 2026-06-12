@@ -20,9 +20,9 @@ pub trait ClipboardSink: Send + Sync {
 ///
 /// Format: `ESC ] 52 ; c ; <base64(text)> BEL`
 pub fn osc52_sequence(text: &str) -> String {
-    // TODO (red): stub — will be implemented in green phase
-    let _ = text;
-    String::new()
+    use base64::Engine as _;
+    let b64 = base64::engine::general_purpose::STANDARD.encode(text.as_bytes());
+    format!("\x1b]52;c;{b64}\x07")
 }
 
 /// `ClipboardSink` that emits an OSC 52 escape to stdout.
