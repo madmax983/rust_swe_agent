@@ -701,6 +701,34 @@ fn handle_key(dash: &Arc<RatatuiDashboard>, key: KeyEvent) {
     }
 }
 
+fn build_snapshot(s: &mut DashboardState) -> DashboardSnapshot {
+    if s.notice
+        .as_ref()
+        .is_some_and(|n| n.expires_at <= Instant::now())
+    {
+        s.notice = None;
+    }
+    DashboardSnapshot {
+        task: s.task.clone(),
+        model: s.model.clone(),
+        step: s.step,
+        step_limit: s.step_limit,
+        cost_usd: s.cost_usd,
+        finished: s.finished.clone(),
+        log: s.log.iter().cloned().collect(),
+        pending: s.pending.as_ref().map(|p| p.ctx.clone()),
+        feedback_input: s.feedback_input.clone(),
+        edit_input: s.edit_input.clone(),
+        active_rules: s.active_rules.clone(),
+        scroll_offset: s.scroll_offset,
+        auto_follow: s.auto_follow,
+        last_log_width: s.last_log_width,
+        last_log_height: s.last_log_height,
+        is_monitor: s.is_monitor,
+        notice: s.notice.as_ref().map(|n| n.text.clone()),
+    }
+}
+
 fn draw_frame(
     dash: &Arc<RatatuiDashboard>,
     terminal: &mut Terminal<CrosstermBackend<Stdout>>,
@@ -726,31 +754,9 @@ fn draw_frame(
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         s.last_log_width = log_width;
         s.last_log_height = log_height;
-        if s.notice
-            .as_ref()
-            .is_some_and(|n| n.expires_at <= Instant::now())
-        {
-            s.notice = None;
-        }
-        DashboardSnapshot {
-            task: s.task.clone(),
-            model: s.model.clone(),
-            step: s.step,
-            step_limit: s.step_limit,
-            cost_usd: s.cost_usd,
-            finished: s.finished.clone(),
-            log: s.log.iter().cloned().collect(),
-            pending: s.pending.as_ref().map(|p| p.ctx.clone()),
-            feedback_input: s.feedback_input.clone(),
-            edit_input: s.edit_input.clone(),
-            active_rules: s.active_rules.clone(),
-            scroll_offset: s.scroll_offset,
-            auto_follow: s.auto_follow,
-            last_log_width: s.last_log_width,
-            last_log_height: s.last_log_height,
-            is_monitor: s.is_monitor,
-            notice: s.notice.as_ref().map(|n| n.text.clone()),
-        }
+        let snap = build_snapshot(&mut s);
+        drop(s);
+        snap
     };
     terminal.draw(|frame| draw(frame, &snapshot))?;
     Ok(())
@@ -1649,29 +1655,11 @@ mod tests {
     }
 
     fn snap(dash: &Arc<RatatuiDashboard>) -> DashboardSnapshot {
-        let s = dash
+        let mut s = dash
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        DashboardSnapshot {
-            task: s.task.clone(),
-            model: s.model.clone(),
-            step: s.step,
-            step_limit: s.step_limit,
-            cost_usd: s.cost_usd,
-            finished: s.finished.clone(),
-            log: s.log.iter().cloned().collect(),
-            pending: s.pending.as_ref().map(|p| p.ctx.clone()),
-            feedback_input: s.feedback_input.clone(),
-            edit_input: s.edit_input.clone(),
-            active_rules: s.active_rules.clone(),
-            scroll_offset: s.scroll_offset,
-            auto_follow: s.auto_follow,
-            last_log_width: s.last_log_width,
-            last_log_height: s.last_log_height,
-            is_monitor: s.is_monitor,
-            notice: s.notice.as_ref().map(|n| n.text.clone()),
-        }
+        build_snapshot(&mut s)
     }
 
     fn render_to_buffer(snap: &DashboardSnapshot, w: u16, h: u16) -> Buffer {
