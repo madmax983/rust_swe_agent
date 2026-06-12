@@ -247,7 +247,8 @@ impl RatatuiDashboard {
             full_text: full_text.map(|t| Arc::from(truncate_to_cap(t))),
         });
 
-        let auto_follow_selection = was_at_end && !s.detail_open;
+        let auto_follow_selection =
+            was_at_end && !s.detail_open && (!s.is_monitor || s.auto_follow);
         if auto_follow_selection {
             s.selected_index = Some(s.log.len() - 1);
             let visible_height = s.viewport_height as usize;
@@ -3192,5 +3193,35 @@ mod tests {
 
         // It should fallback to the summary text rather than rendering an empty pane
         assert!(text.contains("bash exit 0"));
+    }
+
+    #[test]
+    fn test_monitor_scrollback_stable_on_append() {
+        let d = make_dashboard();
+        {
+            let mut s = d.state.lock().unwrap();
+            s.is_monitor = true;
+            s.viewport_height = 3;
+        }
+
+        // Append 5 items
+        for i in 1..=5 {
+            d.append(LineKind::Info, format!("line{i}"), None);
+        }
+
+        // Since auto_follow is true initially, feed_scroll_top should advance to 5 - 3 = 2
+        assert_eq!(snap(&d).feed_scroll_top, 2);
+
+        // Set auto_follow to false (scrolled away)
+        {
+            let mut s = d.state.lock().unwrap();
+            s.auto_follow = false;
+        }
+
+        // Append line 6
+        d.append(LineKind::Info, "line6", None);
+
+        // Since auto_follow is false, feed_scroll_top should remain stable at 2 (not advance to 3)
+        assert_eq!(snap(&d).feed_scroll_top, 2);
     }
 }
