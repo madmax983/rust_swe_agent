@@ -27,8 +27,8 @@ pub enum StabilityTier {
 impl StabilityTier {
     pub fn as_str(self) -> &'static str {
         match self {
-            StabilityTier::Stable => "stable",
-            StabilityTier::Experimental => "experimental",
+            Self::Stable => "stable",
+            Self::Experimental => "experimental",
         }
     }
 }
@@ -60,6 +60,10 @@ pub struct ExportFormat {
 /// 3. Document the format and its tier in `docs/spec-export.md`.
 /// 4. The shared conformance test in `tests/export_redaction_conformance.rs` will cover it automatically.
 pub fn registry() -> Vec<ExportFormat> {
+    // `mut` is only used when at least one feature-gated format is compiled in.
+    // Under `--no-default-features` none of the `push` calls exist, so the binding
+    // would otherwise trip `-D warnings`/`unused_mut`.
+    #[allow(unused_mut)]
     let mut formats = vec![ExportFormat {
         name: "markdown",
         tier: StabilityTier::Stable,
@@ -92,6 +96,31 @@ pub fn registry() -> Vec<ExportFormat> {
     });
 
     formats
+}
+
+/// Export format names that exist in the codebase but are gated behind a Cargo feature,
+/// paired with the feature that enables each.
+///
+/// Used to emit a helpful "feature not compiled in" error when an operator requests a
+/// format whose feature is disabled. Compiled-in formats (with metadata and a render fn)
+/// live in [`registry`]; a format gated *out* of this build is absent from `registry()`
+/// but present here so the CLI can still route it and explain how to enable it.
+pub const FEATURE_GATED_FORMATS: &[(&str, &str)] = &[
+    ("csv", "csv-export"),
+    ("html", "html-export"),
+    ("mermaid", "mermaid-export"),
+];
+
+/// Returns `true` if `name` is a trajectory export format known to this codebase,
+/// whether or not its Cargo feature is compiled into the current build.
+///
+/// CLI routing uses this so a request for a gated-out format still reaches the export
+/// dispatch path (and gets a helpful "rebuild with --features" error) instead of falling
+/// through to a generic "unknown format" message. This keeps [`registry`] the single
+/// source of truth for *compiled* formats while still recognizing the full catalog.
+pub fn is_export_format(name: &str) -> bool {
+    registry().iter().any(|f| f.name == name)
+        || FEATURE_GATED_FORMATS.iter().any(|(n, _)| *n == name)
 }
 
 /// A contract for types that can convert a [`Trajectory`] into a specialized string format.

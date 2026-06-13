@@ -2932,6 +2932,7 @@ pub struct EvaluateCmd {
 }
 
 #[derive(Debug, Args)]
+#[allow(clippy::struct_excessive_bools)]
 pub struct InspectCmd {
     /// Completed sweep directory produced by `bench swebench`.
     #[arg(long)]

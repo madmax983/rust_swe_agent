@@ -64,9 +64,15 @@ fn all_registered_exporters_redact_secrets() {
 #[test]
 fn spec_documents_every_registered_format() {
     let formats = registry();
-    let spec = match std::fs::read_to_string("docs/spec-export.md") {
+    // Resolve relative to the crate root so the test passes regardless of the working
+    // directory the test runner is invoked from.
+    let spec_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("docs/spec-export.md");
+    let spec = match std::fs::read_to_string(&spec_path) {
         Ok(s) => s,
-        Err(e) => panic!("docs/spec-export.md must exist (see issue #516): {e}"),
+        Err(e) => panic!(
+            "docs/spec-export.md must exist at {} (see issue #516): {e}",
+            spec_path.display()
+        ),
     };
     for fmt in &formats {
         assert!(

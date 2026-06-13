@@ -76,9 +76,9 @@ implementation calls `Redactor::default_enabled()` and passes each piece of user
 text through `redactor.redact_text(text, surface::EXPORT)` before writing it to the
 output buffer.
 
-The following secret shapes are redacted:
+`Redactor::default_enabled()` applies the built-in structured-secret pass (it does **not**
+load operator-configured literals — see the note below). The following shapes are redacted:
 
-- Configured secret literals (`config.redaction.secret_literals`).
 - Structured token patterns: GitHub tokens (`ghp_*`, `ghs_*`, `gho_*`, `github_pat_*`),
   bearer tokens, API keys (`sk-*`, `sk-ant-*`, `AKIA*`), PEM private-key blocks.
 - Current-process environment variable values whose names contain `TOKEN`, `SECRET`,
@@ -88,8 +88,14 @@ The following secret shapes are redacted:
 Redacted values are replaced with stable digest markers:
 `[REDACTED:<kind>:<size_class>:<hash>]`
 
-See [`docs/spec-secret-redaction.md`](spec-secret-redaction.md) for the full redaction
-contract.
+**Note on configured literals.** Operator-configured `config.redaction.secret_literals`
+and `custom_patterns` are part of the broader redaction surface but are **not** applied by
+this view/export pass: `Redactor::default_enabled()` is built from `RedactionCfg::default()`.
+This matches the canonical `bench inspect` text/JSON view exactly (it uses the same
+`default_enabled()` constructor), which is the invariant this spec enforces — export is
+neither stronger nor weaker than the canonical human-readable view. Configured-literal
+redaction at write time is governed separately by
+[`docs/spec-secret-redaction.md`](spec-secret-redaction.md).
 
 ### Enforcement
 
