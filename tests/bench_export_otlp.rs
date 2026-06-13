@@ -453,7 +453,7 @@ async fn unreachable_collector_is_preflight_error() {
     .await
     .unwrap_err();
     assert_eq!(
-        maxwells_daemon::exit_code::ExitCode::from_error(&err),
+        maxwells_daemon::exit_code::ExitCode::from(&err),
         maxwells_daemon::exit_code::ExitCode::PreflightFailure
     );
 }
@@ -492,7 +492,7 @@ async fn missing_endpoint_is_usage_error() {
     .await
     .unwrap_err();
     assert_eq!(
-        maxwells_daemon::exit_code::ExitCode::from_error(&err),
+        maxwells_daemon::exit_code::ExitCode::from(&err),
         maxwells_daemon::exit_code::ExitCode::UsageError
     );
 }
@@ -508,7 +508,7 @@ async fn missing_sweep_dir_is_usage_error() {
     .await
     .unwrap_err();
     assert_eq!(
-        maxwells_daemon::exit_code::ExitCode::from_error(&err),
+        maxwells_daemon::exit_code::ExitCode::from(&err),
         maxwells_daemon::exit_code::ExitCode::UsageError
     );
 }

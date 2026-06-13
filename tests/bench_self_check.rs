@@ -394,7 +394,7 @@ fn missing_evaluation_json_returns_config_error() {
     );
 
     // Verify exit code maps to 2 (UsageError)
-    let code = maxwells_daemon::exit_code::ExitCode::from_error(&err);
+    let code = maxwells_daemon::exit_code::ExitCode::from(&err);
     assert_eq!(
         code.as_i32(),
         2,
@@ -433,7 +433,7 @@ fn legacy_trajectory_missing_test_field_returns_preflight_error() {
     );
 
     // Verify exit code maps to 3 (PreflightFailure / schema mismatch)
-    let code = maxwells_daemon::exit_code::ExitCode::from_error(&err);
+    let code = maxwells_daemon::exit_code::ExitCode::from(&err);
     assert_eq!(
         code.as_i32(),
         3,

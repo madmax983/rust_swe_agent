@@ -414,7 +414,7 @@ fn test_missing_sweep_dir_returns_exit_code_2() {
         sweep_dir: std::path::PathBuf::from("does_not_exist_at_all_999888"),
     });
     assert!(err.is_err());
-    let code = ExitCode::from_error(&err.unwrap_err());
+    let code = ExitCode::from(&err.unwrap_err());
     assert_eq!(code, ExitCode::UsageError);
 }
 
@@ -431,7 +431,7 @@ fn test_missing_results_json_returns_exit_code_2() {
         sweep_dir: sweep_dir.to_path_buf(),
     });
     assert!(err.is_err());
-    let code = ExitCode::from_error(&err.unwrap_err());
+    let code = ExitCode::from(&err.unwrap_err());
     assert_eq!(code, ExitCode::UsageError);
 }
 
@@ -466,6 +466,6 @@ fn test_missing_trajectory_returns_exit_code_2() {
         sweep_dir: sweep_dir.to_path_buf(),
     });
     assert!(err.is_err());
-    let code = ExitCode::from_error(&err.unwrap_err());
+    let code = ExitCode::from(&err.unwrap_err());
     assert_eq!(code, ExitCode::UsageError);
 }

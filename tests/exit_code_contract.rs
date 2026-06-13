@@ -209,61 +209,61 @@ fn all_variants_have_unique_outcome_classes() {
 #[test]
 fn config_error_maps_to_usage_error() {
     let e = Error::Config(ConfigError::Invalid("bad flag".into()));
-    assert_eq!(ExitCode::from_error(&e), ExitCode::UsageError);
+    assert_eq!(ExitCode::from(&e), ExitCode::UsageError);
 }
 
 #[test]
 fn config_not_found_maps_to_usage_error() {
     let e = Error::Config(ConfigError::NotFound("cfg.toml".into()));
-    assert_eq!(ExitCode::from_error(&e), ExitCode::UsageError);
+    assert_eq!(ExitCode::from(&e), ExitCode::UsageError);
 }
 
 #[test]
 fn verification_failed_maps_to_verification_failure() {
     let e = Error::VerificationFailed(1, 3);
-    assert_eq!(ExitCode::from_error(&e), ExitCode::VerificationFailure);
+    assert_eq!(ExitCode::from(&e), ExitCode::VerificationFailure);
 }
 
 #[test]
 fn model_api_error_maps_to_task_unsuccessful() {
     let e = Error::Model(ModelError::Request("timeout".into()));
-    assert_eq!(ExitCode::from_error(&e), ExitCode::TaskUnsuccessful);
+    assert_eq!(ExitCode::from(&e), ExitCode::TaskUnsuccessful);
 }
 
 #[test]
 fn model_malformed_maps_to_task_unsuccessful() {
     let e = Error::Model(ModelError::Malformed("no json".into()));
-    assert_eq!(ExitCode::from_error(&e), ExitCode::TaskUnsuccessful);
+    assert_eq!(ExitCode::from(&e), ExitCode::TaskUnsuccessful);
 }
 
 #[test]
 fn docker_not_installed_maps_to_preflight_failure() {
     let e = Error::Env(EnvError::DockerNotInstalled);
-    assert_eq!(ExitCode::from_error(&e), ExitCode::PreflightFailure);
+    assert_eq!(ExitCode::from(&e), ExitCode::PreflightFailure);
 }
 
 #[test]
 fn docker_daemon_unreachable_maps_to_preflight_failure() {
     let e = Error::Env(EnvError::DockerDaemonUnreachable("socket closed".into()));
-    assert_eq!(ExitCode::from_error(&e), ExitCode::PreflightFailure);
+    assert_eq!(ExitCode::from(&e), ExitCode::PreflightFailure);
 }
 
 #[test]
 fn container_start_failed_maps_to_preflight_failure() {
     let e = Error::Env(EnvError::ContainerStartFailed("oom".into()));
-    assert_eq!(ExitCode::from_error(&e), ExitCode::PreflightFailure);
+    assert_eq!(ExitCode::from(&e), ExitCode::PreflightFailure);
 }
 
 #[test]
 fn env_command_failed_maps_to_task_unsuccessful() {
     let e = Error::Env(EnvError::CommandFailed("exit 1".into()));
-    assert_eq!(ExitCode::from_error(&e), ExitCode::TaskUnsuccessful);
+    assert_eq!(ExitCode::from(&e), ExitCode::TaskUnsuccessful);
 }
 
 #[test]
 fn env_timeout_maps_to_task_unsuccessful() {
     let e = Error::Env(EnvError::Timeout(std::time::Duration::from_secs(60)));
-    assert_eq!(ExitCode::from_error(&e), ExitCode::TaskUnsuccessful);
+    assert_eq!(ExitCode::from(&e), ExitCode::TaskUnsuccessful);
 }
 
 #[test]
@@ -272,7 +272,7 @@ fn io_error_maps_to_internal_error() {
         std::io::ErrorKind::NotFound,
         "file gone",
     ));
-    assert_eq!(ExitCode::from_error(&e), ExitCode::InternalError);
+    assert_eq!(ExitCode::from(&e), ExitCode::InternalError);
 }
 
 #[test]
@@ -280,19 +280,19 @@ fn json_error_maps_to_internal_error() {
     let e: Error = serde_json::from_str::<serde_json::Value>("not json")
         .unwrap_err()
         .into();
-    assert_eq!(ExitCode::from_error(&e), ExitCode::InternalError);
+    assert_eq!(ExitCode::from(&e), ExitCode::InternalError);
 }
 
 #[test]
 fn trajectory_error_maps_to_internal_error() {
     let e = Error::Trajectory("corrupt file".into());
-    assert_eq!(ExitCode::from_error(&e), ExitCode::InternalError);
+    assert_eq!(ExitCode::from(&e), ExitCode::InternalError);
 }
 
 #[test]
 fn github_error_maps_to_internal_error() {
     let e = Error::Github("api 500".into());
-    assert_eq!(ExitCode::from_error(&e), ExitCode::InternalError);
+    assert_eq!(ExitCode::from(&e), ExitCode::InternalError);
 }
 
 #[test]
@@ -301,7 +301,7 @@ fn template_error_maps_to_internal_error() {
         minijinja::ErrorKind::InvalidOperation,
         "render failed",
     ));
-    assert_eq!(ExitCode::from_error(&e), ExitCode::InternalError);
+    assert_eq!(ExitCode::from(&e), ExitCode::InternalError);
 }
 
 // ── cross-surface consistency ─────────────────────────────────────────────────
@@ -438,7 +438,7 @@ fn text_and_numeric_surfaces_agree_for_every_error_variant() {
     ];
 
     for (expected_class, e) in error_cases {
-        let code = ExitCode::from_error(&e);
+        let code = ExitCode::from(&e);
         assert_eq!(
             code.outcome_class(),
             expected_class,
@@ -516,11 +516,11 @@ fn preflight_probe_errors_map_to_preflight_failure() {
     for msg in cases {
         let e = Error::Env(EnvError::DockerDaemonUnreachable(msg.into()));
         assert_eq!(
-            ExitCode::from_error(&e),
+            ExitCode::from(&e),
             ExitCode::PreflightFailure,
             "message {msg:?} should map to PreflightFailure"
         );
-        assert_eq!(ExitCode::from_error(&e).as_i32(), 3);
+        assert_eq!(ExitCode::from(&e).as_i32(), 3);
     }
 }
 
@@ -532,6 +532,6 @@ fn model_probe_failure_maps_to_preflight_failure() {
     let e = Error::Env(EnvError::DockerDaemonUnreachable(
         "preflight: model probe failed: 401 unauthorized".into(),
     ));
-    assert_eq!(ExitCode::from_error(&e), ExitCode::PreflightFailure);
-    assert_eq!(ExitCode::from_error(&e).as_i32(), 3);
+    assert_eq!(ExitCode::from(&e), ExitCode::PreflightFailure);
+    assert_eq!(ExitCode::from(&e).as_i32(), 3);
 }

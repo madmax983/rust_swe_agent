@@ -560,7 +560,7 @@ pub async fn run(args: SuiteArgs) -> Result<ExitCode, Error> {
             // Mini errored before writing a trajectory (env/preflight failure).
             let (failure_category, stop_reason) = match &run_outcome {
                 Err(e) => {
-                    let code = ExitCode::from_error(e);
+                    let code = ExitCode::from(e);
                     let cat = match code {
                         ExitCode::PreflightFailure => FailureCategory::EnvSetup,
                         _ => FailureCategory::AgentInternal,
@@ -616,7 +616,7 @@ pub async fn run(args: SuiteArgs) -> Result<ExitCode, Error> {
         // ── Propagate hard errors (env/preflight) that should stop the suite
         match &run_outcome {
             Err(e) if !is_verification_error => {
-                let code = ExitCode::from_error(e);
+                let code = ExitCode::from(e);
                 // Only halt on InternalError when no trajectory was written; if
                 // mini returned InternalError *after* writing a trajectory (e.g.
                 // a wallclock-timeout wrapper), it is a task-scoped failure and
@@ -705,13 +705,13 @@ fn classify_task_exit(
         // trajectory (e.g. post-save I/O failure), propagate that exit code.
         return match run_outcome {
             Ok(()) => ExitCode::Success,
-            Err(e) => ExitCode::from_error(e),
+            Err(e) => ExitCode::from(e),
         };
     }
     match run_outcome {
         Ok(()) => ExitCode::TaskUnsuccessful,
         Err(e) => {
-            let code = ExitCode::from_error(e);
+            let code = ExitCode::from(e);
             // Agent-loop terminal conditions (stagnation) and Trajectory-wrapper
             // errors (e.g. wallclock timeout maps to InternalError) are
             // task-level failures in the suite exit matrix (only 0/4/5/7 are

@@ -254,7 +254,7 @@ async fn prompt_drift_exits_drift_code_at_step_zero() {
     let result = replay_run(args).await;
     assert!(result.is_err(), "should fail on drift");
     assert_eq!(
-        ExitCode::from_error(&result.unwrap_err()),
+        ExitCode::from(&result.unwrap_err()),
         ExitCode::ReplayPromptDrift
     );
 

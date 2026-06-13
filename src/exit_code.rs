@@ -259,19 +259,20 @@ impl ExitCode {
             Self::Killed => "killed",
         }
     }
+}
 
-    /// Best-effort mapping from a runtime `Error` to the appropriate outcome class.
-    ///
-    /// A small number of outcomes (regression gate, sweep cancellation, budget-halt
-    /// forecast) are driven by explicit `process::exit` calls in the CLI layer and
-    /// do not go through this function. See `docs/exit-codes.md` for the full table.
-    #[must_use]
-    pub fn from_error(e: &Error) -> Self {
+/// Best-effort mapping from a runtime `Error` to the appropriate outcome class.
+///
+/// A small number of outcomes (regression gate, sweep cancellation, budget-halt
+/// forecast) are driven by explicit `process::exit` calls in the CLI layer and
+/// do not go through this conversion. See `docs/exit-codes.md` for the full table.
+impl From<&Error> for ExitCode {
+    fn from(e: &Error) -> Self {
         match e {
             Error::Preflight(_) => Self::PreflightFailure,
             Error::Config(_) => Self::UsageError,
             Error::VerificationFailed(..) => Self::VerificationFailure,
-            Error::Env(env_e) => Self::from_env_error(env_e),
+            Error::Env(env_e) => Self::from(env_e),
             Error::Model(model_e) => match model_e {
                 crate::error::ModelError::ReplayDrift(_) => Self::ReplayPromptDrift,
                 crate::error::ModelError::ScriptedResponsesExhausted(_) => {
@@ -301,8 +302,10 @@ impl ExitCode {
             },
         }
     }
+}
 
-    fn from_env_error(e: &EnvError) -> Self {
+impl From<&EnvError> for ExitCode {
+    fn from(e: &EnvError) -> Self {
         match e {
             EnvError::DockerNotInstalled
             | EnvError::DockerDaemonUnreachable(_)
@@ -323,7 +326,7 @@ mod tests {
     #[test]
     fn from_error_config_is_usage_error() {
         assert_eq!(
-            ExitCode::from_error(&Error::Config(ConfigError::Invalid("x".into()))),
+            ExitCode::from(&Error::Config(ConfigError::Invalid("x".into()))),
             ExitCode::UsageError
         );
     }
@@ -331,7 +334,7 @@ mod tests {
     #[test]
     fn from_error_preflight_is_preflight_failure() {
         assert_eq!(
-            ExitCode::from_error(&Error::Preflight("drift".into())),
+            ExitCode::from(&Error::Preflight("drift".into())),
             ExitCode::PreflightFailure
         );
     }
@@ -339,7 +342,7 @@ mod tests {
     #[test]
     fn from_error_verification_failed_is_verification_failure() {
         assert_eq!(
-            ExitCode::from_error(&Error::VerificationFailed(1, 2)),
+            ExitCode::from(&Error::VerificationFailed(1, 2)),
             ExitCode::VerificationFailure
         );
     }
@@ -347,7 +350,7 @@ mod tests {
     #[test]
     fn from_error_docker_not_installed_is_preflight_failure() {
         assert_eq!(
-            ExitCode::from_error(&Error::Env(EnvError::DockerNotInstalled)),
+            ExitCode::from(&Error::Env(EnvError::DockerNotInstalled)),
             ExitCode::PreflightFailure
         );
     }
@@ -355,7 +358,7 @@ mod tests {
     #[test]
     fn from_error_command_failed_is_task_unsuccessful() {
         assert_eq!(
-            ExitCode::from_error(&Error::Env(EnvError::CommandFailed("exit 1".into()))),
+            ExitCode::from(&Error::Env(EnvError::CommandFailed("exit 1".into()))),
             ExitCode::TaskUnsuccessful
         );
     }
@@ -363,7 +366,7 @@ mod tests {
     #[test]
     fn from_error_timeout_is_task_unsuccessful() {
         assert_eq!(
-            ExitCode::from_error(&Error::Env(EnvError::Timeout(
+            ExitCode::from(&Error::Env(EnvError::Timeout(
                 std::time::Duration::from_secs(1)
             ))),
             ExitCode::TaskUnsuccessful
@@ -373,7 +376,7 @@ mod tests {
     #[test]
     fn from_error_unexpected_exit_is_task_unsuccessful() {
         assert_eq!(
-            ExitCode::from_error(&Error::Env(EnvError::UnexpectedExit("1".into()))),
+            ExitCode::from(&Error::Env(EnvError::UnexpectedExit("1".into()))),
             ExitCode::TaskUnsuccessful
         );
     }
@@ -381,7 +384,7 @@ mod tests {
     #[test]
     fn from_error_docker_daemon_unreachable_is_preflight_failure() {
         assert_eq!(
-            ExitCode::from_error(&Error::Env(EnvError::DockerDaemonUnreachable(
+            ExitCode::from(&Error::Env(EnvError::DockerDaemonUnreachable(
                 "connection refused".into()
             ))),
             ExitCode::PreflightFailure
@@ -391,7 +394,7 @@ mod tests {
     #[test]
     fn from_error_container_start_failed_is_preflight_failure() {
         assert_eq!(
-            ExitCode::from_error(&Error::Env(EnvError::ContainerStartFailed(
+            ExitCode::from(&Error::Env(EnvError::ContainerStartFailed(
                 "image not found".into()
             ))),
             ExitCode::PreflightFailure
@@ -401,7 +404,7 @@ mod tests {
     #[test]
     fn from_error_env_io_is_task_unsuccessful() {
         assert_eq!(
-            ExitCode::from_error(&Error::Env(EnvError::Io(std::io::Error::other(
+            ExitCode::from(&Error::Env(EnvError::Io(std::io::Error::other(
                 "disk full"
             )))),
             ExitCode::TaskUnsuccessful
@@ -411,7 +414,7 @@ mod tests {
     #[test]
     fn from_error_model_is_task_unsuccessful() {
         assert_eq!(
-            ExitCode::from_error(&Error::Model(ModelError::Request("t/o".into()))),
+            ExitCode::from(&Error::Model(ModelError::Request("t/o".into()))),
             ExitCode::TaskUnsuccessful
         );
     }
@@ -419,7 +422,7 @@ mod tests {
     #[test]
     fn from_error_io_is_internal_error() {
         assert_eq!(
-            ExitCode::from_error(&Error::Io(std::io::Error::other("disk full"))),
+            ExitCode::from(&Error::Io(std::io::Error::other("disk full"))),
             ExitCode::InternalError
         );
     }
@@ -427,7 +430,7 @@ mod tests {
     #[test]
     fn from_error_replay_response_exhausted() {
         assert_eq!(
-            ExitCode::from_error(&Error::Model(ModelError::ScriptedResponsesExhausted(3))),
+            ExitCode::from(&Error::Model(ModelError::ScriptedResponsesExhausted(3))),
             ExitCode::ReplayResponseExhausted
         );
     }
@@ -435,7 +438,7 @@ mod tests {
     #[test]
     fn from_error_replay_unfingerprinted_legacy_is_usage_error() {
         assert_eq!(
-            ExitCode::from_error(&Error::Model(ModelError::ReplayUnfingerprintedLegacy(0))),
+            ExitCode::from(&Error::Model(ModelError::ReplayUnfingerprintedLegacy(0))),
             ExitCode::UsageError
         );
     }
@@ -444,7 +447,7 @@ mod tests {
     fn from_error_responses_exhausted_is_task_unsuccessful() {
         // Generic DeterministicModel exhaustion (non-replay) must not exit 10.
         assert_eq!(
-            ExitCode::from_error(&Error::Model(ModelError::ResponsesExhausted(0))),
+            ExitCode::from(&Error::Model(ModelError::ResponsesExhausted(0))),
             ExitCode::TaskUnsuccessful
         );
     }
