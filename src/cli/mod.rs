@@ -3676,6 +3676,14 @@ fn parse_breakdown_selection(
 }
 
 fn bench_inspect(i: args::InspectCmd) -> Result<(), Error> {
+    if i.list_formats {
+        use crate::trajectory::export::registry;
+        for fmt in registry() {
+            println!("{:<12}{:<14}{}", fmt.name, fmt.tier.as_str(), fmt.consumer);
+        }
+        return Ok(());
+    }
+
     if !i.diff.is_empty() {
         if i.instance.is_some() || i.filter.is_some() || i.sweep.is_some() {
             return Err(Error::Config(crate::error::ConfigError::Invalid(
@@ -3776,15 +3784,19 @@ fn bench_inspect_export(i: args::InspectCmd) -> Result<(), Error> {
     let traj: crate::trajectory::Trajectory = serde_json::from_str(&text)
         .map_err(|e| Error::Trajectory(format!("inspect: failed to parse trajectory: {e}")))?;
 
-    let content = match i.format.as_str() {
-        "markdown" => {
-            use crate::trajectory::export::{MarkdownExporter, TrajectoryExporter};
-            MarkdownExporter::export(&traj)
+    let content = {
+        use crate::trajectory::export::registry;
+        if let Some(fmt) = registry().into_iter().find(|f| f.name == i.format.as_str()) {
+            (fmt.render)(&traj)
+        } else {
+            // Format is known (routing guard above) but not compiled into this build.
+            match i.format.as_str() {
+                "html" => inspect_export_html(&traj)?,
+                "csv" => inspect_export_csv(&traj)?,
+                "mermaid" => inspect_export_mermaid(&traj)?,
+                _ => unreachable!("dispatch guarded by caller"),
+            }
         }
-        "html" => inspect_export_html(&traj)?,
-        "csv" => inspect_export_csv(&traj)?,
-        "mermaid" => inspect_export_mermaid(&traj)?,
-        _ => unreachable!("dispatch guarded by caller"),
     };
 
     if let Some(output_path) = i.output {
