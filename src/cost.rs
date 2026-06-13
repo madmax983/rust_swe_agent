@@ -96,3 +96,85 @@ pub fn is_free_tier_model(model: &str) -> bool {
         .is_some_and(|name| name.ends_with(":free"))
         || model.ends_with(":free")
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_cost_source_combine() {
+        // Unknown with anything else becomes Unknown
+        assert_eq!(
+            CostSource::Unknown.combine(CostSource::ProviderReported),
+            CostSource::Unknown
+        );
+        assert_eq!(
+            CostSource::ProviderReported.combine(CostSource::Unknown),
+            CostSource::Unknown
+        );
+
+        // RateCardEstimate with anything else becomes RateCardEstimate (assuming neither is Unknown)
+        assert_eq!(
+            CostSource::RateCardEstimate.combine(CostSource::ProviderReported),
+            CostSource::RateCardEstimate
+        );
+        assert_eq!(
+            CostSource::ProviderReported.combine(CostSource::RateCardEstimate),
+            CostSource::RateCardEstimate
+        );
+
+        // ProviderReported + FreeTierInferred becomes ProviderReported
+        assert_eq!(
+            CostSource::FreeTierInferred.combine(CostSource::ProviderReported),
+            CostSource::ProviderReported
+        );
+        assert_eq!(
+            CostSource::ProviderReported.combine(CostSource::FreeTierInferred),
+            CostSource::ProviderReported
+        );
+
+        // FreeTierInferred + FreeTierInferred becomes FreeTierInferred
+        assert_eq!(
+            CostSource::FreeTierInferred.combine(CostSource::FreeTierInferred),
+            CostSource::FreeTierInferred
+        );
+
+        // ProviderReported + ProviderReported becomes ProviderReported
+        assert_eq!(
+            CostSource::ProviderReported.combine(CostSource::ProviderReported),
+            CostSource::ProviderReported
+        );
+    }
+
+    #[test]
+    fn test_estimate_cost_usd_anthropic() {
+        let cost = estimate_cost_usd(
+            1_000_000,
+            1_000_000,
+            1_000_000,
+            1_000_000,
+            "claude-3-5-sonnet",
+        );
+        assert!(
+            (cost - 22.05).abs() < f64::EPSILON,
+            "Expected ~22.05, got {cost}"
+        );
+    }
+
+    #[test]
+    fn test_estimate_cost_usd_non_anthropic() {
+        let cost = estimate_cost_usd(1_000_000, 1_000_000, 1_000_000, 1_000_000, "gpt-4o");
+        assert!(
+            (cost - 24.0).abs() < f64::EPSILON,
+            "Expected ~24.0, got {cost}"
+        );
+    }
+
+    #[test]
+    fn test_is_free_tier_model() {
+        assert!(is_free_tier_model("gemini-1.5-pro:free"));
+        assert!(is_free_tier_model("openrouter/gemini-1.5-pro:free"));
+        assert!(!is_free_tier_model("claude-3-5-sonnet"));
+        assert!(!is_free_tier_model("openrouter/claude-3-5-sonnet"));
+    }
+}
