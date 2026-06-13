@@ -1087,7 +1087,11 @@ async fn mini_cmd(m: args::MiniCmd) -> Result<(), Error> {
     let is_verification_failure =
         matches!(run_result, Err(crate::error::Error::VerificationFailed(..)));
     if run_result.is_ok() || is_verification_failure {
-        maybe_publish_mini_github_pr(github_pr).await?;
+        maybe_publish_mini_github_pr(
+            github_pr,
+            result_format == crate::run::mini::ResultFormat::Json,
+        )
+        .await?;
     }
     emit_mini_result(
         result_format,
@@ -1477,6 +1481,11 @@ async fn mini_resume_cmd(
         }
     });
 
+    // Capture --result-format state before MiniArgs consumes cfg/output fields.
+    let result_format = m.result_format;
+    let redactor = crate::redaction::Redactor::from_config_lossy(&cfg.root.redaction);
+    let result_traj_path = traj_output_dir.join(format!("{traj_stem}.traj.json"));
+
     let args = crate::run::mini::MiniArgs {
         task,
         extra_context: m.extra_context,
@@ -1510,7 +1519,16 @@ async fn mini_resume_cmd(
         continue_from: None,
         issue_provenance,
     };
-    crate::run::mini::run(args).await
+    // Resume never captures a patch (patch_capture: None), so patch_path is None.
+    let run_result = crate::run::mini::run(args).await;
+    emit_mini_result(
+        result_format,
+        &run_result,
+        &result_traj_path,
+        None,
+        &redactor,
+    )?;
+    run_result
 }
 
 /// Validate `traj` for `--continue` and exit the process on the first violation.
@@ -1746,6 +1764,11 @@ async fn mini_continue_cmd(
     let verification_checks = parse_verify_checks(&m.verify)?;
     let interactive_mode = resolve_interactive_mode(m.interactive, m.yolo, m.ui);
 
+    // Capture --result-format state before MiniArgs consumes cfg/output fields.
+    let result_format = m.result_format;
+    let redactor = crate::redaction::Redactor::from_config_lossy(&cfg.root.redaction);
+    let result_traj_path = output_dir.join(format!("{child_traj_name}.traj.json"));
+
     let args = crate::run::mini::MiniArgs {
         task: follow_up_task,
         extra_context: m.extra_context,
@@ -1779,7 +1802,16 @@ async fn mini_continue_cmd(
         parent_sweep_run_id: None,
         issue_provenance: None,
     };
-    crate::run::mini::run(args).await
+    // Continue never captures a patch (patch_capture: None), so patch_path is None.
+    let run_result = crate::run::mini::run(args).await;
+    emit_mini_result(
+        result_format,
+        &run_result,
+        &result_traj_path,
+        None,
+        &redactor,
+    )?;
+    run_result
 }
 
 fn apply_read_only_policy(m: &args::MiniCmd, cfg: &Config) -> Result<(), Error> {
@@ -2451,6 +2483,14 @@ fn validate_observation_head_ratio(value: f64) -> Result<(), Error> {
     }
 }
 
+/// Lightweight view over a trajectory file that deserializes only the `info`
+/// block. A trajectory carries the full message history and tool outputs
+/// (potentially megabytes) that `emit_mini_result` never reads.
+#[derive(serde::Deserialize)]
+struct TrajectoryInfoOnly {
+    info: crate::trajectory::TrajectoryInfo,
+}
+
 /// Emit a machine-readable run result to stdout when `--result-format json` is active.
 ///
 /// Called after `mini::run` and the optional GitHub PR publish; `run_result?` comes after.
@@ -2474,20 +2514,18 @@ fn emit_mini_result(
         }
         Err(_) => return Ok(()), // hard error — no object; run_result? handles it
     };
-    // Deserialize only the `info` block: a trajectory carries the full message
-    // history and tool outputs (potentially megabytes) that we never read here.
-    #[derive(serde::Deserialize)]
-    struct TrajectoryInfoOnly {
-        info: crate::trajectory::TrajectoryInfo,
-    }
+    // Deserialize only the `info` block (see TrajectoryInfoOnly) to avoid
+    // loading the full message history just to read summary fields.
     let traj_json = std::fs::read_to_string(traj_path).map_err(Error::Io)?;
     let traj: TrajectoryInfoOnly = serde_json::from_str(&traj_json).map_err(Error::Json)?;
-    // For a plain Ok(()) run, only emit if the trajectory records "submitted".
-    // Stagnation / step-limit / budget-exhausted runs return Ok but are not submitted;
-    // those do not emit a result object (would be noisy and the trajectory is the record).
-    if run_result.is_ok()
-        && traj.info.outcome.as_deref() != Some(crate::trajectory::outcome::SUBMITTED)
-    {
+    // Only emit when the agent actually submitted a patch. This is the unifying
+    // condition behind both contract cases: a clean submit (outcome=submitted,
+    // exit 0) and a submitted-then-verification-failed run (outcome=submitted,
+    // exit 7). Runs that returned Ok without submitting (step-limit, budget) and
+    // runs where a `--verify` check fails on an *unsubmitted* run (outcome still
+    // step_limit_reached/etc., yet mini::run returns VerificationFailed) are
+    // represented only by the trajectory, not by a stdout result object.
+    if traj.info.outcome.as_deref() != Some(crate::trajectory::outcome::SUBMITTED) {
         return Ok(());
     }
     // The spec promises absolute paths. Canonicalize where possible (the files
@@ -2613,23 +2651,37 @@ fn trajectory_submitted(path: &std::path::Path) -> Result<bool, Error> {
     Ok(trajectory.info.outcome.as_deref() == Some(crate::trajectory::outcome::SUBMITTED))
 }
 
-async fn publish_github_pr(options: crate::run::github_pr::GithubPrOptions) -> Result<(), Error> {
+async fn publish_github_pr(
+    options: crate::run::github_pr::GithubPrOptions,
+    to_stderr: bool,
+) -> Result<(), Error> {
     let result = crate::run::github_pr::publish(options).await?;
+    // When the run result is being emitted as JSON, this human-facing PR text
+    // must not pollute stdout — stdout has to be exactly one JSON object.
     if let Some(output) = result.dry_run_output {
-        print!("{output}");
+        if to_stderr {
+            eprint!("{output}");
+        } else {
+            print!("{output}");
+        }
     } else if let Some(url) = result.url {
-        println!("github_pr_url: {url}");
+        if to_stderr {
+            eprintln!("github_pr_url: {url}");
+        } else {
+            println!("github_pr_url: {url}");
+        }
     }
     Ok(())
 }
 
 async fn maybe_publish_mini_github_pr(
     github_pr: Option<crate::run::github_pr::GithubPrOptions>,
+    json_result_mode: bool,
 ) -> Result<(), Error> {
     if let Some(options) = github_pr {
         let traj_path = options.trajectory_ref.clone();
         if trajectory_submitted(std::path::Path::new(&traj_path))? {
-            publish_github_pr(options).await?;
+            publish_github_pr(options, json_result_mode).await?;
         } else {
             tracing::info!(trajectory = %traj_path, "github PR skipped because run did not submit");
         }
@@ -7135,34 +7187,40 @@ mod tests {
         let patch = work.path().join("submitted.patch");
         std::fs::write(&patch, sample_patch()).unwrap();
 
-        maybe_publish_mini_github_pr(Some(crate::run::github_pr::GithubPrOptions {
-            target_repo: "madmax983/maxwells-daemon".into(),
-            target_branch: "trunk".into(),
-            task_id: "submitted".into(),
-            trajectory_ref: submitted.display().to_string(),
-            patch_path: patch,
-            branch_prefix: "max".into(),
-            token_env: "GITHUB_TOKEN".into(),
-            mode: PublishMode::DryRun,
-            timeout_secs: 30,
-            max_retries: 2,
-            backoff_base_ms: 250,
-            redaction: crate::config::RedactionCfg::default(),
-        }))
+        maybe_publish_mini_github_pr(
+            Some(crate::run::github_pr::GithubPrOptions {
+                target_repo: "madmax983/maxwells-daemon".into(),
+                target_branch: "trunk".into(),
+                task_id: "submitted".into(),
+                trajectory_ref: submitted.display().to_string(),
+                patch_path: patch,
+                branch_prefix: "max".into(),
+                token_env: "GITHUB_TOKEN".into(),
+                mode: PublishMode::DryRun,
+                timeout_secs: 30,
+                max_retries: 2,
+                backoff_base_ms: 250,
+                redaction: crate::config::RedactionCfg::default(),
+            }),
+            false,
+        )
         .await
         .unwrap();
 
         let errored = work.path().join("errored.traj.json");
         write_trajectory(&errored, Some(outcome::ERROR));
-        maybe_publish_mini_github_pr(Some(crate::run::github_pr::GithubPrOptions {
-            trajectory_ref: errored.display().to_string(),
-            patch_path: work.path().join("missing.patch"),
-            mode: PublishMode::DryRun,
-            ..github_options_for_cli_test()
-        }))
+        maybe_publish_mini_github_pr(
+            Some(crate::run::github_pr::GithubPrOptions {
+                trajectory_ref: errored.display().to_string(),
+                patch_path: work.path().join("missing.patch"),
+                mode: PublishMode::DryRun,
+                ..github_options_for_cli_test()
+            }),
+            false,
+        )
         .await
         .unwrap();
-        maybe_publish_mini_github_pr(None).await.unwrap();
+        maybe_publish_mini_github_pr(None, false).await.unwrap();
     }
 
     #[test]

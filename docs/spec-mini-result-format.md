@@ -72,16 +72,24 @@ so stdout is clean JSON with no leading noise.
 
 ### Emission scope
 
-The JSON object is emitted **only** for:
+The object is emitted **only when the agent submitted a patch** — i.e. the
+written trajectory records `outcome == "submitted"`. This single condition
+covers both contract cases:
 
-1. **Submitted runs** — `mini::run` returns `Ok(())` and `trajectory.info.outcome == "submitted"`.
-2. **Verification-failure runs** — `mini::run` returns `Err(VerificationFailed)` (exit code 7).
+1. **Submitted + verified** — `mini::run` returns `Ok(())`, exit code `0`.
+2. **Submitted + verification failed** — `mini::run` returns `Err(VerificationFailed)`, exit code `7`.
 
 It is **not** emitted for:
-- Runs that return `Ok(())` but did not submit (step-limit, budget-exhausted, stagnation, user-interrupt).
-  These are operator-actionable signals; the trajectory is the authoritative record.
+- Runs that did not submit (step-limit, budget-exhausted, stagnation, user-interrupt) —
+  even if a `--verify` check fails on such a run (the trajectory outcome is not
+  `submitted`, so no result object is printed). These are represented only by the trajectory.
 - Hard errors before a trajectory exists (env setup, model API failure, pre-trajectory I/O).
   For those the process exits with the appropriate `outcome_class` printed to stderr.
+
+The flag is honored on the standard, `--resume`, and `--continue` mini paths.
+When `--open-pr` / `--github-pr-dry-run` is combined with `--result-format json`,
+the human-facing PR URL / dry-run plan is written to **stderr** instead of stdout
+so that stdout remains exactly one JSON object.
 
 ### Redaction guarantee
 

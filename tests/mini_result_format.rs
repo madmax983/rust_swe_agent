@@ -263,3 +263,52 @@ fn result_format_json_emits_on_verification_failure() {
         "trajectory_path in JSON must point to an existing file: {traj}"
     );
 }
+
+// ── Emission scope: an unsubmitted run must not emit even if --verify fails ──
+
+#[test]
+fn result_format_json_suppressed_when_unsubmitted_verification_fails() {
+    // Agent does one non-submitting step, hits the step limit (outcome =
+    // step_limit_reached), then a failing --verify check makes mini::run return
+    // VerificationFailed. Because the run never submitted, no JSON result object
+    // should be printed — the trajectory is the authoritative record.
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let out = support::command()
+        .args([
+            "--log",
+            "error",
+            "mini",
+            "--task",
+            "say hello",
+            "--env",
+            "local",
+            "--step-limit",
+            "1",
+            "--deterministic-responses",
+            "```bash\necho not-submitting-yet\n```",
+            "--output",
+            tmp.path().to_str().unwrap(),
+            "--result-format",
+            "json",
+            "--verify",
+            "always_fail:false",
+        ])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("spawn max mini");
+    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+    // Verification failure → exit 7.
+    assert_eq!(
+        out.status.code(),
+        Some(7),
+        "expected exit 7; stderr:\n{stderr}\nstdout:\n{stdout}"
+    );
+    // But no result object on stdout, since the run did not submit.
+    assert!(
+        stdout.trim().is_empty(),
+        "unsubmitted run must not emit a JSON result; got stdout: {stdout:?}"
+    );
+}
