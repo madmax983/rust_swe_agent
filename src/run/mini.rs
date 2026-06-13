@@ -106,6 +106,22 @@ pub enum PatchValidationFailure {
     ApplyFailed(String),
 }
 
+/// Output format for `mini --result-format`.
+///
+/// `Text` (default) preserves existing behaviour — nothing machine-readable is
+/// printed to stdout. `Json` emits exactly one schema-versioned JSON object
+/// to stdout after a terminal submitted or verification-failure run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, clap::ValueEnum)]
+pub enum ResultFormat {
+    /// Default: no structured output on stdout; human/log text to stderr.
+    #[default]
+    Text,
+    /// Emit a single schema-versioned JSON object to stdout after the run
+    /// completes (submitted or verification-failure). All human/log text goes
+    /// to stderr so stdout is clean JSON with no leading noise.
+    Json,
+}
+
 /// Selects which agent backend drives a single-task run.
 ///
 /// The harness ships a built-in bash-first loop, but operators exploring

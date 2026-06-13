@@ -75,6 +75,7 @@ pub enum ArtifactKind {
     AgentProfileReport,
     EvalParityReport,
     AgentRunsReport,
+    MiniResult,
 }
 
 impl ArtifactKind {
@@ -107,6 +108,7 @@ impl ArtifactKind {
             Self::AgentProfileReport => "agent_profile_report",
             Self::EvalParityReport => "eval_parity_report",
             Self::AgentRunsReport => "agent_runs_report",
+            Self::MiniResult => "mini_result",
         }
     }
 }
