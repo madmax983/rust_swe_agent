@@ -1033,6 +1033,24 @@ async fn mini_cmd(m: args::MiniCmd) -> Result<(), Error> {
 
     let verification_checks = parse_verify_checks(&m.verify)?;
     let interactive_mode = resolve_interactive_mode(m.interactive, m.yolo, m.ui);
+
+    // Capture state needed for --result-format json before MiniArgs consumes fields.
+    let result_format = m.result_format;
+    let redactor =
+        crate::redaction::Redactor::from_config_lossy(&cfg.root.redaction);
+    let traj_path = m
+        .output
+        .join(format!("{trajectory_name}.traj.json"));
+    // patch_path is only set when github-pr flags are active (same gating as patch_capture).
+    let patch_path = github_pr
+        .as_ref()
+        .map(|o| o.patch_path.clone());
+    let scripted = if m.deterministic_responses.is_empty() {
+        None
+    } else {
+        Some(m.deterministic_responses.clone())
+    };
+
     let args = crate::run::mini::MiniArgs {
         task,
         extra_context: m.extra_context,
@@ -1042,7 +1060,7 @@ async fn mini_cmd(m: args::MiniCmd) -> Result<(), Error> {
         driver_isolated: m.driver_isolated,
         output_dir: m.output,
         trajectory_name,
-        deterministic_responses: None,
+        deterministic_responses: scripted,
         deterministic_usage_per_call: None,
         task_timeout_secs: m.task_timeout_secs,
         cancellation: None,
@@ -1076,6 +1094,13 @@ async fn mini_cmd(m: args::MiniCmd) -> Result<(), Error> {
     if run_result.is_ok() || is_verification_failure {
         maybe_publish_mini_github_pr(github_pr).await?;
     }
+    emit_mini_result(
+        result_format,
+        &run_result,
+        &traj_path,
+        patch_path.as_deref(),
+        &redactor,
+    )?;
     run_result?;
     Ok(())
 }
@@ -2429,6 +2454,55 @@ fn validate_observation_head_ratio(value: f64) -> Result<(), Error> {
             "--observation-head-ratio must be a finite value in [0,1], got {value}"
         ))))
     }
+}
+
+/// Emit a machine-readable run result to stdout when `--result-format json` is active.
+///
+/// Called after `mini::run` and the optional GitHub PR publish; `run_result?` comes after.
+/// Emission scope (from AC4): only for `Ok(())` (submitted) and `VerificationFailed` —
+/// the two cases where the trajectory and patch are guaranteed on disk.
+/// For any other `Err`, silently return `Ok(())` so `run_result?` propagates the real error.
+fn emit_mini_result(
+    format: crate::run::mini::ResultFormat,
+    run_result: &Result<(), Error>,
+    traj_path: &std::path::Path,
+    patch_path: Option<&std::path::Path>,
+    redactor: &crate::redaction::Redactor,
+) -> Result<(), Error> {
+    if format != crate::run::mini::ResultFormat::Json {
+        return Ok(());
+    }
+    let exit_code = match run_result {
+        Ok(()) => crate::exit_code::ExitCode::Success,
+        Err(e) if matches!(e, Error::VerificationFailed(..)) => {
+            crate::exit_code::ExitCode::from_error(e)
+        }
+        Err(_) => return Ok(()), // hard error — no object; run_result? handles it
+    };
+    // Load the trajectory that mini::run just wrote to disk.
+    let traj_json = std::fs::read_to_string(traj_path).map_err(Error::Io)?;
+    let traj: crate::trajectory::Trajectory =
+        serde_json::from_str(&traj_json).map_err(Error::Json)?;
+    // For a plain Ok(()) run, only emit if the trajectory records "submitted".
+    // Stagnation / step-limit / budget-exhausted runs return Ok but are not submitted;
+    // those do not emit a result object (would be noisy and the trajectory is the record).
+    if run_result.is_ok()
+        && traj.info.outcome.as_deref() != Some(crate::trajectory::outcome::SUBMITTED)
+    {
+        return Ok(());
+    }
+    let effective_patch = patch_path.filter(|p| p.exists());
+    let result = crate::run::mini_result::MiniResult::from_trajectory_info(
+        &traj.info,
+        exit_code,
+        traj_path,
+        effective_patch,
+    );
+    let json = result
+        .to_redacted_json(redactor)
+        .map_err(Error::Json)?;
+    println!("{json}");
+    Ok(())
 }
 
 #[allow(clippy::single_option_map)]
@@ -7201,6 +7275,8 @@ mod tests {
             webhook_headers: vec![],
             no_step_persist: false,
             chaos_fail_every: 0,
+            result_format: crate::run::mini::ResultFormat::Text,
+            deterministic_responses: vec![],
         }
     }
 

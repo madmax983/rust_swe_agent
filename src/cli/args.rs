@@ -1083,6 +1083,21 @@ pub struct MiniCmd {
     /// trajectory is reproducible.
     #[arg(long, value_name = "N", default_value_t = 0)]
     pub chaos_fail_every: u32,
+
+    /// Output format for the run result on stdout. `text` (default) preserves
+    /// today's output — no structured output. `json` prints exactly one
+    /// schema-versioned JSON object to stdout on completion (submitted or
+    /// verification-failure); all human/log text goes to stderr.
+    /// Has no effect for hard errors before a trajectory exists.
+    #[arg(long, value_enum, default_value_t = crate::run::mini::ResultFormat::Text)]
+    pub result_format: crate::run::mini::ResultFormat,
+
+    /// Hidden test/CI hook: scripted model responses (repeatable; one response
+    /// per assistant turn), bypassing the real model API. Identical to the
+    /// mechanism used internally by `max hello-world`. Lets CI drive
+    /// `--result-format json` deterministically without a real API key.
+    #[arg(long = "deterministic-responses", value_name = "RESPONSE", hide = true)]
+    pub deterministic_responses: Vec<String>,
 }
 
 #[derive(Debug, Args)]
