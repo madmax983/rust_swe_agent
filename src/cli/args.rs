@@ -2932,6 +2932,7 @@ pub struct EvaluateCmd {
 }
 
 #[derive(Debug, Args)]
+#[allow(clippy::struct_excessive_bools)]
 pub struct InspectCmd {
     /// Completed sweep directory produced by `bench swebench`.
     #[arg(long)]
@@ -2957,8 +2958,16 @@ pub struct InspectCmd {
     /// In instance mode, also accepts `markdown`, `html`, `csv`, and `mermaid`
     /// (each maps to the corresponding trajectory exporter; feature-gated
     /// formats require the matching Cargo feature at build time).
+    /// Use `--list-formats` to enumerate all formats compiled into this build
+    /// along with their stability tier (`stable` / `experimental`) and consumer.
     #[arg(long, default_value = "text")]
     pub format: String,
+
+    /// List all trajectory export formats compiled into this build (name, stability
+    /// tier, intended consumer) and exit. Useful for operator discoverability without
+    /// reading source. See `docs/spec-export.md` for the full export-format contract.
+    #[arg(long, default_value_t = false)]
+    pub list_formats: bool,
 
     /// Write output to a file instead of stdout. Supported with `markdown`,
     /// `html`, `csv`, and `mermaid` formats in instance mode.

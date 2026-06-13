@@ -2522,3 +2522,28 @@ fn inspect_displays_submission_class_and_warning_for_test_only_patches() {
         "expected stdout to contain eval gaming warning; got:\n{stdout}"
     );
 }
+
+#[test]
+fn list_formats_enumerates_compiled_in_formats_with_tier() {
+    // The discoverability affordance from docs/spec-export.md: operators can list every
+    // export format compiled into the build with its stability tier and consumer, without
+    // reading source. `markdown` is always compiled in, so this is feature-independent.
+    let out = Command::new(binary_path())
+        .args(["bench", "inspect", "--list-formats"])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "--list-formats should exit 0; stderr:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("markdown"),
+        "expected `markdown` in --list-formats output; got:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("stable"),
+        "expected a stability tier in --list-formats output; got:\n{stdout}"
+    );
+}

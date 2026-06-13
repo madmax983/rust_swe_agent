@@ -3676,6 +3676,14 @@ fn parse_breakdown_selection(
 }
 
 fn bench_inspect(i: args::InspectCmd) -> Result<(), Error> {
+    if i.list_formats {
+        use crate::trajectory::export::registry;
+        for fmt in registry() {
+            println!("{:<12}{:<14}{}", fmt.name, fmt.tier.as_str(), fmt.consumer);
+        }
+        return Ok(());
+    }
+
     if !i.diff.is_empty() {
         if i.instance.is_some() || i.filter.is_some() || i.sweep.is_some() {
             return Err(Error::Config(crate::error::ConfigError::Invalid(
@@ -3704,7 +3712,7 @@ fn bench_inspect(i: args::InspectCmd) -> Result<(), Error> {
         return Ok(());
     }
 
-    if matches!(i.format.as_str(), "markdown" | "html" | "csv" | "mermaid") {
+    if crate::trajectory::export::is_export_format(&i.format) {
         return bench_inspect_export(i);
     }
 
@@ -3776,15 +3784,22 @@ fn bench_inspect_export(i: args::InspectCmd) -> Result<(), Error> {
     let traj: crate::trajectory::Trajectory = serde_json::from_str(&text)
         .map_err(|e| Error::Trajectory(format!("inspect: failed to parse trajectory: {e}")))?;
 
-    let content = match i.format.as_str() {
-        "markdown" => {
-            use crate::trajectory::export::{MarkdownExporter, TrajectoryExporter};
-            MarkdownExporter::export(&traj)
+    let content = {
+        use crate::trajectory::export::{FEATURE_GATED_FORMATS, registry};
+        if let Some(fmt) = registry().into_iter().find(|f| f.name == i.format.as_str()) {
+            (fmt.render)(&traj)
+        } else if let Some((name, feature)) = FEATURE_GATED_FORMATS
+            .iter()
+            .find(|(n, _)| *n == i.format.as_str())
+        {
+            // Known format, but its Cargo feature was not compiled into this build.
+            return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+                "format_unavailable: --format {name} requires the `{feature}` Cargo feature; \
+                 rebuild with `--features {feature}`"
+            ))));
+        } else {
+            unreachable!("dispatch guarded by is_export_format")
         }
-        "html" => inspect_export_html(&traj)?,
-        "csv" => inspect_export_csv(&traj)?,
-        "mermaid" => inspect_export_mermaid(&traj)?,
-        _ => unreachable!("dispatch guarded by caller"),
     };
 
     if let Some(output_path) = i.output {
@@ -3823,54 +3838,6 @@ fn bench_inspect_export(i: args::InspectCmd) -> Result<(), Error> {
         print!("{content}");
     }
     Ok(())
-}
-
-#[cfg(feature = "html-export")]
-#[allow(clippy::unnecessary_wraps)]
-fn inspect_export_html(traj: &crate::trajectory::Trajectory) -> Result<String, Error> {
-    use crate::trajectory::export::{HtmlExporter, TrajectoryExporter};
-    Ok(HtmlExporter::export(traj))
-}
-
-#[cfg(not(feature = "html-export"))]
-fn inspect_export_html(_traj: &crate::trajectory::Trajectory) -> Result<String, Error> {
-    Err(Error::Config(crate::error::ConfigError::Invalid(
-        "format_unavailable: --format html requires the `html-export` Cargo feature; \
-         rebuild with `--features html-export`"
-            .into(),
-    )))
-}
-
-#[cfg(feature = "csv-export")]
-#[allow(clippy::unnecessary_wraps)]
-fn inspect_export_csv(traj: &crate::trajectory::Trajectory) -> Result<String, Error> {
-    use crate::trajectory::export::{CsvExporter, TrajectoryExporter};
-    Ok(CsvExporter::export(traj))
-}
-
-#[cfg(not(feature = "csv-export"))]
-fn inspect_export_csv(_traj: &crate::trajectory::Trajectory) -> Result<String, Error> {
-    Err(Error::Config(crate::error::ConfigError::Invalid(
-        "format_unavailable: --format csv requires the `csv-export` Cargo feature; \
-         rebuild with `--features csv-export`"
-            .into(),
-    )))
-}
-
-#[cfg(feature = "mermaid-export")]
-#[allow(clippy::unnecessary_wraps)]
-fn inspect_export_mermaid(traj: &crate::trajectory::Trajectory) -> Result<String, Error> {
-    use crate::trajectory::export::{MermaidExporter, TrajectoryExporter};
-    Ok(MermaidExporter::export(traj))
-}
-
-#[cfg(not(feature = "mermaid-export"))]
-fn inspect_export_mermaid(_traj: &crate::trajectory::Trajectory) -> Result<String, Error> {
-    Err(Error::Config(crate::error::ConfigError::Invalid(
-        "format_unavailable: --format mermaid requires the `mermaid-export` Cargo feature; \
-         rebuild with `--features mermaid-export`"
-            .into(),
-    )))
 }
 
 fn bench_command_stats(c: args::CommandStatsCmd) -> Result<(), Error> {

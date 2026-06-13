@@ -6,9 +6,122 @@
 //! narrative document, complete with headers and code blocks.
 //!
 //! You can extend this module with new formats by implementing the [`crate::trajectory::export::TrajectoryExporter`] trait.
+//! Every new exporter MUST register in [`registry`] and MUST apply redaction via
+//! [`crate::redaction::Redactor::default_enabled`] on [`crate::redaction::surface::EXPORT`] before emitting any output.
+//! See `docs/spec-export.md` for the full governing contract.
 
 use super::Trajectory;
 use crate::redaction::{Redactor, surface};
+
+/// Stability tier for a trajectory export format.
+///
+/// `stable` formats guarantee that schema/layout changes require a documented version bump.
+/// `experimental` formats may change without notice.
+/// See `docs/spec-export.md` for the full tier definitions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StabilityTier {
+    Stable,
+    Experimental,
+}
+
+impl StabilityTier {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Stable => "stable",
+            Self::Experimental => "experimental",
+        }
+    }
+}
+
+/// Descriptor for a registered trajectory export format.
+///
+/// The `render` function pointer calls the exporter implementation directly, which ensures
+/// the registry stays in sync with the trait impls without duplicating redaction logic.
+pub struct ExportFormat {
+    /// CLI `--format` value (e.g. `"markdown"`, `"csv"`).
+    pub name: &'static str,
+    /// Stability guarantee for this format's output layout.
+    pub tier: StabilityTier,
+    /// Intended downstream consumer (for documentation and `--list-formats` output).
+    pub consumer: &'static str,
+    /// Render function. MUST apply redaction via `Redactor::default_enabled()` on `surface::EXPORT`.
+    pub render: fn(&Trajectory) -> String,
+}
+
+/// Returns every trajectory export format compiled into this build.
+///
+/// This is the single source of truth for the redaction conformance test, `--list-formats`,
+/// and CLI dispatch. Feature-gated formats (csv, html, mermaid) appear only when the
+/// corresponding Cargo feature is enabled.
+///
+/// When adding a new exporter:
+/// 1. Implement `TrajectoryExporter` with mandatory `Redactor::default_enabled()` redaction.
+/// 2. Add an `ExportFormat` entry here (feature-gated if behind a Cargo feature).
+/// 3. Document the format and its tier in `docs/spec-export.md`.
+/// 4. The shared conformance test in `tests/export_redaction_conformance.rs` will cover it automatically.
+pub fn registry() -> Vec<ExportFormat> {
+    // `mut` is only used when at least one feature-gated format is compiled in.
+    // Under `--no-default-features` none of the `push` calls exist, so the binding
+    // would otherwise trip `-D warnings`/`unused_mut`.
+    #[allow(unused_mut)]
+    let mut formats = vec![ExportFormat {
+        name: "markdown",
+        tier: StabilityTier::Stable,
+        consumer: "docs, PR review, human readers",
+        render: MarkdownExporter::export,
+    }];
+
+    #[cfg(feature = "csv-export")]
+    formats.push(ExportFormat {
+        name: "csv",
+        tier: StabilityTier::Stable,
+        consumer: "spreadsheets, jq pipelines, tabular tools",
+        render: CsvExporter::export,
+    });
+
+    #[cfg(feature = "html-export")]
+    formats.push(ExportFormat {
+        name: "html",
+        tier: StabilityTier::Stable,
+        consumer: "self-contained browser view, shared notebooks",
+        render: HtmlExporter::export,
+    });
+
+    #[cfg(feature = "mermaid-export")]
+    formats.push(ExportFormat {
+        name: "mermaid",
+        tier: StabilityTier::Experimental,
+        consumer: "Mermaid sequence-diagram renderers (GitLab, GitHub markdown, mermaid.live)",
+        render: MermaidExporter::export,
+    });
+
+    formats
+}
+
+/// Export format names that exist in the codebase but are gated behind a Cargo feature,
+/// paired with the feature that enables each.
+///
+/// Used to emit a helpful "feature not compiled in" error when an operator requests a
+/// format whose feature is disabled. Compiled-in formats (with metadata and a render fn)
+/// live in [`registry`]; a format gated *out* of this build is absent from `registry()`
+/// but present here so the CLI can still route it and explain how to enable it.
+pub const FEATURE_GATED_FORMATS: &[(&str, &str)] = &[
+    ("csv", "csv-export"),
+    ("html", "html-export"),
+    ("mermaid", "mermaid-export"),
+];
+
+/// Returns `true` if `name` is a trajectory export format known to this codebase,
+/// whether or not its Cargo feature is compiled into the current build.
+///
+/// CLI routing uses this so a request for a gated-out format still reaches the export
+/// dispatch path (and gets a helpful "rebuild with --features" error) instead of falling
+/// through to a generic "unknown format" message. This keeps [`registry`] the single
+/// source of truth for *compiled* formats while still recognizing the full catalog.
+pub fn is_export_format(name: &str) -> bool {
+    registry().iter().any(|f| f.name == name)
+        || FEATURE_GATED_FORMATS.iter().any(|(n, _)| *n == name)
+}
 
 /// A contract for types that can convert a [`Trajectory`] into a specialized string format.
 ///
