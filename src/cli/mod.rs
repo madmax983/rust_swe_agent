@@ -3689,7 +3689,7 @@ fn bench_inspect(i: args::InspectCmd) -> Result<(), Error> {
         }
         if i.output.is_some() {
             return Err(Error::Config(crate::error::ConfigError::Invalid(
-                "inspect: --output is only supported with export formats (markdown/html/csv/mermaid)".into(),
+                "inspect: --output is only supported with export formats (markdown/html/csv/mermaid/summary)".into(),
             )));
         }
         let format = parse_trajectory_diff_format(&i.format)?;
@@ -3710,7 +3710,7 @@ fn bench_inspect(i: args::InspectCmd) -> Result<(), Error> {
 
     if i.output.is_some() {
         return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
-            "inspect: --output is only supported with export formats (markdown/html/csv/mermaid), not `{}`",
+            "inspect: --output is only supported with export formats (markdown/html/csv/mermaid/summary), not `{}`",
             i.format
         ))));
     }
@@ -3762,7 +3762,7 @@ fn bench_inspect_export(i: args::InspectCmd) -> Result<(), Error> {
     })?;
     let instance_id = i.instance.as_deref().ok_or_else(|| {
         Error::Config(crate::error::ConfigError::Invalid(
-            "inspect: --instance is required for export formats (markdown/html/csv/mermaid)".into(),
+            "inspect: --instance is required for export formats (markdown/html/csv/mermaid/summary)".into(),
         ))
     })?;
     let traj_path =
@@ -3784,6 +3784,10 @@ fn bench_inspect_export(i: args::InspectCmd) -> Result<(), Error> {
         "html" => inspect_export_html(&traj)?,
         "csv" => inspect_export_csv(&traj)?,
         "mermaid" => inspect_export_mermaid(&traj)?,
+        "summary" => {
+            use crate::trajectory::export::{SummaryExporter, TrajectoryExporter};
+            SummaryExporter::export(&traj)
+        }
         _ => unreachable!("dispatch guarded by caller"),
     };
 

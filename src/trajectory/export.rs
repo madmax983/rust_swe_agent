@@ -53,7 +53,44 @@ pub struct MermaidExporter;
 #[cfg(feature = "html-export")]
 pub struct HtmlExporter;
 
+pub struct SummaryExporter;
+
 use std::fmt::Write;
+
+impl TrajectoryExporter for SummaryExporter {
+    fn export(trajectory: &Trajectory) -> String {
+        let mut table = comfy_table::Table::new();
+        table.set_header(vec!["Metric", "Value"]);
+
+        let task = trajectory.info.task.as_deref().unwrap_or("Unknown");
+        table.add_row(vec!["Task", task]);
+
+        let outcome = trajectory.info.outcome.as_deref().unwrap_or("Unknown");
+        table.add_row(vec!["Outcome", outcome]);
+
+        if let Some(tokens) = &trajectory.info.token_usage {
+            let total = tokens.total_prompt_tokens() + tokens.completion_tokens;
+            table.add_row(vec!["Total Tokens", &total.to_string()]);
+        }
+
+        if let Some(cost) = trajectory.info.total_cost_usd {
+            table.add_row(vec!["Total Cost (USD)", &format!("{cost:.4}")]);
+        }
+
+        if let Some(duration) = trajectory.info.duration_secs {
+            table.add_row(vec!["Duration (s)", &format!("{duration:.2}")]);
+        }
+
+        let steps = trajectory
+            .messages
+            .iter()
+            .filter(|m| m.role == "tool")
+            .count();
+        table.add_row(vec!["Tool Steps", &steps.to_string()]);
+
+        table.to_string()
+    }
+}
 
 #[cfg(feature = "csv-export")]
 impl TrajectoryExporter for CsvExporter {
@@ -339,5 +376,24 @@ mod tests {
         assert!(html.contains("submitted"));
         assert!(html.contains("Hello agent"));
         assert!(html.contains("Hello user"));
+    }
+
+    #[test]
+    fn test_summary_export_format() {
+        let mut t = Trajectory::new();
+        t.info.task = Some("Add a feature".to_string());
+        t.info.outcome = Some("submitted".to_string());
+        t.info.duration_secs = Some(15.5);
+        t.record_message(&Message::system("sys"));
+        t.record_message(&Message::user("Hello"));
+        let mut tool_msg = Message::user("tool_output");
+        tool_msg.role = crate::model::Role::Tool;
+        t.record_message(&tool_msg);
+
+        let summary = SummaryExporter::export(&t);
+        assert!(summary.contains("Add a feature"));
+        assert!(summary.contains("submitted"));
+        assert!(summary.contains("15.50"));
+        assert!(summary.contains("Tool Steps"));
     }
 }
