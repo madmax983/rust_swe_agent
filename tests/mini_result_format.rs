@@ -17,8 +17,7 @@ use std::process::Stdio;
 
 mod support;
 
-const SUBMIT_RESPONSE: &str =
-    "COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT\n```\nok\n```";
+const SUBMIT_RESPONSE: &str = "COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT\n```\nok\n```";
 
 /// Run `max mini` with the deterministic scripted model and return (stdout, stderr, status).
 fn run_mini(extra_args: &[&str]) -> (String, String, std::process::ExitStatus) {
@@ -58,10 +57,9 @@ fn result_format_json_prints_valid_json_on_submit() {
         "expected exit 0; stderr:\n{stderr}\nstdout:\n{stdout}"
     );
     // AC1: stdout is valid JSON with no leading log noise
-    let parsed: serde_json::Value = serde_json::from_str(stdout.trim())
-        .unwrap_or_else(|e| {
-            panic!("stdout is not valid JSON: {e}\nstdout: {stdout}\nstderr: {stderr}")
-        });
+    let parsed: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap_or_else(|e| {
+        panic!("stdout is not valid JSON: {e}\nstdout: {stdout}\nstderr: {stderr}")
+    });
     assert!(parsed.is_object(), "JSON output must be an object");
 }
 
@@ -69,8 +67,7 @@ fn result_format_json_prints_valid_json_on_submit() {
 fn result_format_json_contains_artifact_kind_and_schema_version() {
     let (stdout, _, status) = run_mini(&["--result-format", "json"]);
     assert!(status.success());
-    let parsed: serde_json::Value =
-        serde_json::from_str(stdout.trim()).expect("valid JSON");
+    let parsed: serde_json::Value = serde_json::from_str(stdout.trim()).expect("valid JSON");
     // AC6: versioned via ArtifactSchemaVersion
     assert_eq!(
         parsed["artifact_kind"].as_str(),
@@ -95,8 +92,7 @@ fn result_format_json_contains_artifact_kind_and_schema_version() {
 fn result_format_json_contains_all_required_keys() {
     let (stdout, _, status) = run_mini(&["--result-format", "json"]);
     assert!(status.success());
-    let parsed: serde_json::Value =
-        serde_json::from_str(stdout.trim()).expect("valid JSON");
+    let parsed: serde_json::Value = serde_json::from_str(stdout.trim()).expect("valid JSON");
     // AC3: required key presence
     let required = [
         "outcome",
@@ -107,8 +103,8 @@ fn result_format_json_contains_all_required_keys() {
         "input_tokens",
         "output_tokens",
         "trajectory_path",
-        "patch_path",         // nullable — key must exist
-        "failure_category",   // nullable — key must exist
+        "patch_path",       // nullable — key must exist
+        "failure_category", // nullable — key must exist
     ];
     for key in required {
         assert!(
@@ -122,8 +118,7 @@ fn result_format_json_contains_all_required_keys() {
 fn result_format_json_outcome_is_submitted_on_success() {
     let (stdout, _, status) = run_mini(&["--result-format", "json"]);
     assert!(status.success());
-    let parsed: serde_json::Value =
-        serde_json::from_str(stdout.trim()).expect("valid JSON");
+    let parsed: serde_json::Value = serde_json::from_str(stdout.trim()).expect("valid JSON");
     assert_eq!(
         parsed["outcome"].as_str(),
         Some("submitted"),
@@ -175,8 +170,8 @@ fn result_format_json_stdout_starts_with_brace_when_log_info() {
         "stdout must start with '{{' (no log noise); got: {trimmed:?}"
     );
     // Also must be valid JSON
-    let _: serde_json::Value = serde_json::from_str(trimmed)
-        .unwrap_or_else(|e| panic!("not valid JSON: {e}\n{trimmed}"));
+    let _: serde_json::Value =
+        serde_json::from_str(trimmed).unwrap_or_else(|e| panic!("not valid JSON: {e}\n{trimmed}"));
 }
 
 // ── AC2: default / `--result-format text` unchanged, stdout empty ────────────
@@ -229,7 +224,7 @@ fn result_format_json_emits_on_verification_failure() {
             "--result-format",
             "json",
             "--verify",
-            "always_fail:false",  // `false` exits 1 on every platform
+            "always_fail:false", // `false` exits 1 on every platform
         ])
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -242,13 +237,13 @@ fn result_format_json_emits_on_verification_failure() {
     assert_eq!(
         out.status.code(),
         Some(7),
-        "expected exit 7 (verification_failure); got {:#?}\nstderr:\n{stderr}", out.status
+        "expected exit 7 (verification_failure); got {:#?}\nstderr:\n{stderr}",
+        out.status
     );
     // But stdout must still have the JSON result
-    let parsed: serde_json::Value = serde_json::from_str(stdout.trim())
-        .unwrap_or_else(|e| {
-            panic!("stdout is not valid JSON: {e}\nstdout: {stdout}\nstderr: {stderr}")
-        });
+    let parsed: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap_or_else(|e| {
+        panic!("stdout is not valid JSON: {e}\nstdout: {stdout}\nstderr: {stderr}")
+    });
     assert_eq!(
         parsed["exit_code"].as_i64(),
         Some(7),
@@ -260,7 +255,9 @@ fn result_format_json_emits_on_verification_failure() {
         "exit_outcome_class must be 'verification_failure'"
     );
     // trajectory_path should reference an existing file
-    let traj = parsed["trajectory_path"].as_str().expect("trajectory_path is a string");
+    let traj = parsed["trajectory_path"]
+        .as_str()
+        .expect("trajectory_path is a string");
     assert!(
         std::path::Path::new(traj).exists(),
         "trajectory_path in JSON must point to an existing file: {traj}"

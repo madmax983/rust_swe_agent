@@ -1036,15 +1036,10 @@ async fn mini_cmd(m: args::MiniCmd) -> Result<(), Error> {
 
     // Capture state needed for --result-format json before MiniArgs consumes fields.
     let result_format = m.result_format;
-    let redactor =
-        crate::redaction::Redactor::from_config_lossy(&cfg.root.redaction);
-    let traj_path = m
-        .output
-        .join(format!("{trajectory_name}.traj.json"));
+    let redactor = crate::redaction::Redactor::from_config_lossy(&cfg.root.redaction);
+    let traj_path = m.output.join(format!("{trajectory_name}.traj.json"));
     // patch_path is only set when github-pr flags are active (same gating as patch_capture).
-    let patch_path = github_pr
-        .as_ref()
-        .map(|o| o.patch_path.clone());
+    let patch_path = github_pr.as_ref().map(|o| o.patch_path.clone());
     let scripted = if m.deterministic_responses.is_empty() {
         None
     } else {
@@ -2479,10 +2474,14 @@ fn emit_mini_result(
         }
         Err(_) => return Ok(()), // hard error — no object; run_result? handles it
     };
-    // Load the trajectory that mini::run just wrote to disk.
+    // Deserialize only the `info` block: a trajectory carries the full message
+    // history and tool outputs (potentially megabytes) that we never read here.
+    #[derive(serde::Deserialize)]
+    struct TrajectoryInfoOnly {
+        info: crate::trajectory::TrajectoryInfo,
+    }
     let traj_json = std::fs::read_to_string(traj_path).map_err(Error::Io)?;
-    let traj: crate::trajectory::Trajectory =
-        serde_json::from_str(&traj_json).map_err(Error::Json)?;
+    let traj: TrajectoryInfoOnly = serde_json::from_str(&traj_json).map_err(Error::Json)?;
     // For a plain Ok(()) run, only emit if the trajectory records "submitted".
     // Stagnation / step-limit / budget-exhausted runs return Ok but are not submitted;
     // those do not emit a result object (would be noisy and the trajectory is the record).
@@ -2491,16 +2490,22 @@ fn emit_mini_result(
     {
         return Ok(());
     }
-    let effective_patch = patch_path.filter(|p| p.exists());
+    // The spec promises absolute paths. Canonicalize where possible (the files
+    // exist on disk by this point); fall back to the as-given path if the
+    // filesystem call fails so we never panic on an unusual path.
+    let abs_traj_path = traj_path
+        .canonicalize()
+        .unwrap_or_else(|_| traj_path.to_path_buf());
+    let abs_patch_path = patch_path
+        .filter(|p| p.exists())
+        .and_then(|p| p.canonicalize().ok());
     let result = crate::run::mini_result::MiniResult::from_trajectory_info(
         &traj.info,
         exit_code,
-        traj_path,
-        effective_patch,
+        &abs_traj_path,
+        abs_patch_path.as_deref(),
     );
-    let json = result
-        .to_redacted_json(redactor)
-        .map_err(Error::Json)?;
+    let json = result.to_redacted_json(redactor).map_err(Error::Json)?;
     println!("{json}");
     Ok(())
 }
