@@ -334,15 +334,19 @@ where
     R: tokio::io::AsyncRead + Unpin,
 {
     let mut chunk = [0u8; 8192];
+    const MAX_BUFFER: usize = 5 * 1024 * 1024;
     loop {
         let n = pipe.read(&mut chunk).await.map_err(EnvError::Io)?;
         if n == 0 {
             return Ok(());
         }
-        buffer
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .extend_from_slice(&chunk[..n]);
+        let mut b = buffer.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if b.len() + n <= MAX_BUFFER {
+            b.extend_from_slice(&chunk[..n]);
+        } else if b.len() < MAX_BUFFER {
+            let space = MAX_BUFFER - b.len();
+            b.extend_from_slice(&chunk[..space]);
+        }
     }
 }
 
