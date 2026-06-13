@@ -95,6 +95,14 @@ pub fn registry() -> Vec<ExportFormat> {
         render: MermaidExporter::export,
     });
 
+    #[cfg(feature = "dot-export")]
+    formats.push(ExportFormat {
+        name: "dot",
+        tier: StabilityTier::Experimental,
+        consumer: "Graphviz DOT renderers for agent flowchart architecture",
+        render: DotExporter::export,
+    });
+
     formats
 }
 
@@ -109,6 +117,7 @@ pub const FEATURE_GATED_FORMATS: &[(&str, &str)] = &[
     ("csv", "csv-export"),
     ("html", "html-export"),
     ("mermaid", "mermaid-export"),
+    ("dot", "dot-export"),
 ];
 
 /// Returns `true` if `name` is a trajectory export format known to this codebase,
@@ -162,6 +171,9 @@ pub struct CsvExporter;
 
 #[cfg(feature = "mermaid-export")]
 pub struct MermaidExporter;
+
+#[cfg(feature = "dot-export")]
+pub struct DotExporter;
 
 #[cfg(feature = "html-export")]
 pub struct HtmlExporter;
@@ -304,6 +316,76 @@ impl TrajectoryExporter for HtmlExporter {
 
         html.push_str("</body>\n</html>");
         html
+    }
+}
+
+#[cfg(feature = "dot-export")]
+impl TrajectoryExporter for DotExporter {
+    fn export(trajectory: &Trajectory) -> String {
+        let redactor = Redactor::default_enabled();
+        let mut dot = String::new();
+        dot.push_str("digraph Trajectory {\n");
+        dot.push_str("    node [shape=box, style=filled, fontname=\"sans-serif\"];\n");
+        dot.push_str("    edge [fontname=\"sans-serif\"];\n\n");
+
+        if let Some(task) = &trajectory.info.task {
+            let task = redactor.redact_text(task, surface::EXPORT).text;
+            let safe_task = task.replace('"', "\\\"");
+            let _ = writeln!(
+                dot,
+                "    label=\"Task: {safe_task}\";\n    labelloc=\"t\";\n"
+            );
+        }
+
+        for (i, msg) in trajectory.messages.iter().enumerate() {
+            let role_title = match msg.role.as_str() {
+                "system" => "System",
+                "user" => "User",
+                "assistant" => "Assistant",
+                "tool" => "Tool",
+                other => other,
+            };
+
+            let content = redactor.redact_text(&msg.content, surface::EXPORT).text;
+            let safe_content = content
+                .replace('\\', "\\\\")
+                .replace('"', "\\\"")
+                .replace('\n', "\\l"); // left-aligned line breaks in dot
+
+            let color = match msg.role.as_str() {
+                "system" => "\"#f8d7da\"",
+                "user" => "\"#d1ecf1\"",
+                "assistant" => "\"#d4edda\"",
+                "tool" => "\"#e2e3e5\"",
+                _ => "\"#ffffff\"",
+            };
+
+            let _ = writeln!(
+                dot,
+                "    M{i} [label=\"{role_title}\\l---\\l{safe_content}\", fillcolor={color}];"
+            );
+
+            if i > 0 {
+                let prev = i - 1;
+                let _ = writeln!(dot, "    M{prev} -> M{i};");
+            }
+        }
+
+        if let Some(outcome) = &trajectory.info.outcome {
+            let outcome = redactor.redact_text(outcome, surface::EXPORT).text;
+            let safe_outcome = outcome.replace('"', "\\\"");
+            let last_idx = trajectory.messages.len().saturating_sub(1);
+            let _ = writeln!(
+                dot,
+                "\n    Outcome [label=\"Outcome: {safe_outcome}\", shape=ellipse, fillcolor=\"#fff3cd\"];"
+            );
+            if !trajectory.messages.is_empty() {
+                let _ = writeln!(dot, "    M{last_idx} -> Outcome;");
+            }
+        }
+
+        dot.push_str("}\n");
+        dot
     }
 }
 
@@ -452,5 +534,29 @@ mod tests {
         assert!(html.contains("submitted"));
         assert!(html.contains("Hello agent"));
         assert!(html.contains("Hello user"));
+    }
+
+    #[cfg(feature = "dot-export")]
+    #[test]
+    fn test_dot_export_format() {
+        let mut t = Trajectory::new();
+        t.info.task = Some("Add a feature".to_string());
+        t.info.outcome = Some(crate::trajectory::outcome::SUBMITTED.to_string());
+
+        t.record_message(&Message::system("System prompt"));
+        t.record_message(&Message::user("Hello agent\nMulti-line"));
+        t.record_message(&Message::assistant("Hello \"user\""));
+
+        let dot = DotExporter::export(&t);
+
+        assert!(dot.starts_with("digraph Trajectory {"));
+        assert!(dot.contains("label=\"Task: Add a feature\""));
+        assert!(dot.contains("M0 [label=\"System\\l---\\lSystem prompt\""));
+        assert!(dot.contains("M1 [label=\"User\\l---\\lHello agent\\lMulti-line\""));
+        assert!(dot.contains("M2 [label=\"Assistant\\l---\\lHello \\\"user\\\"\""));
+        assert!(dot.contains("M0 -> M1;"));
+        assert!(dot.contains("M1 -> M2;"));
+        assert!(dot.contains("Outcome [label=\"Outcome: submitted\""));
+        assert!(dot.contains("M2 -> Outcome;"));
     }
 }
