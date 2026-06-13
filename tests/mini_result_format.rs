@@ -359,3 +359,49 @@ fn result_format_json_rejected_with_ratatui_ui() {
         "error message should mention the ratatui conflict; got: {stderr}"
     );
 }
+
+// ── Incompatible combo: scripted responses are ignored by external drivers ───
+
+#[test]
+fn deterministic_responses_rejected_with_external_driver() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let out = support::command()
+        .args([
+            "--log",
+            "error",
+            "mini",
+            "--task",
+            "say hello",
+            "--env",
+            "local",
+            "--deterministic-responses",
+            SUBMIT_RESPONSE,
+            "--driver",
+            "codex",
+            "--output",
+            tmp.path().to_str().unwrap(),
+            "--result-format",
+            "json",
+        ])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("spawn max mini");
+    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+    // Usage error → exit 2; no JSON, and no real external agent invoked.
+    assert_eq!(
+        out.status.code(),
+        Some(2),
+        "expected usage error exit 2; stderr:\n{stderr}\nstdout:\n{stdout}"
+    );
+    assert!(
+        stdout.trim().is_empty(),
+        "stdout must be empty when the combination is rejected; got: {stdout:?}"
+    );
+    assert!(
+        stderr.contains("deterministic-responses"),
+        "error message should mention deterministic-responses; got: {stderr}"
+    );
+}

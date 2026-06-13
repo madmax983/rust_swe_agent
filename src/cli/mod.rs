@@ -1041,6 +1041,17 @@ async fn mini_cmd(m: args::MiniCmd) -> Result<(), Error> {
     let traj_path = m.output.join(format!("{trajectory_name}.traj.json"));
     // patch_path is only set when github-pr flags are active (same gating as patch_capture).
     let patch_path = github_pr.as_ref().map(|o| o.patch_path.clone());
+    // The scripted-model hook only affects the builtin loop; external drivers
+    // shell out to a real agent and ignore it, which would silently make a paid
+    // call despite the documented "bypasses the model API" guarantee.
+    if !m.deterministic_responses.is_empty() && m.driver != crate::run::mini::RunDriver::Builtin {
+        return Err(Error::Config(crate::error::ConfigError::Invalid(
+            "--deterministic-responses is only honored by the builtin driver; \
+             external drivers (--driver codex|claude-code) shell out to a real agent \
+             and ignore scripted responses"
+                .into(),
+        )));
+    }
     let scripted = if m.deterministic_responses.is_empty() {
         None
     } else {
@@ -1081,31 +1092,34 @@ async fn mini_cmd(m: args::MiniCmd) -> Result<(), Error> {
         issue_provenance,
     };
     let run_result = crate::run::mini::run(args).await;
-    // Emit the machine-readable result BEFORE attempting any GitHub PR publish.
-    // A submitted run's trajectory and patch already exist on disk, so a later
-    // PR-publish error (missing token, API failure) must not suppress the JSON
-    // stdout contract the caller asked for.
-    emit_mini_result(
-        result_format,
-        &run_result,
-        &traj_path,
-        patch_path.as_deref(),
-        &redactor,
-    )?;
-    // Only publish when the run succeeded or failed at verification — those are
-    // the two cases where the trajectory and patch are guaranteed on disk.
-    // For other errors (env setup, model API, pre-trajectory I/O) propagate
-    // immediately so the real failure isn't masked by a trajectory-read error.
+    // Attempt the GitHub PR publish only when the run succeeded or failed at
+    // verification — those are the two cases where the trajectory and patch are
+    // guaranteed on disk. Capture the result instead of early-returning so the
+    // JSON result object can both always emit AND fold the publish failure into
+    // its effective exit code.
     let is_verification_failure =
         matches!(run_result, Err(crate::error::Error::VerificationFailed(..)));
-    if run_result.is_ok() || is_verification_failure {
+    let publish_result = if run_result.is_ok() || is_verification_failure {
         maybe_publish_mini_github_pr(
             github_pr,
             result_format == crate::run::mini::ResultFormat::Json,
         )
-        .await?;
-    }
+        .await
+    } else {
+        Ok(())
+    };
+    emit_mini_result(
+        result_format,
+        &run_result,
+        &publish_result,
+        &traj_path,
+        patch_path.as_deref(),
+        &redactor,
+    )?;
+    // Propagate the run error first (it determines the JSON exit code), then any
+    // publish error. This ordering matches emit_mini_result's exit-code precedence.
     run_result?;
+    publish_result?;
     Ok(())
 }
 
@@ -1530,11 +1544,13 @@ async fn mini_resume_cmd(
         continue_from: None,
         issue_provenance,
     };
-    // Resume never captures a patch (patch_capture: None), so patch_path is None.
+    // Resume never captures a patch (patch_capture: None) and never publishes a PR.
     let run_result = crate::run::mini::run(args).await;
+    let no_publish: Result<(), Error> = Ok(());
     emit_mini_result(
         result_format,
         &run_result,
+        &no_publish,
         &result_traj_path,
         None,
         &redactor,
@@ -1819,11 +1835,13 @@ async fn mini_continue_cmd(
         parent_sweep_run_id: None,
         issue_provenance: None,
     };
-    // Continue never captures a patch (patch_capture: None), so patch_path is None.
+    // Continue never captures a patch (patch_capture: None) and never publishes a PR.
     let run_result = crate::run::mini::run(args).await;
+    let no_publish: Result<(), Error> = Ok(());
     emit_mini_result(
         result_format,
         &run_result,
+        &no_publish,
         &result_traj_path,
         None,
         &redactor,
@@ -2537,13 +2555,19 @@ struct TrajectoryInfoOnly {
 
 /// Emit a machine-readable run result to stdout when `--result-format json` is active.
 ///
-/// Called after `mini::run` and the optional GitHub PR publish; `run_result?` comes after.
-/// Emission scope (from AC4): only for `Ok(())` (submitted) and `VerificationFailed` —
-/// the two cases where the trajectory and patch are guaranteed on disk.
-/// For any other `Err`, silently return `Ok(())` so `run_result?` propagates the real error.
+/// Emission scope: only when the trajectory records `outcome == "submitted"`,
+/// covering a clean submit (exit 0) and a submitted-then-verification-failed run
+/// (exit 7). Hard errors before a trajectory exists, and unsubmitted runs (step
+/// limit, budget, stagnation), print no result object.
+///
+/// The reported `exit_code`/`exit_outcome_class` reflect the **effective** final
+/// exit: a run error takes precedence (it is propagated first by the caller),
+/// otherwise a GitHub PR-publish error, otherwise success. This keeps the JSON
+/// honest even when `--open-pr` publishing fails after a successful submit.
 fn emit_mini_result(
     format: crate::run::mini::ResultFormat,
     run_result: &Result<(), Error>,
+    publish_result: &Result<(), Error>,
     traj_path: &std::path::Path,
     patch_path: Option<&std::path::Path>,
     redactor: &crate::redaction::Redactor,
@@ -2551,24 +2575,25 @@ fn emit_mini_result(
     if format != crate::run::mini::ResultFormat::Json {
         return Ok(());
     }
-    let exit_code = match run_result {
-        Ok(()) => crate::exit_code::ExitCode::Success,
-        Err(e) if matches!(e, Error::VerificationFailed(..)) => {
-            crate::exit_code::ExitCode::from_error(e)
-        }
-        Err(_) => return Ok(()), // hard error — no object; run_result? handles it
+    // Only Ok and VerificationFailed guarantee a trajectory (and patch) on disk.
+    // Any other run error is a hard pre-/mid-trajectory failure → no result object;
+    // the caller's `run_result?` propagates it and `main` prints the outcome class.
+    if !(run_result.is_ok() || matches!(run_result, Err(Error::VerificationFailed(..)))) {
+        return Ok(());
+    }
+    // Effective exit code: run error first (caller propagates it before the publish
+    // error), then a publish error, otherwise success.
+    let exit_code = match (run_result, publish_result) {
+        (Err(e), _) | (Ok(()), Err(e)) => crate::exit_code::ExitCode::from_error(e),
+        (Ok(()), Ok(())) => crate::exit_code::ExitCode::Success,
     };
     // Deserialize only the `info` block (see TrajectoryInfoOnly) to avoid
     // loading the full message history just to read summary fields.
     let traj_json = std::fs::read_to_string(traj_path).map_err(Error::Io)?;
     let traj: TrajectoryInfoOnly = serde_json::from_str(&traj_json).map_err(Error::Json)?;
-    // Only emit when the agent actually submitted a patch. This is the unifying
-    // condition behind both contract cases: a clean submit (outcome=submitted,
-    // exit 0) and a submitted-then-verification-failed run (outcome=submitted,
-    // exit 7). Runs that returned Ok without submitting (step-limit, budget) and
-    // runs where a `--verify` check fails on an *unsubmitted* run (outcome still
-    // step_limit_reached/etc., yet mini::run returns VerificationFailed) are
-    // represented only by the trajectory, not by a stdout result object.
+    // Only emit when the agent actually submitted a patch — the unifying condition
+    // behind both contract cases. Unsubmitted runs (incl. a `--verify` failure on a
+    // step-limit/budget run) are represented only by the trajectory.
     if traj.info.outcome.as_deref() != Some(crate::trajectory::outcome::SUBMITTED) {
         return Ok(());
     }

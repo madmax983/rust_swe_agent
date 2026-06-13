@@ -89,7 +89,16 @@ It is **not** emitted for:
 The flag is honored on the standard, `--resume`, and `--continue` mini paths.
 When `--open-pr` / `--github-pr-dry-run` is combined with `--result-format json`,
 the human-facing PR URL / dry-run plan is written to **stderr** instead of stdout
-so that stdout remains exactly one JSON object.
+so that stdout remains exactly one JSON object. If the PR publish itself fails
+(e.g. missing token), the result object is still emitted and its
+`exit_code` / `exit_outcome_class` reflect that publish failure — a run error
+takes precedence, otherwise the publish error, otherwise success — so the JSON
+never reports success for a command that exits non-zero.
+
+`--result-format json` is rejected (usage error) when combined with `--ui ratatui`,
+because the dashboard renders to stdout. The hidden `--deterministic-responses`
+test hook is likewise rejected with `--driver codex|claude-code`, which shell out
+to a real agent and ignore scripted responses.
 
 ### Redaction guarantee
 
