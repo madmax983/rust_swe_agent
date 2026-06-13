@@ -6,7 +6,7 @@
 //! terminal; the agent thread drives state through a mutex and a
 //! `Notify` channel.
 
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 use std::io::{Stdout, Write as _};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -50,6 +50,7 @@ struct DashboardState {
     last_log_height: usize,
     should_exit: bool,
     is_monitor: bool,
+    search: Option<SearchState>,
 }
 
 impl Default for DashboardState {
@@ -73,6 +74,30 @@ impl Default for DashboardState {
             last_log_height: 20,
             should_exit: false,
             is_monitor: false,
+            search: None,
+        }
+    }
+}
+
+/// In-dashboard incremental find over the trajectory feed.
+///
+/// Two-phase (less/vim style): while `editing` the operator types the query
+/// and matches highlight incrementally; pressing Enter commits, after which
+/// `n`/`N` cycle matches. `current` is an ordinal into the live match list
+/// (recomputed each frame from `query`), clamped where it is read.
+#[derive(Clone)]
+struct SearchState {
+    query: String,
+    current: usize,
+    editing: bool,
+}
+
+impl SearchState {
+    fn new() -> Self {
+        Self {
+            query: String::new(),
+            current: 0,
+            editing: true,
         }
     }
 }
@@ -483,6 +508,188 @@ fn handle_key_edit_input(
     }
 }
 
+/// The slice of `log` the dashboard actually renders: the last
+/// `MAX_LOG_LINES` entries. Search indices are relative to this window so
+/// that key handling and `log_paragraph` agree on what each index means.
+fn displayed_window(log: &VecDeque<LogLine>) -> Vec<&LogLine> {
+    let max_lines = log.len().min(MAX_LOG_LINES);
+    let take_from = log.len().saturating_sub(max_lines);
+    log.iter().skip(take_from).collect()
+}
+
+/// Case-insensitive literal-substring match over the rendered feed text.
+/// Returns the indices (into `window`) of matching lines. An empty query
+/// matches nothing. Pure: never executes or mutates anything.
+fn search_matches(window: &[&LogLine], query: &str) -> Vec<usize> {
+    if query.is_empty() {
+        return Vec::new();
+    }
+    let needle = query.to_lowercase();
+    window
+        .iter()
+        .enumerate()
+        .filter(|(_, line)| line.text.to_lowercase().contains(&needle))
+        .map(|(i, _)| i)
+        .collect()
+}
+
+/// Scroll the feed so the wrapped line(s) of `line_idx` (an index into the
+/// displayed window) are visible, introducing the minimal offset needed:
+/// scroll up if the line is above the viewport, down if below, otherwise
+/// leave the offset untouched. Disengages auto-follow and clamps to bounds.
+fn scroll_to_line(s: &mut DashboardState, line_idx: usize) {
+    let window = displayed_window(&s.log);
+    let width = s.last_log_width;
+    let height = s.last_log_height;
+    let total = total_wrapped_lines(window.iter().copied(), width);
+    let max_scroll = total.saturating_sub(height);
+
+    let start = total_wrapped_lines(window.iter().take(line_idx).copied(), width);
+    let line_height = window
+        .get(line_idx)
+        .map_or(1, |line| count_wrapped_lines(&line.text, width).max(1));
+    let end = start + line_height;
+
+    let current_top = if s.auto_follow {
+        max_scroll
+    } else {
+        s.scroll_offset.min(max_scroll)
+    };
+
+    let new_top = if start < current_top {
+        start
+    } else if end > current_top + height {
+        end.saturating_sub(height)
+    } else {
+        current_top
+    };
+
+    s.scroll_offset = new_top.min(max_scroll);
+    s.auto_follow = false;
+}
+
+/// Handle a keystroke while the `/`-search sub-mode is active. Implements the
+/// two-phase model: `editing` accepts the query (incremental highlight + jump
+/// to first match); committed mode cycles matches with `n`/`N`. Returns the
+/// (possibly mutated) `SearchState` to `s.search` unless search is exited.
+fn handle_key_search(
+    dash: &RatatuiDashboard,
+    s: &mut DashboardState,
+    mut search: SearchState,
+    key: KeyEvent,
+) {
+    // Arrow / page / Home / End keep scrolling the feed without disturbing
+    // the active query.
+    if perform_scroll(s, key.code) {
+        s.search = Some(search);
+        dash.notify.notify_waiters();
+        return;
+    }
+
+    // Ignore modifier combos (e.g. Ctrl-x) so they neither steal navigation
+    // nor land in the query buffer. Ctrl-C is handled before we get here.
+    if !key.modifiers.is_empty() && key.modifiers != KeyModifiers::SHIFT {
+        s.search = Some(search);
+        return;
+    }
+
+    match key.code {
+        KeyCode::Esc => {
+            // Exit search, clear highlights, keep the operator's scroll
+            // position at the last match (no snap-back).
+            s.search = None;
+            dash.notify.notify_waiters();
+        }
+        KeyCode::Enter => {
+            if search.query.is_empty() {
+                // An empty query exits search cleanly.
+                s.search = None;
+                dash.notify.notify_waiters();
+                return;
+            }
+            // Commit: leave editing mode and settle on the current match
+            // (the first hit the incremental find already landed on). `n`/`N`
+            // advance from here.
+            search.editing = false;
+            let window = displayed_window(&s.log);
+            let matches = search_matches(&window, &search.query);
+            if !matches.is_empty() {
+                search.current = search.current.min(matches.len() - 1);
+                let line_idx = matches[search.current];
+                scroll_to_line(s, line_idx);
+            }
+            s.search = Some(search);
+            dash.notify.notify_waiters();
+        }
+        KeyCode::Backspace if search.editing => {
+            search.query.pop();
+            search_recompute_after_edit(s, &mut search);
+            s.search = Some(search);
+            dash.notify.notify_waiters();
+        }
+        KeyCode::Char(c) if search.editing => {
+            search.query.push(c);
+            search_recompute_after_edit(s, &mut search);
+            s.search = Some(search);
+            dash.notify.notify_waiters();
+        }
+        // Committed-phase navigation.
+        KeyCode::Char('n') => {
+            search_jump(s, &mut search, 1);
+            s.search = Some(search);
+            dash.notify.notify_waiters();
+        }
+        KeyCode::Char('N') => {
+            search_jump(s, &mut search, -1);
+            s.search = Some(search);
+            dash.notify.notify_waiters();
+        }
+        KeyCode::Char('/') => {
+            // Restart a fresh search.
+            s.search = Some(SearchState::new());
+            dash.notify.notify_waiters();
+        }
+        _ => {
+            s.search = Some(search);
+        }
+    }
+}
+
+/// After the query changes while editing, re-anchor the current match to the
+/// first hit and jump the view to it (incremental find).
+fn search_recompute_after_edit(s: &mut DashboardState, search: &mut SearchState) {
+    let window = displayed_window(&s.log);
+    let matches = search_matches(&window, &search.query);
+    if matches.is_empty() {
+        search.current = 0;
+        return;
+    }
+    search.current = 0;
+    let line_idx = matches[0];
+    scroll_to_line(s, line_idx);
+}
+
+/// Move the current-match cursor by `step` (+1 next, -1 previous) with
+/// wraparound and scroll the view to it. No-op when there are no matches.
+fn search_jump(s: &mut DashboardState, search: &mut SearchState, step: isize) {
+    let window = displayed_window(&s.log);
+    let matches = search_matches(&window, &search.query);
+    if matches.is_empty() {
+        search.current = 0;
+        return;
+    }
+    let len = matches.len();
+    let cur = search.current.min(len - 1);
+    let next = if step >= 0 {
+        (cur + 1) % len
+    } else {
+        (cur + len - 1) % len
+    };
+    search.current = next;
+    let line_idx = matches[next];
+    scroll_to_line(s, line_idx);
+}
+
 fn perform_scroll(s: &mut DashboardState, code: KeyCode) -> bool {
     let total = total_wrapped_lines(&s.log, s.last_log_width);
     let max_scroll = total.saturating_sub(s.last_log_height);
@@ -621,6 +828,23 @@ fn handle_key(dash: &Arc<RatatuiDashboard>, key: KeyEvent) {
                 let _ = tx.send(true);
             }
         }
+
+        // The active /-search sub-mode owns Esc/Enter/typing/n/N, taking
+        // priority over the finished-close and scroll handling below. Ctrl-C
+        // still falls through so the global stop/close keeps working.
+        if !ctrl_c {
+            if let Some(search) = s.search.take() {
+                handle_key_search(dash, &mut s, search, key);
+                return;
+            }
+            if matches!(key.code, KeyCode::Char('/')) {
+                s.search = Some(SearchState::new());
+                drop(s);
+                dash.notify.notify_waiters();
+                return;
+            }
+        }
+
         if s.finished.is_some() {
             let close_key = matches!(key.code, KeyCode::Char('q' | 'Q') | KeyCode::Esc) || ctrl_c;
             if close_key {
@@ -680,6 +904,7 @@ fn draw_frame(
             last_log_width: s.last_log_width,
             last_log_height: s.last_log_height,
             is_monitor: s.is_monitor,
+            search: s.search.clone(),
         }
     };
     terminal.draw(|frame| draw(frame, &snapshot))?;
@@ -703,6 +928,7 @@ struct DashboardSnapshot {
     last_log_width: usize,
     last_log_height: usize,
     is_monitor: bool,
+    search: Option<SearchState>,
 }
 
 fn draw(frame: &mut ratatui::Frame, snap: &DashboardSnapshot) {
@@ -774,10 +1000,24 @@ fn header_paragraph(snap: &DashboardSnapshot) -> Paragraph<'_> {
 fn log_paragraph(snap: &DashboardSnapshot) -> Paragraph<'_> {
     let max_lines = snap.log.len().min(MAX_LOG_LINES);
     let take_from = snap.log.len().saturating_sub(max_lines);
-    let lines: Vec<Line> = snap.log[take_from..]
+    let window: Vec<&LogLine> = snap.log[take_from..].iter().collect();
+
+    // Recompute matches each frame so highlights stay correct as the log
+    // grows; the persisted `current` ordinal picks the active hit.
+    let query = snap.search.as_ref().map_or("", |s| s.query.as_str());
+    let matches = search_matches(&window, query);
+    let match_set: HashSet<usize> = matches.iter().copied().collect();
+    let current_line = snap.search.as_ref().and_then(|s| {
+        matches
+            .get(s.current.min(matches.len().saturating_sub(1)))
+            .copied()
+    });
+
+    let lines: Vec<Line> = window
         .iter()
-        .map(|l| {
-            let style = match l.kind {
+        .enumerate()
+        .map(|(i, l)| {
+            let base = match l.kind {
                 LineKind::Info => Style::default().fg(Color::Gray),
                 LineKind::AssistantMsg => Style::default().fg(Color::Cyan),
                 LineKind::BashRun => Style::default().fg(Color::White),
@@ -785,6 +1025,18 @@ fn log_paragraph(snap: &DashboardSnapshot) -> Paragraph<'_> {
                 LineKind::BashErr => Style::default().fg(Color::Red),
                 LineKind::Observation => Style::default().fg(Color::LightBlue),
                 LineKind::Warn => Style::default().fg(Color::LightYellow),
+            };
+            let style = if current_line == Some(i) {
+                // The active match: a distinct high-contrast highlight so the
+                // operator always knows which hit they are on.
+                Style::default()
+                    .bg(Color::Yellow)
+                    .fg(Color::Black)
+                    .add_modifier(Modifier::BOLD)
+            } else if match_set.contains(&i) {
+                base.bg(Color::DarkGray)
+            } else {
+                base
             };
             Line::from(Span::styled(l.text.clone(), style))
         })
@@ -798,10 +1050,18 @@ fn log_paragraph(snap: &DashboardSnapshot) -> Paragraph<'_> {
         snap.scroll_offset.min(max_scroll)
     };
 
-    let title = if snap.auto_follow {
-        " trajectory [LIVE] "
+    let title = if let Some(search) = &snap.search {
+        let total_matches = matches.len();
+        let pos = if total_matches == 0 {
+            0
+        } else {
+            search.current.min(total_matches - 1) + 1
+        };
+        format!(" trajectory [SEARCH {pos}/{total_matches}] ")
+    } else if snap.auto_follow {
+        " trajectory [LIVE] ".to_string()
     } else {
-        " trajectory [SCROLLED] "
+        " trajectory [SCROLLED] ".to_string()
     };
 
     #[allow(clippy::cast_possible_truncation)]
@@ -814,8 +1074,29 @@ fn log_paragraph(snap: &DashboardSnapshot) -> Paragraph<'_> {
 }
 
 fn footer_paragraph(snap: &DashboardSnapshot) -> Paragraph<'_> {
-    let hint = if snap.finished.is_some() {
-        "run complete — press 'q', Esc, or Ctrl-C to close  [scroll: ↑/↓/PgUp/PgDn/Home/End]"
+    let hint = if let Some(search) = &snap.search {
+        let max_lines = snap.log.len().min(MAX_LOG_LINES);
+        let take_from = snap.log.len().saturating_sub(max_lines);
+        let window: Vec<&LogLine> = snap.log[take_from..].iter().collect();
+        let total_matches = search_matches(&window, &search.query).len();
+        let pos = if total_matches == 0 {
+            0
+        } else {
+            search.current.min(total_matches - 1) + 1
+        };
+        if search.editing {
+            format!(
+                "search: {}█   [Enter] find   [Esc] cancel   ({pos}/{total_matches})",
+                search.query
+            )
+        } else {
+            format!(
+                "search: {}   [n] next   [N] prev   [/] new   [Esc] exit   ({pos}/{total_matches})",
+                search.query
+            )
+        }
+    } else if snap.finished.is_some() {
+        "run complete — press 'q', Esc, or Ctrl-C to close  [scroll: ↑/↓/PgUp/PgDn/Home/End]  [/ search]"
             .to_string()
     } else if snap.edit_input.is_some() {
         "[Enter] execute edit   [Esc] cancel".to_string()
@@ -823,7 +1104,7 @@ fn footer_paragraph(snap: &DashboardSnapshot) -> Paragraph<'_> {
         let scope = pending.derive_scope();
         format!("(y) approve   (n) reject   (e) edit   (a) abort   (A) auto-approve {scope}")
     } else {
-        "waiting for next agent step…  [scroll: ↑/↓/PgUp/PgDn/Home/End]".to_string()
+        "waiting for next agent step…  [scroll: ↑/↓/PgUp/PgDn/Home/End]  [/ search]".to_string()
     };
     Paragraph::new(Line::from(Span::styled(
         hint,
@@ -1541,6 +1822,7 @@ mod tests {
             last_log_width: s.last_log_width,
             last_log_height: s.last_log_height,
             is_monitor: s.is_monitor,
+            search: s.search.clone(),
         }
     }
 
@@ -1779,6 +2061,310 @@ mod tests {
             responder: tx,
         });
         rx
+    }
+
+    // ---- in-dashboard incremental search (#637) ----
+
+    /// Push `n` plain info lines `line1..=linen` into the feed for search tests.
+    fn push_lines(d: &Arc<RatatuiDashboard>, n: usize) {
+        let mut s = d.state.lock().unwrap();
+        for i in 1..=n {
+            s.log.push_back(LogLine {
+                kind: LineKind::Info,
+                text: format!("line{i}"),
+            });
+        }
+        drop(s);
+    }
+
+    /// True if any cell in the buffer carries the current-match highlight
+    /// (yellow background) — i.e. the active hit is visible on screen.
+    fn has_current_match_highlight(buf: &Buffer) -> bool {
+        for y in 0..buf.area.height {
+            for x in 0..buf.area.width {
+                if buf[(x, y)].style().bg == Some(Color::Yellow) {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    fn press(d: &Arc<RatatuiDashboard>, code: KeyCode) {
+        handle_key(d, KeyEvent::new(code, KeyModifiers::NONE));
+    }
+
+    fn type_str(d: &Arc<RatatuiDashboard>, text: &str) {
+        for c in text.chars() {
+            press(d, KeyCode::Char(c));
+        }
+    }
+
+    /// Clone out the active `SearchState` (if any) without holding the lock
+    /// across the assertions.
+    fn search_state(d: &Arc<RatatuiDashboard>) -> Option<SearchState> {
+        let s = d.state.lock().unwrap();
+        let out = s.search.clone();
+        drop(s);
+        out
+    }
+
+    #[test]
+    fn search_slash_enters_search_mode() {
+        let d = make_dashboard();
+        press(&d, KeyCode::Char('/'));
+        let search = search_state(&d).unwrap();
+        assert!(search.editing);
+        assert!(search.query.is_empty());
+        assert_eq!(search.current, 0);
+    }
+
+    #[test]
+    fn search_typing_appends_and_matches_incrementally() {
+        let d = make_dashboard();
+        {
+            let mut s = d.state.lock().unwrap();
+            s.last_log_height = 3;
+            s.last_log_width = 80;
+        }
+        push_lines(&d, 8); // line1..line8, viewport shows 3
+        press(&d, KeyCode::Char('/'));
+        type_str(&d, "line6");
+
+        let s = snap(&d);
+        assert_eq!(s.search.as_ref().unwrap().query, "line6");
+        // Incremental find anchored to the (only) match and scrolled to it.
+        let window: Vec<&LogLine> = s.log.iter().collect();
+        let matches = search_matches(&window, "line6");
+        assert_eq!(matches.len(), 1);
+        assert!(
+            !s.auto_follow,
+            "typing should disengage auto-follow to jump"
+        );
+    }
+
+    #[test]
+    fn search_is_case_insensitive() {
+        let d = make_dashboard();
+        {
+            let mut s = d.state.lock().unwrap();
+            s.log.push_back(LogLine {
+                kind: LineKind::BashErr,
+                text: "Tests FAILED in module foo".into(),
+            });
+        }
+        let s = snap(&d);
+        let window: Vec<&LogLine> = s.log.iter().collect();
+        assert_eq!(search_matches(&window, "failed"), vec![0]);
+        assert_eq!(search_matches(&window, "TESTS"), vec![0]);
+        assert!(search_matches(&window, "passed").is_empty());
+    }
+
+    #[test]
+    fn search_commit_then_navigate_wraps() {
+        let d = make_dashboard();
+        {
+            let mut s = d.state.lock().unwrap();
+            s.last_log_height = 3;
+            s.last_log_width = 80;
+            for i in 1..=6 {
+                // "mark" appears on lines 0, 2, 4 (three matches).
+                let text = if i % 2 == 1 {
+                    format!("mark line {i}")
+                } else {
+                    format!("other line {i}")
+                };
+                s.log.push_back(LogLine {
+                    kind: LineKind::Info,
+                    text,
+                });
+            }
+        }
+        press(&d, KeyCode::Char('/'));
+        type_str(&d, "mark");
+        press(&d, KeyCode::Enter); // commit, settle on first match
+        let committed = search_state(&d).unwrap();
+        assert!(!committed.editing);
+        assert_eq!(committed.current, 0);
+        // n cycles forward 0 -> 1 -> 2 -> wrap 0
+        press(&d, KeyCode::Char('n'));
+        assert_eq!(search_state(&d).unwrap().current, 1);
+        press(&d, KeyCode::Char('n'));
+        assert_eq!(search_state(&d).unwrap().current, 2);
+        press(&d, KeyCode::Char('n'));
+        assert_eq!(search_state(&d).unwrap().current, 0);
+        // N cycles backward 0 -> wrap 2
+        press(&d, KeyCode::Char('N'));
+        assert_eq!(search_state(&d).unwrap().current, 2);
+    }
+
+    #[test]
+    fn search_esc_exits_keeps_scroll() {
+        let d = make_dashboard();
+        {
+            let mut s = d.state.lock().unwrap();
+            s.last_log_height = 3;
+            s.last_log_width = 80;
+        }
+        push_lines(&d, 8);
+        press(&d, KeyCode::Char('/'));
+        type_str(&d, "line1"); // matches line1 at top -> scrolls up
+        let scroll_at_match = snap(&d).scroll_offset;
+        press(&d, KeyCode::Esc);
+        let s = snap(&d);
+        assert!(s.search.is_none(), "Esc clears search");
+        assert!(!s.auto_follow, "scroll position must not snap back");
+        assert_eq!(s.scroll_offset, scroll_at_match);
+    }
+
+    #[test]
+    fn search_enter_empty_query_exits() {
+        let d = make_dashboard();
+        push_lines(&d, 4);
+        press(&d, KeyCode::Char('/'));
+        press(&d, KeyCode::Enter); // empty query
+        assert!(search_state(&d).is_none());
+    }
+
+    #[test]
+    fn search_backspace_to_empty_stays_in_mode() {
+        let d = make_dashboard();
+        push_lines(&d, 4);
+        press(&d, KeyCode::Char('/'));
+        type_str(&d, "x");
+        press(&d, KeyCode::Backspace);
+        let search = search_state(&d).unwrap();
+        assert!(search.query.is_empty());
+    }
+
+    #[test]
+    fn search_zero_matches_shows_0_0() {
+        let d = make_dashboard();
+        {
+            let mut s = d.state.lock().unwrap();
+            s.last_log_height = 5;
+            s.last_log_width = 80;
+        }
+        push_lines(&d, 4);
+        press(&d, KeyCode::Char('/'));
+        type_str(&d, "zzz-no-such-token");
+        let s = snap(&d);
+        let buf = render_to_buffer(&s, 80, 11);
+        let text = buffer_text(&buf);
+        assert!(
+            text.contains("0/0"),
+            "zero-match counter should show 0/0; got:\n{text}"
+        );
+        assert!(
+            !has_current_match_highlight(&buf),
+            "no highlight when no match"
+        );
+    }
+
+    #[test]
+    fn search_does_not_steal_modal_keys() {
+        let d = make_dashboard();
+        let mut rx = make_pending(&d);
+        // '/' while a modal is open must not enter search nor send a decision.
+        press(&d, KeyCode::Char('/'));
+        let s = snap(&d);
+        assert!(s.pending.is_some(), "modal stays open");
+        assert!(s.search.is_none(), "search is not reachable behind a modal");
+        assert!(rx.try_recv().is_err(), "no decision sent by '/'");
+        // The modal verbs still work, byte-for-byte.
+        press(&d, KeyCode::Char('y'));
+        assert_eq!(rx.try_recv().unwrap(), ConfirmDecision::Approve);
+    }
+
+    #[test]
+    fn footer_shows_search_hints_contextually() {
+        let d = make_dashboard();
+        // Idle: a '/' hint.
+        {
+            let s = snap(&d);
+            let buf = render_to_buffer(&s, 80, 12);
+            assert!(buffer_text(&buf).contains("/ search"));
+        }
+        // Editing: query + Enter/Esc hints.
+        press(&d, KeyCode::Char('/'));
+        type_str(&d, "boom");
+        {
+            let s = snap(&d);
+            let buf = render_to_buffer(&s, 80, 12);
+            let text = buffer_text(&buf);
+            assert!(text.contains("search: boom"), "shows query; got:\n{text}");
+            assert!(text.contains("[Enter] find"));
+            assert!(text.contains("[Esc] cancel"));
+        }
+        // Committed: n/N/Esc hints.
+        press(&d, KeyCode::Enter);
+        {
+            let s = snap(&d);
+            let buf = render_to_buffer(&s, 80, 12);
+            let text = buffer_text(&buf);
+            assert!(text.contains("[n] next"), "shows n/N hints; got:\n{text}");
+            assert!(text.contains("[N] prev"));
+        }
+    }
+
+    #[test]
+    fn search_jumps_to_offscreen_match() {
+        // Success metric: a feed longer than the viewport with a known token
+        // only on an off-screen line; after entering search, typing the token,
+        // and committing, the rendered frame shows that line with the
+        // current-match highlight and a counter >= 1/1.
+        let d = make_dashboard();
+        {
+            let mut s = d.state.lock().unwrap();
+            s.last_log_height = 5;
+            s.last_log_width = 80;
+        }
+        {
+            let mut s = d.state.lock().unwrap();
+            // 20 filler lines, the unique token buried near the top (off-screen
+            // when the feed auto-follows to the bottom).
+            s.log.push_back(LogLine {
+                kind: LineKind::BashErr,
+                text: "UNIQUETOKEN the failing assertion".into(),
+            });
+            for i in 1..=20 {
+                s.log.push_back(LogLine {
+                    kind: LineKind::Info,
+                    text: format!("filler line number {i}"),
+                });
+            }
+            drop(s);
+        }
+        // Before search: the token line is off-screen (auto-follow at bottom).
+        {
+            let s = snap(&d);
+            let buf = render_to_buffer(&s, 80, 11);
+            assert!(
+                !buffer_text(&buf).contains("UNIQUETOKEN"),
+                "token should start off-screen"
+            );
+        }
+
+        press(&d, KeyCode::Char('/'));
+        type_str(&d, "UNIQUETOKEN");
+        press(&d, KeyCode::Enter);
+        press(&d, KeyCode::Char('n'));
+
+        let s = snap(&d);
+        let buf = render_to_buffer(&s, 80, 11);
+        let text = buffer_text(&buf);
+        assert!(
+            text.contains("UNIQUETOKEN"),
+            "matched line must be scrolled into view; got:\n{text}"
+        );
+        assert!(
+            has_current_match_highlight(&buf),
+            "the current match must carry the highlight; got:\n{text}"
+        );
+        assert!(
+            text.contains("1/1"),
+            "counter should read 1/1; got:\n{text}"
+        );
     }
 
     #[test]
