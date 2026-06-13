@@ -1036,6 +1036,7 @@ async fn mini_cmd(m: args::MiniCmd) -> Result<(), Error> {
 
     // Capture state needed for --result-format json before MiniArgs consumes fields.
     let result_format = m.result_format;
+    reject_json_with_ratatui(result_format, interactive_mode)?;
     let redactor = crate::redaction::Redactor::from_config_lossy(&cfg.root.redaction);
     let traj_path = m.output.join(format!("{trajectory_name}.traj.json"));
     // patch_path is only set when github-pr flags are active (same gating as patch_capture).
@@ -1080,6 +1081,17 @@ async fn mini_cmd(m: args::MiniCmd) -> Result<(), Error> {
         issue_provenance,
     };
     let run_result = crate::run::mini::run(args).await;
+    // Emit the machine-readable result BEFORE attempting any GitHub PR publish.
+    // A submitted run's trajectory and patch already exist on disk, so a later
+    // PR-publish error (missing token, API failure) must not suppress the JSON
+    // stdout contract the caller asked for.
+    emit_mini_result(
+        result_format,
+        &run_result,
+        &traj_path,
+        patch_path.as_deref(),
+        &redactor,
+    )?;
     // Only publish when the run succeeded or failed at verification — those are
     // the two cases where the trajectory and patch are guaranteed on disk.
     // For other errors (env setup, model API, pre-trajectory I/O) propagate
@@ -1093,13 +1105,6 @@ async fn mini_cmd(m: args::MiniCmd) -> Result<(), Error> {
         )
         .await?;
     }
-    emit_mini_result(
-        result_format,
-        &run_result,
-        &traj_path,
-        patch_path.as_deref(),
-        &redactor,
-    )?;
     run_result?;
     Ok(())
 }
@@ -1483,8 +1488,14 @@ async fn mini_resume_cmd(
 
     // Capture --result-format state before MiniArgs consumes cfg/output fields.
     let result_format = m.result_format;
+    reject_json_with_ratatui(result_format, interactive_mode)?;
     let redactor = crate::redaction::Redactor::from_config_lossy(&cfg.root.redaction);
     let result_traj_path = traj_output_dir.join(format!("{traj_stem}.traj.json"));
+    let scripted = if m.deterministic_responses.is_empty() {
+        None
+    } else {
+        Some(m.deterministic_responses.clone())
+    };
 
     let args = crate::run::mini::MiniArgs {
         task,
@@ -1495,7 +1506,7 @@ async fn mini_resume_cmd(
         driver_isolated: false,
         output_dir: traj_output_dir,
         trajectory_name: traj_stem,
-        deterministic_responses: None,
+        deterministic_responses: scripted,
         deterministic_usage_per_call: None,
         task_timeout_secs: m.task_timeout_secs,
         cancellation: None,
@@ -1766,8 +1777,14 @@ async fn mini_continue_cmd(
 
     // Capture --result-format state before MiniArgs consumes cfg/output fields.
     let result_format = m.result_format;
+    reject_json_with_ratatui(result_format, interactive_mode)?;
     let redactor = crate::redaction::Redactor::from_config_lossy(&cfg.root.redaction);
     let result_traj_path = output_dir.join(format!("{child_traj_name}.traj.json"));
+    let scripted = if m.deterministic_responses.is_empty() {
+        None
+    } else {
+        Some(m.deterministic_responses.clone())
+    };
 
     let args = crate::run::mini::MiniArgs {
         task: follow_up_task,
@@ -1778,7 +1795,7 @@ async fn mini_continue_cmd(
         driver_isolated: false,
         output_dir,
         trajectory_name: child_traj_name,
-        deterministic_responses: None,
+        deterministic_responses: scripted,
         deterministic_usage_per_call: None,
         task_timeout_secs: effective_task_timeout,
         cancellation: None,
@@ -2481,6 +2498,33 @@ fn validate_observation_head_ratio(value: f64) -> Result<(), Error> {
             "--observation-head-ratio must be a finite value in [0,1], got {value}"
         ))))
     }
+}
+
+/// Reject `--result-format json` combined with the ratatui dashboard UI.
+///
+/// The ratatui dashboard enters the alternate screen and renders to
+/// `std::io::stdout()` (see `agent::confirm_tui`), which would interleave
+/// terminal-control bytes with the JSON result and break the clean-stdout
+/// contract. The two modes are fundamentally incompatible, so reject early.
+fn reject_json_with_ratatui(
+    result_format: crate::run::mini::ResultFormat,
+    interactive_mode: crate::run::mini::InteractiveMode,
+) -> Result<(), Error> {
+    use crate::run::mini::{InteractiveMode, ResultFormat};
+    if result_format == ResultFormat::Json
+        && matches!(
+            interactive_mode,
+            InteractiveMode::Ratatui | InteractiveMode::RatatuiMonitor
+        )
+    {
+        return Err(Error::Config(crate::error::ConfigError::Invalid(
+            "--result-format json cannot be combined with --ui ratatui; the dashboard \
+             renders to stdout and would corrupt the JSON result stream. Use the default \
+             --ui stderr."
+                .into(),
+        )));
+    }
+    Ok(())
 }
 
 /// Lightweight view over a trajectory file that deserializes only the `info`
