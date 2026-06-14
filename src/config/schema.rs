@@ -91,6 +91,13 @@ pub struct AgentCfg {
     /// are set, whichever elides more observations wins.
     #[serde(default)]
     pub history_keep_last_observations: Option<usize>,
+    /// Maximum number of re-prompt retries when the model returns an empty or
+    /// unparseable response before the run fails with `failure_category:
+    /// model_parse`. Default: `3` (up to 3 additional re-prompt attempts after
+    /// the first unactionable response). Set to `0` to abort on the very first
+    /// unactionable response (reproduces the pre-retry behavior).
+    #[serde(default = "default_parse_error_retries")]
+    pub parse_error_retries: u32,
 }
 
 fn default_step_limit() -> u32 {
@@ -131,6 +138,10 @@ fn default_stagnation_repeat_threshold() -> u32 {
 
 fn default_stagnation_window() -> u32 {
     8
+}
+
+fn default_parse_error_retries() -> u32 {
+    3
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]

@@ -6,6 +6,11 @@
 kind = "default"
 # Max conversational steps. Prevents runaway loops.
 step_limit = 50
+# Maximum number of re-prompt retries when the model returns an empty or
+# unparseable response before the run fails with failure_category: model_parse.
+# Default: 3 (up to 3 additional re-prompt attempts after the first failure).
+# Set to 0 to abort immediately on the first unactionable response.
+parse_error_retries = 3
 # Template rendered when the model's response contains no valid action.
 format_error_template = '''
 Your response did not include a valid tool call. Respond with a single

@@ -52,6 +52,7 @@
           "observation_head_ratio": 0.5,
           "observation_template": "...",
           "format_error_template": "...",
+          "parse_error_retries": 3,
           "tool_hook_timeout_secs": 30
         },
         "environment": {

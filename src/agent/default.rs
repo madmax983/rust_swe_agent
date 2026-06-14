@@ -441,6 +441,9 @@ pub struct DefaultAgent {
     /// When true, tool execution is blocked and any attempted tool action
     /// terminates the run with a read-only failure.
     pub read_only: bool,
+    /// Running count of consecutive unactionable model responses in this run.
+    /// Compared against `config.root.agent.parse_error_retries` to bound retries.
+    parse_error_count: u32,
 }
 
 pub struct DefaultAgentBuilder {
@@ -653,6 +656,7 @@ impl DefaultAgentBuilder {
             confirm_callback: None,
             auto_approve_rules: std::sync::Mutex::new(std::collections::HashSet::new()),
             read_only: self.read_only,
+            parse_error_count: 0,
         })
     }
 }
@@ -1068,14 +1072,11 @@ impl Agent for DefaultAgent {
                 asst.extra.actions = Some(vec![call.action_label()]);
             }
             Action::None => {
-                // Keep a breadcrumb that at least one model response could
-                // not be parsed into a valid action. Terminal limit checks
-                // above still take precedence if the run eventually ends on
-                // step/cost exhaustion.
-                self.trajectory
-                    .info
-                    .failure_category
-                    .get_or_insert(FailureCategory::ModelParse);
+                // Count this unactionable response and record it in the trajectory
+                // so triage can distinguish one-off flakes from chronic format failures.
+                self.parse_error_count += 1;
+                self.trajectory.info.parse_retries += 1;
+
                 self.history.push(Message::assistant(
                     self.redactor
                         .redact_text(&assistant_content, surface::MODEL_OBSERVATION)
@@ -1087,6 +1088,25 @@ impl Agent for DefaultAgent {
                     asst.extra.clone(),
                     &self.redactor,
                 );
+
+                if self.parse_error_count > self.config.root.agent.parse_error_retries {
+                    // Retries exhausted: terminal limit checks above still take
+                    // precedence on step/cost exhaustion, so only set ModelParse
+                    // here when no prior category was recorded.
+                    self.trajectory
+                        .info
+                        .failure_category
+                        .get_or_insert(FailureCategory::ModelParse);
+                    self.trajectory.info.steps = Some(self.steps);
+                    self.trajectory.info.total_cost_usd = Some(self.total_cost_usd);
+                    self.finalize_run_metadata(crate::trajectory::outcome::ERROR);
+                    return Err(Error::Model(ModelError::Malformed(format!(
+                        "parse-error retries exhausted after {} attempt(s)",
+                        self.parse_error_count
+                    ))));
+                }
+
+                // Under retry limit — re-prompt with format_error_template.
                 // Observation = format_error_template, verbatim (no vars in
                 // default template, but we still render to pick up any
                 // future placeholders).
@@ -2997,6 +3017,179 @@ mod tests {
                 .any(|m| m.content.contains("did not include a valid tool call"))
         );
     }
+
+    // ── RED phase: parse-retry AC tests (issue #517) ─────────────────────────
+
+    fn make_agent_with_parse_retries(
+        responses: Vec<String>,
+        parse_error_retries: u32,
+    ) -> DefaultAgent {
+        let mut cfg = Config::defaults().unwrap();
+        cfg.root.agent.step_limit = 10;
+        cfg.root.agent.parse_error_retries = parse_error_retries;
+        let model = Arc::new(DeterministicModel::new(responses));
+        DefaultAgentBuilder {
+            config: cfg,
+            model,
+            env: Box::new(LocalEnvironment::new()),
+            task: "test".into(),
+            extra_context: None,
+            renderer: None,
+            stream: None,
+            resume_from: None,
+            read_only: false,
+        }
+        .build()
+        .unwrap()
+    }
+
+    /// AC (a): empty/garbage first response is retried then succeeds → run proceeds past step 0.
+    #[tokio::test]
+    async fn parse_retry_first_garbage_then_success_proceeds() {
+        let mut agent = make_agent_with_parse_retries(
+            vec![
+                "no fenced block here".into(),
+                "COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT\n```\nok\n```".into(),
+            ],
+            2,
+        );
+        let exit = agent.run().await.unwrap();
+        assert!(
+            matches!(exit, ExitReason::Submitted { .. }),
+            "run should succeed after retry, got {exit:?}"
+        );
+        assert_eq!(
+            agent.trajectory.info.failure_category, None,
+            "no failure_category on a successful run"
+        );
+        assert_eq!(
+            agent.trajectory.info.parse_retries, 1,
+            "one parse retry should be recorded"
+        );
+    }
+
+    /// AC (b): persistently empty responses fail with model_parse only after N retries.
+    #[tokio::test]
+    async fn parse_retry_persistent_fails_after_n_retries() {
+        let model = Arc::new(DeterministicModel::new([
+            "garbage no action".into(),
+            "garbage no action".into(),
+            "garbage no action".into(),
+            // Should not reach a 4th call
+            "COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT\n```\nok\n```".into(),
+        ]));
+        let mut cfg = Config::defaults().unwrap();
+        cfg.root.agent.step_limit = 10;
+        cfg.root.agent.parse_error_retries = 2;
+        let mut agent = DefaultAgentBuilder {
+            config: cfg,
+            model: model.clone(),
+            env: Box::new(LocalEnvironment::new()),
+            task: "test".into(),
+            extra_context: None,
+            renderer: None,
+            stream: None,
+            resume_from: None,
+            read_only: false,
+        }
+        .build()
+        .unwrap();
+        let result = agent.run().await;
+        assert!(result.is_err(), "should fail after retries exhausted");
+        assert_eq!(
+            agent.trajectory.info.failure_category,
+            Some(FailureCategory::ModelParse),
+            "failure_category must be model_parse after N retries"
+        );
+        assert_eq!(
+            agent.trajectory.info.parse_retries, 3,
+            "3 parse errors should be recorded"
+        );
+        assert_eq!(model.call_count(), 3, "model called exactly N+1 times");
+    }
+
+    /// AC (c): retries stop at budget exhaustion; failure_category is budget_exhausted not model_parse.
+    #[tokio::test]
+    async fn parse_retry_stops_at_budget_exhaustion() {
+        let usage = ModelUsage {
+            input_tokens: 0,
+            output_tokens: 0,
+            cache_read_tokens: 0,
+            cache_creation_tokens: 0,
+            cost_usd: Some(0.10),
+        };
+        let mut cfg = Config::defaults().unwrap();
+        cfg.root.agent.step_limit = 10;
+        cfg.root.agent.per_task_budget_usd = Some(0.15);
+        cfg.root.agent.parse_error_retries = 5;
+        let model = Arc::new(DeterministicModel::with_usage(
+            [
+                "garbage no action".into(),
+                "garbage no action".into(),
+                "garbage no action".into(),
+            ],
+            usage,
+        ));
+        let mut agent = DefaultAgentBuilder {
+            config: cfg,
+            model,
+            env: Box::new(LocalEnvironment::new()),
+            task: "test".into(),
+            extra_context: None,
+            renderer: None,
+            stream: None,
+            resume_from: None,
+            read_only: false,
+        }
+        .build()
+        .unwrap();
+        let exit = agent.run().await.unwrap();
+        assert!(
+            matches!(exit, ExitReason::BudgetExhausted { .. }),
+            "should be budget_exhausted when budget runs out during parse retry: {exit:?}"
+        );
+        assert_eq!(
+            agent.trajectory.info.failure_category,
+            Some(FailureCategory::BudgetExhausted),
+            "failure_category must be budget_exhausted, not model_parse"
+        );
+    }
+
+    /// AC (d): N=0 reproduces today's abort-at-step-0 behavior (no re-prompt, immediate fail).
+    #[tokio::test]
+    async fn parse_retry_n_zero_aborts_immediately() {
+        let model = Arc::new(DeterministicModel::new([
+            "garbage no action".into(),
+            // Should never reach second call
+            "COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT\n```\nok\n```".into(),
+        ]));
+        let mut cfg = Config::defaults().unwrap();
+        cfg.root.agent.step_limit = 10;
+        cfg.root.agent.parse_error_retries = 0;
+        let mut agent = DefaultAgentBuilder {
+            config: cfg,
+            model: model.clone(),
+            env: Box::new(LocalEnvironment::new()),
+            task: "test".into(),
+            extra_context: None,
+            renderer: None,
+            stream: None,
+            resume_from: None,
+            read_only: false,
+        }
+        .build()
+        .unwrap();
+        let result = agent.run().await;
+        assert!(result.is_err(), "N=0 should immediately fail on first parse error");
+        assert_eq!(
+            agent.trajectory.info.failure_category,
+            Some(FailureCategory::ModelParse),
+            "failure_category must be model_parse with N=0"
+        );
+        assert_eq!(model.call_count(), 1, "model called exactly once with N=0");
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
 
     #[tokio::test]
     async fn wallclock_deadline_warning_is_visible_before_model_query() {
