@@ -2,8 +2,10 @@
 
 Every trajectory produced by the harness carries a `failure_category` field in
 its `info` block when the run does not submit.  The field is present on outcomes
-`error`, `step_limit_reached`, and `budget_exhausted`; it is absent on `submitted`
-and on sweep-skipped instances whose `outcome` is `null`.  This string drives
+`error`, `step_limit_reached`, and `budget_exhausted`; it is absent on `submitted`,
+on sweep-skipped instances whose `outcome` is `null`, and on **cancelled** runs
+(which carry `outcome: error` but have `failure_category: null` because
+`finalize_cancelled` clears the field intentionally).  This string drives
 [`bench triage`](spec-triage.md), [`bench compare`](spec-evaluation.md), the
 [systemic-halt circuit breaker](spec-systemic-halt.md), nightly-smoke auto-issues,
 and the failure mix in [`bench tail`](spec-tail.md).
@@ -65,8 +67,8 @@ patch file in the workspace).
 1. Run `bench doctor` to verify Docker availability and connectivity.
 2. Check that the container image exists and is pullable: `docker pull <image>`.
 3. Review `bench inspect --sweep <sweep_dir> --instance <id>` for the specific error message; inspect `info.other["patch_error"]` if present to distinguish pre-loop from post-loop failures.
-4. If `env_setup` is dominant across instances, the circuit breaker may trip with exit 11 (`systemic_halt`).  Halt reports are in `halt-report.json`.
-5. Use `bench retry` to rerun only affected instances after fixing the infrastructure issue.
+4. If `env_setup` is dominant across instances, the circuit breaker may trip with exit 11 (`systemic_halt`).  Halt reports are in `halt-report.json`.  After fixing the infrastructure issue, use `bench swebench --resume` to continue (the halted sweep status is `systemic_halt`, not `completed`, so `bench retry` will refuse it).
+5. Use `bench retry` to rerun only affected instances from a *completed* sweep after fixing the issue.
 
 ---
 
@@ -93,7 +95,7 @@ gave up because every attempt failed.
 **Recommended action.**
 1. Verify the API key: `echo $ANTHROPIC_API_KEY | wc -c` and confirm it is set in the environment.
 2. Check the provider dashboard for quota or outage notices.
-3. Confirm the model name in your config matches a currently-available model: `bench doctor --skip-model-probe`.
+3. Confirm the model name in your config matches a currently-available model by running `bench doctor` (without `--skip-model-probe`, which would bypass the model endpoint check).
 4. Run `bench inspect --sweep <sweep_dir> --instance <id>` to see the raw API error text.
 5. After fixing the credential issue, use `bench retry` or `bench swebench --resume` to continue.
 
@@ -324,9 +326,10 @@ were recorded.
 | **Partial patch preserved** | **Yes** — the redacted patch is written to disk before the run is downgraded |
 | **Typical sweep outcome class** | `success` (0) — the run is downgraded internally but the process exits cleanly |
 
-**Definition.** A configured secret literal was found in a submission artifact
-(patch, trajectory, or output file).  The harness blocked the submission and
-recorded the instance as failed to prevent credential exposure.
+**Definition.** A configured secret literal was detected in the submitted
+**patch** artifact.  The harness writes the redacted patch, downgrades the
+outcome to `error`, and records this category.  Trajectory text and output
+files are redacted at display time but do not trigger this category.
 
 **You will see this when…**
 - The agent incorporates an API key or password into generated code or test files.
@@ -416,20 +419,22 @@ a provider context-length error.
 | **JSON string** | `read_only_violation` |
 | **Systemic-halt actionable** | No |
 | **Partial patch preserved** | No |
-| **Typical sweep outcome class** | `success` (0) |
+| **Typical sweep outcome class** | N/A — only produced by `mini --read-only`; `bench swebench` always runs with `read_only: false` |
 
-**Definition.** The agent attempted a write operation (file edit, shell command
-with side-effects) while running in `--read-only` mode.  The harness blocked the
-tool invocation and terminated the run.
+**Definition.** The agent attempted a write operation while running in
+`--read-only` mode (`mini --read-only`).  The harness blocked the tool
+invocation and terminated the run.  `bench swebench` does not expose a
+`--read-only` flag and always passes `read_only: false`, so this category
+cannot occur in a sweep context.
 
 **You will see this when…**
-- You run a sweep with `--read-only` but the task requires writing files.
+- You run `mini --read-only` for a task that requires writing files.
 - An agent action unexpectedly triggers the read-only policy.
 - You are using `agent env preview` and the policy is stricter than expected.
 
 **Recommended action.**
-1. Remove `--read-only` if the task requires write access.
-2. Use `bench inspect` to identify which tool call triggered the violation.
+1. Remove `--read-only` from the `mini` invocation if the task requires write access.
+2. Use `bench inspect --sweep <dir> --instance <id>` to identify which tool call triggered the violation.
 3. See [`docs/spec-read-only.md`](spec-read-only.md) for the full read-only policy reference.
 
 ---
@@ -567,5 +572,5 @@ bench tail --sweep runs/sweep-retry
 | `patch_empty` | No | **Yes** (empty patch file) | `success` (0) |
 | `secret_leak_detected` | No | **Yes** (redacted patch) | `success` (0) |
 | `agent_stagnation` | No | No | `agent_stagnation` (12) / `success` (0) |
-| `read_only_violation` | No | No | `success` (0) |
+| `read_only_violation` | No | No | `mini --read-only` only; `bench swebench` never produces this |
 | `unknown` | No | Unknown | `success` (0) |
