@@ -1,7 +1,9 @@
 # Failure Category Reference and Triage Runbook
 
 Every trajectory produced by the harness carries a `failure_category` field in
-its `info` block when `outcome` is `error`.  This string drives
+its `info` block when the run does not submit.  The field is present on outcomes
+`error`, `step_limit_reached`, and `budget_exhausted`; it is absent on `submitted`
+and on sweep-skipped instances whose `outcome` is `null`.  This string drives
 [`bench triage`](spec-triage.md), [`bench compare`](spec-evaluation.md), the
 [systemic-halt circuit breaker](spec-systemic-halt.md), nightly-smoke auto-issues,
 and the failure mix in [`bench tail`](spec-tail.md).
@@ -44,10 +46,12 @@ answers these questions:
 | **Partial patch preserved** | No |
 | **Typical sweep outcome class** | `systemic_halt` (11) when dominant; `success` (0) otherwise |
 
-**Definition.** The environment setup phase failed before the agent loop
-started. The harness attempted to prepare the task workspace — pulling a Docker
-image, cloning the repository, or running environment installation steps — and
-the preparation did not complete successfully.  No agent turns were executed.
+**Definition.** An environment or infrastructure failure prevented a successful
+run.  The two most common triggers are: (1) the environment setup phase fails
+*before* any agent turns execute (Docker not running, image pull failed,
+repository clone failed); (2) the patch capture step fails *after* the agent
+has already run turns (the harness could not invoke `git diff` or write the
+patch file in the workspace).
 
 **You will see this when…**
 - The Docker daemon is not running or the socket is not accessible.
@@ -55,11 +59,12 @@ the preparation did not complete successfully.  No agent turns were executed.
 - The task dataset specifies a repository that cannot be cloned (private, moved, or removed).
 - The container fails to start or the environment setup script exits non-zero.
 - Network access to the container registry is blocked.
+- Patch capture fails after the agent has completed its turns (look for `patch_error` in `info.other`).
 
 **Recommended action.**
 1. Run `bench doctor` to verify Docker availability and connectivity.
 2. Check that the container image exists and is pullable: `docker pull <image>`.
-3. Review `bench inspect <sweep_dir> --instance <id>` for the specific error message.
+3. Review `bench inspect --sweep <sweep_dir> --instance <id>` for the specific error message; inspect `info.other["patch_error"]` if present to distinguish pre-loop from post-loop failures.
 4. If `env_setup` is dominant across instances, the circuit breaker may trip with exit 11 (`systemic_halt`).  Halt reports are in `halt-report.json`.
 5. Use `bench retry` to rerun only affected instances after fixing the infrastructure issue.
 
@@ -189,9 +194,12 @@ capture only runs on a `Submitted` exit, so no `.patch` artifact is written even
 if the agent had partial edits in the worktree.
 
 **You will see this when…**
-- The per-task budget was consumed partway through an agent turn.
+- The per-task budget (`agent.per_task_budget_usd`) was consumed partway through an agent turn.
 - A single very expensive model call pushed the instance over its ceiling.
-- The sweep-level cost cap (`--sweep-cost-limit-usd`) is hit, causing remaining instances to be skipped.
+
+Note: instances skipped because the *sweep-level* `--sweep-cost-limit-usd` cap was reached are
+recorded with `exit_reason: "budget_halt"` and `failure_category: null` — they do **not** appear
+as `budget_exhausted` rows.
 
 **Recommended action.**
 1. Check `bench tail` cost burn per instance to calibrate the ceiling.
@@ -274,7 +282,7 @@ cannot be applied cleanly.
 - You use `agent apply` on an incompatible tree (use `apply_check_failed`, exit 29, for that scenario).
 
 **Recommended action.**
-1. Inspect the invalid patch: `bench inspect <sweep_dir> --instance <id> --show-patch`.
+1. Inspect the invalid patch: `bench inspect --sweep <sweep_dir> --instance <id>` (the `.patch` file is written alongside the trajectory for direct inspection).
 2. Check the base commit the agent was working against.
 3. Review the agent's final diff-generation step in the trajectory.
 4. If systematic, investigate the model's patch-formatting capability.
@@ -314,7 +322,7 @@ were recorded.
 | **JSON string** | `secret_leak_detected` |
 | **Systemic-halt actionable** | No |
 | **Partial patch preserved** | **Yes** — the redacted patch is written to disk before the run is downgraded |
-| **Typical sweep outcome class** | `verification_failure` (7) for `mini`; `success` (0) for `bench swebench` |
+| **Typical sweep outcome class** | `success` (0) — the run is downgraded internally but the process exits cleanly |
 
 **Definition.** A configured secret literal was found in a submission artifact
 (patch, trajectory, or output file).  The harness blocked the submission and
@@ -367,7 +375,7 @@ contains a diagnostic object:
 1. Use `bench inspect` on the stagnating instance to see which action repeated.
 2. Review the `stagnation` diagnostic object to identify the repeated step indices.
 3. Use `bench stagnation-report` for cross-sweep aggregation of stagnation patterns.
-4. Adjust the prompt or the stagnation window (`agent.stagnation_window`, `agent.stagnation_count`) if needed.
+4. Adjust the prompt or the stagnation thresholds (`agent.stagnation_window`, `agent.stagnation_repeat_threshold`) if needed.
 5. See [`docs/spec-stagnation.md`](spec-stagnation.md) for the full detection rule and config reference.
 
 ---
@@ -522,7 +530,7 @@ improve prompting for the clustered task types.
 **Step 4 — Investigate `patch_empty`.**
 
 ```bash
-bench inspect --sweep runs/sweep --instance <patch_empty_id> --show-patch
+bench inspect --sweep runs/sweep --instance <patch_empty_id>
 ```
 
 Review the trajectory to understand why the agent submitted with no changes.
@@ -531,13 +539,13 @@ These may be tasks the model interprets as "already done."
 **Step 5 — Bundle and archive.**
 
 ```bash
-bench bundle runs/sweep --output sweep-archive.tar.gz
+bench bundle --sweep runs/sweep --output sweep-archive.tar.gz
 ```
 
 Use `bench tail` to monitor any re-run in real time:
 
 ```bash
-bench tail runs/sweep-retry
+bench tail --sweep runs/sweep-retry
 ```
 
 ---
@@ -557,7 +565,7 @@ bench tail runs/sweep-retry
 | `agent_internal` | No | No | `internal_error` (1) / `success` (0) |
 | `patch_apply_invalid` | No | **Yes** (invalid patch) | `success` (0) |
 | `patch_empty` | No | **Yes** (empty patch file) | `success` (0) |
-| `secret_leak_detected` | No | **Yes** (redacted patch) | `verification_failure` (7) / `success` (0) |
+| `secret_leak_detected` | No | **Yes** (redacted patch) | `success` (0) |
 | `agent_stagnation` | No | No | `agent_stagnation` (12) / `success` (0) |
 | `read_only_violation` | No | No | `success` (0) |
 | `unknown` | No | Unknown | `success` (0) |
