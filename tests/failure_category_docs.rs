@@ -8,7 +8,7 @@
 //! adding or renaming a FailureCategory variant without updating this test
 //! causes a compile error, making documentation drift impossible to merge.
 
-#![allow(clippy::unwrap_used)]
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use maxwells_daemon::trajectory::FailureCategory;
 

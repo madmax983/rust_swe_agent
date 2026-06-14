@@ -54,11 +54,12 @@ per-category runbook):
 |---|---|
 | `model_api` | Invalid or missing `ANTHROPIC_API_KEY`, quota exhausted, unreachable model endpoint, wrong model name |
 | `env_setup` | Docker daemon not running, dataset repository path not accessible, environment image pull failed |
+| `history_compaction_failed` | Task requires more context than `history_max_input_tokens` allows even after eliding all older observations |
 
 All other categories (`step_limit`, `cost_limit`, `budget_exhausted`,
 `wallclock_timeout`, `agent_internal`, `patch_apply_invalid`, `patch_empty`,
-`secret_leak_detected`, `model_parse`, `unknown`) are non-actionable and never
-trip the breaker.
+`secret_leak_detected`, `model_parse`, `agent_stagnation`, `read_only_violation`,
+`unknown`) are non-actionable and never trip the breaker.
 
 ## CLI Flags
 

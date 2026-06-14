@@ -88,8 +88,8 @@ gave up because every attempt failed.
 **Recommended action.**
 1. Verify the API key: `echo $ANTHROPIC_API_KEY | wc -c` and confirm it is set in the environment.
 2. Check the provider dashboard for quota or outage notices.
-3. Confirm the model name in your config matches a currently-available model: `bench doctor --skip-docker`.
-4. Run `bench inspect <sweep_dir> --instance <id>` to see the raw API error text.
+3. Confirm the model name in your config matches a currently-available model: `bench doctor --skip-model-probe`.
+4. Run `bench inspect --sweep <sweep_dir> --instance <id>` to see the raw API error text.
 5. After fixing the credential issue, use `bench retry` or `bench swebench --resume` to continue.
 
 ---
@@ -163,13 +163,13 @@ complete.  The harness stopped dispatching new turns and recorded the instance
 as failed.
 
 **You will see this when…**
-- `--cost-limit-usd` (per-task) is set too low for the model and task complexity.
+- The `agent.cost_limit_usd` config field is set too low for the model and task complexity.
 - You are intentionally running with a tight per-task cap for cost exploration.
 - Token usage per turn is unusually high (e.g., long file reads, verbose tool output).
 
 **Recommended action.**
-1. Review per-task cost in `bench tail` or `bench inspect` to understand typical spend.
-2. Increase the per-task cost limit or switch to a cheaper model.
+1. Review per-task cost in `bench tail` or `bench inspect --sweep <dir>` to understand typical spend.
+2. Increase `agent.cost_limit_usd` in your config file, or switch to a cheaper model.
 3. Use `bench forecast` to project total cost before raising limits.
 
 ---
@@ -180,13 +180,13 @@ as failed.
 |---|---|
 | **JSON string** | `budget_exhausted` |
 | **Systemic-halt actionable** | No |
-| **Partial patch preserved** | **Yes** — any patch accumulated before the cap fired is preserved |
+| **Partial patch preserved** | No — patch capture only runs on `Submitted` exit; the in-flight worktree state is not written to disk |
 | **Typical sweep outcome class** | `budget_halt` (5) when the sweep-level cost cap terminates the run; `success` (0) for per-task cap |
 
-**Definition.** The per-task USD ceiling was reached mid-loop.  Unlike
-`cost_limit` (which prevents new turns from starting), `budget_exhausted` fires
-inside an active turn: the harness terminated the agent and preserved any partial
-patch that had accumulated before the cap fired.
+**Definition.** The per-task USD ceiling (`agent.per_task_budget_usd`) was
+reached mid-loop.  The harness terminated the agent before submission.  Patch
+capture only runs on a `Submitted` exit, so no `.patch` artifact is written even
+if the agent had partial edits in the worktree.
 
 **You will see this when…**
 - The per-task budget was consumed partway through an agent turn.
@@ -194,10 +194,9 @@ patch that had accumulated before the cap fired.
 - The sweep-level cost cap (`--sweep-cost-limit-usd`) is hit, causing remaining instances to be skipped.
 
 **Recommended action.**
-1. Inspect the preserved partial patch via `bench inspect` — it may still be useful.
-2. Check `bench tail` cost burn per instance to calibrate the ceiling.
-3. Increase the per-task ceiling or use `bench forecast` to size the budget before re-running.
-4. Use `bench retry` to attempt only the budget-exhausted instances with a higher ceiling.
+1. Check `bench tail` cost burn per instance to calibrate the ceiling.
+2. Increase `agent.per_task_budget_usd` in your config, or use `bench forecast` to size the budget before re-running.
+3. Use `bench retry` to attempt only the budget-exhausted instances with a higher ceiling.
 
 ---
 
@@ -288,7 +287,7 @@ cannot be applied cleanly.
 |---|---|
 | **JSON string** | `patch_empty` |
 | **Systemic-halt actionable** | No |
-| **Partial patch preserved** | No |
+| **Partial patch preserved** | **Yes** — the empty patch file is written to disk before validation fires |
 | **Typical sweep outcome class** | `success` (0) |
 
 **Definition.** The agent submitted but the captured diff was empty (zero bytes
@@ -314,7 +313,7 @@ were recorded.
 |---|---|
 | **JSON string** | `secret_leak_detected` |
 | **Systemic-halt actionable** | No |
-| **Partial patch preserved** | No — submission is rejected |
+| **Partial patch preserved** | **Yes** — the redacted patch is written to disk before the run is downgraded |
 | **Typical sweep outcome class** | `verification_failure` (7) for `mini`; `success` (0) for `bench swebench` |
 
 **Definition.** A configured secret literal was found in a submission artifact
@@ -503,8 +502,8 @@ first because it is in the systemic-halt whitelist and prevents any meaningful w
 **Step 2 — Diagnose the actionable category.**
 
 ```bash
-bench triage runs/sweep --category model_api
-bench inspect runs/sweep --instance <failing_id>
+bench triage --sweep runs/sweep --bucket model_api
+bench inspect --sweep runs/sweep --instance <failing_id>
 ```
 
 Check the provider dashboard for quota alerts.  If the API key is invalid, fix
@@ -514,7 +513,7 @@ highest-priority fix.
 **Step 3 — Address `step_limit` after the API issue is cleared.**
 
 ```bash
-bench triage runs/sweep --category step_limit --top 10
+bench triage --sweep runs/sweep --bucket step_limit --top 10
 ```
 
 Look for clusters of similar task types.  Increase `agent.step_limit` or
@@ -523,7 +522,7 @@ improve prompting for the clustered task types.
 **Step 4 — Investigate `patch_empty`.**
 
 ```bash
-bench inspect runs/sweep --instance <patch_empty_id> --show-patch
+bench inspect --sweep runs/sweep --instance <patch_empty_id> --show-patch
 ```
 
 Review the trajectory to understand why the agent submitted with no changes.
@@ -553,12 +552,12 @@ bench tail runs/sweep-retry
 | `model_parse` | No | No | `success` (0) |
 | `step_limit` | No | No | `success` (0) |
 | `cost_limit` | No | No | `success` (0) / `budget_halt` (5) |
-| `budget_exhausted` | No | **Yes** | `budget_halt` (5) / `success` (0) |
+| `budget_exhausted` | No | No | `budget_halt` (5) / `success` (0) |
 | `wallclock_timeout` | No | No | `success` (0) |
 | `agent_internal` | No | No | `internal_error` (1) / `success` (0) |
 | `patch_apply_invalid` | No | **Yes** (invalid patch) | `success` (0) |
-| `patch_empty` | No | No | `success` (0) |
-| `secret_leak_detected` | No | No | `verification_failure` (7) / `success` (0) |
+| `patch_empty` | No | **Yes** (empty patch file) | `success` (0) |
+| `secret_leak_detected` | No | **Yes** (redacted patch) | `verification_failure` (7) / `success` (0) |
 | `agent_stagnation` | No | No | `agent_stagnation` (12) / `success` (0) |
 | `read_only_violation` | No | No | `success` (0) |
 | `unknown` | No | Unknown | `success` (0) |
