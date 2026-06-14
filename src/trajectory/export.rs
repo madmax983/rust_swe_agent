@@ -95,6 +95,14 @@ pub fn registry() -> Vec<ExportFormat> {
         render: MermaidExporter::export,
     });
 
+    #[cfg(feature = "jupyter-export")]
+    formats.push(ExportFormat {
+        name: "jupyter",
+        tier: StabilityTier::Experimental,
+        consumer: "Jupyter notebooks, data scientists, researchers",
+        render: JupyterExporter::export,
+    });
+
     formats
 }
 
@@ -109,6 +117,7 @@ pub const FEATURE_GATED_FORMATS: &[(&str, &str)] = &[
     ("csv", "csv-export"),
     ("html", "html-export"),
     ("mermaid", "mermaid-export"),
+    ("jupyter", "jupyter-export"),
 ];
 
 /// Returns `true` if `name` is a trajectory export format known to this codebase,
@@ -166,7 +175,65 @@ pub struct MermaidExporter;
 #[cfg(feature = "html-export")]
 pub struct HtmlExporter;
 
+#[cfg(feature = "jupyter-export")]
+pub struct JupyterExporter;
+
 use std::fmt::Write;
+
+#[cfg(feature = "jupyter-export")]
+impl TrajectoryExporter for JupyterExporter {
+    fn export(trajectory: &Trajectory) -> String {
+        let redactor = Redactor::default_enabled();
+
+        let mut cells = Vec::new();
+
+        let mut task_content = String::from("# Trajectory\n\n");
+        if let Some(task) = &trajectory.info.task {
+            let task = redactor.redact_text(task, surface::EXPORT).text;
+            let _ = write!(task_content, "**Task:** {task}\n\n");
+        }
+        if let Some(outcome) = &trajectory.info.outcome {
+            let outcome = redactor.redact_text(outcome, surface::EXPORT).text;
+            let _ = writeln!(task_content, "**Outcome:** {outcome}");
+        }
+
+        let task_cell = serde_json::json!({
+            "cell_type": "markdown",
+            "metadata": {},
+            "source": [task_content]
+        });
+        cells.push(task_cell);
+
+        for msg in &trajectory.messages {
+            let role_title = match msg.role.as_str() {
+                "system" => "System",
+                "user" => "User",
+                "assistant" => "Assistant",
+                "tool" => "Tool",
+                other => other,
+            };
+
+            let content = redactor.redact_text(&msg.content, surface::EXPORT).text;
+            let source_text = format!("### {role_title}\n\n{content}");
+
+            let cell = serde_json::json!({
+                "cell_type": "markdown",
+                "metadata": {},
+                "source": [source_text]
+            });
+            cells.push(cell);
+        }
+
+        let notebook = serde_json::json!({
+            "cells": cells,
+            "metadata": {},
+            "nbformat": 4,
+            "nbformat_minor": 5
+        });
+
+        serde_json::to_string_pretty(&notebook).unwrap_or_default()
+    }
+}
 
 #[cfg(feature = "csv-export")]
 impl TrajectoryExporter for CsvExporter {
@@ -452,5 +519,23 @@ mod tests {
         assert!(html.contains("submitted"));
         assert!(html.contains("Hello agent"));
         assert!(html.contains("Hello user"));
+    }
+
+    #[cfg(feature = "jupyter-export")]
+    #[test]
+    fn test_jupyter_export_format() {
+        let mut t = Trajectory::new();
+        t.info.task = Some("Data analysis task".to_string());
+
+        t.record_message(&Message::system("System prompt"));
+        t.record_message(&Message::user("Please analyze"));
+        t.record_message(&Message::assistant("Analyzing now"));
+
+        let jupyter = JupyterExporter::export(&t);
+
+        assert!(jupyter.contains("\"nbformat\": 4"));
+        assert!(jupyter.contains("Data analysis task"));
+        assert!(jupyter.contains("Please analyze"));
+        assert!(jupyter.contains("Analyzing now"));
     }
 }
