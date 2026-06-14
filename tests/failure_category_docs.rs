@@ -4,7 +4,7 @@
 //! GREEN phase: create docs/failure-categories.md with all variant entries.
 //! REFACTOR phase: update links in README.md, exit-codes.md, and spec files.
 //!
-//! The exhaustive match in `assert_doc_covers_all_variants` ensures that
+//! The exhaustive match in `serde_string` ensures that
 //! adding or renaming a FailureCategory variant without updating this test
 //! causes a compile error, making documentation drift impossible to merge.
 
@@ -74,11 +74,14 @@ fn all_failure_category_variants_documented_in_reference_page() {
         );
     }
 
-    // Runtime check: each serde string must appear as a documented entry in the reference page.
-    let missing: Vec<&str> = variants
+    // Runtime check: each serde string must appear as a backtick-wrapped entry in the reference
+    // page (e.g. `env_setup`). Backtick-wrapping avoids false positives where one variant name
+    // is a substring of another (e.g. a hypothetical `api` matching `model_api`).
+    let missing: Vec<String> = variants
         .iter()
         .map(|&v| serde_string(v))
-        .filter(|&s| !doc.contains(s))
+        .filter(|&s| !doc.contains(&format!("`{s}`")))
+        .map(str::to_owned)
         .collect();
 
     assert!(
