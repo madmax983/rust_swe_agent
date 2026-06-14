@@ -103,6 +103,7 @@ Controls the inner agent loop.
 | `hide_budget_from_agent` | bool | `false` | `true`, `false` | When `true`, the budget block is not appended to observations (A/B flag) |
 | `budget_block_template` | string | see defaults | Handlebars template | Variables: `budget_used`, `budget_limit`, `budget_remaining_pct`, `turn`, `max_turns` |
 | `format_error_template` | string | see defaults | Any string | Rendered when the model response contains no valid bash action |
+| `parse_error_retries` | integer | `3` | `0`–`∞` | Maximum additional re-prompt attempts when the model returns an empty or unparseable response before the run fails with `failure_category: model_parse`. Set to `0` to abort immediately on the first unactionable response (pre-retry behavior) |
 | `observation_template` | string | see defaults | Jinja2/Handlebars template | Variables: `returncode`, `output`, `tool_use_blocked`, `pre_tool_use_hooks`, `post_tool_use_hooks` |
 | `observation_max_bytes` | integer | `16384` | `1`–`∞` | Truncation limit for observations before they reach the model |
 | `observation_head_ratio` | float | `0.5` | `0.0`–`1.0` | Head/tail split ratio when truncating; `0.5` = equal halves |

@@ -1066,9 +1066,11 @@ impl Agent for DefaultAgent {
                 }));
             }
             Action::Bash(cmd) => {
+                self.parse_error_count = 0;
                 asst.extra.actions = Some(vec![cmd.clone()]);
             }
             Action::Tool(call) => {
+                self.parse_error_count = 0;
                 asst.extra.actions = Some(vec![call.action_label()]);
             }
             Action::None => {
@@ -1090,9 +1092,57 @@ impl Agent for DefaultAgent {
                 );
 
                 if self.parse_error_count > self.config.root.agent.parse_error_retries {
-                    // Retries exhausted: terminal limit checks above still take
-                    // precedence on step/cost exhaustion, so only set ModelParse
-                    // here when no prior category was recorded.
+                    // Before classifying as ModelParse, check if a budget limit was
+                    // exceeded by this model call — budget precedence must hold even
+                    // when the call that exhausts retries is also the one that pushes
+                    // total_cost_usd past the cap, since the next step's budget check
+                    // won't run if we terminate here.
+                    if let Some(limit) = self.config.root.agent.per_task_budget_usd {
+                        if self.total_cost_usd >= limit {
+                            self.trajectory.info.exit_reason = Some("budget_exhausted".into());
+                            self.trajectory.info.failure_category =
+                                Some(FailureCategory::BudgetExhausted);
+                            self.trajectory.info.steps = Some(self.steps);
+                            self.trajectory.info.total_cost_usd = Some(self.total_cost_usd);
+                            self.trajectory.info.ended_at = Some(chrono::Utc::now().to_rfc3339());
+                            self.finalize_run_metadata(outcome::BUDGET_EXHAUSTED);
+                            self.emit_run_ended(
+                                "budget_exhausted",
+                                Some(FailureCategory::BudgetExhausted),
+                                None,
+                            );
+                            return Ok(StepOutcome::Terminate(ExitReason::BudgetExhausted {
+                                limit_usd: limit,
+                                spent_usd: self.total_cost_usd,
+                            }));
+                        }
+                    }
+                    if let Some(limit) = self.config.root.agent.cost_limit_usd {
+                        if self.total_cost_usd >= limit {
+                            self.trajectory.info.exit_reason = Some("cost_limit".into());
+                            self.trajectory.info.failure_category =
+                                Some(FailureCategory::CostLimit);
+                            self.trajectory.info.steps = Some(self.steps);
+                            self.trajectory.info.total_cost_usd = Some(self.total_cost_usd);
+                            self.finalize_run_metadata(outcome::STEP_LIMIT_REACHED);
+                            self.emit_run_ended(
+                                "cost_limit",
+                                Some(FailureCategory::CostLimit),
+                                None,
+                            );
+                            return Ok(StepOutcome::Terminate(ExitReason::CostLimit {
+                                limit_usd: limit,
+                                spent_usd: self.total_cost_usd,
+                            }));
+                        }
+                    }
+                    // Retries exhausted with no budget exceeded — fail with ModelParse.
+                    // Terminal limit checks at the top of step() still take precedence
+                    // if the run eventually ends on step exhaustion.
+                    self.trajectory
+                        .info
+                        .exit_reason
+                        .get_or_insert_with(|| "error".into());
                     self.trajectory
                         .info
                         .failure_category
@@ -1100,6 +1150,7 @@ impl Agent for DefaultAgent {
                     self.trajectory.info.steps = Some(self.steps);
                     self.trajectory.info.total_cost_usd = Some(self.total_cost_usd);
                     self.finalize_run_metadata(crate::trajectory::outcome::ERROR);
+                    self.emit_run_ended("error", Some(FailureCategory::ModelParse), None);
                     return Err(Error::Model(ModelError::Malformed(format!(
                         "parse-error retries exhausted after {} attempt(s)",
                         self.parse_error_count
@@ -3155,6 +3206,51 @@ mod tests {
         );
     }
 
+    /// Budget exceeded by the very model call that also exhausts parse retries → BudgetExhausted wins.
+    #[tokio::test]
+    async fn parse_retry_budget_wins_when_exceeded_on_same_call_as_retry_exhaustion() {
+        let usage = ModelUsage {
+            input_tokens: 0,
+            output_tokens: 0,
+            cache_read_tokens: 0,
+            cache_creation_tokens: 0,
+            cost_usd: Some(0.10),
+        };
+        // N=1, budget=$0.15: step 0 call costs $0.10 (under budget, retry), step 1 call
+        // costs another $0.10 (total $0.20 > $0.15) AND exhausts retries simultaneously.
+        let mut cfg = Config::defaults().unwrap();
+        cfg.root.agent.step_limit = 10;
+        cfg.root.agent.per_task_budget_usd = Some(0.15);
+        cfg.root.agent.parse_error_retries = 1;
+        let model = Arc::new(DeterministicModel::with_usage(
+            ["garbage".into(), "garbage".into()],
+            usage,
+        ));
+        let mut agent = DefaultAgentBuilder {
+            config: cfg,
+            model,
+            env: Box::new(LocalEnvironment::new()),
+            task: "test".into(),
+            extra_context: None,
+            renderer: None,
+            stream: None,
+            resume_from: None,
+            read_only: false,
+        }
+        .build()
+        .unwrap();
+        let exit = agent.run().await.unwrap();
+        assert!(
+            matches!(exit, ExitReason::BudgetExhausted { .. }),
+            "budget must win over model_parse even when both conditions fire together: {exit:?}"
+        );
+        assert_eq!(
+            agent.trajectory.info.failure_category,
+            Some(FailureCategory::BudgetExhausted),
+            "failure_category must be budget_exhausted, not model_parse"
+        );
+    }
+
     /// AC (d): N=0 reproduces today's abort-at-step-0 behavior (no re-prompt, immediate fail).
     #[tokio::test]
     async fn parse_retry_n_zero_aborts_immediately() {
@@ -3180,7 +3276,10 @@ mod tests {
         .build()
         .unwrap();
         let result = agent.run().await;
-        assert!(result.is_err(), "N=0 should immediately fail on first parse error");
+        assert!(
+            result.is_err(),
+            "N=0 should immediately fail on first parse error"
+        );
         assert_eq!(
             agent.trajectory.info.failure_category,
             Some(FailureCategory::ModelParse),

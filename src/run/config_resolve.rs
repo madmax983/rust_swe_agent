@@ -222,6 +222,10 @@ const SCALAR_FIELDS: &[FieldDef] = &[
         key: "agent.stagnation_window",
     },
     FieldDef {
+        path: &["agent", "parse_error_retries"],
+        key: "agent.parse_error_retries",
+    },
+    FieldDef {
         path: &["environment", "kind"],
         key: "environment.kind",
     },
