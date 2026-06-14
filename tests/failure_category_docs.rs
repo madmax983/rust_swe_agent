@@ -92,9 +92,8 @@ fn all_failure_category_variants_documented_in_reference_page() {
 
 #[test]
 fn failure_categories_doc_reserves_unknown_string() {
-    let doc = std::fs::read_to_string("docs/failure-categories.md").expect(
-        "docs/failure-categories.md must exist — see issue #330",
-    );
+    let doc = std::fs::read_to_string("docs/failure-categories.md")
+        .expect("docs/failure-categories.md must exist — see issue #330");
 
     assert!(
         doc.contains("unknown"),
@@ -111,9 +110,8 @@ fn failure_categories_doc_reserves_unknown_string() {
 
 #[test]
 fn failure_categories_doc_links_to_relevant_commands() {
-    let doc = std::fs::read_to_string("docs/failure-categories.md").expect(
-        "docs/failure-categories.md must exist — see issue #330",
-    );
+    let doc = std::fs::read_to_string("docs/failure-categories.md")
+        .expect("docs/failure-categories.md must exist — see issue #330");
 
     for cmd in ["bench triage", "bench inspect", "bench retry", "bench tail"] {
         assert!(
