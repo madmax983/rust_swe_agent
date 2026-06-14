@@ -437,12 +437,18 @@ instead of dollars to ride out. Tiny mercy.
 | Docker run fails before the agent starts | Docker is unavailable or the binary lacks the `docker` feature | Start Docker, or use `--env local`; build with the Docker feature before selecting `--env docker` |
 | Smoke run cannot write artifacts | Output directory is unwritable | Choose a writable `--output` path, for example `runs/quickstart` inside the repo |
 | `bench doctor` reports dataset read/parse errors | The `--dataset-path` value is missing, points at a directory, or is not JSONL | Pass a readable SWE-bench JSONL file and rerun `bench doctor --skip-model-probe` |
+| `bench inspect` shows an unfamiliar `failure_category` string | Trajectory from a newer harness version, or an unclassified failure | See [`docs/failure-categories.md`](docs/failure-categories.md) for the full reference and triage runbook |
 
 ## Advanced Specs
 
 Start with the first-run path above, then use these deeper specs once you have
 a valid trajectory in hand:
 
+- [`failure-category reference`](docs/failure-categories.md): every
+  `failure_category` string, its definition, typical triggers, recommended
+  operator action, systemic-halt status, and a worked triage example. The
+  canonical vocabulary index for `bench triage`, `bench inspect`, `bench tail`,
+  and the circuit breaker.
 - [`mini --resume`](docs/spec-mini-resume.md): continue an interrupted
   single-task run from its persisted checkpoint — no token replay, prefix
   trusted verbatim, resume history recorded in the trajectory manifest.

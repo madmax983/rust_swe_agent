@@ -78,7 +78,9 @@ line without inspecting the integer exit code.
 
 For sweep commands the per-instance `failure_category` field in trajectory
 JSON files carries fine-grained information; the process exit code gives the
-coarse sweep-level result.
+coarse sweep-level result.  See [`docs/failure-categories.md`](failure-categories.md)
+for the complete reference of every `failure_category` value, its definition,
+and the recommended triage action.
 
 ## Per-Command Outcome Class Table
 

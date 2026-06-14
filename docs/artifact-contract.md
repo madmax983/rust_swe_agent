@@ -55,21 +55,9 @@ Any future schema change needs either a documented no-bump rationale in the rele
 ## Trajectory `failure_category` values
 
 The `info.failure_category` field in a trajectory artifact uses a stable string
-taxonomy.  Readers should treat unrecognised values as `unknown`.
-
-| Value              | Meaning                                                                 |
-|--------------------|-------------------------------------------------------------------------|
-| `step_limit`       | Agent exhausted the configured step budget.                             |
-| `patch_empty`      | Agent submitted but the patch was empty or only whitespace.             |
-| `patch_invalid`    | Captured patch failed `git apply --check` validation.                   |
-| `env_setup`        | Environment setup failed (Docker, container, tooling).                  |
-| `model_api`        | Persistent model API error (auth, quota, wrong model name).             |
-| `model_parse`      | Model response could not be parsed.                                     |
-| `wallclock_timeout`| Run exceeded the per-task wallclock timeout.                            |
-| `budget_halt`      | Run was skipped / halted due to a cost cap.                             |
-| `cancelled`        | Run was cancelled by operator (SIGINT / `--cancel-deadline`).           |
-| `agent_stagnation` | Stagnation detector tripped: same action repeated K times in W steps.   |
-| `unknown`          | Catch-all for unclassified failures.                                    |
+taxonomy.  Readers should treat unrecognised values as `unknown`.  The
+**canonical reference** for all values, their definitions, triage actions, and
+compatibility policy is [`docs/failure-categories.md`](failure-categories.md).
 
 ### `agent_stagnation` diagnostics
 

@@ -55,7 +55,8 @@ sweep start/end timestamps, total wallclock time, runs per instance, and total r
 ### Failure Mix
 
 A table with one row per outcome category: `resolved`, then each `failure_category`
-(or `eval_exit_reason` when `evaluation.json` is present). Columns:
+(see [`docs/failure-categories.md`](failure-categories.md) for all values)
+or `eval_exit_reason` when `evaluation.json` is present. Columns:
 
 - `n` — instance count
 - `share%` — share of total instances

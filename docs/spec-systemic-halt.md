@@ -46,7 +46,9 @@ When both conditions are satisfied, the breaker:
 
 ## Actionable Categories
 
-Only these two `failure_category` values count toward the breaker threshold:
+Only these `failure_category` values count toward the breaker threshold (see
+[`docs/failure-categories.md`](failure-categories.md) for the full vocabulary and
+per-category runbook):
 
 | Category | Trigger examples |
 |---|---|
