@@ -175,7 +175,7 @@ as failed.
 - Token usage per turn is unusually high (e.g., long file reads, verbose tool output).
 
 **Recommended action.**
-1. Review per-task cost in `bench tail` or `bench inspect --sweep <dir>` to understand typical spend.
+1. Review per-task cost in `bench tail` or `bench inspect --sweep <dir> --filter failure_category=cost_limit` to understand typical spend.
 2. Increase `agent.cost_limit_usd` in your config file, or switch to a cheaper model.
 3. Use `bench forecast` to project total cost before raising limits.
 
@@ -326,14 +326,24 @@ were recorded.
 | **Partial patch preserved** | **Yes** — the redacted patch is written to disk before the run is downgraded |
 | **Typical sweep outcome class** | `success` (0) — the run is downgraded internally but the process exits cleanly |
 
-**Definition.** A configured secret literal was detected in the submitted
-**patch** artifact.  The harness writes the redacted patch, downgrades the
-outcome to `error`, and records this category.  Trajectory text and output
-files are redacted at display time but do not trigger this category.
+**Definition.** A secret was detected in the submitted **patch** artifact.
+Two distinct code paths can fire this category: (1) a configured `secret_literals`
+entry matches a substring of the patch; (2) the patch contains a structured secret
+shape (i.e., `redacted_patch.redacted` is true, indicating the redaction pipeline
+flagged a secret pattern even without an explicit literal match).  In both cases
+the harness writes the **redacted** patch, downgrades the outcome to `error`, and
+records this category.  Note that some instances of `secret_leak_detected` are
+**result-row-only**: the downgrade path (`downgrade_patch_secret_leak_if_needed`)
+can fire after the trajectory has already been written as `submitted`, leaving the
+trajectory showing `submitted` while `results.json` shows `secret_leak_detected`.
+Trajectory text and output files are redacted at display time but do not trigger
+this category.
 
 **You will see this when…**
 - The agent incorporates an API key or password into generated code or test files.
 - A configured `secret_literals` entry matches a substring of the patch.
+- The patch contains a structured secret shape detected by the redaction pipeline
+  (even without a matching `secret_literals` entry).
 - The model echoes a secret from its context window into a tool call argument.
 
 **Recommended action.**
@@ -514,7 +524,11 @@ first because it is in the systemic-halt whitelist and prevents any meaningful w
 
 **Step 2 — Diagnose the actionable category.**
 
+`bench triage` requires `evaluation.json` to be present.  If you have not yet
+evaluated the sweep, run `bench evaluate` first:
+
 ```bash
+bench evaluate --sweep runs/sweep
 bench triage --sweep runs/sweep --bucket model_api
 bench inspect --sweep runs/sweep --instance <failing_id>
 ```

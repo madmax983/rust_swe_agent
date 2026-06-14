@@ -37,7 +37,7 @@ Contains run-level metadata and aggregate telemetry. All fields are optional
 |---|---|---|
 | `model_name` | `string?` | Configured primary model name |
 | `outcome` | `string?` | `submitted` \| `step_limit_reached` \| `error` |
-| `failure_category` | `string?` | Coarse failure kind when `outcome=error`; see [`docs/failure-categories.md`](failure-categories.md) for all values |
+| `failure_category` | `string?` | Coarse failure kind when `outcome` is `error`, `step_limit_reached`, or `budget_exhausted`; absent on `submitted`, `null`-outcome (sweep-skipped), and cancelled runs; see [`docs/failure-categories.md`](failure-categories.md) for all values |
 | `token_usage` | `TokenUsage?` | Aggregate token counts for the run |
 | `actual_cost_usd` | `number?` | Measured USD cost |
 | `fallback_summary` | `FallbackSummary?` | Fallback chain telemetry (present only when `model.fallback_models` was configured) |
