@@ -7361,7 +7361,7 @@ instance = "inst"
         assert_eq!(v["artifact_kind"], "preflight_report");
         assert_eq!(
             v["schema_version"],
-            serde_json::json!({"major": 1, "minor": 10})
+            serde_json::json!({"major": 1, "minor": 11})
         );
         assert!(v.get("mode").is_some());
         assert!(v.get("checks").is_some());

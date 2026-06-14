@@ -656,6 +656,11 @@ impl DefaultAgentBuilder {
             confirm_callback: None,
             auto_approve_rules: std::sync::Mutex::new(std::collections::HashSet::new()),
             read_only: self.read_only,
+            // Consecutive parse-error counter always starts at 0. On --resume,
+            // the on-disk parse_retries (cumulative) is restored via the
+            // trajectory, but this consecutive counter is not, so the effective
+            // cap resets per session rather than per lifetime. Bounded impact:
+            // at most parse_error_retries extra retries per kill/resume cycle.
             parse_error_count: 0,
         })
     }

@@ -652,7 +652,7 @@ pub fn run(args: &AuditCmd) -> Result<(), Error> {
         "artifact_kind": "audit_report",
         "schema_version": {
             "major": 1,
-            "minor": 10
+            "minor": 11
         },
         "overall_pass_fail": overall_pass_fail,
         "divergences": divergences,
