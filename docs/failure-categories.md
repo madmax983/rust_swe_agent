@@ -231,7 +231,7 @@ duration regardless of progress.
 
 **Recommended action.**
 1. Check provider status for API latency anomalies.
-2. Increase `task_timeout_secs` in your config.
+2. Increase the per-task wallclock limit via `--task-timeout-secs <N>` on the CLI (this is a CLI flag, not a TOML config key).
 3. Use `bench inspect` to see at which step the timeout occurred.
 4. If timeouts are rare, they may be noise; if they dominate, investigate infrastructure latency.
 
@@ -347,7 +347,7 @@ this category.
 - The model echoes a secret from its context window into a tool call argument.
 
 **Recommended action.**
-1. Run `agent redact-check` to verify your secret literals configuration is correct.
+1. Run `agent redact-check --trajectory <path>.traj.json` to verify your secret literals configuration is correct against a real trajectory (exactly one of `--text`, `--file`, `--trajectory`, or piped stdin is required).
 2. Run `agent redact-audit` on the sweep directory to locate any exposed secrets.
 3. Review the task and model prompt to understand why the secret appeared in the output.
 4. See [`docs/spec-secret-redaction.md`](spec-secret-redaction.md) for the full redaction policy.
@@ -444,7 +444,7 @@ cannot occur in a sweep context.
 
 **Recommended action.**
 1. Remove `--read-only` from the `mini` invocation if the task requires write access.
-2. Use `bench inspect --sweep <dir> --instance <id>` to identify which tool call triggered the violation.
+2. Inspect the `mini` trajectory artifact (e.g., `<output-dir>/<task-id>.traj.json`) to identify which tool call triggered the violation — `bench inspect --sweep` cannot be used here because this category is never produced by a sweep.
 3. See [`docs/spec-read-only.md`](spec-read-only.md) for the full read-only policy reference.
 
 ---
