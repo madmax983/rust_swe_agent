@@ -1,7 +1,7 @@
 #![allow(clippy::unwrap_used)]
 
 use clap::CommandFactory as _;
-use maxwells_daemon::cli::Cli;
+use maxwells_daemon::Cli;
 
 #[test]
 fn cli_uses_maxwell_branding() {

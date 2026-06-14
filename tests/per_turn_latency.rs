@@ -9,8 +9,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
+use maxwells_daemon::ArtifactSchemaVersion;
 use maxwells_daemon::agent::default::DefaultAgentBuilder;
-use maxwells_daemon::artifact::ArtifactSchemaVersion;
 use maxwells_daemon::run::evaluate::EvaluationResults;
 use maxwells_daemon::run::inspect::{InspectReport, render_text};
 use maxwells_daemon::trajectory::Trajectory;

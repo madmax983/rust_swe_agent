@@ -6,8 +6,8 @@
 
 #![allow(clippy::unwrap_used)]
 
+use maxwells_daemon::ExitCode;
 use maxwells_daemon::config::Config;
-use maxwells_daemon::exit_code::ExitCode;
 use maxwells_daemon::run::env_preview::{
     EnvPreview, EnvPreviewOpts, EnvVarPreview, HookEntry, HooksPreview, McpServerPreview,
     PolicyPreview, PreviewFinding, format_preview_text, is_risky, run_env_preview,

@@ -2,7 +2,7 @@
 #![allow(clippy::too_many_lines)]
 
 use clap::CommandFactory as _;
-use maxwells_daemon::cli::Cli;
+use maxwells_daemon::Cli;
 
 #[test]
 fn bench_help_documents_diff_config_subcommand_and_options() {

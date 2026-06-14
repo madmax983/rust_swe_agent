@@ -10,7 +10,7 @@ use std::fmt::Write as _;
 use std::path::Path;
 use std::process::Command;
 
-use maxwells_daemon::artifact::ArtifactKind;
+use maxwells_daemon::ArtifactKind;
 use maxwells_daemon::run::swebench::{
     SWEEP_STATUS_COMPLETED, SWEEP_STATUS_SYSTEMIC_HALT, SwebenchArgs, SweepHaltReport,
     SweepResults, circuit_breaker::CircuitBreaker, run,

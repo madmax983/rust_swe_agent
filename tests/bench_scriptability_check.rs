@@ -15,7 +15,7 @@ use std::process::Command;
 mod support;
 use support::binary_path;
 
-use maxwells_daemon::exit_code::ExitCode;
+use maxwells_daemon::ExitCode;
 use maxwells_daemon::run::scriptability_check::{
     HookCheckResult, McpServerCheckResult, McpToolCheckResult, ScriptabilityCheckArgs,
     ScriptabilityCheckReport, render_text,
@@ -101,8 +101,8 @@ fn hook_check_result_has_expected_fields() {
 #[test]
 fn report_fields_exist() {
     let report = ScriptabilityCheckReport {
-        artifact_kind: maxwells_daemon::artifact::ArtifactKind::ScriptabilityCheck,
-        schema_version: maxwells_daemon::artifact::ArtifactSchemaVersion::CURRENT,
+        artifact_kind: maxwells_daemon::ArtifactKind::ScriptabilityCheck,
+        schema_version: maxwells_daemon::ArtifactSchemaVersion::CURRENT,
         generated_at: "2026-01-01T00:00:00Z".into(),
         config: "<defaults>".into(),
         servers: vec![],
@@ -117,7 +117,7 @@ fn report_fields_exist() {
 
 #[test]
 fn artifact_kind_scriptability_check_label() {
-    use maxwells_daemon::artifact::ArtifactKind;
+    use maxwells_daemon::ArtifactKind;
     assert_eq!(
         ArtifactKind::ScriptabilityCheck.label(),
         "scriptability_check"

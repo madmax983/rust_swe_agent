@@ -10,7 +10,7 @@
 use std::path::Path;
 use std::process::Command;
 
-use maxwells_daemon::exit_code::ExitCode;
+use maxwells_daemon::ExitCode;
 use maxwells_daemon::run::apply::{
     AgentApplyOpts, ApplyError, ApplyReport, PatchSelector, run_agent_apply,
 };
@@ -48,7 +48,7 @@ fn apply_dirty_tree_refused_exit_code_is_31() {
 
 #[test]
 fn apply_report_has_required_fields() {
-    use maxwells_daemon::artifact::{ArtifactKind, ArtifactSchemaVersion};
+    use maxwells_daemon::{ArtifactKind, ArtifactSchemaVersion};
 
     let report = ApplyReport {
         schema_version: ArtifactSchemaVersion::CURRENT,
@@ -71,7 +71,7 @@ fn apply_report_has_required_fields() {
 
 #[test]
 fn artifact_kind_has_apply_report_variant() {
-    use maxwells_daemon::artifact::ArtifactKind;
+    use maxwells_daemon::ArtifactKind;
     assert_eq!(ArtifactKind::ApplyReport.label(), "apply_report");
 }
 

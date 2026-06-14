@@ -7,13 +7,13 @@
 
 pub mod agent;
 pub mod annotation;
-pub mod artifact;
-pub mod cli;
+pub(crate) mod artifact;
+pub(crate) mod cli;
 pub mod config;
-pub mod cost;
+pub(crate) mod cost;
 pub mod env;
 pub mod error;
-pub mod exit_code;
+pub(crate) mod exit_code;
 pub mod fingerprint;
 pub mod ids;
 pub mod model;
@@ -35,9 +35,19 @@ pub use run::dataset::{
 };
 
 pub use agent::{Agent, DefaultAgent, ExitReason, InteractiveAgent, StepOutcome};
+pub use artifact::{
+    ArtifactKind, ArtifactSchemaVersion, CompatibilityClass, classify_json_value, to_string_pretty,
+    to_writer_pretty,
+};
+pub use cli::{
+    Cli, Command,
+    args::{BenchCmd, UiKind},
+    bench_swebench, catalog, compare_rehearsals, run as cli_run,
+};
 pub use config::{
     Config, McpServerCfg, RedactionCfg, SkillCfg, ToolCfg, ToolHookCfg, ToolHooksCfg,
 };
+pub use cost::CostSource;
 #[cfg(feature = "docker")]
 pub use env::DockerEnvironment;
 pub use env::{Environment, LocalEnvironment, RunRequest, RunResult};

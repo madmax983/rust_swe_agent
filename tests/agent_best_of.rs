@@ -7,9 +7,9 @@
 
 #![allow(clippy::unwrap_used, clippy::large_futures)]
 
-use maxwells_daemon::artifact::{ArtifactKind, ArtifactSchemaVersion};
-use maxwells_daemon::exit_code::ExitCode;
+use maxwells_daemon::ExitCode;
 use maxwells_daemon::run::best_of::{BestOfResults, BestOfRunDetail, select_winner, validate_runs};
+use maxwells_daemon::{ArtifactKind, ArtifactSchemaVersion};
 
 // ── Exit code unit tests ──────────────────────────────────────────────────────
 

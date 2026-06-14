@@ -1,8 +1,8 @@
-use maxwells_daemon::exit_code::ExitCode;
+use maxwells_daemon::ExitCode;
 
 #[tokio::main]
 async fn main() {
-    match Box::pin(maxwells_daemon::cli::run()).await {
+    match Box::pin(maxwells_daemon::cli_run()).await {
         Ok(()) => {}
         Err(e) => {
             let code = ExitCode::from_error(&e);

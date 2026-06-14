@@ -14,7 +14,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use maxwells_daemon::artifact::ArtifactKind;
+use maxwells_daemon::ArtifactKind;
 use maxwells_daemon::run::calibrate::{
     CalibrationArgs, CalibrationMetricStatus, CalibrationVerdict, compute, render_text, to_json,
 };
@@ -213,11 +213,8 @@ fn relative_calibration_output_dir_is_resolved_from_current_cwd_first() {
     );
     std::fs::write(
         cwd.join(&calibration_dir).join("results.json"),
-        maxwells_daemon::artifact::to_string_pretty(
-            ArtifactKind::SweepResults,
-            &calibration_results,
-        )
-        .unwrap(),
+        maxwells_daemon::to_string_pretty(ArtifactKind::SweepResults, &calibration_results)
+            .unwrap(),
     )
     .unwrap();
 
@@ -236,7 +233,7 @@ fn relative_calibration_output_dir_is_resolved_from_current_cwd_first() {
     );
     std::fs::write(
         cwd.join(&results_path),
-        maxwells_daemon::artifact::to_string_pretty(ArtifactKind::SweepResults, &actual).unwrap(),
+        maxwells_daemon::to_string_pretty(ArtifactKind::SweepResults, &actual).unwrap(),
     )
     .unwrap();
 
@@ -744,11 +741,8 @@ fn write_pair(
     );
     std::fs::write(
         calibration_dir.join("results.json"),
-        maxwells_daemon::artifact::to_string_pretty(
-            ArtifactKind::SweepResults,
-            &calibration_results,
-        )
-        .unwrap(),
+        maxwells_daemon::to_string_pretty(ArtifactKind::SweepResults, &calibration_results)
+            .unwrap(),
     )
     .unwrap();
 
@@ -767,7 +761,7 @@ fn write_pair(
     let actual = sweep_results(results, results_manifest, &actual_ids);
     std::fs::write(
         &results_path,
-        maxwells_daemon::artifact::to_string_pretty(ArtifactKind::SweepResults, &actual).unwrap(),
+        maxwells_daemon::to_string_pretty(ArtifactKind::SweepResults, &actual).unwrap(),
     )
     .unwrap();
 

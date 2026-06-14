@@ -6,8 +6,8 @@
 
 #![allow(clippy::unwrap_used)]
 
+use maxwells_daemon::ExitCode;
 use maxwells_daemon::error::{ConfigError, EnvError, Error, ModelError};
-use maxwells_daemon::exit_code::ExitCode;
 
 // ── integer code values ───────────────────────────────────────────────────────
 

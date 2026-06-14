@@ -12,8 +12,8 @@
 use std::path::Path;
 
 use maxwells_daemon::{
+    ExitCode,
     config::Config,
-    exit_code::ExitCode,
     fingerprint::{InputFingerprint, canonical_json, compute_input_fingerprint},
     model::{Message, MessageExtra},
     run::replay::{ReplayArgs, run as replay_run},

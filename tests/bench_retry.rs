@@ -11,7 +11,7 @@ use std::collections::HashSet;
 use std::path::Path;
 use std::process::Command;
 
-use maxwells_daemon::artifact::ArtifactKind;
+use maxwells_daemon::ArtifactKind;
 use maxwells_daemon::run::retry::{
     OverrideDelta, RetryHistoryEntry, RetrySelection, archive_trajectories,
     detect_harness_mismatch_with_sha, merge_retry_results, resolve_selection,
@@ -117,8 +117,7 @@ fn base_sweep(instances: Vec<InstanceResult>) -> SweepResults {
 }
 
 fn write_results(dir: &Path, results: &SweepResults) {
-    let json =
-        maxwells_daemon::artifact::to_string_pretty(ArtifactKind::SweepResults, results).unwrap();
+    let json = maxwells_daemon::to_string_pretty(ArtifactKind::SweepResults, results).unwrap();
     std::fs::write(dir.join("results.json"), json).unwrap();
 }
 
@@ -448,8 +447,8 @@ fn merge_preserves_prior_retry_history_entries() {
 #[test]
 fn schema_version_is_1_10() {
     assert_eq!(
-        maxwells_daemon::artifact::ArtifactSchemaVersion::CURRENT,
-        maxwells_daemon::artifact::ArtifactSchemaVersion::new(1, 10),
+        maxwells_daemon::ArtifactSchemaVersion::CURRENT,
+        maxwells_daemon::ArtifactSchemaVersion::new(1, 10),
         "schema bumped to 1.10 for local_workdir in RenderOnlyReport (issue #341)"
     );
 }
@@ -459,8 +458,7 @@ fn sweep_results_serializes_retry_history_when_present() {
     let mut results = base_sweep(vec![]);
     results.retry_history.push(make_retry_entry("test-id", 0));
 
-    let json =
-        maxwells_daemon::artifact::to_string_pretty(ArtifactKind::SweepResults, &results).unwrap();
+    let json = maxwells_daemon::to_string_pretty(ArtifactKind::SweepResults, &results).unwrap();
     let value: serde_json::Value = serde_json::from_str(&json).unwrap();
     assert!(
         value.get("retry_history").is_some(),
@@ -472,8 +470,7 @@ fn sweep_results_serializes_retry_history_when_present() {
 #[test]
 fn sweep_results_omits_retry_history_when_empty() {
     let results = base_sweep(vec![]);
-    let json =
-        maxwells_daemon::artifact::to_string_pretty(ArtifactKind::SweepResults, &results).unwrap();
+    let json = maxwells_daemon::to_string_pretty(ArtifactKind::SweepResults, &results).unwrap();
     let value: serde_json::Value = serde_json::from_str(&json).unwrap();
     assert!(
         value.get("retry_history").is_none(),

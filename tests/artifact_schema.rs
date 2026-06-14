@@ -3,15 +3,15 @@
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::large_futures)]
 
 use maxwells_daemon::Config;
-use maxwells_daemon::artifact::{
-    ArtifactKind, ArtifactSchemaVersion, CompatibilityClass, classify_json_value,
-};
 use maxwells_daemon::run::evaluate::{EvaluateArgs, EvaluateBackend};
 use maxwells_daemon::run::forecast::{ForecastArgs, ForecastOutcome, forecast_from_results};
 use maxwells_daemon::run::swebench::{
     InstanceResult, SwebenchArgs, SweepResults, run, trajectory_path_for_run,
 };
 use maxwells_daemon::trajectory::{Trajectory, outcome};
+use maxwells_daemon::{
+    ArtifactKind, ArtifactSchemaVersion, CompatibilityClass, classify_json_value,
+};
 
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
@@ -122,12 +122,10 @@ fn artifact_writer_pretty_matches_string_serializer() {
         "total": 1,
         "instances": [{"instance_id": "task-a"}]
     });
-    let expected =
-        maxwells_daemon::artifact::to_string_pretty(ArtifactKind::SweepResults, &payload).unwrap();
+    let expected = maxwells_daemon::to_string_pretty(ArtifactKind::SweepResults, &payload).unwrap();
     let mut actual = Vec::new();
 
-    maxwells_daemon::artifact::to_writer_pretty(&mut actual, ArtifactKind::SweepResults, &payload)
-        .unwrap();
+    maxwells_daemon::to_writer_pretty(&mut actual, ArtifactKind::SweepResults, &payload).unwrap();
 
     assert_eq!(String::from_utf8(actual).unwrap(), expected);
 }
@@ -135,8 +133,7 @@ fn artifact_writer_pretty_matches_string_serializer() {
 #[test]
 fn sweep_results_serialization_includes_dual_cost_metadata() {
     let json =
-        maxwells_daemon::artifact::to_string_pretty(ArtifactKind::SweepResults, &fixture_results())
-            .unwrap();
+        maxwells_daemon::to_string_pretty(ArtifactKind::SweepResults, &fixture_results()).unwrap();
     let value: serde_json::Value = serde_json::from_str(&json).unwrap();
 
     assert_eq!(value["actual_cost_usd"], 0.03);
@@ -533,8 +530,7 @@ async fn current_contract_fixtures_match_emitted_artifact_top_level_fields() {
     })
     .unwrap();
     let eval_json = serde_json::from_str(
-        &maxwells_daemon::artifact::to_string_pretty(ArtifactKind::EvaluationResults, &eval)
-            .unwrap(),
+        &maxwells_daemon::to_string_pretty(ArtifactKind::EvaluationResults, &eval).unwrap(),
     )
     .unwrap();
     assert_contract_shape_matches_fixture("current/evaluation.json", &eval_json);
@@ -881,7 +877,7 @@ fn fixture_results() -> SweepResults {
         total_completion_tokens: 30,
         estimated_cost_usd: 0.03,
         actual_cost_usd: Some(0.03),
-        actual_cost_source: Some(maxwells_daemon::cost::CostSource::RateCardEstimate),
+        actual_cost_source: Some(maxwells_daemon::CostSource::RateCardEstimate),
         baseline_cost_usd: Some(0.00135),
         baseline_cost_model: Some("claude-3-5-sonnet".into()),
         cache_hit_rate: 0.0,

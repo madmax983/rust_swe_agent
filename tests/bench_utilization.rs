@@ -15,7 +15,7 @@
 use std::path::Path;
 use std::process::Command;
 
-use maxwells_daemon::artifact::ArtifactKind;
+use maxwells_daemon::ArtifactKind;
 use maxwells_daemon::run::swebench::{
     CliManifest, ConfigManifest, DatasetManifest, FilterSpec, HarnessManifest, InstanceResult,
     ModelManifest, PromptTemplateManifest, ProvenanceManifest, RuntimeManifest,
@@ -193,7 +193,7 @@ fn write_sweep(dir: &Path, spec: &SweepSpec) {
     std::fs::create_dir_all(dir).unwrap();
     std::fs::write(
         dir.join("results.json"),
-        maxwells_daemon::artifact::to_string_pretty(ArtifactKind::SweepResults, &results).unwrap(),
+        maxwells_daemon::to_string_pretty(ArtifactKind::SweepResults, &results).unwrap(),
     )
     .unwrap();
 }

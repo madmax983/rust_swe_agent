@@ -7,12 +7,12 @@
 
 #![allow(clippy::unwrap_used)]
 
-use maxwells_daemon::artifact::{ArtifactKind, ArtifactSchemaVersion};
-use maxwells_daemon::exit_code::ExitCode;
+use maxwells_daemon::ExitCode;
 use maxwells_daemon::run::stability::{
     StabilityResults, StabilityRunDetail, compute_pass_at_k, compute_patch_identical_rate,
     compute_stats, pass_predicate_label, should_fail_under, validate_runs,
 };
+use maxwells_daemon::{ArtifactKind, ArtifactSchemaVersion};
 
 // ── Exit code unit tests ──────────────────────────────────────────────────────
 

@@ -83,7 +83,7 @@ fn snapshot_keeps_zero_actual_cost_separate_from_baseline_cost() {
     traj.info.exit_reason = Some("submitted".into());
     traj.info.total_cost_usd = Some(0.0);
     traj.info.actual_cost_usd = Some(0.0);
-    traj.info.actual_cost_source = Some(maxwells_daemon::cost::CostSource::FreeTierInferred);
+    traj.info.actual_cost_source = Some(maxwells_daemon::CostSource::FreeTierInferred);
     traj.info.baseline_cost_usd = Some(1.8);
     traj.info.baseline_cost_model = Some("claude-3-5-sonnet".into());
     traj.info.token_usage = Some(TokenUsage {

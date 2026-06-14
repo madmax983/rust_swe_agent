@@ -475,7 +475,7 @@ async fn unknown_actual_zero_cost_still_trips_budget_from_tokens() {
     );
     assert_eq!(
         results.actual_cost_source,
-        Some(maxwells_daemon::cost::CostSource::Unknown)
+        Some(maxwells_daemon::CostSource::Unknown)
     );
     assert!(
         results.instances[0]
@@ -571,7 +571,7 @@ async fn free_tier_zero_cost_does_not_trip_sweep_budget_from_tokens() {
     assert_eq!(results.actual_cost_usd, Some(0.0));
     assert_eq!(
         results.actual_cost_source,
-        Some(maxwells_daemon::cost::CostSource::FreeTierInferred)
+        Some(maxwells_daemon::CostSource::FreeTierInferred)
     );
 }
 

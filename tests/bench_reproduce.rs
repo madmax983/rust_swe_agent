@@ -483,8 +483,8 @@ fn render_summary_includes_patch_identical_percentage() {
 #[test]
 fn cli_parses_bench_reproduce_required_args() {
     use clap::Parser as _;
-    use maxwells_daemon::cli::Cli;
-    use maxwells_daemon::cli::args::BenchCmd;
+    use maxwells_daemon::BenchCmd;
+    use maxwells_daemon::Cli;
 
     let cli = Cli::parse_from([
         "max",
@@ -496,7 +496,7 @@ fn cli_parses_bench_reproduce_required_args() {
         "/tmp/replay-sweep",
     ]);
 
-    let maxwells_daemon::cli::Command::Bench { cmd } = cli.command else {
+    let maxwells_daemon::Command::Bench { cmd } = cli.command else {
         panic!("expected bench reproduce command, got something else");
     };
     let BenchCmd::Reproduce(cmd) = *cmd else {
@@ -512,8 +512,8 @@ fn cli_parses_bench_reproduce_required_args() {
 #[test]
 fn cli_parses_bench_reproduce_optional_overrides() {
     use clap::Parser as _;
-    use maxwells_daemon::cli::Cli;
-    use maxwells_daemon::cli::args::BenchCmd;
+    use maxwells_daemon::BenchCmd;
+    use maxwells_daemon::Cli;
 
     let cli = Cli::parse_from([
         "max",
@@ -530,7 +530,7 @@ fn cli_parses_bench_reproduce_optional_overrides() {
         "--skip-model-probe",
     ]);
 
-    let maxwells_daemon::cli::Command::Bench { cmd } = cli.command else {
+    let maxwells_daemon::Command::Bench { cmd } = cli.command else {
         panic!("expected bench reproduce");
     };
     let BenchCmd::Reproduce(cmd) = *cmd else {

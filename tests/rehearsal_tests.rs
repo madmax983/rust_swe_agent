@@ -236,7 +236,7 @@ async fn test_rehearsal_evaluator_scores_one() {
 #[tokio::test]
 async fn test_skip_evaluator_short_circuit() {
     use clap::Parser as _;
-    use maxwells_daemon::cli::{Cli, Command};
+    use maxwells_daemon::{Cli, Command};
 
     let work = tempfile::tempdir().unwrap();
     let dataset = work.path().join("dataset.jsonl");
@@ -261,9 +261,9 @@ async fn test_skip_evaluator_short_circuit() {
     let cli = Cli::try_parse_from(args_vec).unwrap();
     match cli.command {
         Command::Bench { cmd } => match *cmd {
-            maxwells_daemon::cli::args::BenchCmd::Rehearsal(mut s) => {
+            maxwells_daemon::BenchCmd::Rehearsal(mut s) => {
                 s.rehearse = true;
-                maxwells_daemon::cli::bench_swebench(*s).await.unwrap();
+                maxwells_daemon::bench_swebench(*s).await.unwrap();
             }
             _ => panic!("Expected bench rehearsal subcommand"),
         },
@@ -285,7 +285,7 @@ async fn test_skip_evaluator_short_circuit() {
 #[tokio::test]
 async fn test_diff_surfaces_drift() {
     use clap::Parser as _;
-    use maxwells_daemon::cli::{Cli, Command};
+    use maxwells_daemon::{Cli, Command};
 
     let work = tempfile::tempdir().unwrap();
     let dataset_baseline = work.path().join("dataset_baseline.jsonl");
@@ -311,9 +311,9 @@ async fn test_diff_surfaces_drift() {
     ];
     let cli_baseline = Cli::try_parse_from(args_baseline).unwrap();
     if let Command::Bench { cmd } = cli_baseline.command {
-        if let maxwells_daemon::cli::args::BenchCmd::Rehearsal(mut s) = *cmd {
+        if let maxwells_daemon::BenchCmd::Rehearsal(mut s) = *cmd {
             s.rehearse = true;
-            maxwells_daemon::cli::bench_swebench(*s).await.unwrap();
+            maxwells_daemon::bench_swebench(*s).await.unwrap();
         }
     }
 
@@ -334,16 +334,16 @@ async fn test_diff_surfaces_drift() {
     ];
     let cli_candidate_match = Cli::try_parse_from(args_candidate_match).unwrap();
     if let Command::Bench { cmd } = cli_candidate_match.command {
-        if let maxwells_daemon::cli::args::BenchCmd::Rehearsal(mut s) = *cmd {
+        if let maxwells_daemon::BenchCmd::Rehearsal(mut s) = *cmd {
             s.rehearse = true;
-            maxwells_daemon::cli::bench_swebench(*s).await.unwrap();
+            maxwells_daemon::bench_swebench(*s).await.unwrap();
         }
     }
 
     let output_candidate_match_rehearsal = output_candidate_match.with_extension("rehearsal");
 
     assert!(
-        maxwells_daemon::cli::compare_rehearsals(
+        maxwells_daemon::compare_rehearsals(
             &output_baseline_rehearsal,
             &output_candidate_match_rehearsal
         )
@@ -368,15 +368,15 @@ async fn test_diff_surfaces_drift() {
     ];
     let cli_candidate_drift = Cli::try_parse_from(args_candidate_drift).unwrap();
     if let Command::Bench { cmd } = cli_candidate_drift.command {
-        if let maxwells_daemon::cli::args::BenchCmd::Rehearsal(mut s) = *cmd {
+        if let maxwells_daemon::BenchCmd::Rehearsal(mut s) = *cmd {
             s.rehearse = true;
-            maxwells_daemon::cli::bench_swebench(*s).await.unwrap();
+            maxwells_daemon::bench_swebench(*s).await.unwrap();
         }
     }
 
     let output_candidate_drift_rehearsal = output_candidate_drift.with_extension("rehearsal");
 
-    let diff_result = maxwells_daemon::cli::compare_rehearsals(
+    let diff_result = maxwells_daemon::compare_rehearsals(
         &output_baseline_rehearsal,
         &output_candidate_drift_rehearsal,
     );
@@ -531,7 +531,7 @@ async fn test_rehearsal_empty_patch_and_missing_eval_comparisons() {
     std::fs::write(cand_dir.join("results.json"), &results_json).unwrap();
     std::fs::write(cand_dir.join("evaluation.json"), &cand_eval_json).unwrap();
 
-    let cmp_res = maxwells_daemon::cli::compare_rehearsals(&base_dir, &cand_dir);
+    let cmp_res = maxwells_daemon::compare_rehearsals(&base_dir, &cand_dir);
     if let Err(ref e) = cmp_res {
         println!("DEBUG MOCK CMP ERROR: {}", e);
     }
@@ -547,7 +547,7 @@ async fn test_rehearsal_empty_patch_and_missing_eval_comparisons() {
 #[tokio::test]
 async fn test_forecast_rejects_rehearsal() {
     use clap::Parser as _;
-    use maxwells_daemon::cli::{Cli, Command};
+    use maxwells_daemon::{Cli, Command};
 
     let args = vec![
         "max".to_string(),
@@ -562,8 +562,8 @@ async fn test_forecast_rejects_rehearsal() {
     ];
     let cli = Cli::try_parse_from(args).unwrap();
     if let Command::Bench { cmd } = cli.command {
-        if let maxwells_daemon::cli::args::BenchCmd::Swebench(s) = *cmd {
-            let res = maxwells_daemon::cli::bench_swebench(*s).await;
+        if let maxwells_daemon::BenchCmd::Swebench(s) = *cmd {
+            let res = maxwells_daemon::bench_swebench(*s).await;
             assert!(res.is_err());
             let err_msg = res.unwrap_err().to_string();
             assert!(err_msg.contains("rehearsal mode cannot be used with forecast-first"));
@@ -696,7 +696,7 @@ async fn test_rehearsal_drift_resolved_count_and_pass_at_1() {
     std::fs::write(cand_dir.join("results.json"), &results_json).unwrap();
     std::fs::write(cand_dir.join("evaluation.json"), &cand_eval_json).unwrap();
 
-    let cmp_res = maxwells_daemon::cli::compare_rehearsals(&base_dir, &cand_dir);
+    let cmp_res = maxwells_daemon::compare_rehearsals(&base_dir, &cand_dir);
     assert!(cmp_res.is_err());
     let err_msg = cmp_res.err().unwrap().to_string();
     assert!(err_msg.contains("Drift/regression comparison failed: regressions detected."));
@@ -790,7 +790,7 @@ async fn test_rehearsal_fails_on_corrupted_trajectory() {
 #[tokio::test]
 async fn test_rehearsal_rejects_diff_combined_with_dry_run() {
     use clap::Parser as _;
-    use maxwells_daemon::cli::{Cli, Command};
+    use maxwells_daemon::{Cli, Command};
 
     let args = vec![
         "max".to_string(),
@@ -807,8 +807,8 @@ async fn test_rehearsal_rejects_diff_combined_with_dry_run() {
     ];
     let cli = Cli::try_parse_from(args).unwrap();
     if let Command::Bench { cmd } = cli.command {
-        if let maxwells_daemon::cli::args::BenchCmd::Swebench(s) = *cmd {
-            let res = maxwells_daemon::cli::bench_swebench(*s).await;
+        if let maxwells_daemon::BenchCmd::Swebench(s) = *cmd {
+            let res = maxwells_daemon::bench_swebench(*s).await;
             assert!(res.is_err());
             let err_msg = res.unwrap_err().to_string();
             assert!(err_msg.contains("--diff cannot be used with --dry-run"));
@@ -904,7 +904,7 @@ async fn test_rehearsal_fails_on_missing_trajectory() {
 #[tokio::test]
 async fn test_rehearsal_rejects_empty_terminal_path_segment() {
     use clap::Parser as _;
-    use maxwells_daemon::cli::{Cli, Command};
+    use maxwells_daemon::{Cli, Command};
 
     let args = vec![
         "max".to_string(),
@@ -918,8 +918,8 @@ async fn test_rehearsal_rejects_empty_terminal_path_segment() {
     ];
     let cli = Cli::try_parse_from(args).unwrap();
     if let Command::Bench { cmd } = cli.command {
-        if let maxwells_daemon::cli::args::BenchCmd::Swebench(s) = *cmd {
-            let res = maxwells_daemon::cli::bench_swebench(*s).await;
+        if let maxwells_daemon::BenchCmd::Swebench(s) = *cmd {
+            let res = maxwells_daemon::bench_swebench(*s).await;
             assert!(res.is_err());
             let err_msg = res.unwrap_err().to_string();
             assert!(err_msg.contains("rehearsal output path must contain a terminal path segment"));
@@ -1231,7 +1231,7 @@ async fn test_rehearsal_drift_resolved_count_without_evaluation() {
     )
     .unwrap();
 
-    let cmp_res = maxwells_daemon::cli::compare_rehearsals(&base_dir, &cand_dir);
+    let cmp_res = maxwells_daemon::compare_rehearsals(&base_dir, &cand_dir);
     assert!(cmp_res.is_err());
     let err_msg = cmp_res.err().unwrap().to_string();
     assert!(err_msg.contains("Drift/regression comparison failed: regressions detected."));

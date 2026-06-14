@@ -99,12 +99,8 @@ fn write_results(dir: &Path, instances: Vec<InstanceResult>) {
         span_export_dropped: 0,
     };
     let file = std::fs::File::create(dir.join("results.json")).unwrap();
-    maxwells_daemon::artifact::to_writer_pretty(
-        file,
-        maxwells_daemon::artifact::ArtifactKind::SweepResults,
-        &sweep,
-    )
-    .unwrap();
+    maxwells_daemon::to_writer_pretty(file, maxwells_daemon::ArtifactKind::SweepResults, &sweep)
+        .unwrap();
 }
 
 fn default_evaluate_args(sweep_dir: &Path) -> EvaluateArgs {

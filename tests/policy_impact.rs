@@ -7,8 +7,8 @@
 #[test]
 fn test_cli_parsing_policy_impact() {
     use clap::Parser;
-    use maxwells_daemon::cli::args::BenchCmd;
-    use maxwells_daemon::cli::{Cli, Command};
+    use maxwells_daemon::BenchCmd;
+    use maxwells_daemon::{Cli, Command};
 
     let args = Cli::try_parse_from(["max", "bench", "policy-impact", "--sweep", "some_sweep_dir"]);
     assert!(args.is_ok(), "Failed to parse args: {:?}", args.err());
@@ -407,7 +407,7 @@ fn test_render_text_snapshot() {
 
 #[test]
 fn test_missing_sweep_dir_returns_exit_code_2() {
-    use maxwells_daemon::exit_code::ExitCode;
+    use maxwells_daemon::ExitCode;
     use maxwells_daemon::run::policy_impact::{self, PolicyImpactArgs};
 
     let err = policy_impact::run(&PolicyImpactArgs {
@@ -420,7 +420,7 @@ fn test_missing_sweep_dir_returns_exit_code_2() {
 
 #[test]
 fn test_missing_results_json_returns_exit_code_2() {
-    use maxwells_daemon::exit_code::ExitCode;
+    use maxwells_daemon::ExitCode;
     use maxwells_daemon::run::policy_impact::{self, PolicyImpactArgs};
     use tempfile::tempdir;
 
@@ -437,7 +437,7 @@ fn test_missing_results_json_returns_exit_code_2() {
 
 #[test]
 fn test_missing_trajectory_returns_exit_code_2() {
-    use maxwells_daemon::exit_code::ExitCode;
+    use maxwells_daemon::ExitCode;
     use maxwells_daemon::run::policy_impact::{self, PolicyImpactArgs};
     use std::fs;
     use tempfile::tempdir;
