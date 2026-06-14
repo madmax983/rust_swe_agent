@@ -445,6 +445,116 @@ fn build_mini_manifest(
 }
 
 #[allow(clippy::too_many_lines)]
+fn validate_external_driver_config(args: &MiniArgs) -> Result<(), Error> {
+    let driver_name = match args.driver {
+        RunDriver::ClaudeCode => "claude-code",
+        RunDriver::Codex => "codex",
+        RunDriver::Builtin => return Ok(()),
+    };
+
+    if matches!(args.config.root.environment.kind, EnvKind::Docker) {
+        return Err(Error::Config(ConfigError::Invalid(format!(
+            "--driver {driver_name} is only supported with the local environment, \
+             not --env docker"
+        ))));
+    }
+    if args.read_only {
+        return Err(Error::Config(ConfigError::Invalid(format!(
+            "--driver {driver_name} cannot honor --read-only (it auto-allows \
+             mutation tools); drop one of the two flags"
+        ))));
+    }
+    if matches!(
+        args.interactive_mode,
+        InteractiveMode::StderrPrompt | InteractiveMode::Ratatui
+    ) {
+        return Err(Error::Config(ConfigError::Invalid(format!(
+            "--driver {driver_name} cannot honor interactive confirmation \
+             (--interactive/--ui); tool calls would run unattended"
+        ))));
+    }
+    if args.config.root.policy.profile != "yolo" {
+        return Err(Error::Config(ConfigError::Invalid(format!(
+            "--driver {driver_name} cannot enforce the built-in policy deny \
+             corpus (profile={:?}); the CLI runs tools itself. \
+             Set policy.profile = \"yolo\" in config to acknowledge this, \
+             or switch to --driver builtin",
+            args.config.root.policy.profile
+        ))));
+    }
+    if !args.config.root.policy.extra_deny_patterns.is_empty()
+        || !args.config.root.policy.extra_allow_patterns.is_empty()
+    {
+        return Err(Error::Config(ConfigError::Invalid(format!(
+            "--driver {driver_name} cannot enforce custom command policy \
+             (policy.extra_deny_patterns/extra_allow_patterns); the CLI \
+             runs tools itself"
+        ))));
+    }
+    if args.resume_from.is_some() || args.continue_from.is_some() {
+        return Err(Error::Config(ConfigError::Invalid(format!(
+            "--driver {driver_name} does not support --resume or --continue; \
+             the external CLI cannot be seeded with prior message history"
+        ))));
+    }
+    if !args.config.root.agent.hooks.pre_tool_use.is_empty()
+        || !args.config.root.agent.hooks.post_tool_use.is_empty()
+    {
+        return Err(Error::Config(ConfigError::Invalid(format!(
+            "--driver {driver_name} cannot run pre/post_tool_use hooks; the \
+             CLI executes tools outside the harness loop"
+        ))));
+    }
+    if args.config.root.environment.chaos_fail_every > 0 {
+        return Err(Error::Config(ConfigError::Invalid(format!(
+            "--driver {driver_name} cannot inject chaos faults \
+             (environment.chaos_fail_every); it bypasses the wrapped \
+             environment"
+        ))));
+    }
+    if !args.config.root.agent.mcp_servers.is_empty() {
+        return Err(Error::Config(ConfigError::Invalid(format!(
+            "--driver {driver_name} cannot bridge MCP server configs; \
+             the CLI manages its own tool routing outside the harness. \
+             Remove agent.mcp_servers or switch to --driver builtin"
+        ))));
+    }
+    if args.config.root.agent.detect_stagnation {
+        return Err(Error::Config(ConfigError::Invalid(format!(
+            "--driver {driver_name} cannot enforce stagnation detection; \
+             set agent.detect_stagnation = false in config, or switch \
+             to --driver builtin"
+        ))));
+    }
+    if args.config.root.environment.timeout_secs != DEFAULT_ENV_TIMEOUT_SECS {
+        return Err(Error::Config(ConfigError::Invalid(format!(
+            "--driver {driver_name} cannot enforce per-command timeout \
+             (environment.timeout_secs={}); the CLI runs tools itself. \
+             Remove the override or switch to --driver builtin",
+            args.config.root.environment.timeout_secs
+        ))));
+    }
+    if args.config.root.agent.per_task_budget_usd.is_some()
+        && !args.config.root.agent.hide_budget_from_agent
+    {
+        return Err(Error::Config(ConfigError::Invalid(format!(
+            "--driver {driver_name} cannot append budget-visibility blocks \
+             (agent.hide_budget_from_agent = false with per_task_budget_usd); \
+             set hide_budget_from_agent = true or switch to --driver builtin"
+        ))));
+    }
+    if !args.config.root.agent.tools.is_empty() {
+        return Err(Error::Config(ConfigError::Invalid(format!(
+            "--driver {driver_name} cannot bridge configured command tools \
+             (agent.tools); the CLI manages its own toolset outside the \
+             harness registry. Remove agent.tools or switch to --driver builtin"
+        ))));
+    }
+
+    Ok(())
+}
+
+#[allow(clippy::too_many_lines)]
 pub async fn run(args: MiniArgs) -> Result<(), Error> {
     let mut args = args;
     let mut cancel_tx = None;
@@ -459,280 +569,11 @@ pub async fn run(args: MiniArgs) -> Result<(), Error> {
         args.cancellation = Some(crate::env::CancellationToken::new(rx));
     }
 
-    // The Claude Code driver shells out to the host `claude` binary and edits
-    // the host working tree directly. It cannot honor several safety contracts
-    // the built-in loop enforces inside `DefaultAgent::step`, so reject the
-    // combinations it would silently violate rather than mislead the operator.
-    if args.driver == RunDriver::ClaudeCode {
-        if matches!(args.config.root.environment.kind, EnvKind::Docker) {
-            // No path into a Docker sandbox — it runs on the host.
-            return Err(Error::Config(ConfigError::Invalid(
-                "--driver claude-code is only supported with the local environment, \
-                 not --env docker"
-                    .into(),
-            )));
-        }
-        if args.read_only {
-            // Claude Code auto-allows Bash/Edit/Write, so it would mutate the
-            // worktree despite the analysis-only contract.
-            return Err(Error::Config(ConfigError::Invalid(
-                "--driver claude-code cannot honor --read-only (it auto-allows \
-                 mutation tools); drop one of the two flags"
-                    .into(),
-            )));
-        }
-        if matches!(
-            args.interactive_mode,
-            InteractiveMode::StderrPrompt | InteractiveMode::Ratatui
-        ) {
-            // Per-action operator confirmation is gated inside DefaultAgent;
-            // the driver can't route Claude's tool calls through the confirmer.
-            return Err(Error::Config(ConfigError::Invalid(
-                "--driver claude-code cannot honor interactive confirmation \
-                 (--interactive/--ui); tool calls would run unattended"
-                    .into(),
-            )));
-        }
-        if args.config.root.policy.profile != "yolo" {
-            // The built-in policy deny corpus is enforced inside
-            // DefaultAgent::step before every bash command. Claude Code
-            // executes tools itself, so safe/ask deny rules would never fire;
-            // a "safe" trajectory would be a false promise. Operators must
-            // explicitly set `policy.profile = "yolo"` to acknowledge that
-            // the external CLI owns tool execution.
-            return Err(Error::Config(ConfigError::Invalid(format!(
-                "--driver claude-code cannot enforce the built-in policy deny \
-                 corpus (profile={:?}); the CLI runs tools itself. \
-                 Set policy.profile = \"yolo\" in config to acknowledge this, \
-                 or switch to --driver builtin",
-                args.config.root.policy.profile
-            ))));
-        }
-        if !args.config.root.policy.extra_deny_patterns.is_empty()
-            || !args.config.root.policy.extra_allow_patterns.is_empty()
-        {
-            // The command policy engine gates `env.run` in the built-in loop;
-            // Claude Code executes tools itself, bypassing custom rules.
-            return Err(Error::Config(ConfigError::Invalid(
-                "--driver claude-code cannot enforce custom command policy \
-                 (policy.extra_deny_patterns/extra_allow_patterns); the CLI \
-                 runs tools itself"
-                    .into(),
-            )));
-        }
-        if args.resume_from.is_some() || args.continue_from.is_some() {
-            // Claude Code is spawned with only the new task prompt; there is
-            // no mechanism to seed the external CLI with prior message history,
-            // so --resume/--continue would silently lose the prior context
-            // while the trajectory claims it was continued.
-            return Err(Error::Config(ConfigError::Invalid(
-                "--driver claude-code does not support --resume or --continue; \
-                 the external CLI cannot be seeded with prior message history"
-                    .into(),
-            )));
-        }
-        if !args.config.root.agent.hooks.pre_tool_use.is_empty()
-            || !args.config.root.agent.hooks.post_tool_use.is_empty()
-        {
-            // PreToolUse/PostToolUse hooks fire around `env.run`, which the
-            // driver never calls.
-            return Err(Error::Config(ConfigError::Invalid(
-                "--driver claude-code cannot run pre/post_tool_use hooks; the \
-                 CLI executes tools outside the harness loop"
-                    .into(),
-            )));
-        }
-        if args.config.root.environment.chaos_fail_every > 0 {
-            // Chaos injection wraps `env.run`; the driver bypasses it, so the
-            // configured failures would never fire.
-            return Err(Error::Config(ConfigError::Invalid(
-                "--driver claude-code cannot inject chaos faults \
-                 (environment.chaos_fail_every); it bypasses the wrapped \
-                 environment"
-                    .into(),
-            )));
-        }
-        if !args.config.root.agent.mcp_servers.is_empty() {
-            // The driver spawns claude with the fixed ALLOWED_TOOLS set; it
-            // never routes tool calls through the harness ToolRegistry, so
-            // configured MCP servers would be silently unavailable — or
-            // advertised in the system prompt but uncallable.
-            return Err(Error::Config(ConfigError::Invalid(
-                "--driver claude-code cannot bridge MCP server configs; \
-                 the CLI manages its own tool routing outside the harness. \
-                 Remove agent.mcp_servers or switch to --driver builtin"
-                    .into(),
-            )));
-        }
-        if args.config.root.agent.detect_stagnation {
-            // The built-in stagnation detector runs inside DefaultAgent::step
-            // after each action. Claude Code manages its own loop so the
-            // detector would never fire; a stagnating run would exhaust
-            // max-turns or the budget instead of producing a clean stagnation
-            // outcome.
-            return Err(Error::Config(ConfigError::Invalid(
-                "--driver claude-code cannot enforce stagnation detection; \
-                 set agent.detect_stagnation = false in config, or switch \
-                 to --driver builtin"
-                    .into(),
-            )));
-        }
-        if args.config.root.environment.timeout_secs != DEFAULT_ENV_TIMEOUT_SECS {
-            // The built-in loop wraps every bash call in RunRequest::with_timeout
-            // using this value. Claude Code executes tools itself and cannot
-            // receive per-command timeouts from the harness, so a non-default
-            // value would be silently ignored.
-            return Err(Error::Config(ConfigError::Invalid(format!(
-                "--driver claude-code cannot enforce per-command timeout \
-                 (environment.timeout_secs={}); the CLI runs tools itself. \
-                 Remove the override or switch to --driver builtin",
-                args.config.root.environment.timeout_secs
-            ))));
-        }
-        if args.config.root.agent.per_task_budget_usd.is_some()
-            && !args.config.root.agent.hide_budget_from_agent
-        {
-            // The built-in loop appends a budget block to each observation when
-            // hide_budget_from_agent is false, letting the agent track spend.
-            // The driver records only raw Claude tool results, so this template
-            // would never fire and the agent would have no budget visibility.
-            return Err(Error::Config(ConfigError::Invalid(
-                "--driver claude-code cannot append budget-visibility blocks \
-                 (agent.hide_budget_from_agent = false with per_task_budget_usd); \
-                 set hide_budget_from_agent = true or switch to --driver builtin"
-                    .into(),
-            )));
-        }
-        if !args.config.root.agent.tools.is_empty() {
-            // DefaultAgentBuilder registers configured command tools in the
-            // ToolRegistry and may render them into the system prompt, but the
-            // driver hands Claude Code only the fixed ALLOWED_TOOLS set and never
-            // routes calls through the registry. A tool-ablation or custom-tool
-            // run would be recorded as having capabilities Claude cannot call.
-            return Err(Error::Config(ConfigError::Invalid(
-                "--driver claude-code cannot bridge configured command tools \
-                 (agent.tools); the CLI manages its own toolset outside the \
-                 harness registry. Remove agent.tools or switch to --driver builtin"
-                    .into(),
-            )));
-        }
-    }
-
-    // The Codex driver shells out to the host `codex` binary and edits the
-    // host working tree directly. It shares the same safety-contract
-    // limitations as the Claude Code driver: it cannot honor in-process
-    // guards, hooks, or analysis-only postures.
-    if args.driver == RunDriver::Codex {
-        if matches!(args.config.root.environment.kind, EnvKind::Docker) {
-            return Err(Error::Config(ConfigError::Invalid(
-                "--driver codex is only supported with the local environment, \
-                 not --env docker"
-                    .into(),
-            )));
-        }
-        if args.read_only {
-            return Err(Error::Config(ConfigError::Invalid(
-                "--driver codex cannot honor --read-only (it auto-allows \
-                 mutation tools); drop one of the two flags"
-                    .into(),
-            )));
-        }
-        if matches!(
-            args.interactive_mode,
-            InteractiveMode::StderrPrompt | InteractiveMode::Ratatui
-        ) {
-            return Err(Error::Config(ConfigError::Invalid(
-                "--driver codex cannot honor interactive confirmation \
-                 (--interactive/--ui); tool calls would run unattended"
-                    .into(),
-            )));
-        }
-        if args.config.root.policy.profile != "yolo" {
-            return Err(Error::Config(ConfigError::Invalid(format!(
-                "--driver codex cannot enforce the built-in policy deny \
-                 corpus (profile={:?}); the CLI runs tools itself. \
-                 Set policy.profile = \"yolo\" in config to acknowledge this, \
-                 or switch to --driver builtin",
-                args.config.root.policy.profile
-            ))));
-        }
-        if !args.config.root.policy.extra_deny_patterns.is_empty()
-            || !args.config.root.policy.extra_allow_patterns.is_empty()
-        {
-            return Err(Error::Config(ConfigError::Invalid(
-                "--driver codex cannot enforce custom command policy \
-                 (policy.extra_deny_patterns/extra_allow_patterns); the CLI \
-                 runs tools itself"
-                    .into(),
-            )));
-        }
-        if args.resume_from.is_some() || args.continue_from.is_some() {
-            return Err(Error::Config(ConfigError::Invalid(
-                "--driver codex does not support --resume or --continue; \
-                 the external CLI cannot be seeded with prior message history"
-                    .into(),
-            )));
-        }
-        if !args.config.root.agent.hooks.pre_tool_use.is_empty()
-            || !args.config.root.agent.hooks.post_tool_use.is_empty()
-        {
-            return Err(Error::Config(ConfigError::Invalid(
-                "--driver codex cannot run pre/post_tool_use hooks; the \
-                 CLI executes tools outside the harness loop"
-                    .into(),
-            )));
-        }
-        if args.config.root.environment.chaos_fail_every > 0 {
-            return Err(Error::Config(ConfigError::Invalid(
-                "--driver codex cannot inject chaos faults \
-                 (environment.chaos_fail_every); it bypasses the wrapped \
-                 environment"
-                    .into(),
-            )));
-        }
-        if !args.config.root.agent.mcp_servers.is_empty() {
-            return Err(Error::Config(ConfigError::Invalid(
-                "--driver codex cannot bridge MCP server configs; \
-                 the CLI manages its own tool routing outside the harness. \
-                 Remove agent.mcp_servers or switch to --driver builtin"
-                    .into(),
-            )));
-        }
-        if args.config.root.agent.detect_stagnation {
-            return Err(Error::Config(ConfigError::Invalid(
-                "--driver codex cannot enforce stagnation detection; \
-                 set agent.detect_stagnation = false in config, or switch \
-                 to --driver builtin"
-                    .into(),
-            )));
-        }
-        if args.config.root.environment.timeout_secs != DEFAULT_ENV_TIMEOUT_SECS {
-            return Err(Error::Config(ConfigError::Invalid(format!(
-                "--driver codex cannot enforce per-command timeout \
-                 (environment.timeout_secs={}); the CLI runs tools itself. \
-                 Remove the override or switch to --driver builtin",
-                args.config.root.environment.timeout_secs
-            ))));
-        }
-        if args.config.root.agent.per_task_budget_usd.is_some()
-            && !args.config.root.agent.hide_budget_from_agent
-        {
-            return Err(Error::Config(ConfigError::Invalid(
-                "--driver codex cannot append budget-visibility blocks \
-                 (agent.hide_budget_from_agent = false with per_task_budget_usd); \
-                 set hide_budget_from_agent = true or switch to --driver builtin"
-                    .into(),
-            )));
-        }
-        if !args.config.root.agent.tools.is_empty() {
-            return Err(Error::Config(ConfigError::Invalid(
-                "--driver codex cannot bridge configured command tools \
-                 (agent.tools); the CLI manages its own toolset outside the \
-                 harness registry. Remove agent.tools or switch to --driver builtin"
-                    .into(),
-            )));
-        }
-    }
+    // External CLI drivers shell out to a host binary and edit the working tree
+    // directly. They cannot honor several safety contracts the built-in loop
+    // enforces inside `DefaultAgent::step`, so we reject combinations that
+    // would silently violate guarantees rather than mislead the operator.
+    validate_external_driver_config(&args)?;
 
     std::fs::create_dir_all(&args.output_dir)?;
 
