@@ -50,7 +50,11 @@ fn cfg(workdir: &Path) -> Config {
         .to_string()
         .replace('\\', "\\\\")
         .replace('"', "\\\"");
-    let toml = format!("[environment]\nworkdir = \"{workdir}\"\n");
+    // parse_error_retries=0 so agent-level retries don't interfere with the
+    // sweep-level retry logic these tests exercise.
+    let toml = format!(
+        "[agent]\nparse_error_retries = 0\n\n[environment]\nworkdir = \"{workdir}\"\n"
+    );
     Config::from_toml_str(&toml).unwrap()
 }
 
