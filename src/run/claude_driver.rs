@@ -412,6 +412,7 @@ fn record_claude_config(agent: &mut DefaultAgent, cwd: &Path, isolated: bool) {
 ///   reproducible measurement run. Note: `--bare` forces API-key-only auth, so
 ///   OAuth/keychain logins do not apply in this mode.
 #[allow(clippy::too_many_lines)]
+#[allow(rustdoc::private_intra_doc_links)]
 pub async fn drive(
     agent: &mut DefaultAgent,
     task: String,
