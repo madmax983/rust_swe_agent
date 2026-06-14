@@ -338,3 +338,14 @@ pub struct RootCfg {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub extends: Option<String>,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_error_retries_defaults_to_three() {
+        let cfg: AgentCfg = toml::from_str("").unwrap();
+        assert_eq!(cfg.parse_error_retries, 3);
+    }
+}
