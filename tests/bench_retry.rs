@@ -446,11 +446,11 @@ fn merge_preserves_prior_retry_history_entries() {
 // ─── Schema tests ─────────────────────────────────────────────────────────────
 
 #[test]
-fn schema_version_is_1_10() {
+fn schema_version_is_1_11() {
     assert_eq!(
         maxwells_daemon::artifact::ArtifactSchemaVersion::CURRENT,
-        maxwells_daemon::artifact::ArtifactSchemaVersion::new(1, 10),
-        "schema bumped to 1.10 for local_workdir in RenderOnlyReport (issue #341)"
+        maxwells_daemon::artifact::ArtifactSchemaVersion::new(1, 11),
+        "schema bumped to 1.11 for parse_retries in TrajectoryInfo (issue #517)"
     );
 }
 
