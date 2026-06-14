@@ -1097,6 +1097,26 @@ impl Agent for DefaultAgent {
                     // when the call that exhausts retries is also the one that pushes
                     // total_cost_usd past the cap, since the next step's budget check
                     // won't run if we terminate here.
+                    // Order matches the normal limit gate at the top of step(): cost_limit first.
+                    if let Some(limit) = self.config.root.agent.cost_limit_usd {
+                        if self.total_cost_usd >= limit {
+                            self.trajectory.info.exit_reason = Some("cost_limit".into());
+                            self.trajectory.info.failure_category =
+                                Some(FailureCategory::CostLimit);
+                            self.trajectory.info.steps = Some(self.steps);
+                            self.trajectory.info.total_cost_usd = Some(self.total_cost_usd);
+                            self.finalize_run_metadata(outcome::STEP_LIMIT_REACHED);
+                            self.emit_run_ended(
+                                "cost_limit",
+                                Some(FailureCategory::CostLimit),
+                                None,
+                            );
+                            return Ok(StepOutcome::Terminate(ExitReason::CostLimit {
+                                limit_usd: limit,
+                                spent_usd: self.total_cost_usd,
+                            }));
+                        }
+                    }
                     if let Some(limit) = self.config.root.agent.per_task_budget_usd {
                         if self.total_cost_usd >= limit {
                             self.trajectory.info.exit_reason = Some("budget_exhausted".into());
@@ -1112,25 +1132,6 @@ impl Agent for DefaultAgent {
                                 None,
                             );
                             return Ok(StepOutcome::Terminate(ExitReason::BudgetExhausted {
-                                limit_usd: limit,
-                                spent_usd: self.total_cost_usd,
-                            }));
-                        }
-                    }
-                    if let Some(limit) = self.config.root.agent.cost_limit_usd {
-                        if self.total_cost_usd >= limit {
-                            self.trajectory.info.exit_reason = Some("cost_limit".into());
-                            self.trajectory.info.failure_category =
-                                Some(FailureCategory::CostLimit);
-                            self.trajectory.info.steps = Some(self.steps);
-                            self.trajectory.info.total_cost_usd = Some(self.total_cost_usd);
-                            self.finalize_run_metadata(outcome::STEP_LIMIT_REACHED);
-                            self.emit_run_ended(
-                                "cost_limit",
-                                Some(FailureCategory::CostLimit),
-                                None,
-                            );
-                            return Ok(StepOutcome::Terminate(ExitReason::CostLimit {
                                 limit_usd: limit,
                                 spent_usd: self.total_cost_usd,
                             }));
@@ -1181,6 +1182,13 @@ impl Agent for DefaultAgent {
                 record_redacted_message(&mut self.trajectory, &obs, obs_extra, &self.redactor);
                 self.last_measurement_end = Instant::now();
                 self.steps += 1;
+                if let Some(path) = &self.checkpoint_path.clone() {
+                    self.trajectory.info.steps = Some(self.steps);
+                    self.trajectory.info.actual_cost_usd = Some(self.total_cost_usd);
+                    if let Err(e) = self.trajectory.save_partial_atomic(path) {
+                        tracing::warn!(error=%e, "checkpoint write failed; continuing without checkpoint");
+                    }
+                }
                 return Ok(StepOutcome::Continue);
             }
         }
