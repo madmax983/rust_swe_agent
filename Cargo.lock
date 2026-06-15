@@ -1347,6 +1347,7 @@ dependencies = [
  "dialoguer",
  "flate2",
  "futures",
+ "hex",
  "indicatif",
  "insta",
  "litellm-rs",

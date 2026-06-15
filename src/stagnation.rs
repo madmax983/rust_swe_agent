@@ -58,12 +58,7 @@ pub fn action_hash(canonical: &str) -> String {
     let digest = hasher.finalize();
     // 16 bytes = 32 hex chars — enough to distinguish actions while keeping the
     // info block compact.
-    let mut hex = String::with_capacity(32);
-    for b in &digest[..16] {
-        use std::fmt::Write as _;
-        let _ = write!(hex, "{b:02x}");
-    }
-    hex
+    hex::encode(&digest[..16])
 }
 
 /// A single entry in the stagnation ring buffer.
