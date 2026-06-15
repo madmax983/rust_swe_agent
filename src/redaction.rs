@@ -5,7 +5,7 @@
 //! with sensitive names before text reaches persisted or shareable surfaces.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, RwLock, PoisonError};
 
 use regex::Regex;
 use serde::{Deserialize, Serialize};
@@ -99,8 +99,8 @@ struct RedactorInner {
     salt: String,
     rules: Vec<RedactionRule>,
     blocking_literals: Vec<String>,
-    markers: Mutex<BTreeMap<String, String>>,
-    counts: Mutex<BTreeMap<(String, String), u64>>,
+    markers: RwLock<BTreeMap<String, String>>,
+    counts: RwLock<BTreeMap<(String, String), u64>>,
     /// Original 0-based positions of all non-empty entries in `cfg.secret_literals`,
     /// in config order (duplicates included).  Used to compute unmatched-literal
     /// indices in `check()`.
@@ -231,8 +231,8 @@ impl Redactor {
                 salt: new_salt(),
                 rules,
                 blocking_literals,
-                markers: Mutex::new(BTreeMap::new()),
-                counts: Mutex::new(BTreeMap::new()),
+                markers: RwLock::new(BTreeMap::new()),
+                counts: RwLock::new(BTreeMap::new()),
                 literal_positions,
                 custom_pattern_count,
             }),
@@ -255,8 +255,8 @@ impl Redactor {
                 salt: new_salt(),
                 rules: Vec::new(),
                 blocking_literals: Vec::new(),
-                markers: Mutex::new(BTreeMap::new()),
-                counts: Mutex::new(BTreeMap::new()),
+                markers: RwLock::new(BTreeMap::new()),
+                counts: RwLock::new(BTreeMap::new()),
                 literal_positions: Vec::new(),
                 custom_pattern_count: 0,
             }),
@@ -275,7 +275,7 @@ impl Redactor {
             let markers = self
                 .inner
                 .markers
-                .lock()
+                .read()
                 .unwrap_or_else(PoisonError::into_inner);
             markers
                 .iter()
@@ -408,7 +408,7 @@ impl Redactor {
             let counts = self
                 .inner
                 .counts
-                .lock()
+                .read()
                 .unwrap_or_else(PoisonError::into_inner);
             counts
                 .iter()
@@ -550,10 +550,20 @@ impl Redactor {
     }
 
     fn marker_for(&self, raw: &str, kind: &str) -> String {
+        {
+            let markers = self
+                .inner
+                .markers
+                .read()
+                .unwrap_or_else(PoisonError::into_inner);
+            if let Some(marker) = markers.get(raw) {
+                return marker.clone();
+            }
+        }
         let mut markers = self
             .inner
             .markers
-            .lock()
+            .write()
             .unwrap_or_else(PoisonError::into_inner);
         if let Some(marker) = markers.get(raw) {
             return marker.clone();
@@ -573,7 +583,7 @@ impl Redactor {
         let mut counts = self
             .inner
             .counts
-            .lock()
+            .write()
             .unwrap_or_else(PoisonError::into_inner);
         let key = (surface.to_owned(), kind.to_owned());
         let value = counts.entry(key).or_insert(0);
