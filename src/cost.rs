@@ -96,3 +96,69 @@ pub fn is_free_tier_model(model: &str) -> bool {
         .is_some_and(|name| name.ends_with(":free"))
         || model.ends_with(":free")
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cost_source_combine() {
+        assert_eq!(
+            CostSource::ProviderReported.combine(CostSource::FreeTierInferred),
+            CostSource::ProviderReported
+        );
+        assert_eq!(
+            CostSource::FreeTierInferred.combine(CostSource::ProviderReported),
+            CostSource::ProviderReported
+        );
+        assert_eq!(
+            CostSource::FreeTierInferred.combine(CostSource::FreeTierInferred),
+            CostSource::FreeTierInferred
+        );
+        assert_eq!(
+            CostSource::Unknown.combine(CostSource::ProviderReported),
+            CostSource::Unknown
+        );
+        assert_eq!(
+            CostSource::ProviderReported.combine(CostSource::Unknown),
+            CostSource::Unknown
+        );
+        assert_eq!(
+            CostSource::RateCardEstimate.combine(CostSource::ProviderReported),
+            CostSource::RateCardEstimate
+        );
+        assert_eq!(
+            CostSource::ProviderReported.combine(CostSource::RateCardEstimate),
+            CostSource::RateCardEstimate
+        );
+    }
+
+    #[test]
+    fn test_is_free_tier_model() {
+        assert!(is_free_tier_model("anthropic/claude:free"));
+        assert!(is_free_tier_model("claude:free"));
+        assert!(!is_free_tier_model("claude:free-tier"));
+        assert!(!is_free_tier_model("claude-free"));
+    }
+
+    #[test]
+    #[allow(clippy::suboptimal_flops)]
+    fn test_estimate_cost_usd_anthropic() {
+        let cost = estimate_cost_usd(
+            1_000_000,
+            1_000_000,
+            1_000_000,
+            1_000_000,
+            "claude-3-5-sonnet-20240620",
+        );
+        let expected = 3.0 + (3.0 * 0.10) + (3.0 * 1.25) + 15.0;
+        assert!((cost - expected).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_estimate_cost_usd_other() {
+        let cost = estimate_cost_usd(1_000_000, 1_000_000, 1_000_000, 1_000_000, "gpt-4o");
+        let expected = 3.0 + 3.0 + 3.0 + 15.0;
+        assert!((cost - expected).abs() < f64::EPSILON);
+    }
+}
