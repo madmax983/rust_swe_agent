@@ -95,6 +95,14 @@ pub fn registry() -> Vec<ExportFormat> {
         render: MermaidExporter::export,
     });
 
+    #[cfg(feature = "chatml-export")]
+    formats.push(ExportFormat {
+        name: "chatml",
+        tier: StabilityTier::Experimental,
+        consumer: "LLM fine-tuning datasets, tokenizers",
+        render: ChatMlExporter::export,
+    });
+
     formats
 }
 
@@ -109,6 +117,7 @@ pub const FEATURE_GATED_FORMATS: &[(&str, &str)] = &[
     ("csv", "csv-export"),
     ("html", "html-export"),
     ("mermaid", "mermaid-export"),
+    ("chatml", "chatml-export"),
 ];
 
 /// Returns `true` if `name` is a trajectory export format known to this codebase,
@@ -452,5 +461,58 @@ mod tests {
         assert!(html.contains("submitted"));
         assert!(html.contains("Hello agent"));
         assert!(html.contains("Hello user"));
+    }
+}
+
+/// An exporter that renders the trajectory into the ChatML format.
+///
+/// ChatML is commonly used for LLM fine-tuning and inference pipelines.
+/// Format: `<|im_start|>role\ncontent<|im_end|>\n`
+pub struct ChatMlExporter;
+
+impl TrajectoryExporter for ChatMlExporter {
+    fn export(trajectory: &Trajectory) -> String {
+        use std::fmt::Write;
+        let mut out = String::new();
+        let redactor = Redactor::default_enabled();
+
+        for msg in &trajectory.messages {
+            let role = redactor.redact_text(&msg.role, surface::EXPORT).text;
+            let content = redactor.redact_text(&msg.content, surface::EXPORT).text;
+            let _ = write!(out, "<|im_start|>{role}\n{content}<|im_end|>\n");
+        }
+
+        out
+    }
+}
+
+#[cfg(test)]
+mod chatml_tests {
+    use super::*;
+    use crate::trajectory::MessageRecord;
+
+    #[test]
+    fn test_chatml_export_format() {
+        let traj = Trajectory {
+            messages: vec![
+                MessageRecord {
+                    role: "system".to_string(),
+                    content: "You are a helpful assistant.".to_string(),
+                    extra: Default::default(),
+                },
+                MessageRecord {
+                    role: "user".to_string(),
+                    content: "Hello!".to_string(),
+                    extra: Default::default(),
+                },
+            ],
+            ..Trajectory::default()
+        };
+
+        let result = ChatMlExporter::export(&traj);
+        assert_eq!(
+            result,
+            "<|im_start|>system\nYou are a helpful assistant.<|im_end|>\n<|im_start|>user\nHello!<|im_end|>\n"
+        );
     }
 }
