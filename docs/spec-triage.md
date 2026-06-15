@@ -58,7 +58,7 @@ instance IDs are de-duplicated before clustering.
 
 Each unresolved instance produces one pure `FailureSignature` from four fields:
 
-1. `failure_category`
+1. `failure_category` (see [`docs/failure-categories.md`](failure-categories.md) for the full vocabulary)
 2. The last assistant message tail, capped at the final 500 Unicode scalar
    values.
 3. The last bash exit code, or `none` when no bash result is present.

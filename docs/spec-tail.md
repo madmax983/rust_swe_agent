@@ -25,7 +25,7 @@ one object in `--once` mode.
 Each snapshot reports:
 
 * `completed`, `in_flight`, `pending`, `total`
-* `failure_counts`, keyed by `failure_category`
+* `failure_counts`, keyed by `failure_category` (see [`docs/failure-categories.md`](failure-categories.md) for all values)
 * `cumulative_cost_usd` for actual run spend
 * `baseline_cumulative_cost_usd` for the configured baseline model counterfactual
 * `burn_rate_usd_per_min` over the last five minutes

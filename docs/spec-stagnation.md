@@ -49,7 +49,7 @@ the count is ≥ K the detector trips.
 When the detector trips:
 
 - `info.exit_reason` = `"agent_stagnation"`
-- `info.failure_category` = `"agent_stagnation"`
+- `info.failure_category` = `"agent_stagnation"` (see [`docs/failure-categories.md`](failure-categories.md) for the full runbook)
 - `info.other["stagnation"]` — JSON object with diagnostic fields:
 
 ```json

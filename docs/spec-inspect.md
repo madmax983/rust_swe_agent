@@ -30,7 +30,7 @@ max bench compare --baseline <dir> --candidate <dir> --emit-diff-script <out.sh>
 
 * `--sweep`: output directory from `bench swebench`.
 * `--instance`: render one instance transcript.
-* `--filter`: summary-table mode (`resolved=true|false` or `failure_category=<snake_case>`).
+* `--filter`: summary-table mode (`resolved=true|false` or `failure_category=<snake_case>`).  See [`docs/failure-categories.md`](failure-categories.md) for all valid `failure_category` strings.
 * `--format`: output format. Accepted values:
   | Value      | Description                                             | Requires Cargo feature |
   |------------|--------------------------------------------------------|------------------------|
