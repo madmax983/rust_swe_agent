@@ -96,3 +96,117 @@ pub fn is_free_tier_model(model: &str) -> bool {
         .is_some_and(|name| name.ends_with(":free"))
         || model.ends_with(":free")
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn should_return_correct_label_for_cost_source() {
+        assert_eq!(CostSource::ProviderReported.label(), "provider_reported");
+        assert_eq!(CostSource::RateCardEstimate.label(), "rate_card_estimate");
+        assert_eq!(CostSource::FreeTierInferred.label(), "free_tier_inferred");
+        assert_eq!(CostSource::Unknown.label(), "unknown");
+    }
+
+    #[test]
+    fn should_combine_cost_sources_correctly() {
+        // Unknown combinations
+        assert_eq!(
+            CostSource::Unknown.combine(CostSource::ProviderReported),
+            CostSource::Unknown
+        );
+        assert_eq!(
+            CostSource::ProviderReported.combine(CostSource::Unknown),
+            CostSource::Unknown
+        );
+
+        // RateCardEstimate overrides ProviderReported and FreeTierInferred
+        assert_eq!(
+            CostSource::RateCardEstimate.combine(CostSource::ProviderReported),
+            CostSource::RateCardEstimate
+        );
+        assert_eq!(
+            CostSource::ProviderReported.combine(CostSource::RateCardEstimate),
+            CostSource::RateCardEstimate
+        );
+
+        // ProviderReported vs FreeTierInferred
+        assert_eq!(
+            CostSource::ProviderReported.combine(CostSource::FreeTierInferred),
+            CostSource::ProviderReported
+        );
+        assert_eq!(
+            CostSource::FreeTierInferred.combine(CostSource::ProviderReported),
+            CostSource::ProviderReported
+        );
+
+        // Same sources
+        assert_eq!(
+            CostSource::FreeTierInferred.combine(CostSource::FreeTierInferred),
+            CostSource::FreeTierInferred
+        );
+        assert_eq!(
+            CostSource::ProviderReported.combine(CostSource::ProviderReported),
+            CostSource::ProviderReported
+        );
+    }
+
+    #[test]
+    fn should_estimate_cost_usd_accurately_for_non_anthropic() {
+        let cost = estimate_cost_usd(1_000_000, 1_000_000, 1_000_000, 1_000_000, "gpt-4o");
+        // Non-anthropic multipliers are 1.0.
+        // 1M prompt = $3.0
+        // 1M cache_read = $3.0 * 1.0 = $3.0
+        // 1M cache_creation = $3.0 * 1.0 = $3.0
+        // 1M completion = $15.0
+        // Total = 3 + 3 + 3 + 15 = 24.0
+        let expected = 24.0;
+        assert!(
+            (cost - expected).abs() < 1e-6,
+            "Expected {expected}, got {cost}"
+        );
+    }
+
+    #[test]
+    fn should_estimate_cost_usd_accurately_for_anthropic() {
+        let cost = estimate_cost_usd(
+            1_000_000,
+            1_000_000,
+            1_000_000,
+            1_000_000,
+            "claude-3-5-sonnet",
+        );
+        // Anthropic multipliers are 0.10 for cache_read, 1.25 for cache_creation.
+        // 1M prompt = $3.0
+        // 1M cache_read = $3.0 * 0.10 = $0.30
+        // 1M cache_creation = $3.0 * 1.25 = $3.75
+        // 1M completion = $15.0
+        // Total = 3 + 0.30 + 3.75 + 15 = 22.05
+        let expected = 22.05;
+        assert!(
+            (cost - expected).abs() < 1e-6,
+            "Expected {expected}, got {cost}"
+        );
+    }
+
+    #[test]
+    fn should_detect_free_tier_models() {
+        let test_cases = vec![
+            ("google/gemini-pro:free", true),
+            ("openrouter/auto:free", true),
+            ("llama3:free", true),
+            ("gpt-4o", false),
+            ("claude-3-5-sonnet", false),
+            ("anthropic/claude-3-opus", false),
+        ];
+
+        for (model, expected) in test_cases {
+            assert_eq!(
+                is_free_tier_model(model),
+                expected,
+                "Failed on model: {model}"
+            );
+        }
+    }
+}
