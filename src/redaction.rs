@@ -5,7 +5,7 @@
 //! with sensitive names before text reaches persisted or shareable surfaces.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::{Arc, RwLock, PoisonError};
+use std::sync::{Arc, PoisonError, RwLock};
 
 use regex::Regex;
 use serde::{Deserialize, Serialize};
