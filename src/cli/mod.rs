@@ -6086,7 +6086,7 @@ fn bench_dataset_verify(s: args::DatasetVerifyCmd) -> Result<(), Error> {
 
     // Verify
     let report =
-        crate::run::dataset_verify::verify_dataset(&candidate_instances, &reference_instances)?;
+        crate::run::dataset_verify::verify_dataset(&candidate_instances, &reference_instances);
 
     if s.format == "json" {
         let serialized = serde_json::to_string_pretty(&report)?;

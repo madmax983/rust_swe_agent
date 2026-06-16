@@ -1,6 +1,5 @@
 //! Analysis logic for verifying SWE-bench dataset authenticity offline (`bench dataset-verify`).
 
-use crate::error::Error;
 use crate::run::swebench::SweBenchInstance;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -141,7 +140,7 @@ pub fn compute_instance_hash(inst: &SweBenchInstance) -> String {
 pub fn verify_dataset(
     candidate_instances: &[SweBenchInstance],
     reference_instances: &[SweBenchInstance],
-) -> Result<DatasetVerifyReport, Error> {
+) -> DatasetVerifyReport {
     let mut cand_counts = HashMap::new();
     let mut cand_hashes = HashMap::new();
     for inst in candidate_instances {
@@ -219,13 +218,13 @@ pub fn verify_dataset(
         "mismatch".to_string()
     };
 
-    Ok(DatasetVerifyReport {
+    DatasetVerifyReport {
         schema_version: DatasetVerifyReport::SCHEMA_VERSION,
         verdict,
         missing,
         extra,
         mutated,
-    })
+    }
 }
 
 pub fn render_text(report: &DatasetVerifyReport) -> String {
@@ -284,7 +283,7 @@ mod tests {
         let candidate = vec![inst.clone()];
         let reference = vec![inst];
 
-        let result = verify_dataset(&candidate, &reference).unwrap();
+        let result = verify_dataset(&candidate, &reference);
         assert_eq!(result.verdict, "clean");
         assert!(result.missing.is_empty());
         assert!(result.extra.is_empty());
@@ -305,7 +304,7 @@ mod tests {
         let candidate: Vec<SweBenchInstance> = vec![];
         let reference = vec![inst];
 
-        let result = verify_dataset(&candidate, &reference).unwrap();
+        let result = verify_dataset(&candidate, &reference);
         assert_eq!(result.verdict, "mismatch");
         assert_eq!(result.missing, vec!["test-1".to_string()]);
         assert!(result.extra.is_empty());
@@ -326,7 +325,7 @@ mod tests {
         let candidate = vec![inst];
         let reference: Vec<SweBenchInstance> = vec![];
 
-        let result = verify_dataset(&candidate, &reference).unwrap();
+        let result = verify_dataset(&candidate, &reference);
         assert_eq!(result.verdict, "mismatch");
         assert!(result.missing.is_empty());
         assert_eq!(result.extra, vec!["test-1".to_string()]);
@@ -350,7 +349,7 @@ mod tests {
         let candidate = vec![inst_cand];
         let reference = vec![inst_ref];
 
-        let result = verify_dataset(&candidate, &reference).unwrap();
+        let result = verify_dataset(&candidate, &reference);
         assert_eq!(result.verdict, "mismatch");
         assert!(result.missing.is_empty());
         assert!(result.extra.is_empty());
@@ -418,7 +417,7 @@ mod tests {
             let candidate = vec![inst_cand];
             let reference = vec![inst_ref.clone()];
 
-            let result = verify_dataset(&candidate, &reference).unwrap();
+            let result = verify_dataset(&candidate, &reference);
             assert_eq!(
                 result.verdict, "mismatch",
                 "Failed to detect mutation on field: {field}"
@@ -454,7 +453,7 @@ mod tests {
         let candidate: Vec<SweBenchInstance> = vec![];
         let reference = vec![inst1, inst2];
 
-        let result = verify_dataset(&candidate, &reference).unwrap();
+        let result = verify_dataset(&candidate, &reference);
         assert_eq!(result.verdict, "mismatch");
         assert_eq!(
             result.missing,
@@ -588,7 +587,7 @@ mod tests {
             // Candidate has duplicates of inst_base
             let candidate = vec![inst_base.clone(), inst_base.clone()];
 
-            let result = verify_dataset(&candidate, &reference).unwrap();
+            let result = verify_dataset(&candidate, &reference);
             assert_eq!(result.verdict, "mismatch");
             assert!(result.mutated.contains(&"test-1".to_string()));
         }
@@ -607,7 +606,7 @@ mod tests {
             let reference = vec![inst_base.clone(), inst2.clone()];
             let candidate = vec![inst2, inst_base.clone()];
 
-            let result = verify_dataset(&candidate, &reference).unwrap();
+            let result = verify_dataset(&candidate, &reference);
             assert_eq!(result.verdict, "mismatch");
             // The two out-of-order IDs should be reported as mutated
             assert!(result.mutated.contains(&"test-1".to_string()));
