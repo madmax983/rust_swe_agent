@@ -263,14 +263,23 @@ pub fn format_text(report: &AgentProfileReport) -> String {
         "\n── Token Usage ──────────────────────────────────────────"
     );
     let tu = &report.token_usage;
-    let _ = writeln!(out, "  prompt:          {:>8}", tu.prompt_tokens);
-    let _ = writeln!(out, "  cache-read:      {:>8}", tu.cache_read_tokens);
-    let _ = writeln!(out, "  cache-creation:  {:>8}", tu.cache_creation_tokens);
-    let _ = writeln!(out, "  completion:      {:>8}", tu.completion_tokens);
     let total =
         tu.prompt_tokens + tu.cache_read_tokens + tu.cache_creation_tokens + tu.completion_tokens;
-    let _ = writeln!(out, "  ─────────────────────────");
-    let _ = writeln!(out, "  total:           {total:>8}");
+
+    let mut token_table = comfy_table::Table::new();
+    token_table
+        .load_preset(comfy_table::presets::UTF8_FULL)
+        .apply_modifier(comfy_table::modifiers::UTF8_ROUND_CORNERS)
+        .set_header(vec!["Type", "Tokens"])
+        .add_row(vec!["prompt", &tu.prompt_tokens.to_string()])
+        .add_row(vec!["cache-read", &tu.cache_read_tokens.to_string()])
+        .add_row(vec![
+            "cache-creation",
+            &tu.cache_creation_tokens.to_string(),
+        ])
+        .add_row(vec!["completion", &tu.completion_tokens.to_string()])
+        .add_row(vec!["total", &total.to_string()]);
+    let _ = writeln!(out, "{token_table}");
 
     // Stage breakdown
     let _ = writeln!(
@@ -278,44 +287,46 @@ pub fn format_text(report: &AgentProfileReport) -> String {
         "\n── Stage Breakdown ──────────────────────────────────────"
     );
     let sb = &report.stage_breakdown;
-    let _ = writeln!(out, "  {:<10} {:>10}   {:>5}", "stage", "ms", "share");
-    let _ = writeln!(out, "  {}", "─".repeat(30));
-    let _ = writeln!(
-        out,
-        "  {:<10} {:>10}   {:>5}",
-        "model",
-        fmt_ms(sb.model_ms),
-        fmt_pct(sb.model_pct)
-    );
-    let _ = writeln!(
-        out,
-        "  {:<10} {:>10}   {:>5}",
-        "tool",
-        fmt_ms(sb.tool_ms),
-        fmt_pct(sb.tool_pct)
-    );
-    let _ = writeln!(
-        out,
-        "  {:<10} {:>10}   {:>5}",
-        "harness",
-        fmt_ms(sb.harness_ms),
-        fmt_pct(sb.harness_pct)
-    );
+    let mut stage_table = comfy_table::Table::new();
+    stage_table
+        .load_preset(comfy_table::presets::UTF8_FULL)
+        .apply_modifier(comfy_table::modifiers::UTF8_ROUND_CORNERS)
+        .set_header(vec!["stage", "ms", "share"])
+        .add_row(vec![
+            "model".to_owned(),
+            fmt_ms(sb.model_ms),
+            fmt_pct(sb.model_pct),
+        ])
+        .add_row(vec![
+            "tool".to_owned(),
+            fmt_ms(sb.tool_ms),
+            fmt_pct(sb.tool_pct),
+        ])
+        .add_row(vec![
+            "harness".to_owned(),
+            fmt_ms(sb.harness_ms),
+            fmt_pct(sb.harness_pct),
+        ]);
+    let _ = writeln!(out, "{stage_table}");
 
     // Action mix
     let _ = writeln!(
         out,
         "\n── Action Mix ───────────────────────────────────────────"
     );
-    let _ = writeln!(out, "  {:<10} {:>6}   {:>6}", "class", "count", "share");
-    let _ = writeln!(out, "  {}", "─".repeat(28));
+    let mut mix_table = comfy_table::Table::new();
+    mix_table
+        .load_preset(comfy_table::presets::UTF8_FULL)
+        .apply_modifier(comfy_table::modifiers::UTF8_ROUND_CORNERS)
+        .set_header(vec!["class", "count", "share"]);
     for (name, entry) in &report.action_mix {
-        let _ = writeln!(
-            out,
-            "  {:<10} {:>6}   {:>5.1}%",
-            name, entry.count, entry.share_pct
-        );
+        mix_table.add_row(vec![
+            name.to_owned(),
+            entry.count.to_string(),
+            format!("{:.1}%", entry.share_pct),
+        ]);
     }
+    let _ = writeln!(out, "{mix_table}");
 
     out
 }
