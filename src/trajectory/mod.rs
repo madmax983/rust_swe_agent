@@ -812,7 +812,7 @@ impl Trajectory {
     /// ```
     pub fn record_message(&mut self, m: &Message) {
         self.messages.push(MessageRecord {
-            role: role_to_string(m.role),
+            role: m.role.to_string(),
             content: m.content.clone(),
             extra: m.extra.clone(),
         });
@@ -831,7 +831,7 @@ impl Trajectory {
     /// ```
     pub fn record_with_extra(&mut self, m: &Message, extra: MessageExtra) {
         self.messages.push(MessageRecord {
-            role: role_to_string(m.role),
+            role: m.role.to_string(),
             content: m.content.clone(),
             extra,
         });
@@ -903,12 +903,7 @@ impl Trajectory {
         self.messages
             .iter()
             .map(|rec| {
-                let role = match rec.role.as_str() {
-                    "system" => Role::System,
-                    "assistant" => Role::Assistant,
-                    "tool" => Role::Tool,
-                    _ => Role::User,
-                };
+                let role = rec.role.parse().unwrap_or(Role::User);
                 Message {
                     role,
                     content: rec.content.clone(),
@@ -999,15 +994,6 @@ pub fn load_all_trajectories_for_instance(
         }
     }
     trajs
-}
-
-fn role_to_string(r: crate::model::Role) -> String {
-    match r {
-        crate::model::Role::System => "system".into(),
-        crate::model::Role::User => "user".into(),
-        crate::model::Role::Assistant => "assistant".into(),
-        crate::model::Role::Tool => "tool".into(),
-    }
 }
 
 #[cfg(test)]

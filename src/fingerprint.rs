@@ -140,16 +140,7 @@ pub fn cap_canonical(s: &str, cap: usize) -> (String, bool) {
 }
 
 fn role_to_json_str(role: crate::model::Role) -> serde_json::Value {
-    use crate::model::Role;
-    serde_json::Value::String(
-        match role {
-            Role::System => "system",
-            Role::User => "user",
-            Role::Assistant => "assistant",
-            Role::Tool => "tool",
-        }
-        .to_owned(),
-    )
+    serde_json::Value::String(role.to_string())
 }
 
 #[cfg(test)]

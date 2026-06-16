@@ -30,6 +30,31 @@ pub enum Role {
     Tool,
 }
 
+impl std::fmt::Display for Role {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::System => write!(f, "system"),
+            Self::User => write!(f, "user"),
+            Self::Assistant => write!(f, "assistant"),
+            Self::Tool => write!(f, "tool"),
+        }
+    }
+}
+
+impl std::str::FromStr for Role {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "system" => Ok(Self::System),
+            "assistant" => Ok(Self::Assistant),
+            "tool" => Ok(Self::Tool),
+            "user" => Ok(Self::User),
+            _ => Err(()),
+        }
+    }
+}
+
 /// Advisory: tells the backend whether this message's content is worth
 /// keeping warm in a prompt cache, and whether a breakpoint marker belongs
 /// here.
