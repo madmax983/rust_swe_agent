@@ -32,6 +32,7 @@ max bench inspect --list-formats
 |--------|---------------|---------------|------------------------------|
 | `markdown` | stable | always compiled | docs, PR review, human readers |
 | `csv` | stable | `csv-export` | spreadsheets, jq pipelines, tabular tools |
+| `messages-json` | stable | `json-export` | json parsers, JQ scripts, pipeline integration |
 | `html` | stable | `html-export` | self-contained browser view, shared notebooks |
 | `mermaid` | experimental | `mermaid-export` | Mermaid sequence-diagram renderers (GitLab, GitHub markdown, mermaid.live) |
 

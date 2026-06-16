@@ -87,6 +87,14 @@ pub fn registry() -> Vec<ExportFormat> {
         render: HtmlExporter::export,
     });
 
+    #[cfg(feature = "json-export")]
+    formats.push(ExportFormat {
+        name: "messages-json",
+        tier: StabilityTier::Stable,
+        consumer: "json parsers, JQ scripts, pipeline integration",
+        render: JsonExporter::export,
+    });
+
     #[cfg(feature = "mermaid-export")]
     formats.push(ExportFormat {
         name: "mermaid",
@@ -107,6 +115,7 @@ pub fn registry() -> Vec<ExportFormat> {
 /// but present here so the CLI can still route it and explain how to enable it.
 pub const FEATURE_GATED_FORMATS: &[(&str, &str)] = &[
     ("csv", "csv-export"),
+    ("messages-json", "json-export"),
     ("html", "html-export"),
     ("mermaid", "mermaid-export"),
 ];
@@ -160,6 +169,9 @@ pub struct MarkdownExporter;
 #[cfg(feature = "csv-export")]
 pub struct CsvExporter;
 
+#[cfg(feature = "json-export")]
+pub struct JsonExporter;
+
 #[cfg(feature = "mermaid-export")]
 pub struct MermaidExporter;
 
@@ -167,6 +179,27 @@ pub struct MermaidExporter;
 pub struct HtmlExporter;
 
 use std::fmt::Write;
+
+#[cfg(feature = "json-export")]
+impl TrajectoryExporter for JsonExporter {
+    fn export(trajectory: &Trajectory) -> String {
+        let redactor = Redactor::default_enabled();
+
+        let messages: Vec<serde_json::Value> = trajectory
+            .messages
+            .iter()
+            .map(|msg| {
+                let content = redactor.redact_text(&msg.content, surface::EXPORT).text;
+                serde_json::json!({
+                    "role": msg.role,
+                    "content": content
+                })
+            })
+            .collect();
+
+        serde_json::to_string_pretty(&messages).unwrap_or_else(|_| "[]".to_string())
+    }
+}
 
 #[cfg(feature = "csv-export")]
 impl TrajectoryExporter for CsvExporter {
@@ -386,6 +419,25 @@ mod tests {
         assert!(md.contains("Hello agent"));
         assert!(md.contains("### Assistant"));
         assert!(md.contains("Hello user"));
+    }
+
+    #[cfg(feature = "json-export")]
+    #[test]
+    #[allow(clippy::unwrap_used, clippy::expect_used)]
+    fn test_json_export_format() {
+        let mut t = Trajectory::new();
+        t.info.task = Some("Add a feature".to_string());
+        t.record_message(&Message::system("System prompt"));
+        t.record_message(&Message::user("Hello agent"));
+
+        let json_out = JsonExporter::export(&t);
+        let parsed: Vec<serde_json::Value> = serde_json::from_str(&json_out).unwrap();
+
+        assert_eq!(parsed.len(), 2);
+        assert_eq!(parsed[0]["role"], "system");
+        assert_eq!(parsed[0]["content"], "System prompt");
+        assert_eq!(parsed[1]["role"], "user");
+        assert_eq!(parsed[1]["content"], "Hello agent");
     }
 
     #[cfg(feature = "csv-export")]
