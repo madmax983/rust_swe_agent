@@ -641,6 +641,13 @@ pub struct TrajectoryInfo {
     /// Per-check evidence for runs where verification checks were configured.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub verification_results: Vec<VerificationResult>,
+    /// Number of parse-error re-prompts that occurred during this run.
+    /// Omitted from serialized JSON when zero. A non-zero value indicates
+    /// the model returned unactionable responses that were retried. When
+    /// equal to `config.agent.parse_error_retries + 1`, all retries were
+    /// exhausted and the run ended with `failure_category: model_parse`.
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub parse_retries: u32,
     /// Whether this trajectory file represents a mid-run checkpoint rather than
     /// a completed run. `true` while the agent is running; `false` (or absent)
     /// on the final write. Old files without this field parse as `false`.

@@ -156,7 +156,7 @@ paths = ["{}"]
     let traj_1 = serde_json::json!({
         "trajectory_format": "mini-swe-agent-1.2",
         "artifact_kind": "trajectory",
-        "schema_version": { "major": 1, "minor": 10 },
+        "schema_version": { "major": 1, "minor": 11 },
         "info": {
             "task": "task 1",
             "model_name": "claude-3-5",
@@ -183,7 +183,7 @@ paths = ["{}"]
     let traj_2 = serde_json::json!({
         "trajectory_format": "mini-swe-agent-1.2",
         "artifact_kind": "trajectory",
-        "schema_version": { "major": 1, "minor": 10 },
+        "schema_version": { "major": 1, "minor": 11 },
         "info": {
             "task": "task 2",
             "model_name": "claude-3-5",
@@ -217,7 +217,7 @@ paths = ["{}"]
     let traj_3 = serde_json::json!({
         "trajectory_format": "mini-swe-agent-1.2",
         "artifact_kind": "trajectory",
-        "schema_version": { "major": 1, "minor": 10 },
+        "schema_version": { "major": 1, "minor": 11 },
         "info": {
             "task": "task 3",
             "model_name": "claude-3-5",
@@ -372,7 +372,7 @@ paths = ["/dummy/path/a"]
     let traj_1 = serde_json::json!({
         "trajectory_format": "mini-swe-agent-1.2",
         "artifact_kind": "trajectory",
-        "schema_version": { "major": 1, "minor": 10 },
+        "schema_version": { "major": 1, "minor": 11 },
         "info": {
             "task": "task 1",
             "outcome": "submitted",
@@ -407,7 +407,7 @@ paths = ["/dummy/path/a"]
     let traj_2 = serde_json::json!({
         "trajectory_format": "mini-swe-agent-1.2",
         "artifact_kind": "trajectory",
-        "schema_version": { "major": 1, "minor": 10 },
+        "schema_version": { "major": 1, "minor": 11 },
         "info": {
             "task": "task 2",
             "outcome": "submitted",
@@ -479,7 +479,7 @@ fn cli_supports_per_instance_activation_reasons() {
     let traj = serde_json::json!({
         "trajectory_format": "mini-swe-agent-1.2",
         "artifact_kind": "trajectory",
-        "schema_version": { "major": 1, "minor": 10 },
+        "schema_version": { "major": 1, "minor": 11 },
         "info": {
             "task": "task 1",
             "outcome": "submitted",
@@ -605,7 +605,7 @@ paths = ["{}"]
     let traj = serde_json::json!({
         "trajectory_format": "mini-swe-agent-1.2",
         "artifact_kind": "trajectory",
-        "schema_version": { "major": 1, "minor": 10 },
+        "schema_version": { "major": 1, "minor": 11 },
         "info": {
             "task": "task 1",
             "outcome": "submitted"
@@ -654,7 +654,7 @@ fn cli_fails_on_malformed_active_skills_manifest() {
     let traj = serde_json::json!({
         "trajectory_format": "mini-swe-agent-1.2",
         "artifact_kind": "trajectory",
-        "schema_version": { "major": 1, "minor": 10 },
+        "schema_version": { "major": 1, "minor": 11 },
         "info": {
             "task": "task 1",
             "outcome": "submitted",
@@ -763,7 +763,7 @@ fn mock_trajectory(task: &str, skill_name: &str, skill_path: &str) -> serde_json
     serde_json::json!({
         "trajectory_format": "mini-swe-agent-1.2",
         "artifact_kind": "trajectory",
-        "schema_version": { "major": 1, "minor": 10 },
+        "schema_version": { "major": 1, "minor": 11 },
         "info": {
             "task": task,
             "outcome": "submitted",

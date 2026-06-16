@@ -923,6 +923,7 @@ pub async fn run(args: MiniArgs) -> Result<(), Error> {
         parent.info.trace_id = None;
         parent.info.other.clear();
         parent.info.policy_counts = Default::default();
+        parent.info.parse_retries = 0;
         // Overwrite the task to the redacted follow-up instruction.
         parent.info.task = Some(redacted_follow_up);
 

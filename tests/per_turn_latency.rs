@@ -65,12 +65,13 @@ fn legacy_trajectory_without_latency_fields_parses_cleanly() {
 }
 
 // -- 2. Artifact schema bump for workdir support: 1.9 -> 1.10.
+// -- 3. Artifact schema bump for parse_retries: 1.10 -> 1.11.
 
 #[test]
 fn artifact_schema_minor_bumped_for_latency_attribution() {
     assert_eq!(
         ArtifactSchemaVersion::CURRENT,
-        ArtifactSchemaVersion::new(1, 10),
+        ArtifactSchemaVersion::new(1, 11),
     );
 }
 

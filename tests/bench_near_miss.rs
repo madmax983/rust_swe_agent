@@ -17,7 +17,7 @@ use support::binary_path;
 fn write_results_json(dir: &Path) {
     let payload = serde_json::json!({
         "artifact_kind": "sweep_results",
-        "schema_version": {"major": 1, "minor": 10},
+        "schema_version": {"major": 1, "minor": 11},
         "total": 5,
         "sweep_status": "completed",
         "submitted": 5,
@@ -127,7 +127,7 @@ fn write_results_json(dir: &Path) {
 fn write_evaluation_json_full(dir: &Path) {
     let payload = serde_json::json!({
         "artifact_kind": "evaluation_results",
-        "schema_version": {"major": 1, "minor": 10},
+        "schema_version": {"major": 1, "minor": 11},
         "instances": [
             {
                 "instance_id": "iou_1",
@@ -568,7 +568,7 @@ fn bench_compare_text_output_has_near_miss_referral() {
     // baseline: instance "a" resolved
     let baseline_payload = serde_json::json!({
         "artifact_kind": "sweep_results",
-        "schema_version": {"major": 1, "minor": 10},
+        "schema_version": {"major": 1, "minor": 11},
         "total": 1,
         "sweep_status": "completed",
         "submitted": 1,
@@ -616,7 +616,7 @@ fn bench_compare_text_output_has_near_miss_referral() {
     .unwrap();
     let baseline_eval = serde_json::json!({
         "artifact_kind": "evaluation_results",
-        "schema_version": {"major": 1, "minor": 10},
+        "schema_version": {"major": 1, "minor": 11},
         "instances": [{"instance_id": "a", "resolved": true, "eval_exit_reason": "resolved"}]
     });
     std::fs::write(
@@ -628,7 +628,7 @@ fn bench_compare_text_output_has_near_miss_referral() {
     // candidate: instance "a" fails (regression)
     let candidate_payload = serde_json::json!({
         "artifact_kind": "sweep_results",
-        "schema_version": {"major": 1, "minor": 10},
+        "schema_version": {"major": 1, "minor": 11},
         "total": 1,
         "sweep_status": "completed",
         "submitted": 0,
@@ -677,7 +677,7 @@ fn bench_compare_text_output_has_near_miss_referral() {
     .unwrap();
     let candidate_eval = serde_json::json!({
         "artifact_kind": "evaluation_results",
-        "schema_version": {"major": 1, "minor": 10},
+        "schema_version": {"major": 1, "minor": 11},
         "instances": [{"instance_id": "a", "resolved": false, "eval_exit_reason": "unresolved"}]
     });
     std::fs::write(
