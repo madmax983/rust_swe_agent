@@ -346,40 +346,48 @@ impl Redactor {
         filtered
     }
 
-    pub fn redact_json_value(&self, value: &mut serde_json::Value, surface: &str) -> bool {
+    pub fn redact_json_value(&self, root_value: &mut serde_json::Value, surface: &str) -> bool {
         if !self.inner.enabled {
             return false;
         }
-        match value {
-            serde_json::Value::Object(map) => {
-                let mut redacted = false;
-                for (key, child) in map.iter_mut() {
-                    if let Some(kind) = sensitive_key_kind(key) {
-                        redacted |= self.redact_sensitive_value(child, surface, kind);
-                    } else {
-                        redacted |= self.redact_json_value(child, surface);
+
+        let mut redacted_any = false;
+        let mut stack = vec![(root_value, None)];
+
+        while let Some((value, inherited_kind)) = stack.pop() {
+            match value {
+                serde_json::Value::Object(map) => {
+                    for (key, child) in map.iter_mut() {
+                        let kind = inherited_kind.or_else(|| sensitive_key_kind(key));
+                        stack.push((child, kind));
                     }
                 }
-                redacted
-            }
-            serde_json::Value::Array(values) => {
-                let mut redacted = false;
-                for child in values {
-                    redacted |= self.redact_json_value(child, surface);
+                serde_json::Value::Array(values) => {
+                    for child in values {
+                        stack.push((child, inherited_kind));
+                    }
                 }
-                redacted
-            }
-            serde_json::Value::String(text) => {
-                let outcome = self.redact_text(text, surface);
-                if outcome.redacted {
-                    *text = outcome.text;
-                    true
-                } else {
-                    false
+                serde_json::Value::String(text) => {
+                    if let Some(kind) = inherited_kind {
+                        if !text.is_empty() {
+                            let marker = self.marker_for(text, kind);
+                            *text = marker;
+                            self.increment(surface, kind);
+                            redacted_any = true;
+                        }
+                    } else {
+                        let outcome = self.redact_text(text, surface);
+                        if outcome.redacted {
+                            *text = outcome.text;
+                            redacted_any = true;
+                        }
+                    }
                 }
+                _ => {}
             }
-            _ => false,
         }
+
+        redacted_any
     }
 
     #[must_use]
@@ -579,40 +587,6 @@ impl Redactor {
         let value = counts.entry(key).or_insert(0);
         *value = value.saturating_add(1);
         drop(counts);
-    }
-
-    fn redact_sensitive_value(
-        &self,
-        value: &mut serde_json::Value,
-        surface: &str,
-        kind: &str,
-    ) -> bool {
-        match value {
-            serde_json::Value::String(text) => {
-                if text.is_empty() {
-                    return false;
-                }
-                let marker = self.marker_for(text, kind);
-                *text = marker;
-                self.increment(surface, kind);
-                true
-            }
-            serde_json::Value::Array(values) => {
-                let mut redacted = false;
-                for child in values {
-                    redacted |= self.redact_sensitive_value(child, surface, kind);
-                }
-                redacted
-            }
-            serde_json::Value::Object(map) => {
-                let mut redacted = false;
-                for child in map.values_mut() {
-                    redacted |= self.redact_sensitive_value(child, surface, kind);
-                }
-                redacted
-            }
-            _ => false,
-        }
     }
 }
 
