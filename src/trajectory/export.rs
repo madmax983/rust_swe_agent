@@ -95,6 +95,14 @@ pub fn registry() -> Vec<ExportFormat> {
         render: MermaidExporter::export,
     });
 
+    #[cfg(feature = "junit-export")]
+    formats.push(ExportFormat {
+        name: "junit",
+        tier: StabilityTier::Experimental,
+        consumer: "CI pipelines (GitLab, Jenkins, GitHub Actions)",
+        render: JunitExporter::export,
+    });
+
     formats
 }
 
@@ -109,6 +117,7 @@ pub const FEATURE_GATED_FORMATS: &[(&str, &str)] = &[
     ("csv", "csv-export"),
     ("html", "html-export"),
     ("mermaid", "mermaid-export"),
+    ("junit", "junit-export"),
 ];
 
 /// Returns `true` if `name` is a trajectory export format known to this codebase,
@@ -165,6 +174,56 @@ pub struct MermaidExporter;
 
 #[cfg(feature = "html-export")]
 pub struct HtmlExporter;
+
+#[cfg(feature = "junit-export")]
+pub struct JunitExporter;
+
+#[cfg(feature = "junit-export")]
+impl TrajectoryExporter for JunitExporter {
+    fn export(trajectory: &Trajectory) -> String {
+        let redactor = Redactor::default_enabled();
+        let mut xml = String::new();
+
+        let task = trajectory.info.task.as_deref().unwrap_or("Unknown Task");
+        let task_safe = redactor
+            .redact_text(task, surface::EXPORT)
+            .text
+            .replace('&', "&amp;")
+            .replace('<', "&lt;")
+            .replace('>', "&gt;")
+            .replace('"', "&quot;")
+            .replace('\'', "&apos;");
+
+        let outcome = trajectory.info.outcome.as_deref().unwrap_or("unknown");
+        let outcome_safe = redactor
+            .redact_text(outcome, surface::EXPORT)
+            .text
+            .replace('&', "&amp;")
+            .replace('<', "&lt;")
+            .replace('>', "&gt;")
+            .replace('"', "&quot;")
+            .replace('\'', "&apos;");
+
+        let name = "Agent Trajectory";
+        let failures = i32::from(outcome == "error");
+
+        xml.push_str("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<testsuites>\n");
+        let _ = write!(
+            xml,
+            "  <testsuite name=\"{name}\" tests=\"1\" failures=\"{failures}\">\n    <testcase classname=\"Agent\" name=\"{task_safe}\">"
+        );
+
+        if failures > 0 {
+            let _ = write!(
+                xml,
+                "\n      <failure message=\"{outcome_safe}\">Outcome: {outcome_safe}</failure>"
+            );
+        }
+
+        xml.push_str("\n    </testcase>\n  </testsuite>\n</testsuites>\n");
+        xml
+    }
+}
 
 use std::fmt::Write;
 
@@ -452,5 +511,31 @@ mod tests {
         assert!(html.contains("submitted"));
         assert!(html.contains("Hello agent"));
         assert!(html.contains("Hello user"));
+    }
+
+    #[cfg(feature = "junit-export")]
+    #[test]
+    fn test_junit_export_format() {
+        let mut t = Trajectory::new();
+        t.info.task = Some("Add a feature".to_string());
+        t.info.outcome = Some(outcome::SUBMITTED.to_string());
+
+        let xml = JunitExporter::export(&t);
+
+        assert!(xml.starts_with("<?xml version=\"1.0\" encoding=\"UTF-8\"?>"));
+        assert!(xml.contains("<testsuites>"));
+        assert!(xml.contains("<testsuite name=\"Agent Trajectory\" tests=\"1\" failures=\"0\">"));
+        assert!(xml.contains("<testcase classname=\"Agent\" name=\"Add a feature\">"));
+        assert!(!xml.contains("<failure"));
+
+        let mut t_err = Trajectory::new();
+        t_err.info.task = Some("Trigger error".to_string());
+        t_err.info.outcome = Some("error".to_string());
+
+        let xml_err = JunitExporter::export(&t_err);
+        assert!(
+            xml_err.contains("<testsuite name=\"Agent Trajectory\" tests=\"1\" failures=\"1\">")
+        );
+        assert!(xml_err.contains("<failure message=\"error\">Outcome: error</failure>"));
     }
 }
