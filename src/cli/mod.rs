@@ -158,6 +158,7 @@ pub async fn run() -> Result<(), Error> {
             args::AgentCmd::BestOf(b) => Box::pin(agent_best_of_cmd(*b)).await,
             args::AgentCmd::Profile(p) => agent_profile_cmd(&p),
             args::AgentCmd::Runs(r) => agent_runs_cmd(&r),
+            args::AgentCmd::FsAudit(a) => agent_fs_audit_cmd(&a),
         },
         Command::Catalog(c) => catalog::run_catalog(c),
         Command::Ui(u) => ui_cmd(u).await,
@@ -6929,6 +6930,69 @@ fn agent_runs_cmd(r: &args::AgentRunsCmd) -> Result<(), Error> {
         }
     }
 
+    Ok(())
+}
+
+fn agent_fs_audit_cmd(a: &args::FsAuditCmd) -> Result<(), Error> {
+    use crate::run::fs_audit::{
+        FsAuditFormat, FsAuditOpts, FsAuditSource, format_json, format_text, parse_format,
+        run_fs_audit,
+    };
+
+    // Exactly one of --trajectory / --sweep is required (clap group enforces this,
+    // but guard here for a helpful error message).
+    let source = match (&a.trajectory, &a.sweep) {
+        (Some(p), None) => FsAuditSource::Trajectory(p.clone()),
+        (None, Some(d)) => FsAuditSource::Sweep(d.clone()),
+        (None, None) => {
+            return Err(Error::Config(crate::error::ConfigError::Invalid(
+                "one of --trajectory or --sweep is required".to_owned(),
+            )));
+        }
+        (Some(_), Some(_)) => {
+            return Err(Error::Config(crate::error::ConfigError::Invalid(
+                "--trajectory and --sweep are mutually exclusive".to_owned(),
+            )));
+        }
+    };
+
+    let format = parse_format(a.format.as_str()).map_err(Error::Config)?;
+
+    let opts = FsAuditOpts {
+        source,
+        workdir_override: a.workdir.clone(),
+        allow: a.allow.clone(),
+        format,
+    };
+
+    let report = match run_fs_audit(&opts) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("fs-audit: {e}");
+            let code = if matches!(e, Error::Config(_)) {
+                ExitCode::UsageError
+            } else {
+                ExitCode::FsAuditScanError
+            };
+            exit_with_outcome(code, code.outcome_class());
+        }
+    };
+
+    let exit_code = report.exit_code();
+
+    let report_content = match format {
+        FsAuditFormat::Json => {
+            let json = format_json(&report).map_err(Error::Json)?;
+            serde_json::to_string_pretty(&json).map_err(Error::Json)?
+        }
+        FsAuditFormat::Text => format_text(&report),
+    };
+
+    println!("{report_content}");
+
+    if exit_code != ExitCode::Success {
+        exit_with_outcome(exit_code, exit_code.outcome_class());
+    }
     Ok(())
 }
 

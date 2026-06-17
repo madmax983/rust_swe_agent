@@ -35,6 +35,7 @@ pub mod export_otlp;
 pub mod failure_digest;
 pub mod forecast;
 pub mod fork;
+pub mod fs_audit;
 pub mod frontier;
 pub mod github_issue;
 pub mod github_pr;
