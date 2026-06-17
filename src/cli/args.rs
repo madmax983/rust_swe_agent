@@ -672,6 +672,8 @@ pub enum AgentCmd {
     Profile(AgentProfileCmd),
     /// List and summarize single-task trajectory files in a directory (issue #509).
     Runs(AgentRunsCmd),
+    /// Audit trajectory files for filesystem accesses outside the workdir (issue #511).
+    FsAudit(FsAuditCmd),
 }
 
 /// `agent runs` — list and summarize single-task trajectory files (issue #509).
@@ -706,6 +708,37 @@ pub struct AgentProfileCmd {
     pub trajectory: std::path::PathBuf,
 
     /// Output format: `text` (default) or `json`.
+    #[arg(long, default_value = "text")]
+    pub format: String,
+}
+
+/// `agent fs-audit` — post-hoc filesystem boundary audit (issue #511).
+///
+/// Scans bash commands in trajectory files for path references outside the
+/// configured workdir: absolute paths, `..` traversals, `$HOME`/`~/`
+/// references. Zero-cost: read-only, no model calls, no network.
+#[derive(Debug, Args)]
+pub struct FsAuditCmd {
+    /// Single trajectory file to audit. Mutually exclusive with `--sweep`.
+    #[arg(long, value_name = "PATH", group = "source")]
+    pub trajectory: Option<PathBuf>,
+
+    /// Sweep directory containing `*.traj.json` files to audit.
+    /// Mutually exclusive with `--trajectory`.
+    #[arg(long, value_name = "DIR", group = "source")]
+    pub sweep: Option<PathBuf>,
+
+    /// Override the workdir used for path boundary checks. When omitted,
+    /// each trajectory's `info.local_workdir` is used (default `/repo`).
+    #[arg(long, value_name = "PATH")]
+    pub workdir: Option<PathBuf>,
+
+    /// Suppress findings whose `matched_path` starts with this prefix.
+    /// Repeatable. Example: `--allow /etc --allow /tmp`.
+    #[arg(long = "allow", value_name = "PATH")]
+    pub allow: Vec<PathBuf>,
+
+    /// Output format: `text` (default, human-readable) or `json`.
     #[arg(long, default_value = "text")]
     pub format: String,
 }

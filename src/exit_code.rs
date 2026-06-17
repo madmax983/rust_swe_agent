@@ -190,6 +190,18 @@ pub enum ExitCode {
     /// `slo_rule_failure` (27) so automation can route "concurrency
     /// under-utilized" separately from generic SLO failures.
     UtilizationGateFailure = 44,
+    /// 45 — `agent fs-audit` found at least one finding (a bash command accessed a
+    /// path outside the configured workdir). The audit completed and its report was
+    /// printed; the non-zero exit is the CI publish gate. Distinct from
+    /// `internal_error` (1) so automation can route "filesystem boundary violated"
+    /// separately from an unexpected crash.
+    FsAuditFindings = 45,
+    /// 46 — `agent fs-audit` could not read or parse one or more trajectory files
+    /// (unreadable file, invalid JSON, missing sweep directory). The scan is
+    /// incomplete, so a "clean" verdict cannot be trusted. Distinct from
+    /// `usage_error` (2) so CI can tell "the scan broke" from "your invocation is
+    /// broken".
+    FsAuditScanError = 46,
     /// 130 — user interruption (graceful SIGINT / Ctrl-C; 128 + SIGINT(2)).
     Interrupted = 130,
     /// 137 — forced kill (SIGKILL escalation after graceful-cancel deadline; 128 + SIGKILL(9)).
@@ -255,6 +267,8 @@ impl ExitCode {
             Self::ConfigOverrideWarning => "config_override_warning",
             Self::EvalParityGateFailure => "eval_parity_gate_failure",
             Self::UtilizationGateFailure => "utilization_gate_failure",
+            Self::FsAuditFindings => "fs_audit_findings",
+            Self::FsAuditScanError => "fs_audit_scan_error",
             Self::Interrupted => "interrupted",
             Self::Killed => "killed",
         }
