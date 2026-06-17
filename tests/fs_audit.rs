@@ -3,7 +3,7 @@
 //! RED PHASE: These tests are written before the implementation and are expected
 //! to fail until `src/run/fs_audit.rs` is implemented.
 
-#![allow(clippy::unwrap_used)]
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use std::path::PathBuf;
 
