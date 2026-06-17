@@ -95,6 +95,14 @@ pub fn registry() -> Vec<ExportFormat> {
         render: MermaidExporter::export,
     });
 
+    #[cfg(feature = "finetune-export")]
+    formats.push(ExportFormat {
+        name: "finetune",
+        tier: StabilityTier::Experimental,
+        consumer: "JSONL fine-tuning format for model training platforms",
+        render: FinetuneExporter::export,
+    });
+
     formats
 }
 
@@ -109,6 +117,7 @@ pub const FEATURE_GATED_FORMATS: &[(&str, &str)] = &[
     ("csv", "csv-export"),
     ("html", "html-export"),
     ("mermaid", "mermaid-export"),
+    ("finetune", "finetune-export"),
 ];
 
 /// Returns `true` if `name` is a trajectory export format known to this codebase,
@@ -166,7 +175,32 @@ pub struct MermaidExporter;
 #[cfg(feature = "html-export")]
 pub struct HtmlExporter;
 
+#[cfg(feature = "finetune-export")]
+pub struct FinetuneExporter;
+
 use std::fmt::Write;
+
+#[cfg(feature = "finetune-export")]
+impl TrajectoryExporter for FinetuneExporter {
+    fn export(trajectory: &Trajectory) -> String {
+        let redactor = Redactor::default_enabled();
+
+        let mut messages = Vec::new();
+        for msg in &trajectory.messages {
+            let content = redactor.redact_text(&msg.content, surface::EXPORT).text;
+            messages.push(serde_json::json!({
+                "role": msg.role,
+                "content": content
+            }));
+        }
+
+        let dataset_row = serde_json::json!({
+            "messages": messages
+        });
+
+        serde_json::to_string(&dataset_row).unwrap_or_else(|_| String::new()) + "\n"
+    }
+}
 
 #[cfg(feature = "csv-export")]
 impl TrajectoryExporter for CsvExporter {
@@ -452,5 +486,27 @@ mod tests {
         assert!(html.contains("submitted"));
         assert!(html.contains("Hello agent"));
         assert!(html.contains("Hello user"));
+    }
+
+    #[cfg(feature = "finetune-export")]
+    #[test]
+    fn test_finetune_export_format() {
+        let mut t = Trajectory::new();
+        t.record_message(&Message::system("Sys prompt"));
+        t.record_message(&Message::user("User prompt"));
+        t.record_message(&Message::assistant("Assistant reply"));
+
+        let jsonl = FinetuneExporter::export(&t);
+        let parsed: serde_json::Value = serde_json::from_str(&jsonl).unwrap_or_else(|_| serde_json::json!({}));
+
+        assert!(parsed.get("messages").is_some());
+        let msgs = parsed["messages"].as_array().map_or(&[] as &[serde_json::Value], |v| v.as_slice());
+        assert_eq!(msgs.len(), 3);
+        assert_eq!(msgs[0]["role"], "system");
+        assert_eq!(msgs[0]["content"], "Sys prompt");
+        assert_eq!(msgs[1]["role"], "user");
+        assert_eq!(msgs[1]["content"], "User prompt");
+        assert_eq!(msgs[2]["role"], "assistant");
+        assert_eq!(msgs[2]["content"], "Assistant reply");
     }
 }

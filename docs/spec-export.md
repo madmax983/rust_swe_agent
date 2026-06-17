@@ -171,3 +171,5 @@ an exporter. Each **must** satisfy this bar before merging:
 - Choosing the concrete CLI surface, trait shape, or Cargo feature-flag strategy beyond
   what is already implemented.
 - Live streaming or real-time export from in-flight sweeps.
+finetune
+experimental
