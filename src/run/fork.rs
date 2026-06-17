@@ -614,7 +614,7 @@ pub async fn run(args: ForkCmd) -> Result<(), Error> {
     let run_result = agent.run().await;
 
     // Report if any drift steps occurred during the deterministic prefix (though we exit 9 early if mismatch occurs)
-    let collected_drifts = drift_steps.lock().unwrap().clone();
+    let collected_drifts = drift_steps.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
     if !collected_drifts.is_empty() {
         tracing::warn!("Replay drift detected during deterministic prefix phase");
     }
