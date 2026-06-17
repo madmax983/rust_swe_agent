@@ -606,6 +606,30 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn custom_headers_appear_in_request() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let url = format!("http://{addr}");
+
+        let headers = vec![("X-Test-Header".to_owned(), "hello-world".to_owned())];
+        let sink =
+            SweepWebhookSink::new(url, &headers, Redactor::disabled(), "s".to_owned()).unwrap();
+
+        sink.emit(SweepNotificationEvent::SweepStarted {
+            total_instances: 5,
+            model: "test-model".to_owned(),
+        });
+
+        let socket = accept(&listener).await;
+        let request = read_http(socket).await;
+        let lower = request.to_ascii_lowercase();
+        assert!(
+            lower.contains("x-test-header: hello-world"),
+            "custom header not found in: {request}"
+        );
+    }
+
+    #[tokio::test]
     async fn invalid_header_name_rejected_at_construction() {
         let err = SweepWebhookSink::new(
             "http://127.0.0.1:1".to_owned(),
