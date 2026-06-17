@@ -139,6 +139,7 @@ pub async fn run() -> Result<(), Error> {
             args::BenchCmd::EvalParity(p) => bench_eval_parity(p),
             args::BenchCmd::Utilization(u) => bench_utilization(u),
             args::BenchCmd::ExportOtlp(c) => Box::pin(bench_export_otlp(c)).await,
+            args::BenchCmd::Variance(v) => bench_variance(v),
         },
         Command::Agent { cmd } => match *cmd {
             args::AgentCmd::SkillsPreview(s) => agent_skills_preview_cmd(&s),
@@ -4292,6 +4293,37 @@ fn bench_budget_fit(b: args::BudgetFitCmd) -> Result<(), Error> {
         println!("{}", serde_json::to_string_pretty(&report)?);
     } else {
         print!("{}", crate::run::budget_fit::render_text(&report));
+    }
+    Ok(())
+}
+
+fn bench_variance(v: args::BenchVarianceCmd) -> Result<(), Error> {
+    let is_json = match v.format.as_str() {
+        "text" => false,
+        "json" => true,
+        other => {
+            return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+                "bench variance: unknown --format `{other}` (expected `text` or `json`)"
+            ))));
+        }
+    };
+    let args = crate::run::variance::BenchVarianceArgs {
+        sweep_dir: v.sweep,
+        ci_width: v.ci_width,
+        filter: v.filter,
+        class: v.class,
+    };
+    let report = crate::run::variance::compute_variance(&args)?;
+    if is_json {
+        println!(
+            "{}",
+            crate::artifact::to_string_pretty(
+                crate::artifact::ArtifactKind::BenchVarianceReport,
+                &report,
+            )?
+        );
+    } else {
+        print!("{}", crate::run::variance::render_text(&report));
     }
     Ok(())
 }

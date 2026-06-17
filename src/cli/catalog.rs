@@ -194,6 +194,12 @@ pub fn entries() -> &'static [CatalogEntry] {
             stage: "analyze",
         },
         CatalogEntry {
+            path: "bench variance",
+            summary: "Classify per-instance flakiness from a rerun sweep (zero cost)",
+            cost_tier: "free",
+            stage: "analyze",
+        },
+        CatalogEntry {
             path: "bench bundle",
             summary: "Export or verify a portable, redacted sweep archive",
             cost_tier: "free",
