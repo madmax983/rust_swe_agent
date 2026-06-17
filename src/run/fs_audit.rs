@@ -321,42 +321,23 @@ struct LightExtra {
 
 // ── Trajectory scanning ───────────────────────────────────────────────────────
 
-/// Sanitize single-quoted substrings for path scanning.
+/// Replace single-quoted substrings with spaces so that the path regex does
+/// not match paths embedded in shell string literals (e.g. `sed 's/a/b/'` or
+/// `sed -n '/TODO/p'`).
 ///
-/// Shell substitution expressions like `sed 's/foo/bar/'` produce false-positive
-/// path matches, so we blank their content. However, quoted path arguments like
-/// `cat '/etc/passwd'` represent real accesses and must be preserved. We
-/// distinguish them by whether the quoted content looks like a path (starts with
-/// `/`, `~/`, `$HOME`, or `${HOME}`).
-///
-/// Also handles backslash-escaped single quotes (`\'`) outside single-quoted
-/// strings so that a lone `\'` does not flip `in_sq`.
+/// Handles backslash-escaped single quotes (`\'`) outside single-quoted strings
+/// so that a lone `\'` does not flip `in_sq` and incorrectly mute the rest of
+/// the command.
 fn strip_single_quoted(cmd: &str) -> String {
     let mut out = String::with_capacity(cmd.len());
     let mut in_sq = false;
     let mut escaped = false;
-    let mut sq_buf = String::new();
     for ch in cmd.chars() {
         if in_sq {
             if ch == '\'' {
                 in_sq = false;
-                // Preserve content that looks like a path argument; blank the rest.
-                let is_path_like = sq_buf.starts_with('/')
-                    || sq_buf.starts_with("~/")
-                    || sq_buf.starts_with("$HOME")
-                    || sq_buf.starts_with("${HOME}");
-                if is_path_like {
-                    out.push_str(&sq_buf);
-                } else {
-                    for _ in sq_buf.chars() {
-                        out.push(' ');
-                    }
-                }
-                sq_buf.clear();
-                out.push(' ');
-            } else {
-                sq_buf.push(ch);
             }
+            out.push(' ');
         } else if escaped {
             out.push(ch);
             escaped = false;
@@ -365,7 +346,6 @@ fn strip_single_quoted(cmd: &str) -> String {
             out.push(ch);
         } else if ch == '\'' {
             in_sq = true;
-            sq_buf.clear();
             out.push(' ');
         } else {
             out.push(ch);
@@ -480,13 +460,44 @@ fn scan_trajectory(
 
             for mat in path_re().find_iter(&scanned) {
                 let matched = mat.as_str();
-                // Skip URL path components: in `https://host/path` the regex
-                // matches `/host/path` starting right after the second `/` in
-                // `://`, so the preceding byte is `/`.  Also skip the rare
-                // `:path` form (e.g. `file:///etc`).
+
                 if mat.start() > 0 {
-                    let prev = scanned.as_bytes().get(mat.start() - 1).copied();
-                    if prev == Some(b'/') || prev == Some(b':') {
+                    let bytes = scanned.as_bytes();
+                    let prev = bytes.get(mat.start() - 1).copied();
+                    let prev2 = mat
+                        .start()
+                        .checked_sub(2)
+                        .and_then(|i| bytes.get(i))
+                        .copied();
+
+                    // Skip URL authority: `https://host/path` — the regex matches
+                    // `/host/path` starting at the second `/` in `://`; `prev` is `/`
+                    // and `prev2` is `:`.  Only skip when both conditions hold so
+                    // that POSIX double-slash paths (`cat //etc/passwd`) are flagged.
+                    if prev == Some(b'/') && prev2 == Some(b':') {
+                        continue;
+                    }
+
+                    // Skip `:path` form used by some URI schemes (e.g. `file:///`).
+                    if prev == Some(b':') {
+                        continue;
+                    }
+
+                    // For absolute paths, skip if inside a relative path token:
+                    // e.g. `cat src/run/mod.rs` → the regex matches `/run/mod.rs`
+                    // whose preceding byte is `c` from `src`.
+                    if matched.starts_with('/')
+                        && matches!(prev, Some(c) if c.is_ascii_alphanumeric() || c == b'_' || c == b'.')
+                    {
+                        continue;
+                    }
+
+                    // For tilde references, skip when the preceding byte is an
+                    // alphanumeric or `@` — these indicate a version/package specifier
+                    // like `foo@~1.2.3` where bash does not expand the tilde.
+                    if matched.starts_with('~')
+                        && matches!(prev, Some(c) if c.is_ascii_alphanumeric() || c == b'@' || c == b'-' || c == b'+')
+                    {
                         continue;
                     }
                 }
@@ -1148,48 +1159,55 @@ mod tests {
         );
     }
 
-    // ── strip_single_quoted: path-like quoted content is preserved ────────────
-
-    #[test]
-    fn single_quoted_path_is_preserved() {
-        // `cat '/etc/passwd'` — the quoted arg is path-like, should be kept
-        let result = strip_single_quoted("cat '/etc/passwd'");
-        assert!(
-            result.contains("/etc/passwd"),
-            "path-like single-quoted content must be preserved, got: {result:?}"
-        );
-    }
+    // ── strip_single_quoted ───────────────────────────────────────────────────
 
     #[test]
     fn sed_substitution_expression_is_blanked() {
-        // `sed 's/foo/bar/'` — the expression is NOT path-like, should be blanked
+        // `sed 's/foo/bar/'` — blanked, no path match
         let result = strip_single_quoted("sed 's/foo/bar/' /repo/main.py");
         assert!(
             !result.contains("/foo/bar/"),
             "sed expression must be blanked, got: {result:?}"
         );
-        // The actual file path outside the quotes must be preserved
         assert!(
             result.contains("/repo/main.py"),
             "non-quoted path must be preserved, got: {result:?}"
         );
     }
 
-    // ── URL false positive guard ──────────────────────────────────────────────
+    #[test]
+    fn sed_address_pattern_is_blanked() {
+        // `sed -n '/TODO/p'` — quoted sed address starts with `/` but is not
+        // a filesystem path; it must be blanked to avoid a false positive.
+        let result = strip_single_quoted("sed -n '/TODO/p' /repo/main.py");
+        assert!(
+            !result.contains("/TODO/p"),
+            "sed address must be blanked, got: {result:?}"
+        );
+        assert!(
+            result.contains("/repo/main.py"),
+            "non-quoted path must be preserved, got: {result:?}"
+        );
+    }
+
+    // ── scan loop guards ──────────────────────────────────────────────────────
 
     #[test]
     fn url_path_component_is_not_a_finding() {
         // `curl https://example.com/data` — the regex matches `/example.com/data`
-        // starting right after the `//` in `://`.  The guard must skip this
-        // because the preceding byte is `/` (part of the URI authority).
+        // starting at the second `/` in `://`; prev=`/`, prev2=`:` → URL guard fires.
         let scanned = strip_single_quoted("curl https://example.com/data");
+        let bytes = scanned.as_bytes();
         let surviving: Vec<_> = path_re()
             .find_iter(&scanned)
             .filter(|m| {
-                // Replicate the guard from scan_trajectory
                 if m.start() > 0 {
-                    let prev = scanned.as_bytes().get(m.start() - 1).copied();
-                    if prev == Some(b'/') || prev == Some(b':') {
+                    let prev = bytes.get(m.start() - 1).copied();
+                    let prev2 = m.start().checked_sub(2).and_then(|i| bytes.get(i)).copied();
+                    if prev == Some(b'/') && prev2 == Some(b':') {
+                        return false;
+                    }
+                    if prev == Some(b':') {
                         return false;
                     }
                 }
@@ -1198,7 +1216,90 @@ mod tests {
             .collect();
         assert!(
             surviving.is_empty(),
-            "URL path component must not become an out-of-workdir finding, got: {surviving:?}"
+            "URL path component must not become a finding, got: {surviving:?}"
+        );
+    }
+
+    #[test]
+    fn double_slash_posix_path_is_a_finding() {
+        // `cat //etc/passwd` — POSIX double-slash absolute path; guard must NOT
+        // skip it (prev=`/`, prev2=` ` — not `://`).
+        let scanned = strip_single_quoted("cat //etc/passwd");
+        let bytes = scanned.as_bytes();
+        let findings: Vec<_> = path_re()
+            .find_iter(&scanned)
+            .filter(|m| {
+                if m.start() > 0 {
+                    let prev = bytes.get(m.start() - 1).copied();
+                    let prev2 = m.start().checked_sub(2).and_then(|i| bytes.get(i)).copied();
+                    if prev == Some(b'/') && prev2 == Some(b':') {
+                        return false;
+                    }
+                    if prev == Some(b':') {
+                        return false;
+                    }
+                }
+                is_outside_workdir(m.as_str(), "/repo")
+            })
+            .collect();
+        assert!(
+            !findings.is_empty(),
+            "//etc/passwd must be detected as out-of-workdir"
+        );
+    }
+
+    #[test]
+    fn relative_path_inside_token_is_not_a_finding() {
+        // `cat src/run/mod.rs` — the regex matches `/run/mod.rs` but the
+        // preceding byte is `c` (word char) → token-boundary guard fires.
+        let scanned = strip_single_quoted("cat src/run/mod.rs");
+        let bytes = scanned.as_bytes();
+        let findings: Vec<_> = path_re()
+            .find_iter(&scanned)
+            .filter(|m| {
+                if m.start() > 0 {
+                    let prev = bytes.get(m.start() - 1).copied();
+                    if matched_starts_with_slash(m.as_str())
+                        && matches!(prev, Some(c) if c.is_ascii_alphanumeric() || c == b'_' || c == b'.')
+                    {
+                        return false;
+                    }
+                }
+                is_outside_workdir(m.as_str(), "/repo")
+            })
+            .collect();
+        assert!(
+            findings.is_empty(),
+            "relative path token must not produce a finding, got: {findings:?}"
+        );
+    }
+
+    fn matched_starts_with_slash(s: &str) -> bool {
+        s.starts_with('/')
+    }
+
+    #[test]
+    fn version_spec_tilde_is_not_a_finding() {
+        // `npm install foo@~1.2.3` — `~` is preceded by `@`, not a word boundary.
+        let scanned = strip_single_quoted("npm install foo@~1.2.3");
+        let bytes = scanned.as_bytes();
+        let findings: Vec<_> = path_re()
+            .find_iter(&scanned)
+            .filter(|m| {
+                if m.start() > 0 {
+                    let prev = bytes.get(m.start() - 1).copied();
+                    if m.as_str().starts_with('~')
+                        && matches!(prev, Some(c) if c.is_ascii_alphanumeric() || c == b'@' || c == b'-' || c == b'+')
+                    {
+                        return false;
+                    }
+                }
+                is_outside_workdir(m.as_str(), "/repo")
+            })
+            .collect();
+        assert!(
+            findings.is_empty(),
+            "version-spec tilde must not produce a finding, got: {findings:?}"
         );
     }
 }
