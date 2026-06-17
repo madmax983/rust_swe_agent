@@ -7,10 +7,10 @@
 
 use std::path::PathBuf;
 
+use maxwells_daemon::exit_code::ExitCode;
 use maxwells_daemon::run::fs_audit::{
     AccessKind, FsAuditFormat, FsAuditOpts, FsAuditSource, run_fs_audit,
 };
-use maxwells_daemon::exit_code::ExitCode;
 
 fn sweep_fixture(name: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -27,7 +27,10 @@ fn traj_fixture(sweep: &str, name: &str) -> PathBuf {
 #[test]
 fn fs_audit_findings_exit_code_is_45() {
     assert_eq!(ExitCode::FsAuditFindings.as_i32(), 45);
-    assert_eq!(ExitCode::FsAuditFindings.outcome_class(), "fs_audit_findings");
+    assert_eq!(
+        ExitCode::FsAuditFindings.outcome_class(),
+        "fs_audit_findings"
+    );
 }
 
 #[test]
@@ -103,11 +106,7 @@ fn etc_access_trajectory_is_flagged() {
         "finding must reference /etc path, got: {}",
         finding.matched_path
     );
-    assert_eq!(
-        finding.access,
-        AccessKind::Read,
-        "cat is a read command"
-    );
+    assert_eq!(finding.access, AccessKind::Read, "cat is a read command");
     assert_eq!(
         report.exit_code(),
         ExitCode::FsAuditFindings,
@@ -236,10 +235,7 @@ fn finding_reports_correct_step_index() {
     let report = run_fs_audit(&opts).expect("scan should succeed");
     // In etc-access.traj.json, the bash action is the first assistant message (step 0)
     let finding = &report.findings[0];
-    assert_eq!(
-        finding.step_index, 0,
-        "first assistant message is step 0"
-    );
+    assert_eq!(finding.step_index, 0, "first assistant message is step 0");
 }
 
 #[test]
@@ -252,10 +248,7 @@ fn finding_reports_command_head() {
     };
     let report = run_fs_audit(&opts).expect("scan should succeed");
     let finding = &report.findings[0];
-    assert_eq!(
-        finding.command_head, "cat",
-        "command head must be 'cat'"
-    );
+    assert_eq!(finding.command_head, "cat", "command head must be 'cat'");
 }
 
 // ── workdir resolution ────────────────────────────────────────────────────────
@@ -350,14 +343,20 @@ fn json_output_has_required_fields() {
         .expect("JSON serialization must succeed");
     let obj = json.as_object().expect("JSON output must be an object");
     assert!(obj.contains_key("artifact_kind"), "must have artifact_kind");
-    assert!(obj.contains_key("schema_version"), "must have schema_version");
+    assert!(
+        obj.contains_key("schema_version"),
+        "must have schema_version"
+    );
     assert!(obj.contains_key("source"), "must have source");
     assert!(obj.contains_key("workdir"), "must have workdir");
     assert!(
         obj.contains_key("trajectories_scanned"),
         "must have trajectories_scanned"
     );
-    assert!(obj.contains_key("total_findings"), "must have total_findings");
+    assert!(
+        obj.contains_key("total_findings"),
+        "must have total_findings"
+    );
     assert!(obj.contains_key("findings"), "must have findings");
     assert!(obj.contains_key("scan_errors"), "must have scan_errors");
     assert_eq!(
@@ -379,8 +378,16 @@ fn json_schema_version_is_1_0() {
     let json = maxwells_daemon::run::fs_audit::format_json(&report)
         .expect("JSON serialization must succeed");
     let sv = &json["schema_version"];
-    assert_eq!(sv["major"].as_i64(), Some(1), "schema_version.major must be 1");
-    assert_eq!(sv["minor"].as_i64(), Some(0), "schema_version.minor must be 0");
+    assert_eq!(
+        sv["major"].as_i64(),
+        Some(1),
+        "schema_version.major must be 1"
+    );
+    assert_eq!(
+        sv["minor"].as_i64(),
+        Some(0),
+        "schema_version.minor must be 0"
+    );
 }
 
 #[test]
@@ -397,10 +404,19 @@ fn json_finding_has_all_required_fields() {
     let findings = json["findings"].as_array().expect("findings must be array");
     assert!(!findings.is_empty(), "must have at least one finding");
     let f = &findings[0];
-    assert!(f["instance_id"].is_string(), "finding must have instance_id");
+    assert!(
+        f["instance_id"].is_string(),
+        "finding must have instance_id"
+    );
     assert!(f["step_index"].is_number(), "finding must have step_index");
-    assert!(f["command_head"].is_string(), "finding must have command_head");
-    assert!(f["matched_path"].is_string(), "finding must have matched_path");
+    assert!(
+        f["command_head"].is_string(),
+        "finding must have command_head"
+    );
+    assert!(
+        f["matched_path"].is_string(),
+        "finding must have matched_path"
+    );
     assert!(f["access"].is_string(), "finding must have access");
 }
 
@@ -451,10 +467,7 @@ fn missing_sweep_dir_is_error() {
         format: FsAuditFormat::Json,
     };
     let result = run_fs_audit(&opts);
-    assert!(
-        result.is_err(),
-        "missing sweep directory must return Err"
-    );
+    assert!(result.is_err(), "missing sweep directory must return Err");
 }
 
 #[test]
@@ -466,10 +479,7 @@ fn missing_trajectory_file_is_error() {
         format: FsAuditFormat::Json,
     };
     let result = run_fs_audit(&opts);
-    assert!(
-        result.is_err(),
-        "missing trajectory file must return Err"
-    );
+    assert!(result.is_err(), "missing trajectory file must return Err");
 }
 
 #[test]

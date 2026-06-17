@@ -21,6 +21,7 @@ const SCHEMA_VERSION: ArtifactSchemaVersion = ArtifactSchemaVersion::new(1, 0);
 
 // ── Path extraction regex ─────────────────────────────────────────────────────
 
+#[allow(clippy::expect_used)]
 fn path_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
@@ -59,9 +60,34 @@ impl AccessKind {
 }
 
 const READ_HEADS: &[&str] = &[
-    "cat", "head", "tail", "less", "more", "wc", "file", "stat", "ls", "du", "find", "diff",
-    "cmp", "strings", "hexdump", "xxd", "grep", "rg", "egrep", "fgrep", "readlink", "od", "cut",
-    "sort", "uniq", "md5sum", "sha256sum", "sha1sum",
+    "cat",
+    "head",
+    "tail",
+    "less",
+    "more",
+    "wc",
+    "file",
+    "stat",
+    "ls",
+    "du",
+    "find",
+    "diff",
+    "cmp",
+    "strings",
+    "hexdump",
+    "xxd",
+    "grep",
+    "rg",
+    "egrep",
+    "fgrep",
+    "readlink",
+    "od",
+    "cut",
+    "sort",
+    "uniq",
+    "md5sum",
+    "sha256sum",
+    "sha1sum",
 ];
 
 const WRITE_HEADS: &[&str] = &[
@@ -100,10 +126,15 @@ fn has_write_redirect(command: &str) -> bool {
 fn extract_command_head(command: &str) -> String {
     let mut tokens = command.split_whitespace();
     loop {
-        let tok = match tokens.next() {
-            Some(t) => t,
-            None => return String::new(),
+        let Some(tok) = tokens.next() else {
+            return String::new();
         };
+        // Strip leading subshell parens before any other check so that
+        // `(sudo cmd)` correctly identifies `cmd` as the head.
+        let tok = tok.trim_start_matches('(');
+        if tok.is_empty() {
+            continue;
+        }
         // Strip known prefix commands
         if matches!(tok, "sudo" | "time" | "env" | "nohup" | "nice") {
             continue;
@@ -115,8 +146,6 @@ fn extract_command_head(command: &str) -> String {
                 continue;
             }
         }
-        // Strip leading subshell parens
-        let tok = tok.trim_start_matches('(');
         return tok.to_owned();
     }
 }
@@ -164,9 +193,17 @@ fn is_allowlisted(path: &str, allow: &[PathBuf]) -> bool {
         if path_norm == entry_norm || path_norm.starts_with(&format!("{entry_norm}/")) {
             return true;
         }
-        // For non-absolute patterns (HOME, ~), check substring match
-        if !entry_str.starts_with('/') && path.contains(entry_str.as_ref()) {
-            return true;
+        // For non-absolute patterns (e.g. $HOME, ~/…), use path-component matching
+        // to avoid over-suppression from substring coincidences.
+        if !entry_str.starts_with('/') {
+            let e: &str = entry_str.as_ref();
+            if path == e
+                || path.starts_with(&format!("{e}/"))
+                || path.ends_with(&format!("/{e}"))
+                || path.contains(&format!("/{e}/"))
+            {
+                return true;
+            }
         }
     }
     false
@@ -283,14 +320,28 @@ struct LightExtra {
 
 /// Replace single-quoted substrings with spaces so that regex matching does
 /// not pick up paths embedded inside shell string literals (e.g. `sed 's/a/b/'`).
+///
+/// Handles backslash-escaped single quotes (`\'`) outside single-quoted strings
+/// so that a lone `\'` does not flip `in_sq` and incorrectly mute the rest of
+/// the command.
 fn strip_single_quoted(cmd: &str) -> String {
     let mut out = String::with_capacity(cmd.len());
     let mut in_sq = false;
+    let mut escaped = false;
     for ch in cmd.chars() {
-        if ch == '\'' {
-            in_sq = !in_sq;
+        if in_sq {
+            if ch == '\'' {
+                in_sq = false;
+            }
             out.push(' ');
-        } else if in_sq {
+        } else if escaped {
+            out.push(ch);
+            escaped = false;
+        } else if ch == '\\' {
+            escaped = true;
+            out.push(ch);
+        } else if ch == '\'' {
+            in_sq = true;
             out.push(' ');
         } else {
             out.push(ch);
@@ -318,7 +369,10 @@ fn extract_bash_commands(msg: &LightMessage) -> Vec<String> {
 }
 
 fn is_tool_call(action: &str) -> bool {
-    action.trim_start().starts_with('{')
+    let trimmed = action.trim_start();
+    // Require valid JSON so that bash grouping blocks like `{ cmd; }` are not
+    // misidentified as tool calls.
+    trimmed.starts_with('{') && serde_json::from_str::<serde_json::Value>(trimmed).is_ok()
 }
 
 fn extract_bash_from_content(content: &str) -> Vec<String> {
@@ -356,15 +410,10 @@ fn resolve_workdir(override_wd: Option<&PathBuf>, traj_info_wd: Option<&str>) ->
 
 /// Derive the instance_id from the trajectory file path.
 fn derive_instance_id(path: &Path) -> String {
-    path.file_name()
-        .and_then(|n| n.to_str())
-        .map(|n| {
-            n.strip_suffix(".traj.json")
-                .unwrap_or(n)
-                // strip run-N suffix for reruns
-                .to_owned()
-        })
-        .unwrap_or_else(|| path.display().to_string())
+    path.file_name().and_then(|n| n.to_str()).map_or_else(
+        || path.display().to_string(),
+        |n| n.strip_suffix(".traj.json").unwrap_or(n).to_owned(),
+    )
 }
 
 /// Scan a single trajectory file and return all findings.
@@ -377,10 +426,7 @@ fn scan_trajectory(
     let traj: LightTrajectory = serde_json::from_str(&content)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
 
-    let traj_workdir = traj
-        .info
-        .as_ref()
-        .and_then(|i| i.local_workdir.as_deref());
+    let traj_workdir = traj.info.as_ref().and_then(|i| i.local_workdir.as_deref());
     let workdir = resolve_workdir(workdir_override, traj_workdir);
 
     let instance_id = derive_instance_id(path);
@@ -518,8 +564,7 @@ pub fn run_fs_audit(opts: &FsAuditOpts) -> Result<FsAuditReport, Error> {
             let mut all_findings = Vec::new();
             let mut scan_errors = walk_errors;
             let mut effective_workdir = wd_override
-                .map(|p| p.to_string_lossy().into_owned())
-                .unwrap_or_else(|| "/repo".to_owned());
+                .map_or_else(|| "/repo".to_owned(), |p| p.to_string_lossy().into_owned());
 
             for traj_path in &traj_files {
                 match scan_trajectory(traj_path, wd_override, &opts.allow) {
@@ -693,10 +738,7 @@ mod tests {
 
     #[test]
     fn python_script_is_ambiguous() {
-        assert_eq!(
-            classify_access("python /opt/run.py"),
-            AccessKind::Ambiguous
-        );
+        assert_eq!(classify_access("python /opt/run.py"), AccessKind::Ambiguous);
     }
 
     // ── extract_command_head ──────────────────────────────────────────────────
@@ -713,10 +755,7 @@ mod tests {
 
     #[test]
     fn strips_env_assignment() {
-        assert_eq!(
-            extract_command_head("FOO=bar cat /etc/passwd"),
-            "cat"
-        );
+        assert_eq!(extract_command_head("FOO=bar cat /etc/passwd"), "cat");
     }
 
     #[test]
@@ -782,22 +821,14 @@ mod tests {
 
     #[test]
     fn regex_finds_home_ref() {
-        let matches: Vec<_> = path_re()
-            .find_iter("cat $HOME/.ssh/id_rsa")
-            .collect();
-        assert!(matches
-            .iter()
-            .any(|m| m.as_str().starts_with("$HOME")));
+        let matches: Vec<_> = path_re().find_iter("cat $HOME/.ssh/id_rsa").collect();
+        assert!(matches.iter().any(|m| m.as_str().starts_with("$HOME")));
     }
 
     #[test]
     fn regex_finds_dotdot() {
-        let matches: Vec<_> = path_re()
-            .find_iter("cat ../../etc/shadow")
-            .collect();
-        assert!(matches
-            .iter()
-            .any(|m| m.as_str().starts_with("..")));
+        let matches: Vec<_> = path_re().find_iter("cat ../../etc/shadow").collect();
+        assert!(matches.iter().any(|m| m.as_str().starts_with("..")));
     }
 
     #[test]
@@ -896,7 +927,10 @@ mod tests {
         };
         let text = format_text(&report);
         assert!(text.contains("fs-audit"), "must contain 'fs-audit'");
-        assert!(text.contains("2 trajectories"), "must mention trajectory count");
+        assert!(
+            text.contains("2 trajectories"),
+            "must mention trajectory count"
+        );
         assert!(text.contains("0 finding(s)"), "must mention finding count");
         assert!(text.contains("/repo"), "must mention workdir");
     }
@@ -939,8 +973,14 @@ mod tests {
             scan_errors: vec!["bad.traj.json: parse error".to_owned()],
         };
         let text = format_text(&report);
-        assert!(text.contains("Scan errors"), "must show scan errors section");
-        assert!(text.contains("bad.traj.json"), "must show the error message");
+        assert!(
+            text.contains("Scan errors"),
+            "must show scan errors section"
+        );
+        assert!(
+            text.contains("bad.traj.json"),
+            "must show the error message"
+        );
     }
 
     // ── resolve_workdir ───────────────────────────────────────────────────────
@@ -948,10 +988,7 @@ mod tests {
     #[test]
     fn override_takes_precedence_over_traj_info() {
         let ov = PathBuf::from("/workspace");
-        assert_eq!(
-            resolve_workdir(Some(&ov), Some("/repo")),
-            "/workspace"
-        );
+        assert_eq!(resolve_workdir(Some(&ov), Some("/repo")), "/workspace");
     }
 
     #[test]
