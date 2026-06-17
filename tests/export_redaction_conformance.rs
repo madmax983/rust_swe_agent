@@ -27,6 +27,9 @@ fn fixture_trajectory() -> Trajectory {
     t.record_message(&Message::assistant(format!(
         "Authenticated with {CANARY_TOKEN}, proceeding"
     )));
+    t.record_message(&Message::assistant(format!(
+        "I will now run a command:\n```bash\necho {CANARY_TOKEN} > secret.txt\n```"
+    )));
     t
 }
 

@@ -95,6 +95,14 @@ pub fn registry() -> Vec<ExportFormat> {
         render: MermaidExporter::export,
     });
 
+    #[cfg(feature = "bash-export")]
+    formats.push(ExportFormat {
+        name: "bash",
+        tier: StabilityTier::Stable,
+        consumer: "reproducibility testing, local script execution",
+        render: BashExporter::export,
+    });
+
     formats
 }
 
@@ -109,6 +117,7 @@ pub const FEATURE_GATED_FORMATS: &[(&str, &str)] = &[
     ("csv", "csv-export"),
     ("html", "html-export"),
     ("mermaid", "mermaid-export"),
+    ("bash", "bash-export"),
 ];
 
 /// Returns `true` if `name` is a trajectory export format known to this codebase,
@@ -165,6 +174,32 @@ pub struct MermaidExporter;
 
 #[cfg(feature = "html-export")]
 pub struct HtmlExporter;
+
+#[cfg(feature = "bash-export")]
+pub struct BashExporter;
+
+#[cfg(feature = "bash-export")]
+impl TrajectoryExporter for BashExporter {
+    fn export(trajectory: &Trajectory) -> String {
+        let redactor = Redactor::default_enabled();
+        let mut script = String::new();
+        script.push_str("#!/usr/bin/env bash\n");
+        script.push_str("# Trajectory Bash Export\n\n");
+        script.push_str("set -e\n\n");
+
+        for msg in &trajectory.messages {
+            if msg.role == "assistant" {
+                let action = crate::agent::parse::extract_action(&msg.content);
+                if let crate::agent::parse::Action::Bash(cmd) = action {
+                    let redacted = redactor.redact_text(&cmd, surface::EXPORT).text;
+                    script.push_str(&redacted);
+                    script.push('\n');
+                }
+            }
+        }
+        script
+    }
+}
 
 use std::fmt::Write;
 
@@ -452,5 +487,15 @@ mod tests {
         assert!(html.contains("submitted"));
         assert!(html.contains("Hello agent"));
         assert!(html.contains("Hello user"));
+    }
+
+    #[cfg(feature = "bash-export")]
+    #[test]
+    fn test_bash_export_format() {
+        let mut t = Trajectory::new();
+        t.record_message(&Message::assistant("I will run this:\n```bash\nls -l\n```"));
+        let bash = BashExporter::export(&t);
+        assert!(bash.starts_with("#!/usr/bin/env bash"));
+        assert!(bash.contains("ls -l"));
     }
 }
