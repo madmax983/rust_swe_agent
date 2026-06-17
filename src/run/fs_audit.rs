@@ -189,6 +189,12 @@ fn is_outside_workdir(path: &str, workdir: &str) -> bool {
 /// A path matches an allowlist entry when it starts with the entry (treated
 /// as a directory prefix, e.g. `/etc` suppresses `/etc/passwd`).
 fn is_allowlisted(path: &str, allow: &[PathBuf]) -> bool {
+    // Never suppress paths with `..` segments — they cannot be safely
+    // normalized here and a traversal like `/tmp/../etc/passwd` with
+    // `--allow /tmp` would otherwise bypass the allowlist check.
+    if path.contains("/../") || path.ends_with("/..") {
+        return false;
+    }
     for entry in allow {
         let entry_str = entry.to_string_lossy();
         let entry_norm = entry_str.trim_end_matches('/');
@@ -320,6 +326,67 @@ struct LightExtra {
 }
 
 // ── Trajectory scanning ───────────────────────────────────────────────────────
+
+/// Replace double-quoted substrings that contain no `$` with spaces.
+///
+/// Double-quoted strings without variable interpolation are prose payloads
+/// (e.g. `echo "see /etc/passwd for details"`) — blanking them prevents false
+/// positives while preserving variable-interpolated strings like `"$HOME/cfg"`
+/// where the path is real.
+fn strip_double_quoted(cmd: &str) -> String {
+    let mut out = String::with_capacity(cmd.len());
+    let mut chars = cmd.chars();
+
+    while let Some(ch) = chars.next() {
+        if ch != '"' {
+            out.push(ch);
+            continue;
+        }
+        // Collect the double-quoted segment.
+        let mut segment = Vec::<char>::new();
+        let mut has_dollar = false;
+        let mut closed = false;
+
+        while let Some(c) = chars.next() {
+            match c {
+                '"' => {
+                    closed = true;
+                    break;
+                }
+                '\\' => {
+                    segment.push('\\');
+                    if let Some(next) = chars.next() {
+                        segment.push(next);
+                    }
+                }
+                '$' => {
+                    has_dollar = true;
+                    segment.push(c);
+                }
+                _ => segment.push(c),
+            }
+        }
+
+        if has_dollar {
+            // Keep: variable interpolation means it could expand to a real path.
+            out.push('"');
+            for c in &segment {
+                out.push(*c);
+            }
+            if closed {
+                out.push('"');
+            }
+        } else {
+            // Blank: prose text payload, not an actual path argument.
+            let blanked = 1 + segment.len() + usize::from(closed);
+            for _ in 0..blanked {
+                out.push(' ');
+            }
+        }
+    }
+
+    out
+}
 
 /// Replace single-quoted substrings with spaces so that the path regex does
 /// not match paths embedded in shell string literals (e.g. `sed 's/a/b/'` or
@@ -454,9 +521,12 @@ fn scan_trajectory(
         for command in &commands {
             let command_head = extract_command_head(command);
             let access = classify_access(command);
-            // Strip single-quoted strings before path extraction to avoid
-            // matching paths embedded in shell string literals (e.g. sed 's/a/b/').
-            let scanned = strip_single_quoted(command);
+            // Strip double-quoted text payloads then single-quoted strings
+            // before path extraction to suppress false positives from prose
+            // arguments (e.g. `echo "see /etc/passwd"`) while still catching
+            // variable-interpolated paths (`echo "$HOME/cfg"`).
+            let temp = strip_double_quoted(command);
+            let scanned = strip_single_quoted(&temp);
 
             for mat in path_re().find_iter(&scanned) {
                 let matched = mat.as_str();
@@ -598,7 +668,20 @@ pub fn run_fs_audit(opts: &FsAuditOpts) -> Result<FsAuditReport, Error> {
                         scan_errors: vec![],
                     })
                 }
-                Err(e) => Err(Error::Io(e)),
+                // Parse / IO errors during scanning are surfaced as scan_errors
+                // (same behaviour as sweep mode) so callers get a structured
+                // report rather than a hard failure.
+                Err(e) => Ok(FsAuditReport {
+                    artifact_kind: "fs_audit".to_owned(),
+                    schema_version: SCHEMA_VERSION,
+                    source,
+                    workdir: wd_override
+                        .map_or_else(|| "/repo".to_owned(), |p| p.to_string_lossy().into_owned()),
+                    trajectories_scanned: 1,
+                    total_findings: 0,
+                    findings: vec![],
+                    scan_errors: vec![format!("{}: {e}", path.display())],
+                }),
             }
         }
 
@@ -1276,6 +1359,84 @@ mod tests {
 
     fn matched_starts_with_slash(s: &str) -> bool {
         s.starts_with('/')
+    }
+
+    // ── is_allowlisted: dotdot bypass prevention ─────────────────────────────
+
+    #[test]
+    fn allowlist_does_not_suppress_dotdot_traversal() {
+        // `/tmp/../etc/passwd` starts with `/tmp` but traverses out — must not
+        // be allowlisted even when `--allow /tmp` is set.
+        let allow = vec![PathBuf::from("/tmp")];
+        assert!(
+            !is_allowlisted("/tmp/../etc/passwd", &allow),
+            "dotdot traversal must not be suppressed by allowlist"
+        );
+    }
+
+    #[test]
+    fn allowlist_does_not_suppress_path_ending_with_dotdot() {
+        let allow = vec![PathBuf::from("/tmp")];
+        assert!(
+            !is_allowlisted("/tmp/..", &allow),
+            "path ending with /.. must not be suppressed by allowlist"
+        );
+    }
+
+    // ── strip_double_quoted ───────────────────────────────────────────────────
+
+    #[test]
+    fn double_quoted_text_payload_is_blanked() {
+        // `echo "see /etc/passwd for details"` — no `$`, so the quoted segment
+        // is prose; the path inside must be blanked to avoid a false positive.
+        let result = strip_double_quoted(r#"echo "see /etc/passwd for details""#);
+        assert!(
+            !result.contains("/etc/passwd"),
+            "path inside prose double-quote must be blanked, got: {result:?}"
+        );
+    }
+
+    #[test]
+    fn double_quoted_with_dollar_is_preserved() {
+        // `echo "$HOME/file"` — has `$`, so the variable path must be kept.
+        let result = strip_double_quoted(r#"echo "$HOME/file""#);
+        assert!(
+            result.contains("$HOME"),
+            "variable reference in double-quote must be preserved, got: {result:?}"
+        );
+    }
+
+    #[test]
+    fn unquoted_path_not_affected_by_double_quote_stripping() {
+        // Paths outside double quotes must pass through untouched.
+        let result = strip_double_quoted("cat /etc/passwd");
+        assert!(
+            result.contains("/etc/passwd"),
+            "unquoted path must survive strip_double_quoted, got: {result:?}"
+        );
+    }
+
+    // ── run_fs_audit (single trajectory): parse error → scan_errors ──────────
+
+    #[test]
+    fn single_trajectory_parse_error_returns_scan_error_report() {
+        use std::io::Write as _;
+        let mut tf = tempfile::NamedTempFile::new().unwrap();
+        write!(tf, "not valid json").unwrap();
+        let opts = FsAuditOpts {
+            source: FsAuditSource::Trajectory(tf.path().to_path_buf()),
+            workdir_override: None,
+            allow: vec![],
+            format: FsAuditFormat::Text,
+        };
+        let report = run_fs_audit(&opts).unwrap();
+        assert_eq!(
+            report.scan_errors.len(),
+            1,
+            "parse error must produce one scan_error entry"
+        );
+        assert_eq!(report.total_findings, 0);
+        assert_eq!(report.trajectories_scanned, 1);
     }
 
     #[test]
