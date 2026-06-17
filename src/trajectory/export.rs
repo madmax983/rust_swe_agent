@@ -497,10 +497,13 @@ mod tests {
         t.record_message(&Message::assistant("Assistant reply"));
 
         let jsonl = FinetuneExporter::export(&t);
-        let parsed: serde_json::Value = serde_json::from_str(&jsonl).unwrap_or_else(|_| serde_json::json!({}));
+        let parsed: serde_json::Value =
+            serde_json::from_str(&jsonl).unwrap_or_else(|_| serde_json::json!({}));
 
         assert!(parsed.get("messages").is_some());
-        let msgs = parsed["messages"].as_array().map_or(&[] as &[serde_json::Value], |v| v.as_slice());
+        let msgs = parsed["messages"]
+            .as_array()
+            .map_or(&[] as &[serde_json::Value], |v| v.as_slice());
         assert_eq!(msgs.len(), 3);
         assert_eq!(msgs[0]["role"], "system");
         assert_eq!(msgs[0]["content"], "Sys prompt");

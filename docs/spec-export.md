@@ -34,6 +34,7 @@ max bench inspect --list-formats
 | `csv` | stable | `csv-export` | spreadsheets, jq pipelines, tabular tools |
 | `html` | stable | `html-export` | self-contained browser view, shared notebooks |
 | `mermaid` | experimental | `mermaid-export` | Mermaid sequence-diagram renderers (GitLab, GitHub markdown, mermaid.live) |
+| `finetune` | experimental | `finetune-export` | JSONL fine-tuning format for model training platforms |
 
 Feature-gated formats require rebuilding with the corresponding feature:
 
@@ -171,5 +172,3 @@ an exporter. Each **must** satisfy this bar before merging:
 - Choosing the concrete CLI surface, trait shape, or Cargo feature-flag strategy beyond
   what is already implemented.
 - Live streaming or real-time export from in-flight sweeps.
-finetune
-experimental
