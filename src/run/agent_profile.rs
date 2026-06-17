@@ -228,6 +228,8 @@ fn compute_pct(stage_ms: Option<u64>, total_ms: Option<u64>) -> Option<u8> {
 
 // ── text formatting ───────────────────────────────────────────────────────────
 
+use comfy_table::{Table, modifiers::UTF8_ROUND_CORNERS, presets::UTF8_FULL};
+
 pub fn format_text(report: &AgentProfileReport) -> String {
     let mut out = String::new();
 
@@ -263,14 +265,24 @@ pub fn format_text(report: &AgentProfileReport) -> String {
         "\n── Token Usage ──────────────────────────────────────────"
     );
     let tu = &report.token_usage;
-    let _ = writeln!(out, "  prompt:          {:>8}", tu.prompt_tokens);
-    let _ = writeln!(out, "  cache-read:      {:>8}", tu.cache_read_tokens);
-    let _ = writeln!(out, "  cache-creation:  {:>8}", tu.cache_creation_tokens);
-    let _ = writeln!(out, "  completion:      {:>8}", tu.completion_tokens);
+    let mut token_table = Table::new();
+    token_table
+        .load_preset(UTF8_FULL)
+        .apply_modifier(UTF8_ROUND_CORNERS)
+        .set_header(["Type", "Tokens"]);
+    let prompt_tokens = tu.prompt_tokens.to_string();
+    let cache_read_tokens = tu.cache_read_tokens.to_string();
+    let cache_creation_tokens = tu.cache_creation_tokens.to_string();
+    let completion_tokens = tu.completion_tokens.to_string();
+    token_table.add_row(["prompt", prompt_tokens.as_str()]);
+    token_table.add_row(["cache-read", cache_read_tokens.as_str()]);
+    token_table.add_row(["cache-creation", cache_creation_tokens.as_str()]);
+    token_table.add_row(["completion", completion_tokens.as_str()]);
     let total =
         tu.prompt_tokens + tu.cache_read_tokens + tu.cache_creation_tokens + tu.completion_tokens;
-    let _ = writeln!(out, "  ─────────────────────────");
-    let _ = writeln!(out, "  total:           {total:>8}");
+    let total_str = total.to_string();
+    token_table.add_row(["total", total_str.as_str()]);
+    let _ = writeln!(out, "{token_table}");
 
     // Stage breakdown
     let _ = writeln!(
@@ -278,44 +290,42 @@ pub fn format_text(report: &AgentProfileReport) -> String {
         "\n── Stage Breakdown ──────────────────────────────────────"
     );
     let sb = &report.stage_breakdown;
-    let _ = writeln!(out, "  {:<10} {:>10}   {:>5}", "stage", "ms", "share");
-    let _ = writeln!(out, "  {}", "─".repeat(30));
-    let _ = writeln!(
-        out,
-        "  {:<10} {:>10}   {:>5}",
-        "model",
-        fmt_ms(sb.model_ms),
-        fmt_pct(sb.model_pct)
-    );
-    let _ = writeln!(
-        out,
-        "  {:<10} {:>10}   {:>5}",
-        "tool",
-        fmt_ms(sb.tool_ms),
-        fmt_pct(sb.tool_pct)
-    );
-    let _ = writeln!(
-        out,
-        "  {:<10} {:>10}   {:>5}",
-        "harness",
-        fmt_ms(sb.harness_ms),
-        fmt_pct(sb.harness_pct)
-    );
+    let mut stage_table = Table::new();
+    stage_table
+        .load_preset(UTF8_FULL)
+        .apply_modifier(UTF8_ROUND_CORNERS)
+        .set_header(["stage", "ms", "share"]);
+
+    let model_ms = fmt_ms(sb.model_ms);
+    let model_pct = fmt_pct(sb.model_pct);
+    stage_table.add_row(["model", model_ms.as_str(), model_pct.as_str()]);
+
+    let tool_ms = fmt_ms(sb.tool_ms);
+    let tool_pct = fmt_pct(sb.tool_pct);
+    stage_table.add_row(["tool", tool_ms.as_str(), tool_pct.as_str()]);
+
+    let harness_ms = fmt_ms(sb.harness_ms);
+    let harness_pct = fmt_pct(sb.harness_pct);
+    stage_table.add_row(["harness", harness_ms.as_str(), harness_pct.as_str()]);
+
+    let _ = writeln!(out, "{stage_table}");
 
     // Action mix
     let _ = writeln!(
         out,
         "\n── Action Mix ───────────────────────────────────────────"
     );
-    let _ = writeln!(out, "  {:<10} {:>6}   {:>6}", "class", "count", "share");
-    let _ = writeln!(out, "  {}", "─".repeat(28));
+    let mut mix_table = Table::new();
+    mix_table
+        .load_preset(UTF8_FULL)
+        .apply_modifier(UTF8_ROUND_CORNERS)
+        .set_header(["class", "count", "share"]);
     for (name, entry) in &report.action_mix {
-        let _ = writeln!(
-            out,
-            "  {:<10} {:>6}   {:>5.1}%",
-            name, entry.count, entry.share_pct
-        );
+        let count_str = entry.count.to_string();
+        let share_str = format!("{:.1}%", entry.share_pct);
+        mix_table.add_row([name.as_str(), count_str.as_str(), share_str.as_str()]);
     }
+    let _ = writeln!(out, "{mix_table}");
 
     out
 }

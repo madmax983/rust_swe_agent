@@ -402,6 +402,8 @@ fn redact_value(value: Value, redactor: &Redactor) -> Value {
     }
 }
 
+use comfy_table::{Table, modifiers::UTF8_ROUND_CORNERS, presets::UTF8_FULL};
+
 // ── Text formatter ────────────────────────────────────────────────────────────
 
 /// Render a [`ConfigResolveReport`] as human-readable text (the `--format text` output).
@@ -410,11 +412,13 @@ pub fn format_text(report: &ConfigResolveReport) -> String {
     use std::fmt::Write as _;
     let mut out = String::new();
 
-    let _ = writeln!(out, "=== agent config resolve (no model call made) ===");
-    let _ = writeln!(out);
+    let _ = writeln!(out, "=== agent config resolve (no model call made) ===\n");
 
-    let _ = writeln!(out, "{:<42} {:<32} Layer", "Field", "Value");
-    let _ = writeln!(out, "{}", "-".repeat(82));
+    let mut table = Table::new();
+    table
+        .load_preset(UTF8_FULL)
+        .apply_modifier(UTF8_ROUND_CORNERS)
+        .set_header(["Field", "Value", "Layer"]);
 
     for field in &report.fields {
         let value_str = json_value_display(&field.value);
@@ -424,10 +428,11 @@ pub fn format_text(report: &ConfigResolveReport) -> String {
             ProvenanceLayer::Env => "env",
             ProvenanceLayer::Flag => "flag",
         };
-        let _ = writeln!(out, "{:<42} {:<32} {}", field.key, value_str, layer_str);
+        table.add_row([field.key.as_str(), value_str.as_str(), layer_str]);
     }
 
-    let _ = writeln!(out);
+    let _ = writeln!(out, "{table}\n");
+
     if report.hazards.is_empty() {
         let _ = writeln!(out, "--- Hazards: NONE ---");
     } else {

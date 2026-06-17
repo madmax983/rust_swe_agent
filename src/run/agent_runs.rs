@@ -352,6 +352,8 @@ fn failure_category_label_str(fc: FailureCategory) -> String {
 
 const TASK_DISPLAY_LEN: usize = 40;
 
+use comfy_table::{Table, modifiers::UTF8_ROUND_CORNERS, presets::UTF8_FULL};
+
 pub fn format_text(report: &AgentRunsReport) -> String {
     let mut out = String::new();
 
@@ -367,13 +369,19 @@ pub fn format_text(report: &AgentRunsReport) -> String {
         return out;
     }
 
-    // Header row — outcome needs ≥20 chars (step_limit_reached=18), failure_category ≥26 (history_compaction_failed=25)
-    let _ = writeln!(
-        out,
-        "{:<42} {:<20} {:<26} {:>6} {:>10} {:>9} model",
-        "task", "outcome", "failure_category", "steps", "duration", "cost_usd"
-    );
-    let _ = writeln!(out, "{}", "─".repeat(126));
+    let mut table = Table::new();
+    table
+        .load_preset(UTF8_FULL)
+        .apply_modifier(UTF8_ROUND_CORNERS)
+        .set_header([
+            "task",
+            "outcome",
+            "failure_category",
+            "steps",
+            "duration",
+            "cost_usd",
+            "model",
+        ]);
 
     for row in &report.rows {
         let task_raw = row
@@ -395,14 +403,18 @@ pub fn format_text(report: &AgentRunsReport) -> String {
             .map_or_else(|| "-".to_owned(), |c| format!("${c:.4}"));
         let model = row.model.as_deref().unwrap_or("");
 
-        let _ = writeln!(
-            out,
-            "{task:<42} {outcome:<20} {failure:<26} {steps:>6} {dur:>10} {cost:>9} {model}"
-        );
+        table.add_row([
+            task.as_str(),
+            outcome,
+            failure,
+            steps.as_str(),
+            dur.as_str(),
+            cost.as_str(),
+            model,
+        ]);
     }
 
-    // Footer
-    let _ = writeln!(out, "{}", "─".repeat(126));
+    let _ = writeln!(out, "{table}");
 
     // Outcome breakdown
     let outcome_parts: Vec<String> = report
