@@ -96,3 +96,96 @@ pub fn is_free_tier_model(model: &str) -> bool {
         .is_some_and(|name| name.ends_with(":free"))
         || model.ends_with(":free")
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn combine_unknown_returns_unknown() {
+        assert_eq!(
+            CostSource::Unknown.combine(CostSource::ProviderReported),
+            CostSource::Unknown
+        );
+        assert_eq!(
+            CostSource::ProviderReported.combine(CostSource::Unknown),
+            CostSource::Unknown
+        );
+    }
+
+    #[test]
+    fn combine_rate_card_estimate_with_non_unknown_returns_rate_card() {
+        assert_eq!(
+            CostSource::RateCardEstimate.combine(CostSource::ProviderReported),
+            CostSource::RateCardEstimate
+        );
+        assert_eq!(
+            CostSource::ProviderReported.combine(CostSource::RateCardEstimate),
+            CostSource::RateCardEstimate
+        );
+        assert_eq!(
+            CostSource::RateCardEstimate.combine(CostSource::FreeTierInferred),
+            CostSource::RateCardEstimate
+        );
+    }
+
+    #[test]
+    fn combine_provider_reported_and_free_tier_inferred() {
+        assert_eq!(
+            CostSource::ProviderReported.combine(CostSource::FreeTierInferred),
+            CostSource::ProviderReported
+        );
+        assert_eq!(
+            CostSource::FreeTierInferred.combine(CostSource::ProviderReported),
+            CostSource::ProviderReported
+        );
+        assert_eq!(
+            CostSource::FreeTierInferred.combine(CostSource::FreeTierInferred),
+            CostSource::FreeTierInferred
+        );
+    }
+
+    #[test]
+    fn cost_source_display_returns_label() {
+        assert_eq!(
+            CostSource::ProviderReported.to_string(),
+            "provider_reported"
+        );
+        assert_eq!(
+            CostSource::RateCardEstimate.to_string(),
+            "rate_card_estimate"
+        );
+        assert_eq!(
+            CostSource::FreeTierInferred.to_string(),
+            "free_tier_inferred"
+        );
+        assert_eq!(CostSource::Unknown.to_string(), "unknown");
+    }
+
+    #[test]
+    #[allow(clippy::float_cmp, clippy::suboptimal_flops)]
+    fn test_estimate_cost_usd_anthropic() {
+        let cost = estimate_cost_usd(
+            1_000_000,
+            1_000_000,
+            1_000_000,
+            1_000_000,
+            "claude-3-5-sonnet",
+        );
+        assert_eq!(cost, 3.0 + (3.0 * 0.10) + (3.0 * 1.25) + 15.0);
+    }
+
+    #[test]
+    #[allow(clippy::float_cmp)]
+    fn test_estimate_cost_usd_non_anthropic() {
+        let cost = estimate_cost_usd(1_000_000, 1_000_000, 1_000_000, 1_000_000, "gpt-4o");
+        assert_eq!(cost, 3.0 + 3.0 + 3.0 + 15.0);
+    }
+
+    #[test]
+    fn test_is_free_tier_model() {
+        assert!(is_free_tier_model("google/gemini-pro:free"));
+        assert!(is_free_tier_model("llama3-8b-8192:free"));
+        assert!(!is_free_tier_model("google/gemini-pro"));
+    }
+}
