@@ -85,6 +85,12 @@ pub fn entries() -> &'static [CatalogEntry] {
             stage: "preflight",
         },
         CatalogEntry {
+            path: "agent fs-audit",
+            summary: "Audit sweep trajectories for out-of-workdir filesystem access",
+            cost_tier: "free",
+            stage: "analyze",
+        },
+        CatalogEntry {
             path: "agent injection-audit",
             summary: "Audit sweep trajectories for prompt-injection signals",
             cost_tier: "free",

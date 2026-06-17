@@ -26,13 +26,14 @@ fn path_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
         // Matches (in priority order):
-        // 1. $HOME or ${HOME} references (always outside workdir)
-        // 2. ~/ tilde home references
+        // 1. $HOME / ${HOME} references (word-boundary after HOME to avoid
+        //    false positives like $HOMEBREW_NO_AUTO_UPDATE)
+        // 2. Tilde home references: bare ~, ~/path, ~user, ~user/path
         // 3. ../ dotdot traversals (one or more levels)
         // 4. Absolute paths starting with /
         // Path continuation: anything that isn't whitespace or a shell metachar.
         Regex::new(
-            r#"\$\{?HOME\}?(?:/[^\s"'|&;<>(){}\\:]*)?|~/[^\s"'|&;<>(){}\\:]*|(?:\.\./?)+[^\s"'|&;<>(){}\\:]*|/[a-zA-Z0-9._][^\s"'|&;<>(){}\\:]*"#,
+            r#"\$(?:\{HOME\}|HOME\b)(?:/[^\s"'|&;<>(){}\\:]*)?|~(?:[a-zA-Z][a-zA-Z0-9_]*)?(?:/[^\s"'|&;<>(){}\\:]*)?|(?:\.\./?)+[^\s"'|&;<>(){}\\:]*|/[a-zA-Z0-9._][^\s"'|&;<>(){}\\:]*"#,
         )
         .expect("fs-audit path regex is valid")
     })
@@ -157,11 +158,13 @@ fn extract_command_head(command: &str) -> String {
 /// Conservative (recall-biased): `..` traversals and `$HOME`/`~/` references
 /// are always flagged regardless of the workdir value.
 fn is_outside_workdir(path: &str, workdir: &str) -> bool {
-    // Home directory references — always outside workdir
-    if path.starts_with("$HOME") || path.starts_with("${HOME}") {
+    // Home directory references — always outside workdir.
+    // Use precise boundary for $HOME to avoid matching $HOMEBREW-style vars.
+    if path == "$HOME" || path.starts_with("$HOME/") || path.starts_with("${HOME}") {
         return true;
     }
-    if path.starts_with("~/") || path == "~" {
+    // Tilde: bare ~, ~/path, ~user, ~user/path — all outside workdir
+    if path.starts_with('~') {
         return true;
     }
     // Dotdot traversals — always flag (conservative)
@@ -318,22 +321,42 @@ struct LightExtra {
 
 // ── Trajectory scanning ───────────────────────────────────────────────────────
 
-/// Replace single-quoted substrings with spaces so that regex matching does
-/// not pick up paths embedded inside shell string literals (e.g. `sed 's/a/b/'`).
+/// Sanitize single-quoted substrings for path scanning.
 ///
-/// Handles backslash-escaped single quotes (`\'`) outside single-quoted strings
-/// so that a lone `\'` does not flip `in_sq` and incorrectly mute the rest of
-/// the command.
+/// Shell substitution expressions like `sed 's/foo/bar/'` produce false-positive
+/// path matches, so we blank their content. However, quoted path arguments like
+/// `cat '/etc/passwd'` represent real accesses and must be preserved. We
+/// distinguish them by whether the quoted content looks like a path (starts with
+/// `/`, `~/`, `$HOME`, or `${HOME}`).
+///
+/// Also handles backslash-escaped single quotes (`\'`) outside single-quoted
+/// strings so that a lone `\'` does not flip `in_sq`.
 fn strip_single_quoted(cmd: &str) -> String {
     let mut out = String::with_capacity(cmd.len());
     let mut in_sq = false;
     let mut escaped = false;
+    let mut sq_buf = String::new();
     for ch in cmd.chars() {
         if in_sq {
             if ch == '\'' {
                 in_sq = false;
+                // Preserve content that looks like a path argument; blank the rest.
+                let is_path_like = sq_buf.starts_with('/')
+                    || sq_buf.starts_with("~/")
+                    || sq_buf.starts_with("$HOME")
+                    || sq_buf.starts_with("${HOME}");
+                if is_path_like {
+                    out.push_str(&sq_buf);
+                } else {
+                    for _ in sq_buf.chars() {
+                        out.push(' ');
+                    }
+                }
+                sq_buf.clear();
+                out.push(' ');
+            } else {
+                sq_buf.push(ch);
             }
-            out.push(' ');
         } else if escaped {
             out.push(ch);
             escaped = false;
@@ -342,6 +365,7 @@ fn strip_single_quoted(cmd: &str) -> String {
             out.push(ch);
         } else if ch == '\'' {
             in_sq = true;
+            sq_buf.clear();
             out.push(' ');
         } else {
             out.push(ch);
@@ -354,17 +378,18 @@ fn strip_single_quoted(cmd: &str) -> String {
 fn extract_bash_commands(msg: &LightMessage) -> Vec<String> {
     if let Some(extra) = &msg.extra {
         if let Some(actions) = &extra.actions {
-            let bash_only: Vec<String> = actions
+            // When the actions field is present it is authoritative — return
+            // the filtered bash commands without falling back to content.  A
+            // turn that has only __SUBMIT__ or tool-call actions executed no
+            // bash, so scanning the content would produce false positives.
+            return actions
                 .iter()
                 .filter(|a| a.as_str() != "__SUBMIT__" && !is_tool_call(a))
                 .cloned()
                 .collect();
-            if !bash_only.is_empty() {
-                return bash_only;
-            }
         }
     }
-    // Fall back to bash fenced code blocks in content
+    // No actions field: fall back to bash fenced code blocks in content.
     extract_bash_from_content(msg.content.as_deref().unwrap_or(""))
 }
 
@@ -430,7 +455,12 @@ fn scan_trajectory(
     let workdir = resolve_workdir(workdir_override, traj_workdir);
 
     let instance_id = derive_instance_id(path);
-    let messages = traj.messages.unwrap_or_default();
+    let Some(messages) = traj.messages else {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "trajectory is missing the required 'messages' field",
+        ));
+    };
 
     let mut findings = Vec::new();
 
@@ -450,6 +480,16 @@ fn scan_trajectory(
 
             for mat in path_re().find_iter(&scanned) {
                 let matched = mat.as_str();
+                // Skip URL path components: in `https://host/path` the regex
+                // matches `/host/path` starting right after the second `/` in
+                // `://`, so the preceding byte is `/`.  Also skip the rare
+                // `:path` form (e.g. `file:///etc`).
+                if mat.start() > 0 {
+                    let prev = scanned.as_bytes().get(mat.start() - 1).copied();
+                    if prev == Some(b'/') || prev == Some(b':') {
+                        continue;
+                    }
+                }
                 if !is_outside_workdir(matched, &workdir) {
                     continue;
                 }
@@ -1020,5 +1060,145 @@ mod tests {
     fn parse_format_rejects_unknown() {
         assert!(parse_format("csv").is_err());
         assert!(parse_format("xml").is_err());
+    }
+
+    // ── is_outside_workdir: tilde and HOME boundary ───────────────────────────
+
+    #[test]
+    fn bare_tilde_is_always_outside() {
+        assert!(is_outside_workdir("~", "/repo"));
+    }
+
+    #[test]
+    fn tilde_user_is_always_outside() {
+        assert!(is_outside_workdir("~alice/docs", "/repo"));
+        assert!(is_outside_workdir("~root", "/repo"));
+    }
+
+    #[test]
+    fn home_dollar_precise_boundary() {
+        // $HOME itself and paths under it are outside
+        assert!(is_outside_workdir("$HOME", "/repo"));
+        assert!(is_outside_workdir("$HOME/file", "/repo"));
+        assert!(is_outside_workdir("${HOME}/file", "/repo"));
+    }
+
+    // ── regex: HOME variable boundary and bare tilde ─────────────────────────
+
+    #[test]
+    fn regex_does_not_match_homebrew_var() {
+        let matches: Vec<_> = path_re()
+            .find_iter("export HOMEBREW_NO_AUTO_UPDATE=1")
+            .collect();
+        assert!(
+            matches.is_empty(),
+            "HOMEBREW var must not match as $HOME reference, got: {matches:?}"
+        );
+    }
+
+    #[test]
+    fn regex_matches_bare_tilde() {
+        let matches: Vec<_> = path_re().find_iter("tar cf /repo/home.tar ~").collect();
+        assert!(
+            matches.iter().any(|m| m.as_str() == "~"),
+            "bare ~ must be detected as a home reference"
+        );
+    }
+
+    #[test]
+    fn regex_matches_tilde_user() {
+        let matches: Vec<_> = path_re().find_iter("ls ~alice/docs").collect();
+        assert!(
+            matches.iter().any(|m| m.as_str().starts_with("~alice")),
+            "~user/path must be detected as a home reference"
+        );
+    }
+
+    // ── extract_bash_commands: submit-only does not fall back to content ──────
+
+    #[test]
+    fn submit_only_actions_does_not_scan_content() {
+        // When the actions field is present but only has __SUBMIT__, the
+        // function must NOT fall back to scanning content for bash blocks.
+        let msg = LightMessage {
+            role: Some("assistant".to_owned()),
+            content: Some("```bash\ncat /etc/passwd\n```".to_owned()),
+            extra: Some(LightExtra {
+                actions: Some(vec!["__SUBMIT__".to_owned()]),
+            }),
+        };
+        let cmds = extract_bash_commands(&msg);
+        assert!(
+            cmds.is_empty(),
+            "submit-only turn must yield no bash commands, got: {cmds:?}"
+        );
+    }
+
+    // ── scan_trajectory: missing messages field is a scan error ──────────────
+
+    #[test]
+    fn missing_messages_field_is_scan_error() {
+        use std::io::Write as _;
+        let mut tf = tempfile::NamedTempFile::new().unwrap();
+        write!(tf, r#"{{"info": {{"local_workdir": "/repo"}}}}"#).unwrap();
+        let result = scan_trajectory(tf.path(), None, &[]);
+        assert!(
+            result.is_err(),
+            "missing 'messages' field must produce a scan error"
+        );
+    }
+
+    // ── strip_single_quoted: path-like quoted content is preserved ────────────
+
+    #[test]
+    fn single_quoted_path_is_preserved() {
+        // `cat '/etc/passwd'` — the quoted arg is path-like, should be kept
+        let result = strip_single_quoted("cat '/etc/passwd'");
+        assert!(
+            result.contains("/etc/passwd"),
+            "path-like single-quoted content must be preserved, got: {result:?}"
+        );
+    }
+
+    #[test]
+    fn sed_substitution_expression_is_blanked() {
+        // `sed 's/foo/bar/'` — the expression is NOT path-like, should be blanked
+        let result = strip_single_quoted("sed 's/foo/bar/' /repo/main.py");
+        assert!(
+            !result.contains("/foo/bar/"),
+            "sed expression must be blanked, got: {result:?}"
+        );
+        // The actual file path outside the quotes must be preserved
+        assert!(
+            result.contains("/repo/main.py"),
+            "non-quoted path must be preserved, got: {result:?}"
+        );
+    }
+
+    // ── URL false positive guard ──────────────────────────────────────────────
+
+    #[test]
+    fn url_path_component_is_not_a_finding() {
+        // `curl https://example.com/data` — the regex matches `/example.com/data`
+        // starting right after the `//` in `://`.  The guard must skip this
+        // because the preceding byte is `/` (part of the URI authority).
+        let scanned = strip_single_quoted("curl https://example.com/data");
+        let surviving: Vec<_> = path_re()
+            .find_iter(&scanned)
+            .filter(|m| {
+                // Replicate the guard from scan_trajectory
+                if m.start() > 0 {
+                    let prev = scanned.as_bytes().get(m.start() - 1).copied();
+                    if prev == Some(b'/') || prev == Some(b':') {
+                        return false;
+                    }
+                }
+                is_outside_workdir(m.as_str(), "/repo")
+            })
+            .collect();
+        assert!(
+            surviving.is_empty(),
+            "URL path component must not become an out-of-workdir finding, got: {surviving:?}"
+        );
     }
 }
