@@ -863,6 +863,10 @@ fn strip_volatile_provenance(v: &mut Value) {
         "report_path",
         "report_sha256",
         "source_reports",
+        // `image_names` is the set of Docker images used by *this shard's* instances;
+        // disjoint shards of the same dataset legitimately differ, so it is not a
+        // scoring-identity field (timeout/parallel/backend/dataset still are).
+        "image_names",
     ];
     match v {
         Value::Object(obj) => {
@@ -882,12 +886,34 @@ fn strip_volatile_provenance(v: &mut Value) {
     }
 }
 
-/// Best-effort absolute, symlink-resolved path. Falls back to a lexical absolute
-/// path when the target does not exist yet (e.g. the not-yet-created output dir).
+/// Best-effort absolute, symlink-resolved path. When the target does not exist
+/// yet (e.g. the not-yet-created output dir), canonicalize the nearest existing
+/// ancestor — so symlinks in the parent chain are resolved — and re-append the
+/// non-existent tail. A purely lexical `absolute()` would miss a parent symlink
+/// that points into a shard, letting an overlapping output slip past isolation.
 fn abs_path(p: &Path) -> PathBuf {
-    p.canonicalize()
-        .or_else(|_| std::path::absolute(p))
-        .unwrap_or_else(|_| p.to_path_buf())
+    if let Ok(canon) = p.canonicalize() {
+        return canon;
+    }
+    let mut ancestor = p;
+    let mut tail: Vec<std::ffi::OsString> = Vec::new();
+    loop {
+        if let Ok(base) = ancestor.canonicalize() {
+            let mut result = base;
+            for comp in tail.iter().rev() {
+                result.push(comp);
+            }
+            return result;
+        }
+        match (ancestor.file_name(), ancestor.parent()) {
+            (Some(name), Some(parent)) => {
+                tail.push(name.to_os_string());
+                ancestor = parent;
+            }
+            _ => break,
+        }
+    }
+    std::path::absolute(p).unwrap_or_else(|_| p.to_path_buf())
 }
 
 /// Reject an `--output` that is equal to, contains, or is contained by any input
@@ -1208,10 +1234,20 @@ fn merge_predictions(
     for &k in &run_indices {
         let mut run_text = String::new();
         let mut run_rows = 0usize;
-        for (shard_idx, (_, dir, _)) in loaded.iter().enumerate() {
-            let Ok(text) = fs::read_to_string(predictions_path_for_run(dir, k)) else {
+        for (shard_idx, (label, dir, _)) in loaded.iter().enumerate() {
+            let path = predictions_path_for_run(dir, k);
+            // A missing per-run file is legitimate: rerun sweeps only write a slot
+            // file when that slot produced a submission. But a file that exists yet
+            // cannot be read is corruption — fail rather than silently drop its rows
+            // (bench evaluate reads per-run files when max_runs > 1).
+            if !path.exists() {
                 continue;
-            };
+            }
+            let text = fs::read_to_string(&path).map_err(|e| {
+                Error::Config(crate::error::ConfigError::Invalid(format!(
+                    "merge: shard '{label}' all_preds.run-{k}.jsonl is unreadable: {e}"
+                )))
+            })?;
             for line in text.lines().filter(|l| !l.trim().is_empty()) {
                 if owned_line(shard_idx, line) {
                     run_text.push_str(line);
