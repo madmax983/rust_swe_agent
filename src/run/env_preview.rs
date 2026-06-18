@@ -182,6 +182,21 @@ pub fn run_env_preview(cfg: &Config, opts: &EnvPreviewOpts) -> EnvPreview {
         });
     }
 
+    // Custom network modes are recorded in the config and reported by env
+    // preview for forward-compat, but are not yet enforced — no `--network`
+    // flag is passed and the container still has unrestricted egress.
+    if opts.env_type == "docker" {
+        if let crate::config::NetworkMode::Custom(ref s) = cfg.root.environment.network_mode {
+            findings.push(PreviewFinding {
+                severity: "warning".into(),
+                message: format!(
+                    "network_mode \"{s}\" is recorded but not yet enforced; \
+                     container egress is unrestricted"
+                ),
+            });
+        }
+    }
+
     // For docker, the workdir is the container's cwd, not a host path.
     let host_paths = if opts.env_type == "local" {
         vec![workdir]

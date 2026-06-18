@@ -1953,3 +1953,38 @@ network_mode = ""
         "empty network_mode must fail config parsing"
     );
 }
+
+#[test]
+fn docker_custom_network_mode_produces_unenforced_warning() {
+    // A custom (allowlist) network_mode is accepted by the config but not yet
+    // enforced — env preview must warn that egress is still unrestricted.
+    let cfg = Config::from_toml_str(
+        r#"
+[environment]
+kind = "docker"
+docker_image = "ubuntu:22.04"
+network_mode = "github.com"
+"#,
+    )
+    .unwrap();
+    let opts = EnvPreviewOpts {
+        env_type: "docker".into(),
+        task: "task".into(),
+        config_path: None,
+        show_values: false,
+    };
+    let preview = run_env_preview(&cfg, &opts);
+    assert_eq!(
+        preview.network_egress, "github.com",
+        "custom mode value must appear in network_egress"
+    );
+    let has_unenforced_warning = preview
+        .findings
+        .iter()
+        .any(|f| f.message.contains("not yet enforced") && f.message.contains("github.com"));
+    assert!(
+        has_unenforced_warning,
+        "custom network_mode must produce an unenforced-egress warning; findings: {:?}",
+        preview.findings
+    );
+}
