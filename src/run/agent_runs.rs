@@ -125,9 +125,10 @@ pub struct RunsFooter {
     pub skipped_files: usize,
 }
 
-/// Schema version for `agent_runs_report` artifacts. Using the contract object format
-/// `{major, minor}` so that `agent artifact-check` can validate runs reports correctly.
-const AGENT_RUNS_REPORT_VERSION: ArtifactSchemaVersion = ArtifactSchemaVersion::new(1, 1);
+/// Schema version for `agent_runs_report` artifacts, kept in sync with the
+/// global current artifact contract version so that freshly emitted reports
+/// pass `agent artifact-check --strict`.
+const AGENT_RUNS_REPORT_VERSION: ArtifactSchemaVersion = ArtifactSchemaVersion::CURRENT;
 
 /// The full runs report — JSON artifact shape.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -640,9 +641,9 @@ mod tests {
         let json = serde_json::to_string(&report).unwrap();
         let val: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert_eq!(val["artifact_kind"], "agent_runs_report");
-        // schema_version must be an object {major, minor} per the artifact contract
+        // schema_version must be an object {major, minor} matching CURRENT
         assert_eq!(val["schema_version"]["major"], 1);
-        assert_eq!(val["schema_version"]["minor"], 1);
+        assert_eq!(val["schema_version"]["minor"], 11);
         assert!(val["rows"].is_array());
     }
 
