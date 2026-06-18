@@ -65,46 +65,50 @@ impl ShardFixture {
                 "steps": 2
             }));
 
-            // Write a trajectory file (nested layout: <id>/run-1.traj.json)
-            let inst_dir = dir.join(spec.id);
-            fs::create_dir_all(&inst_dir).unwrap();
-            let traj = serde_json::json!({
-                "trajectory_format": "mini-swe-agent-1.1",
-                "artifact_kind": "trajectory",
-                "schema_version": {"major": 1, "minor": 3},
-                "info": {
-                    "task": spec.id,
-                    "model_name": "deterministic",
-                    "outcome": spec.outcome,
-                    "exit_reason": spec.outcome,
-                    "total_cost_usd": spec.cost,
-                    "token_usage": {
-                        "prompt_tokens": spec.input_tokens,
-                        "completion_tokens": spec.completion_tokens
+            // Budget-halted tasks never ran: no trajectory/patch on disk (mirrors a
+            // real budget-capped sweep, where audit counts them from results.json).
+            if spec.outcome != "budget_halted" {
+                // Write a trajectory file (nested layout: <id>/run-1.traj.json)
+                let inst_dir = dir.join(spec.id);
+                fs::create_dir_all(&inst_dir).unwrap();
+                let traj = serde_json::json!({
+                    "trajectory_format": "mini-swe-agent-1.1",
+                    "artifact_kind": "trajectory",
+                    "schema_version": {"major": 1, "minor": 3},
+                    "info": {
+                        "task": spec.id,
+                        "model_name": "deterministic",
+                        "outcome": spec.outcome,
+                        "exit_reason": spec.outcome,
+                        "total_cost_usd": spec.cost,
+                        "token_usage": {
+                            "prompt_tokens": spec.input_tokens,
+                            "completion_tokens": spec.completion_tokens
+                        },
+                        "redaction": {"enabled": false, "redacted": false},
+                        "steps": 2,
+                        "test_invocations": [],
+                        "tests_run_before_submit": false
                     },
-                    "redaction": {"enabled": false, "redacted": false},
-                    "steps": 2,
-                    "test_invocations": [],
-                    "tests_run_before_submit": false
-                },
-                "messages": []
-            });
-            fs::write(
-                inst_dir.join("run-1.traj.json"),
-                serde_json::to_string_pretty(&traj).unwrap(),
-            )
-            .unwrap();
-
-            // Write a patch for submitted instances
-            if submitted {
+                    "messages": []
+                });
                 fs::write(
-                    inst_dir.join("run-1.patch"),
-                    format!(
-                        "--- a/{id}\n+++ b/{id}\n@@ -0,0 +1 @@\n+fix\n",
-                        id = spec.id
-                    ),
+                    inst_dir.join("run-1.traj.json"),
+                    serde_json::to_string_pretty(&traj).unwrap(),
                 )
                 .unwrap();
+
+                // Write a patch for submitted instances
+                if submitted {
+                    fs::write(
+                        inst_dir.join("run-1.patch"),
+                        format!(
+                            "--- a/{id}\n+++ b/{id}\n@@ -0,0 +1 @@\n+fix\n",
+                            id = spec.id
+                        ),
+                    )
+                    .unwrap();
+                }
             }
         }
 
@@ -117,6 +121,10 @@ impl ShardFixture {
             .filter(|i| i.outcome == "submitted")
             .count();
         let errored_count = instances.iter().filter(|i| i.outcome == "error").count();
+        let budget_halted_count = instances
+            .iter()
+            .filter(|i| i.outcome == "budget_halted")
+            .count();
         #[allow(clippy::cast_precision_loss)]
         let pass_at_k = if instances.is_empty() {
             0.0
@@ -137,7 +145,7 @@ impl ShardFixture {
             "skipped": 0,
             "errored": errored_count,
             "failures_by_category": {},
-            "budget_halted": 0,
+            "budget_halted": budget_halted_count,
             "with_patch": submitted_count,
             "patch_empty": 0,
             "patch_apply_invalid": 0,
@@ -186,6 +194,32 @@ impl ShardFixture {
                 "tests_failed": [],
                 "eval_exit_reason": if *resolved { "resolved" } else { "unresolved" }
             })).collect::<Vec<_>>()
+        });
+        fs::write(
+            fixture.dir.join("evaluation.json"),
+            serde_json::to_string_pretty(&eval_data).unwrap(),
+        )
+        .unwrap();
+        fixture
+    }
+
+    /// Like `create_with_eval` but writes a *legacy* sb-cli `evaluation.json`
+    /// (`resolved_ids`/`submitted_ids` arrays) rather than the modern format.
+    fn create_with_legacy_eval(
+        root: &Path,
+        label: &str,
+        instances: &[InstanceSpec],
+        resolved_ids: &[&str],
+    ) -> Self {
+        let fixture = Self::create(root, label, instances);
+        let submitted_ids: Vec<&str> = instances
+            .iter()
+            .filter(|i| i.outcome == "submitted")
+            .map(|i| i.id)
+            .collect();
+        let eval_data = serde_json::json!({
+            "resolved_ids": resolved_ids,
+            "submitted_ids": submitted_ids,
         });
         fs::write(
             fixture.dir.join("evaluation.json"),
@@ -410,6 +444,15 @@ impl InstanceSpec {
             cost: 0.05,
             input_tokens: 50,
             completion_tokens: 10,
+        }
+    }
+    fn budget_halted(id: &'static str) -> Self {
+        Self {
+            id,
+            outcome: "budget_halted",
+            cost: 0.0,
+            input_tokens: 0,
+            completion_tokens: 0,
         }
     }
 }
@@ -1454,5 +1497,167 @@ fn merged_filter_spec_lists_union_ids() {
         ids,
         vec!["inst-001", "inst-002"],
         "filter_spec must list the merged union, not just shard 0"
+    );
+}
+
+#[test]
+fn budget_halted_rows_preserved_and_audits() {
+    let work = tempfile::tempdir().unwrap();
+
+    // shard_a has a budget-halted task with no trajectory on disk.
+    let shard_a = ShardFixture::create(
+        work.path(),
+        "shard_a",
+        &[
+            InstanceSpec::submitted("inst-001", 0.10),
+            InstanceSpec::budget_halted("inst-002"),
+        ],
+    );
+    let shard_b = ShardFixture::create(
+        work.path(),
+        "shard_b",
+        &[InstanceSpec::submitted("inst-003", 0.10)],
+    );
+
+    let output = work.path().join("merged");
+    let out = Command::new(binary_path())
+        .args(["bench", "merge"])
+        .arg("--shard")
+        .arg(&shard_a.dir)
+        .arg("--shard")
+        .arg(&shard_b.dir)
+        .arg("--output")
+        .arg(&output)
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "merge failed");
+
+    // The budget-halted row (no trajectory) must survive the per-slot recount.
+    let merged: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(output.join("results.json")).unwrap()).unwrap();
+    assert_eq!(
+        merged["budget_halted"], 1,
+        "budget_halted must be preserved"
+    );
+
+    let audit = Command::new(binary_path())
+        .args(["bench", "audit", "--sweep"])
+        .arg(&output)
+        .output()
+        .unwrap();
+    assert!(
+        audit.status.success(),
+        "audit failed on merged budget-capped sweep!\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&audit.stdout),
+        String::from_utf8_lossy(&audit.stderr)
+    );
+}
+
+#[test]
+fn legacy_eval_emits_entry_for_every_owned_instance() {
+    let work = tempfile::tempdir().unwrap();
+
+    // Both shards carry a legacy sb-cli evaluation.json. shard_a has an errored
+    // instance that is absent from resolved_ids/submitted_ids.
+    let shard_a = ShardFixture::create_with_legacy_eval(
+        work.path(),
+        "shard_a",
+        &[
+            InstanceSpec::submitted("inst-001", 0.10),
+            InstanceSpec::errored("inst-002"),
+        ],
+        &["inst-001"],
+    );
+    let shard_b = ShardFixture::create_with_legacy_eval(
+        work.path(),
+        "shard_b",
+        &[InstanceSpec::submitted("inst-003", 0.10)],
+        &[],
+    );
+
+    let output = work.path().join("merged");
+    let out = Command::new(binary_path())
+        .args(["bench", "merge"])
+        .arg("--shard")
+        .arg(&shard_a.dir)
+        .arg("--shard")
+        .arg(&shard_b.dir)
+        .arg("--output")
+        .arg(&output)
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "merge failed");
+
+    // The merged modern evaluation.json must contain an entry for every owned
+    // instance — including the errored one absent from the legacy arrays — or
+    // bench audit reports audit:orphan:evaluation.
+    let eval: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(output.join("evaluation.json")).unwrap()).unwrap();
+    let ids: Vec<&str> = eval["instances"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e["instance_id"].as_str().unwrap())
+        .collect();
+    assert!(ids.contains(&"inst-001"));
+    assert!(
+        ids.contains(&"inst-002"),
+        "errored instance must have an entry"
+    );
+    assert!(ids.contains(&"inst-003"));
+
+    let audit = Command::new(binary_path())
+        .args(["bench", "audit", "--sweep"])
+        .arg(&output)
+        .output()
+        .unwrap();
+    assert!(
+        audit.status.success(),
+        "audit failed on merged legacy-eval sweep!\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&audit.stdout),
+        String::from_utf8_lossy(&audit.stderr)
+    );
+}
+
+#[test]
+fn merged_manifest_keeps_source_dataset_count() {
+    let work = tempfile::tempdir().unwrap();
+    let shard_a = ShardFixture::create(
+        work.path(),
+        "shard_a",
+        &[InstanceSpec::submitted("inst-001", 0.10)],
+    );
+    let shard_b = ShardFixture::create(
+        work.path(),
+        "shard_b",
+        &[InstanceSpec::submitted("inst-002", 0.10)],
+    );
+
+    let output = work.path().join("merged");
+    let out = Command::new(binary_path())
+        .args(["bench", "merge"])
+        .arg("--shard")
+        .arg(&shard_a.dir)
+        .arg("--shard")
+        .arg(&shard_b.dir)
+        .arg("--output")
+        .arg(&output)
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "merge failed");
+
+    // Each shard fixture records dataset.instance_count == 1 (its own selection).
+    // The merged manifest must keep that source cardinality, not overwrite it
+    // with the union size (2); only the subset counts describe the selection.
+    let merged: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(output.join("results.json")).unwrap()).unwrap();
+    let dataset = &merged["manifest"]["dataset"];
+    assert_eq!(
+        dataset["instance_count"], 1,
+        "source dataset count preserved"
+    );
+    assert_eq!(
+        dataset["selected_row_count"], 2,
+        "subset count is the union"
     );
 }

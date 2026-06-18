@@ -52,6 +52,7 @@ pub struct MergeShardSummary {
 
 // ── entry point ───────────────────────────────────────────────────────────────
 
+#[allow(clippy::too_many_lines)]
 pub fn run(args: &MergeCmd) -> Result<MergeReport, Error> {
     // Require ≥2 shards
     if args.shards.len() < 2 {
@@ -112,12 +113,20 @@ pub fn run(args: &MergeCmd) -> Result<MergeReport, Error> {
     // Merge prediction files (all_preds*.jsonl + metadata) for `bench evaluate`.
     merge_predictions(&loaded, &owner_shard, &args.output)?;
 
-    // Merge evaluation.json if every shard has one
-    merge_evaluation_json(&loaded, &owner_shard, &args.output)?;
+    // Merge evaluation.json if every shard has one; returns the authoritative
+    // resolved count when a merged evaluation file was actually written.
+    let eval_resolved = merge_evaluation_json(&loaded, &owner_shard, &args.output)?;
 
     // Recompute aggregates over the union
     let base = &loaded[0].2;
     let mut merged = crate::run::swebench::recompute_aggregates(base, union_instances.clone());
+
+    // Carry every shard's retry_history, not just shard 0's — downstream freshness
+    // checks (e.g. bench budget-fit) use it to reject stale post-retry artifacts.
+    merged.retry_history = loaded
+        .iter()
+        .flat_map(|(_, _, r)| r.retry_history.iter().cloned())
+        .collect();
 
     // `recompute_aggregates` counts outcomes per-instance, but a pass@k sweep has
     // one collapsed row per task while results.json records per-run *slots* (and
@@ -154,7 +163,10 @@ pub fn run(args: &MergeCmd) -> Result<MergeReport, Error> {
     if let Some(ref mut manifest) = merged.manifest {
         manifest.merged_from = Some(merged_from);
         manifest.source = Some("merge".to_owned());
-        manifest.dataset.instance_count = union_instances.len();
+        // Keep `instance_count` (the source dataset cardinality) from the
+        // shard manifest — overwriting it with the union size would make a
+        // 400-of-2294 subset look like a 400-row dataset to evaluation provenance.
+        // Only the subset/post-filter counts describe the merged selection.
         manifest.dataset.selected_row_count = union_instances.len();
         manifest.dataset.post_filter_row_count = union_instances.len();
         manifest.dataset.filter_spec = Some(union_filter_spec);
@@ -177,10 +189,14 @@ pub fn run(args: &MergeCmd) -> Result<MergeReport, Error> {
         })
         .collect();
 
-    let resolved = union_instances
-        .iter()
-        .filter(|r| r.resolved_count > 0)
-        .count();
+    // Prefer the authoritative resolved count from the merged evaluation.json
+    // when present; otherwise fall back to the pass@k/submission proxy.
+    let resolved = eval_resolved.unwrap_or_else(|| {
+        union_instances
+            .iter()
+            .filter(|r| r.resolved_count > 0)
+            .count()
+    });
 
     Ok(MergeReport {
         shards: shard_summaries,
@@ -533,13 +549,13 @@ fn merge_evaluation_json(
     loaded: &[(String, PathBuf, SweepResults)],
     owner_shard: &HashMap<String, usize>,
     output: &Path,
-) -> Result<(), Error> {
+) -> Result<Option<usize>, Error> {
     let shards_with_eval = loaded
         .iter()
         .filter(|(_, dir, _)| dir.join("evaluation.json").exists())
         .count();
     if shards_with_eval == 0 {
-        return Ok(());
+        return Ok(None);
     }
     if shards_with_eval < loaded.len() {
         eprintln!(
@@ -548,12 +564,13 @@ fn merge_evaluation_json(
              (re-run `bench evaluate` on the merged sweep, or evaluate every shard first)",
             loaded.len()
         );
-        return Ok(());
+        return Ok(None);
     }
 
     let mut eval_entries: Vec<Value> = Vec::new();
 
-    for (shard_idx, (label, shard_dir, _)) in loaded.iter().enumerate() {
+    for (shard_idx, (label, shard_dir, shard_results)) in loaded.iter().enumerate() {
+        let owns = |id: &str| owner_shard.get(id).copied().unwrap_or(shard_idx) == shard_idx;
         let eval_path = shard_dir.join("evaluation.json");
         if !eval_path.exists() {
             continue;
@@ -578,51 +595,45 @@ fn merge_evaluation_json(
                     .get("instance_id")
                     .and_then(Value::as_str)
                     .unwrap_or("");
-                if id.is_empty() {
-                    continue;
-                }
-                // Only include if this shard owns the instance
-                if owner_shard.get(id).copied().unwrap_or(shard_idx) == shard_idx {
+                if !id.is_empty() && owns(id) {
                     eval_entries.push(inst.clone());
                 }
             }
         } else {
-            // Legacy format: resolved_ids / submitted_ids arrays
-            let mut resolved_ids: HashSet<&str> = HashSet::new();
-            let mut submitted_ids: HashSet<&str> = HashSet::new();
-
-            if let Some(ids) = eval.get("resolved_ids").and_then(Value::as_array) {
-                for v in ids {
-                    if let Some(id) = v.as_str() {
-                        resolved_ids.insert(id);
-                    }
+            // Legacy sb-cli format: resolved_ids / submitted_ids arrays. These omit
+            // errored/no-patch instances, but the merged file is modern, so audit
+            // wants an entry for *every* owned trajectory. Synthesize an entry for
+            // each owned instance, marking those absent from resolved_ids unresolved.
+            let resolved_ids: HashSet<&str> = eval
+                .get("resolved_ids")
+                .and_then(Value::as_array)
+                .map(|a| a.iter().filter_map(Value::as_str).collect())
+                .unwrap_or_default();
+            for inst in &shard_results.instances {
+                let id = inst.instance_id.as_str();
+                if !owns(id) {
+                    continue;
                 }
-            }
-            if let Some(ids) = eval.get("submitted_ids").and_then(Value::as_array) {
-                for v in ids {
-                    if let Some(id) = v.as_str() {
-                        submitted_ids.insert(id);
-                    }
-                }
-            }
-            for id in resolved_ids.union(&submitted_ids) {
-                if owner_shard.get(*id).copied().unwrap_or(shard_idx) == shard_idx {
-                    let resolved = resolved_ids.contains(id);
-                    // `eval_exit_reason` is required by `InstanceEvaluation`; downstream
-                    // commands (report/triage/inspect) reject rows that omit it.
-                    eval_entries.push(serde_json::json!({
-                        "instance_id": id,
-                        "resolved": resolved,
-                        "eval_exit_reason": if resolved { "resolved" } else { "unresolved" }
-                    }));
-                }
+                let resolved = resolved_ids.contains(id);
+                // `eval_exit_reason` is required by `InstanceEvaluation`; downstream
+                // commands (report/triage/inspect) reject rows that omit it.
+                eval_entries.push(serde_json::json!({
+                    "instance_id": id,
+                    "resolved": resolved,
+                    "eval_exit_reason": if resolved { "resolved" } else { "unresolved" }
+                }));
             }
         }
     }
 
     if eval_entries.is_empty() {
-        return Ok(());
+        return Ok(None);
     }
+
+    let resolved_count = eval_entries
+        .iter()
+        .filter(|e| e.get("resolved").and_then(Value::as_bool) == Some(true))
+        .count();
 
     let merged_eval = serde_json::json!({
         "artifact_kind": "evaluation_results",
@@ -641,7 +652,7 @@ fn merge_evaluation_json(
         )))
     })?;
 
-    Ok(())
+    Ok(Some(resolved_count))
 }
 
 /// Best-effort absolute, symlink-resolved path. Falls back to a lexical absolute
@@ -719,7 +730,9 @@ fn recount_slot_outcomes(
         .collect();
 
     // Map each instance to its run-slot trajectory files, reusing audit's
-    // discovery + path parsing so merge and audit agree on what counts.
+    // discovery + path parsing so merge and audit agree on what counts. The
+    // de-duplication rule matches audit exactly: prefer the deeper (nested) path,
+    // and at equal depth prefer `run-N.traj.json` over a sibling `trajectory.json`.
     let trajectories = crate::run::audit::collect_trajectories_on_disk(output).map_err(|e| {
         Error::Config(crate::error::ConfigError::Invalid(format!(
             "merge: failed to scan merged trajectories: {e}"
@@ -728,11 +741,23 @@ fn recount_slot_outcomes(
     let mut instances_runs: HashMap<String, BTreeMap<u32, PathBuf>> = HashMap::new();
     for path in &trajectories {
         if let Some((inst_id, run_index)) = crate::run::audit::parse_trajectory_path(output, path) {
-            instances_runs
-                .entry(inst_id)
-                .or_default()
-                .entry(run_index)
-                .or_insert_with(|| path.clone());
+            let slot = instances_runs.entry(inst_id).or_default();
+            match slot.get(&run_index) {
+                None => {
+                    slot.insert(run_index, path.clone());
+                }
+                Some(existing) => {
+                    let current_depth = path.components().count();
+                    let existing_depth = existing.components().count();
+                    let prefer = current_depth > existing_depth
+                        || (current_depth == existing_depth
+                            && file_name_contains(path, "run-1")
+                            && file_name_contains(existing, "trajectory.json"));
+                    if prefer {
+                        slot.insert(run_index, path.clone());
+                    }
+                }
+            }
         }
     }
 
@@ -764,12 +789,42 @@ fn recount_slot_outcomes(
             }
         }
     }
+
+    // Budget-halted / skipped tasks that never started have no trajectory files;
+    // audit counts them from results.json, so we must too or the merged
+    // `budget_halted`/`skipped` would drop to zero and fail audit.
+    for inst in union_instances {
+        if instances_runs.contains_key(&inst.instance_id) {
+            continue;
+        }
+        let exit_reason = inst.exit_reason.as_str();
+        let outcome = inst.outcome.as_deref().unwrap_or("");
+        if exit_reason == "budget_halt"
+            || exit_reason == "budget_halted"
+            || outcome == "budget_halted"
+        {
+            counts.budget_halted += 1;
+        } else if exit_reason == "skipped"
+            || exit_reason == "skipped_resume"
+            || outcome == "skipped"
+        {
+            counts.skipped += 1;
+        }
+    }
+
     Ok(counts)
+}
+
+fn file_name_contains(path: &Path, needle: &str) -> bool {
+    path.file_name()
+        .and_then(|n| n.to_str())
+        .is_some_and(|n| n.contains(needle))
 }
 
 /// Merge prediction files so the merged sweep can be scored by `bench evaluate`,
 /// which reads `<sweep>/all_preds.jsonl`. Keeps only rows owned by the merged
 /// union, preserves per-run `all_preds.run-k.jsonl` files, and rewrites metadata.
+#[allow(clippy::too_many_lines)]
 fn merge_predictions(
     loaded: &[(String, PathBuf, SweepResults)],
     owner_shard: &HashMap<String, usize>,
@@ -803,15 +858,28 @@ fn merge_predictions(
         owner_shard.get(orig).copied() == Some(shard_idx)
     };
 
-    // Collect the set of run indices present across shards (uniform by config).
+    // Collect every run index that has a per-run prediction file in any shard.
+    // Rerun sweeps write `all_preds.run-k.jsonl` only for run slots that produced
+    // a submission, so indices can be sparse (e.g. run 1 empty, run 2 present) —
+    // a contiguous `while exists(k)` scan would stop at the first gap and drop
+    // later runs, so scan the directory listing instead.
     let mut run_indices: Vec<u32> = Vec::new();
     for (_, dir, _) in loaded {
-        let mut k = 1u32;
-        while predictions_path_for_run(dir, k).exists() {
-            if !run_indices.contains(&k) {
-                run_indices.push(k);
+        let Ok(entries) = fs::read_dir(dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            if let Some(k) = entry
+                .file_name()
+                .to_str()
+                .and_then(|n| n.strip_prefix("all_preds.run-"))
+                .and_then(|n| n.strip_suffix(".jsonl"))
+                .and_then(|n| n.parse::<u32>().ok())
+            {
+                if !run_indices.contains(&k) {
+                    run_indices.push(k);
+                }
             }
-            k += 1;
         }
     }
     run_indices.sort_unstable();
