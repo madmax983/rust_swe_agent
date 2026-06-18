@@ -15,6 +15,8 @@ use serde::{Deserialize, Serialize};
 use crate::error::Error;
 use crate::run::compare::load_sweep;
 
+const Z95: f64 = 1.96;
+
 // ── public types ──────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -66,7 +68,7 @@ pub struct BenchVarianceArgs {
     pub sweep_dir: PathBuf,
     /// Target CI half-width for recommended rerun count calculation.
     pub ci_width: Option<f64>,
-    /// Instance-id substring filters (currently unused, reserved for future use).
+    /// Instance-id substring filters. An instance is kept when its id contains any filter string.
     pub filter: Vec<String>,
     /// Stability class filter: "flaky", "always_resolved", or "always_failed".
     pub class: Option<String>,
@@ -75,6 +77,14 @@ pub struct BenchVarianceArgs {
 // ── entry point ───────────────────────────────────────────────────────────────
 
 pub fn compute_variance(args: &BenchVarianceArgs) -> Result<BenchVarianceReport, Error> {
+    if let Some(w) = args.ci_width {
+        if !w.is_finite() || w <= 0.0 {
+            return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+                "bench variance: --ci-width must be a finite, strictly positive value, got {w}"
+            ))));
+        }
+    }
+
     let class_filter: Option<StabilityClass> = match args.class.as_deref() {
         None => None,
         Some("flaky") => Some(StabilityClass::Flaky),
@@ -124,13 +134,25 @@ pub fn compute_variance(args: &BenchVarianceArgs) -> Result<BenchVarianceReport,
 
     let noise = compute_noise_summary(&all_variance, args.ci_width);
 
-    let filtered_instances: Vec<InstanceVariance> = match &class_filter {
-        None => all_variance,
-        Some(cls) => all_variance
-            .into_iter()
-            .filter(|i| &i.stability_class == cls)
-            .collect(),
-    };
+    let filtered_instances: Vec<InstanceVariance> = all_variance
+        .into_iter()
+        .filter(|i| {
+            if let Some(cls) = &class_filter {
+                if &i.stability_class != cls {
+                    return false;
+                }
+            }
+            if !args.filter.is_empty()
+                && !args
+                    .filter
+                    .iter()
+                    .any(|f| i.instance_id.contains(f.as_str()))
+            {
+                return false;
+            }
+            true
+        })
+        .collect();
 
     Ok(BenchVarianceReport {
         instances: filtered_instances,
@@ -207,11 +229,10 @@ fn wilson_ci(p: f64, n: u64) -> (f64, f64) {
     if n == 0 {
         return (0.0, 1.0);
     }
-    const Z: f64 = 1.96;
     let n_f = n as f64;
-    let z2 = Z * Z;
+    let z2 = Z95 * Z95;
     let center = (p + z2 / (2.0 * n_f)) / (1.0 + z2 / n_f);
-    let half = Z * (p * (1.0 - p) / n_f + z2 / (4.0 * n_f * n_f)).sqrt() / (1.0 + z2 / n_f);
+    let half = Z95 * (p * (1.0 - p) / n_f + z2 / (4.0 * n_f * n_f)).sqrt() / (1.0 + z2 / n_f);
     let lower = (center - half).max(0.0);
     let upper = (center + half).min(1.0);
     (lower, upper)
@@ -227,11 +248,10 @@ fn compute_recommended_reruns(
     if variance < 1e-12 {
         return None;
     }
-    const Z: f64 = 1.96;
-    let n_required = (Z / ci_width).powi(2) * variance;
+    let n_required = (Z95 / ci_width).powi(2) * variance;
     let avg_current = current_total_slots as f64 / n_instances as f64;
     let k_required = (n_required / n_instances as f64).ceil() as u32;
-    if k_required as f64 <= avg_current {
+    if f64::from(k_required) <= avg_current {
         None
     } else {
         Some(k_required)
@@ -279,8 +299,8 @@ pub fn render_text(report: &BenchVarianceReport) -> String {
     let _ = writeln!(s, "## Instances ({})", report.instances.len());
     let _ = writeln!(
         s,
-        "  {:<40}  {:<8}  {:<5}  {}",
-        "INSTANCE_ID", "RESOLVED", "TOTAL", "CLASS"
+        "  {:<40}  {:<8}  {:<5}  CLASS",
+        "INSTANCE_ID", "RESOLVED", "TOTAL"
     );
     let _ = writeln!(s, "  {}", "-".repeat(78));
     for inst in &report.instances {

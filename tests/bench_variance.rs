@@ -767,6 +767,45 @@ fn ac6_cli_class_filter_via_binary() {
     assert_eq!(instances[0]["instance_id"].as_str().unwrap(), "flaky");
 }
 
+#[test]
+fn ac6_substring_filter() {
+    let dir = tempfile::tempdir().unwrap();
+    write_results(
+        dir.path(),
+        vec![
+            rerun_instance("task-foo-1", 3, 1),
+            rerun_instance("task-bar-2", 3, 1),
+        ],
+    );
+
+    let report = compute_variance(&BenchVarianceArgs {
+        sweep_dir: dir.path().to_path_buf(),
+        ci_width: None,
+        filter: vec!["foo".into()],
+        class: None,
+    })
+    .unwrap();
+
+    assert_eq!(report.instances.len(), 1);
+    assert_eq!(report.instances[0].instance_id, "task-foo-1");
+}
+
+#[test]
+fn ac4_invalid_ci_width_returns_error() {
+    let dir = tempfile::tempdir().unwrap();
+    write_results(dir.path(), vec![rerun_instance("a", 3, 2)]);
+
+    for bad in &[0.0_f64, -0.1, f64::NAN, f64::INFINITY] {
+        let result = compute_variance(&BenchVarianceArgs {
+            sweep_dir: dir.path().to_path_buf(),
+            ci_width: Some(*bad),
+            filter: vec![],
+            class: None,
+        });
+        assert!(result.is_err(), "expected error for ci_width={bad}, got ok");
+    }
+}
+
 // ── AC7: zero cost — reads only on-disk artifacts ─────────────────────────────
 
 #[test]
