@@ -77,6 +77,7 @@ pub enum ArtifactKind {
     AgentRunsReport,
     MiniResult,
     BenchVarianceReport,
+    ValidationReport,
 }
 
 impl ArtifactKind {
@@ -111,6 +112,7 @@ impl ArtifactKind {
             Self::AgentRunsReport => "agent_runs_report",
             Self::MiniResult => "mini_result",
             Self::BenchVarianceReport => "bench_variance_report",
+            Self::ValidationReport => "validation_report",
         }
     }
 }

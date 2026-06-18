@@ -3,6 +3,7 @@
 
 pub mod agent_profile;
 pub mod agent_runs;
+pub mod artifact_check;
 pub mod annotate;
 pub mod apply;
 pub mod assert;

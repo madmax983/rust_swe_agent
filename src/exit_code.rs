@@ -202,6 +202,13 @@ pub enum ExitCode {
     /// `usage_error` (2) so CI can tell "the scan broke" from "your invocation is
     /// broken".
     FsAuditScanError = 46,
+    /// 47 — `agent artifact-check` found at least one artifact that is `invalid`
+    /// or `unsupported_major`. With `--strict`, also triggers on
+    /// `legacy_unversioned` and `valid_with_warnings`. Zero model calls are made;
+    /// the check is purely a structural conformance gate. Distinct from
+    /// `internal_error` (1) so CI can route "artifact does not conform to
+    /// contract" separately from an unexpected infrastructure failure.
+    ArtifactCheckFailure = 47,
     /// 130 — user interruption (graceful SIGINT / Ctrl-C; 128 + SIGINT(2)).
     Interrupted = 130,
     /// 137 — forced kill (SIGKILL escalation after graceful-cancel deadline; 128 + SIGKILL(9)).
@@ -269,6 +276,7 @@ impl ExitCode {
             Self::UtilizationGateFailure => "utilization_gate_failure",
             Self::FsAuditFindings => "fs_audit_findings",
             Self::FsAuditScanError => "fs_audit_scan_error",
+            Self::ArtifactCheckFailure => "artifact_check_failure",
             Self::Interrupted => "interrupted",
             Self::Killed => "killed",
         }
