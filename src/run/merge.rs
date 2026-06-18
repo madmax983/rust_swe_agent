@@ -138,6 +138,11 @@ pub fn run(args: &MergeCmd) -> Result<MergeReport, Error> {
     // rather than presenting one shard's cap over all shards' cost.
     merged.cost_limit_usd = None;
 
+    // recompute_aggregates hardcodes the cost source to RateCardEstimate; preserve
+    // the shards' real provenance (provider-reported / free-tier) when they agree,
+    // and report a mix as Unknown rather than mislabeling it as an estimate.
+    merged.actual_cost_source = merged_cost_source(&loaded, merged.actual_cost_usd.is_some());
+
     // `recompute_aggregates` counts outcomes per-instance, but a pass@k sweep has
     // one collapsed row per task while results.json records per-run *slots* (and
     // `bench audit` recomputes the same way from the copied trajectories). Recount
@@ -736,7 +741,7 @@ fn merge_evaluation_json(
                 // Normalize: a pre-`eval_exit_reason` modern entry would otherwise be
                 // copied verbatim and fail `InstanceEvaluation` deserialization
                 // downstream, even though synthesized rows below carry the field.
-                eval_entries.push(normalize_eval_entry(entry));
+                eval_entries.push(normalize_eval_entry(entry, inst.non_empty_patch));
             } else {
                 // `eval_exit_reason` is required by `InstanceEvaluation`; downstream
                 // commands (report/triage/inspect) reject rows that omit it. A row
@@ -817,9 +822,10 @@ fn merge_evaluation_json(
 }
 
 /// Ensure a copied modern evaluation entry carries the `eval_exit_reason` field
-/// that `InstanceEvaluation` requires (legacy artifacts predate it), deriving a
-/// value from `resolved` when absent.
-fn normalize_eval_entry(entry: &Value) -> Value {
+/// that `InstanceEvaluation` requires (legacy artifacts predate it). A row with
+/// no submitted patch was never scored, so classify it `skipped_no_patch` rather
+/// than `unresolved` — the same patch-aware logic used for synthesized rows.
+fn normalize_eval_entry(entry: &Value, has_patch: bool) -> Value {
     let mut e = entry.clone();
     if let Some(obj) = e.as_object_mut() {
         if !obj.contains_key("eval_exit_reason") {
@@ -827,9 +833,16 @@ fn normalize_eval_entry(entry: &Value) -> Value {
                 .get("resolved")
                 .and_then(Value::as_bool)
                 .unwrap_or(false);
+            let reason = if resolved {
+                "resolved"
+            } else if has_patch {
+                "unresolved"
+            } else {
+                "skipped_no_patch"
+            };
             obj.insert(
                 "eval_exit_reason".to_owned(),
-                Value::String(if resolved { "resolved" } else { "unresolved" }.to_owned()),
+                Value::String(reason.to_owned()),
             );
         }
     }
@@ -1324,6 +1337,31 @@ fn merge_rate_limit_events(
         configured_max_rpm: agreed_rpm,
         configured_max_input_tpm: agreed_input_tpm,
     })
+}
+
+/// Combine per-shard actual-cost provenance. When every shard that recorded a
+/// source agrees, keep it; a mix is reported as `Unknown` so a merged
+/// provider-reported + free-tier sweep is not mislabeled. Falls back to
+/// `RateCardEstimate` (recompute_aggregates' default) only when no shard recorded
+/// a source. Returns `None` when the merged sweep has no actual cost at all.
+fn merged_cost_source(
+    loaded: &[(String, PathBuf, SweepResults)],
+    has_actual_cost: bool,
+) -> Option<crate::cost::CostSource> {
+    if !has_actual_cost {
+        return None;
+    }
+    let mut found: Option<crate::cost::CostSource> = None;
+    for (_, _, results) in loaded {
+        if let Some(src) = results.actual_cost_source {
+            match found {
+                None => found = Some(src),
+                Some(f) if f != src => return Some(crate::cost::CostSource::Unknown),
+                _ => {}
+            }
+        }
+    }
+    found.or(Some(crate::cost::CostSource::RateCardEstimate))
 }
 
 fn config_hash(resolved_toml: &str) -> String {
