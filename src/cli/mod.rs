@@ -160,6 +160,7 @@ pub async fn run() -> Result<(), Error> {
             args::AgentCmd::Profile(p) => agent_profile_cmd(&p),
             args::AgentCmd::Runs(r) => agent_runs_cmd(&r),
             args::AgentCmd::FsAudit(a) => agent_fs_audit_cmd(&a),
+            args::AgentCmd::ArtifactCheck(a) => agent_artifact_check_cmd(&a),
         },
         Command::Catalog(c) => catalog::run_catalog(c),
         Command::Ui(u) => ui_cmd(u).await,
@@ -7036,6 +7037,48 @@ fn agent_fs_audit_cmd(a: &args::FsAuditCmd) -> Result<(), Error> {
     if exit_code != ExitCode::Success {
         exit_with_outcome(exit_code, exit_code.outcome_class());
     }
+    Ok(())
+}
+
+fn agent_artifact_check_cmd(a: &args::ArtifactCheckCmd) -> Result<(), Error> {
+    use crate::error::ConfigError;
+    use crate::run::artifact_check::{
+        ArtifactCheckOpts, ArtifactCheckSource, format_json, format_text, run_artifact_check,
+    };
+
+    if a.format != "text" && a.format != "json" {
+        return Err(Error::Config(ConfigError::Usage(format!(
+            "unknown --format value {:?}; expected 'text' or 'json'",
+            a.format
+        ))));
+    }
+
+    let opts = ArtifactCheckOpts {
+        source: ArtifactCheckSource::Paths(a.paths.clone()),
+        strict: a.strict,
+    };
+
+    let output = run_artifact_check(&opts).map_err(|e| {
+        eprintln!("artifact-check: {e}");
+        e
+    })?;
+
+    let content = if a.format == "json" {
+        let json = format_json(&output).map_err(Error::Json)?;
+        serde_json::to_string_pretty(&json).map_err(Error::Json)?
+    } else {
+        format_text(&output)
+    };
+
+    println!("{content}");
+
+    if output.has_failures() {
+        exit_with_outcome(
+            ExitCode::ArtifactCheckFailure,
+            ExitCode::ArtifactCheckFailure.outcome_class(),
+        );
+    }
+
     Ok(())
 }
 

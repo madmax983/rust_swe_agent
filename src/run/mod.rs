@@ -5,6 +5,7 @@ pub mod agent_profile;
 pub mod agent_runs;
 pub mod annotate;
 pub mod apply;
+pub mod artifact_check;
 pub mod assert;
 pub mod audit;
 pub mod behavior;

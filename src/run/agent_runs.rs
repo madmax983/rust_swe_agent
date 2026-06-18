@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::artifact::ArtifactKind;
+use crate::artifact::{ArtifactKind, ArtifactSchemaVersion};
 use crate::error::Error;
 use crate::trajectory::{FailureCategory, Trajectory};
 
@@ -125,12 +125,16 @@ pub struct RunsFooter {
     pub skipped_files: usize,
 }
 
+/// Schema version for `agent_runs_report` artifacts, kept in sync with the
+/// global current artifact contract version so that freshly emitted reports
+/// pass `agent artifact-check --strict`.
+const AGENT_RUNS_REPORT_VERSION: ArtifactSchemaVersion = ArtifactSchemaVersion::CURRENT;
+
 /// The full runs report — JSON artifact shape.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentRunsReport {
     pub artifact_kind: ArtifactKind,
-    /// Runs-report-specific schema version ("1"). Decoupled from the global artifact version.
-    pub schema_version: String,
+    pub schema_version: ArtifactSchemaVersion,
     /// Directory that was scanned (as supplied by the operator).
     pub scanned_dir: String,
     /// Whether subdirectories were traversed.
@@ -182,7 +186,7 @@ pub fn run_agent_runs(opts: &AgentRunsOpts) -> Result<AgentRunsReport, Error> {
 
     Ok(AgentRunsReport {
         artifact_kind: ArtifactKind::AgentRunsReport,
-        schema_version: "1".to_owned(),
+        schema_version: AGENT_RUNS_REPORT_VERSION,
         scanned_dir: canonical_dir.display().to_string(),
         recursive: opts.recursive,
         rows,
@@ -637,7 +641,9 @@ mod tests {
         let json = serde_json::to_string(&report).unwrap();
         let val: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert_eq!(val["artifact_kind"], "agent_runs_report");
-        assert_eq!(val["schema_version"], "1");
+        // schema_version must be an object {major, minor} matching CURRENT
+        assert_eq!(val["schema_version"]["major"], 1);
+        assert_eq!(val["schema_version"]["minor"], 11);
         assert!(val["rows"].is_array());
     }
 

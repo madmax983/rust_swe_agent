@@ -97,6 +97,12 @@ pub fn entries() -> &'static [CatalogEntry] {
             stage: "analyze",
         },
         CatalogEntry {
+            path: "agent artifact-check",
+            summary: "Validate artifact files against the Artifact Contract (zero-cost, no model call)",
+            cost_tier: "free",
+            stage: "preflight",
+        },
+        CatalogEntry {
             path: "agent policy-check",
             summary: "Check a command corpus against the policy config",
             cost_tier: "free",

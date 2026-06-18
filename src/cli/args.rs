@@ -345,6 +345,28 @@ pub struct SuiteCmd {
     pub resume: bool,
 }
 
+/// `agent artifact-check` — zero-cost structural conformance gate for artifact files (issue #534).
+///
+/// Validates one or more artifact files or directories (recursively) against the
+/// Artifact Contract (`docs/artifact-contract.md`). No model call, no network I/O.
+#[derive(Debug, Args)]
+pub struct ArtifactCheckCmd {
+    /// One or more artifact files or directories to validate. Directories are
+    /// scanned recursively for `*.json` files.
+    #[arg(required = true, value_name = "PATH")]
+    pub paths: Vec<std::path::PathBuf>,
+
+    /// Output format: `text` (default human-readable table) or `json`
+    /// (emits a `validation_report` artifact with `schema_version`).
+    #[arg(long, default_value = "text")]
+    pub format: String,
+
+    /// Promote `legacy_unversioned` and `valid_with_warnings` verdicts to
+    /// failures in addition to the always-fatal `invalid` and `unsupported_major`.
+    #[arg(long, default_value_t = false)]
+    pub strict: bool,
+}
+
 /// `agent redact-check` — zero-cost preflight for the secret-redaction config (issue #321).
 #[derive(Debug, Args)]
 pub struct RedactCheckCmd {
@@ -698,6 +720,8 @@ pub enum AgentCmd {
     Runs(AgentRunsCmd),
     /// Audit trajectory files for filesystem accesses outside the workdir (issue #511).
     FsAudit(FsAuditCmd),
+    /// Validate artifact files against the Artifact Contract (zero-cost, no model call).
+    ArtifactCheck(ArtifactCheckCmd),
 }
 
 /// `agent runs` — list and summarize single-task trajectory files (issue #509).

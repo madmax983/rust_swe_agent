@@ -34,6 +34,13 @@ Cost fields are split deliberately:
 - `baseline_cost_usd` is a counterfactual estimate for the same token usage using `baseline_cost_model`.
 - Legacy `total_cost_usd` remains present for compatibility and should be treated as historical/summary cost, not as the only cost signal.
 
+## Conformance Validation
+
+Use `agent artifact-check` to validate one or more artifact files against this
+contract on demand — zero model calls, zero network I/O. See
+[`docs/spec-artifact-check.md`](spec-artifact-check.md) for the full command
+reference, verdict taxonomy, and per-kind required-field table.
+
 ## Reader Policy
 
 `bench inspect`, `bench tail`, `bench compare`, `bench evaluate`, `bench calibrate`, and trajectory diff loading classify artifacts before reporting metrics.
