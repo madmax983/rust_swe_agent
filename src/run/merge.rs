@@ -387,7 +387,15 @@ fn check_provenance_compatibility(loaded: &[(String, PathBuf, SweepResults)]) ->
 fn check_uniform_rerun_count(loaded: &[(String, PathBuf, SweepResults)]) -> Result<(), Error> {
     let mut reference: Option<(&str, u32)> = None;
     for (label, _, results) in loaded {
-        let Some(runs) = results.instances.iter().map(|r| r.runs).max() else {
+        // Normalize legacy rows (written before `runs` existed, serde-default 0) the
+        // same way the rest of the code does, so a 1-run legacy shard isn't rejected
+        // against a 1-run modern shard.
+        let Some(runs) = results
+            .instances
+            .iter()
+            .map(crate::run::swebench::effective_runs)
+            .max()
+        else {
             continue; // empty shard contributes no rerun signal
         };
         match reference {
@@ -648,6 +656,7 @@ fn merge_evaluation_json(
 
     let mut eval_entries: Vec<Value> = Vec::new();
     let mut merged_provenance: Option<(String, Value)> = None; // (shard label, provenance)
+    let mut shards_with_provenance = 0usize;
 
     for (shard_idx, (label, shard_dir, shard_results)) in loaded.iter().enumerate() {
         let owns = |id: &str| owner_shard.get(id).copied().unwrap_or(shard_idx) == shard_idx;
@@ -672,6 +681,7 @@ fn merge_evaluation_json(
         // backends / versions / dataset settings into one authoritative file would
         // hide the mismatch from downstream compare/report.
         if let Some(prov) = eval.get("provenance").filter(|p| !p.is_null()) {
+            shards_with_provenance += 1;
             match &merged_provenance {
                 None => merged_provenance = Some((label.clone(), prov.clone())),
                 Some((ref0, prov0)) => {
@@ -718,7 +728,10 @@ fn merge_evaluation_json(
                 continue;
             }
             if let Some(entry) = modern.get(id) {
-                eval_entries.push((*entry).clone());
+                // Normalize: a pre-`eval_exit_reason` modern entry would otherwise be
+                // copied verbatim and fail `InstanceEvaluation` deserialization
+                // downstream, even though synthesized rows below carry the field.
+                eval_entries.push(normalize_eval_entry(entry));
             } else {
                 // `eval_exit_reason` is required by `InstanceEvaluation`; downstream
                 // commands (report/triage/inspect) reject rows that omit it.
@@ -765,8 +778,13 @@ fn merge_evaluation_json(
         }
         merged_eval["test_only_resolved_rate"] = serde_json::json!(test_only_resolved_rate);
     }
-    if let Some((_, prov)) = merged_provenance {
-        merged_eval["provenance"] = prov;
+    // Only stamp the merged file with evaluator provenance when *every* evaluated
+    // shard recorded one — otherwise we'd label a legacy/unprovenanced shard's
+    // verdicts as if they shared the first shard's backend/dataset settings.
+    if shards_with_provenance == loaded.len() {
+        if let Some((_, prov)) = merged_provenance {
+            merged_eval["provenance"] = prov;
+        }
     }
 
     let eval_json = serde_json::to_string_pretty(&merged_eval).map_err(|e| {
@@ -781,6 +799,26 @@ fn merge_evaluation_json(
     })?;
 
     Ok(Some(resolved_count))
+}
+
+/// Ensure a copied modern evaluation entry carries the `eval_exit_reason` field
+/// that `InstanceEvaluation` requires (legacy artifacts predate it), deriving a
+/// value from `resolved` when absent.
+fn normalize_eval_entry(entry: &Value) -> Value {
+    let mut e = entry.clone();
+    if let Some(obj) = e.as_object_mut() {
+        if !obj.contains_key("eval_exit_reason") {
+            let resolved = obj
+                .get("resolved")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            obj.insert(
+                "eval_exit_reason".to_owned(),
+                Value::String(if resolved { "resolved" } else { "unresolved" }.to_owned()),
+            );
+        }
+    }
+    e
 }
 
 /// The scoring-relevant evaluator identity that must match across shards before

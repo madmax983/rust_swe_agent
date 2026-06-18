@@ -1026,6 +1026,48 @@ fn provenance_divergence_harness_sha_exits_nonzero() {
 }
 
 #[test]
+fn legacy_runs_zero_merges_with_modern_single_run() {
+    let work = tempfile::tempdir().unwrap();
+    // shard_a is a legacy single-run sweep whose rows predate the `runs` field
+    // (serde-default 0); shard_b is a modern single-run sweep (runs=1). Both are
+    // effectively single-run and must merge without a rerun-count mismatch.
+    let shard_a = ShardFixture::create(
+        work.path(),
+        "shard_a",
+        &[InstanceSpec::submitted("inst-001", 0.10)],
+    );
+    let path = shard_a.dir.join("results.json");
+    let mut results: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+    for inst in results["instances"].as_array_mut().unwrap() {
+        inst["runs"] = serde_json::json!(0);
+    }
+    fs::write(&path, serde_json::to_string_pretty(&results).unwrap()).unwrap();
+
+    let shard_b = ShardFixture::create(
+        work.path(),
+        "shard_b",
+        &[InstanceSpec::submitted("inst-002", 0.10)],
+    );
+
+    let out = Command::new(binary_path())
+        .args(["bench", "merge"])
+        .arg("--shard")
+        .arg(&shard_a.dir)
+        .arg("--shard")
+        .arg(&shard_b.dir)
+        .arg("--output")
+        .arg(work.path().join("merged"))
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "legacy runs=0 must merge with modern runs=1: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+#[test]
 fn mixed_rerun_counts_exit_nonzero() {
     let work = tempfile::tempdir().unwrap();
     // shard_a is single-run (runs=1); shard_b is pass@k with runs=2.
