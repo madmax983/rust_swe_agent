@@ -140,7 +140,7 @@ pub async fn run() -> Result<(), Error> {
             args::BenchCmd::Utilization(u) => bench_utilization(u),
             args::BenchCmd::ExportOtlp(c) => Box::pin(bench_export_otlp(c)).await,
             args::BenchCmd::Variance(v) => bench_variance(v),
-            args::BenchCmd::Merge(m) => bench_merge(m),
+            args::BenchCmd::Merge(m) => bench_merge(&m),
         },
         Command::Agent { cmd } => match *cmd {
             args::AgentCmd::SkillsPreview(s) => agent_skills_preview_cmd(&s),
@@ -6158,17 +6158,9 @@ fn bench_audit(a: args::AuditCmd) -> Result<(), Error> {
     crate::run::audit::run(&a)
 }
 
-fn bench_merge(m: args::MergeCmd) -> Result<(), Error> {
-    let is_json = match m.format.as_str() {
-        "text" => false,
-        "json" => true,
-        other => {
-            return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
-                "unknown --format `{other}` (expected `text` or `json`)"
-            ))));
-        }
-    };
-    let report = crate::run::merge::run(&m)?;
+fn bench_merge(m: &args::MergeCmd) -> Result<(), Error> {
+    let is_json = matches!(m.format, args::MergeFormat::Json);
+    let report = crate::run::merge::run(m)?;
     if is_json {
         println!("{}", serde_json::to_string_pretty(&report)?);
     } else {

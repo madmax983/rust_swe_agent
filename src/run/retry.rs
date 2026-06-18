@@ -501,4 +501,3 @@ pub fn build_history_entry(
         post_resolved_count: post_resolved as usize,
     }
 }
-

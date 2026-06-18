@@ -17,7 +17,7 @@ use sha2::{Digest, Sha256};
 use crate::cli::args::{MergeCmd, MergeCollisionPolicy};
 use crate::error::Error;
 use crate::run::swebench::{
-    MergeShardProvenance, SweepResults, SWEEP_STATUS_COMPLETED, write_sweep_results_atomic,
+    MergeShardProvenance, SWEEP_STATUS_COMPLETED, SweepResults, write_sweep_results_atomic,
 };
 
 // ── public types ──────────────────────────────────────────────────────────────
@@ -97,8 +97,7 @@ pub fn run(args: &MergeCmd) -> Result<MergeReport, Error> {
 
     // Detect collisions and build union instance list
     let policy = args.on_collision;
-    let (union_instances, duplicates, owner_shard) =
-        build_union_instances(&loaded, policy)?;
+    let (union_instances, duplicates, owner_shard) = build_union_instances(&loaded, policy)?;
 
     // Prepare output directory
     prepare_output_dir(&args.output, args.force)?;
@@ -180,7 +179,10 @@ impl MergeReport {
     pub fn render_text(&self) {
         println!("Shards merged: {}", self.shards.len());
         for s in &self.shards {
-            println!("  {:20}  {:6} instances  {}", s.label, s.instance_count, s.dir);
+            println!(
+                "  {:20}  {:6} instances  {}",
+                s.label, s.instance_count, s.dir
+            );
         }
         println!();
         println!(
@@ -248,6 +250,7 @@ fn check_provenance_compatibility(loaded: &[(String, PathBuf, SweepResults)]) ->
     })?;
     let dataset_sha0 = &manifest0.dataset.sha256;
     let model0 = &manifest0.model.name;
+    let config0 = config_hash(&manifest0.config.resolved);
 
     for (label, _, results) in loaded.iter().skip(1) {
         let manifest = results.manifest.as_ref().ok_or_else(|| {
@@ -273,12 +276,27 @@ fn check_provenance_compatibility(loaded: &[(String, PathBuf, SweepResults)]) ->
                 manifest.model.name, model0
             ))));
         }
+
+        if config_hash(&manifest.config.resolved) != config0 {
+            return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+                "merge: shard '{label}' resolved config differs from shard '{label0}'; \
+                 bench merge requires identical config across shards \
+                 (use bench matrix for cross-config comparison)"
+            ))));
+        }
     }
 
     Ok(())
 }
 
-type UnionResult = Result<(Vec<crate::run::swebench::InstanceResult>, usize, HashMap<String, usize>), Error>;
+type UnionResult = Result<
+    (
+        Vec<crate::run::swebench::InstanceResult>,
+        usize,
+        HashMap<String, usize>,
+    ),
+    Error,
+>;
 
 /// Build the union instance list, detecting/resolving collisions.
 /// Returns (union_instances, duplicates_count, owner_shard_index per instance_id).
@@ -356,25 +374,31 @@ fn build_union_instances(
 
 fn prepare_output_dir(output: &Path, force: bool) -> Result<(), Error> {
     if output.exists() {
-        let is_empty = output
-            .read_dir()
-            .map(|mut d| d.next().is_none())
-            .unwrap_or(false);
-        if !is_empty && !force {
-            return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
-                "merge: output directory '{}' already exists and is non-empty; \
-                 use --force to overwrite",
-                output.display()
-            ))));
+        let is_empty = output.read_dir().is_ok_and(|mut d| d.next().is_none());
+        if !is_empty {
+            if !force {
+                return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+                    "merge: output directory '{}' already exists and is non-empty; \
+                     use --force to overwrite",
+                    output.display()
+                ))));
+            }
+            // --force: clear stale artifacts so the merged results.json↔trajectory
+            // bijection that `bench audit` enforces stays intact.
+            fs::remove_dir_all(output).map_err(|e| {
+                Error::Config(crate::error::ConfigError::Invalid(format!(
+                    "merge: failed to clear output directory '{}': {e}",
+                    output.display()
+                )))
+            })?;
         }
-    } else {
-        fs::create_dir_all(output).map_err(|e| {
-            Error::Config(crate::error::ConfigError::Invalid(format!(
-                "merge: failed to create output directory '{}': {e}",
-                output.display()
-            )))
-        })?;
     }
+    fs::create_dir_all(output).map_err(|e| {
+        Error::Config(crate::error::ConfigError::Invalid(format!(
+            "merge: failed to create output directory '{}': {e}",
+            output.display()
+        )))
+    })?;
     Ok(())
 }
 
@@ -386,10 +410,7 @@ fn copy_artifacts(
     output: &Path,
 ) -> Result<(), Error> {
     for inst in union_instances {
-        let shard_idx = owner_shard
-            .get(&inst.instance_id)
-            .copied()
-            .unwrap_or(0);
+        let shard_idx = owner_shard.get(&inst.instance_id).copied().unwrap_or(0);
         let shard_dir = &loaded[shard_idx].1;
         copy_instance_artifacts(shard_dir, output, &inst.instance_id)?;
     }
@@ -399,7 +420,11 @@ fn copy_artifacts(
 /// Copy all artifact files for a single instance from `src_sweep` to `dst_sweep`.
 /// Supports both the nested layout (`<id>/run-N.traj.json`) and legacy flat layout
 /// (`<id>.traj.json`). Copies the entire per-instance subdirectory if it exists.
-fn copy_instance_artifacts(src_sweep: &Path, dst_sweep: &Path, instance_id: &str) -> Result<(), Error> {
+fn copy_instance_artifacts(
+    src_sweep: &Path,
+    dst_sweep: &Path,
+    instance_id: &str,
+) -> Result<(), Error> {
     let inst_dir = src_sweep.join(instance_id);
     if inst_dir.is_dir() {
         // Nested layout: copy the whole per-instance directory

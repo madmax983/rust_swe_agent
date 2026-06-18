@@ -76,6 +76,7 @@ fn minimal_manifest(model_name: &str, git_sha: Option<&str>) -> ProvenanceManife
         import_predictions_path: None,
         import_predictions_sha256: None,
         reproduced_from: None,
+        merged_from: None,
     }
 }
 

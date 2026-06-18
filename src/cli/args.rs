@@ -1428,8 +1428,17 @@ pub struct MergeCmd {
 
     /// Output format: `text` (default) or `json`.
     /// The `json` format emits a machine-readable summary to stdout.
-    #[arg(long, default_value = "text")]
-    pub format: String,
+    #[arg(long, value_enum, default_value_t = MergeFormat::Text)]
+    pub format: MergeFormat,
+}
+
+/// Output format for `bench merge`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum MergeFormat {
+    /// Human-readable text summary (default).
+    Text,
+    /// Machine-readable JSON summary.
+    Json,
 }
 
 /// Collision policy for `bench merge` when the same instance_id appears in multiple shards.

@@ -979,7 +979,10 @@ impl Default for SweepResults {
 /// the instance list.
 #[must_use]
 #[allow(clippy::too_many_lines)]
-pub(crate) fn recompute_aggregates(base: &SweepResults, instances: Vec<InstanceResult>) -> SweepResults {
+pub(crate) fn recompute_aggregates(
+    base: &SweepResults,
+    instances: Vec<InstanceResult>,
+) -> SweepResults {
     use crate::trajectory::FailureCategory;
 
     let total = instances.len();
@@ -1032,10 +1035,7 @@ pub(crate) fn recompute_aggregates(base: &SweepResults, instances: Vec<InstanceR
         }
         map
     };
-    let resolved_any = instances
-        .iter()
-        .filter(|r| r.resolved_count > 0)
-        .count();
+    let resolved_any = instances.iter().filter(|r| r.resolved_count > 0).count();
     #[allow(clippy::cast_precision_loss)]
     let pass_at_k = if instances.is_empty() {
         0.0
@@ -1044,7 +1044,10 @@ pub(crate) fn recompute_aggregates(base: &SweepResults, instances: Vec<InstanceR
     };
     let total_prompt_tokens: u64 = instances.iter().filter_map(|r| r.prompt_tokens).sum();
     let total_cache_read_tokens: u64 = instances.iter().filter_map(|r| r.cache_read_tokens).sum();
-    let total_cache_creation_tokens: u64 = instances.iter().filter_map(|r| r.cache_creation_tokens).sum();
+    let total_cache_creation_tokens: u64 = instances
+        .iter()
+        .filter_map(|r| r.cache_creation_tokens)
+        .sum();
     let total_completion_tokens: u64 = instances.iter().filter_map(|r| r.completion_tokens).sum();
     let estimated_cost_usd: f64 = instances.iter().filter_map(|r| r.cost_usd).sum();
     let actual_cost_usd: Option<f64> = if instances.iter().all(|r| r.cost_usd.is_some()) {
@@ -1063,7 +1066,8 @@ pub(crate) fn recompute_aggregates(base: &SweepResults, instances: Vec<InstanceR
     let cache_hit_rate =
         if total_prompt_tokens + total_cache_read_tokens + total_cache_creation_tokens > 0 {
             (total_cache_read_tokens + total_cache_creation_tokens) as f64
-                / (total_prompt_tokens + total_cache_read_tokens + total_cache_creation_tokens) as f64
+                / (total_prompt_tokens + total_cache_read_tokens + total_cache_creation_tokens)
+                    as f64
         } else {
             0.0
         };
@@ -1071,10 +1075,7 @@ pub(crate) fn recompute_aggregates(base: &SweepResults, instances: Vec<InstanceR
         .iter()
         .filter(|r| !r.retry_reasons.is_empty())
         .count();
-    let retries: u64 = instances
-        .iter()
-        .map(|r| r.retry_reasons.len() as u64)
-        .sum();
+    let retries: u64 = instances.iter().map(|r| r.retry_reasons.len() as u64).sum();
     let total_fallbacks: u64 = instances
         .iter()
         .filter_map(|r| r.fallback_count)
@@ -1109,8 +1110,7 @@ pub(crate) fn recompute_aggregates(base: &SweepResults, instances: Vec<InstanceR
     result.total_completion_tokens = total_completion_tokens;
     result.estimated_cost_usd = estimated_cost_usd;
     result.actual_cost_usd = actual_cost_usd;
-    result.actual_cost_source =
-        actual_cost_usd.map(|_| crate::cost::CostSource::RateCardEstimate);
+    result.actual_cost_source = actual_cost_usd.map(|_| crate::cost::CostSource::RateCardEstimate);
     result.baseline_cost_usd = Some(baseline_cost_usd);
     result.baseline_cost_model = Some(BASELINE_COST_MODEL.to_owned());
     result.cache_hit_rate = cache_hit_rate;
