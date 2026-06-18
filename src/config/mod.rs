@@ -12,8 +12,8 @@ use crate::error::ConfigError;
 pub mod schema;
 
 pub use schema::{
-    AgentCfg, AgentKind, EnvCfg, EnvKind, McpServerCfg, ModelCfg, PromptCfg, RedactionCfg, RootCfg,
-    SkillCfg, SweepCfg, ToolCfg, ToolHookCfg, ToolHooksCfg,
+    AgentCfg, AgentKind, EnvCfg, EnvKind, McpServerCfg, ModelCfg, NetworkMode, PromptCfg,
+    RedactionCfg, RootCfg, SkillCfg, SweepCfg, ToolCfg, ToolHookCfg, ToolHooksCfg,
 };
 
 const DEFAULT_TOML: &str = include_str!("defaults/default.toml");

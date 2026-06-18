@@ -111,6 +111,12 @@ kind = "local"
 # Per-command timeout in seconds.
 timeout_secs = 60
 workdir = "/workspace"
+# Container network isolation mode (issue #523). Applies only to Docker
+# environments. "unrestricted" (default) preserves today's behavior — no
+# --network flag is passed to docker run. "none" adds --network none,
+# disabling all outbound calls from the container. A non-empty string is
+# accepted as a future allowlist value but is not yet enforced.
+# network_mode = "unrestricted"
 
 [sweep]
 # Adaptive rate-limit governor (issue #44). Both keys are opt-in: when unset,

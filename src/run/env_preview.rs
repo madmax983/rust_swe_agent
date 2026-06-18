@@ -189,11 +189,19 @@ pub fn run_env_preview(cfg: &Config, opts: &EnvPreviewOpts) -> EnvPreview {
         vec![]
     };
 
+    // Local env cannot sandbox network egress at all; Docker reports the
+    // effective configured mode so operators can confirm isolation is active.
+    let network_egress = if opts.env_type == "local" {
+        "cannot_sandbox".to_owned()
+    } else {
+        cfg.root.environment.network_mode.as_str().to_owned()
+    };
+
     EnvPreview {
         schema_version: 1,
         env_type: opts.env_type.clone(),
         host_paths,
-        network_egress: "unrestricted".to_owned(),
+        network_egress,
         hooks,
         mcp_servers,
         env_vars,

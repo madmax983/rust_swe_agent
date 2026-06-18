@@ -1877,7 +1877,8 @@ async fn build_docker_env(cfg: &Config) -> Result<Box<dyn Environment>, Error> {
         ))
     })?;
     let wd = PathBuf::from(cfg.root.environment.workdir.clone());
-    let env = DockerEnvironment::start(image, wd).await?;
+    let network = cfg.root.environment.network_mode.docker_network_arg();
+    let env = DockerEnvironment::start(image, wd, network).await?;
     Ok(Box::new(env))
 }
 

@@ -1,7 +1,7 @@
 //! Serde-visible shape of `config/*.toml`. Mirrors mini-swe-agent's layout
 //! with stronger typing — enum variants for backends rather than free-text.
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -17,6 +17,66 @@ pub enum EnvKind {
     #[default]
     Local,
     Docker,
+}
+
+/// Network isolation mode for Docker container runs (issue #523).
+///
+/// `Unrestricted` (the default) preserves today's behavior — no `--network`
+/// flag is passed to `docker run`. `None` adds `--network none` to disable
+/// all container egress. `Custom(s)` accepts an allowlist string for future
+/// proxy-enforcement; the string is recorded in the manifest and reported by
+/// `env preview`, but no additional isolation is applied in this slice.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum NetworkMode {
+    /// Default bridge networking — no `--network` flag, no isolation.
+    #[default]
+    Unrestricted,
+    /// Pass `--network none` to `docker run`; all external calls fail.
+    None,
+    /// Allowlist string accepted for forward-compat; not yet enforced.
+    Custom(String),
+}
+
+impl NetworkMode {
+    /// The string representation stored in config and emitted by `env preview`.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        match self {
+            Self::Unrestricted => "unrestricted",
+            Self::None => "none",
+            Self::Custom(s) => s.as_str(),
+        }
+    }
+
+    /// Returns the value to pass after `--network` in `docker run`, or `None`
+    /// when no `--network` flag should be added (unrestricted = today's default).
+    #[must_use]
+    pub fn docker_network_arg(&self) -> Option<&str> {
+        match self {
+            Self::None => Some("none"),
+            Self::Unrestricted | Self::Custom(_) => None,
+        }
+    }
+}
+
+impl Serialize for NetworkMode {
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for NetworkMode {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let raw = String::deserialize(d)?;
+        match raw.as_str() {
+            "" => Err(serde::de::Error::custom(
+                "network_mode cannot be empty; use \"unrestricted\", \"none\", or an allowlist string",
+            )),
+            "unrestricted" => Ok(Self::Unrestricted),
+            "none" => Ok(Self::None),
+            other => Ok(Self::Custom(other.to_owned())),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -212,6 +272,13 @@ pub struct EnvCfg {
     /// CLI flag; recorded in the run manifest for reproducibility.
     #[serde(default)]
     pub chaos_fail_every: u32,
+    /// Network isolation mode for the Docker container (issue #523).
+    /// `unrestricted` (default) preserves today's behavior — no `--network` flag.
+    /// `none` adds `--network none` to `docker run`, disabling all egress.
+    /// Any other non-empty string is accepted as a future allowlist value but
+    /// not yet enforced.
+    #[serde(default)]
+    pub network_mode: NetworkMode,
 }
 
 fn default_timeout_secs() -> u64 {
@@ -348,5 +415,47 @@ mod tests {
     fn parse_error_retries_defaults_to_three() {
         let cfg: AgentCfg = toml::from_str("").unwrap();
         assert_eq!(cfg.parse_error_retries, 3);
+    }
+
+    // ── NetworkMode RED-phase tests ──────────────────────────────────────────
+
+    #[test]
+    fn network_mode_default_is_unrestricted() {
+        let cfg = EnvCfg::default();
+        assert_eq!(cfg.network_mode, NetworkMode::Unrestricted);
+    }
+
+    #[test]
+    fn network_mode_none_parses_from_toml() {
+        let cfg: EnvCfg = toml::from_str(r#"network_mode = "none""#).unwrap();
+        assert_eq!(cfg.network_mode, NetworkMode::None);
+    }
+
+    #[test]
+    fn network_mode_unrestricted_parses_from_toml() {
+        let cfg: EnvCfg = toml::from_str(r#"network_mode = "unrestricted""#).unwrap();
+        assert_eq!(cfg.network_mode, NetworkMode::Unrestricted);
+    }
+
+    #[test]
+    fn network_mode_empty_string_fails_parse() {
+        let result: Result<EnvCfg, _> = toml::from_str(r#"network_mode = """#);
+        assert!(result.is_err(), "empty network_mode should fail to parse");
+    }
+
+    #[test]
+    fn network_mode_none_docker_network_arg_is_none_str() {
+        assert_eq!(NetworkMode::None.docker_network_arg(), Some("none"));
+    }
+
+    #[test]
+    fn network_mode_unrestricted_docker_network_arg_is_absent() {
+        assert_eq!(NetworkMode::Unrestricted.docker_network_arg(), None);
+    }
+
+    #[test]
+    fn network_mode_as_str_roundtrips() {
+        assert_eq!(NetworkMode::Unrestricted.as_str(), "unrestricted");
+        assert_eq!(NetworkMode::None.as_str(), "none");
     }
 }

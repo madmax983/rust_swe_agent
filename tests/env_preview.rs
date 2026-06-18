@@ -497,13 +497,37 @@ fn sensitive_var_detection_covers_password_and_credential() {
     assert!(!is_sensitive_var_name_test_helper("USER"));
 }
 
-// ── Network egress always shows unrestricted ──────────────────────────────────
+// ── Network egress for local env reports cannot_sandbox ──────────────────────
 
 #[test]
-fn preview_network_egress_is_unrestricted() {
+fn preview_network_egress_local_cannot_sandbox() {
+    // Local env cannot sandbox egress; preview must be honest about this.
     let cfg = Config::defaults().unwrap();
     let opts = EnvPreviewOpts {
         env_type: "local".into(),
+        task: "task".into(),
+        config_path: None,
+        show_values: false,
+    };
+    let preview = run_env_preview(&cfg, &opts);
+    assert_eq!(preview.network_egress, "cannot_sandbox");
+}
+
+// ── Docker env reports the effective configured egress mode ───────────────────
+
+#[test]
+fn preview_network_egress_docker_default_is_unrestricted() {
+    // Default docker config (network_mode unset) must report "unrestricted".
+    let cfg = Config::from_toml_str(
+        r#"
+[environment]
+kind = "docker"
+docker_image = "ubuntu:22.04"
+"#,
+    )
+    .unwrap();
+    let opts = EnvPreviewOpts {
+        env_type: "docker".into(),
         task: "task".into(),
         config_path: None,
         show_values: false,
@@ -1809,3 +1833,124 @@ args = []
 
 // ── is_sensitive_var_name_test_helper covers all branch values ────────────────
 // (already tested above in sensitive_var_detection_covers_password_and_credential)
+
+// ── Issue #523: container network isolation ───────────────────────────────────
+
+#[test]
+fn docker_network_mode_none_sets_network_egress_to_none() {
+    // When network_mode = "none", env preview must report "none", not "unrestricted".
+    let cfg = Config::from_toml_str(
+        r#"
+[environment]
+kind = "docker"
+docker_image = "ubuntu:22.04"
+network_mode = "none"
+"#,
+    )
+    .unwrap();
+    let opts = EnvPreviewOpts {
+        env_type: "docker".into(),
+        task: "task".into(),
+        config_path: None,
+        show_values: false,
+    };
+    let preview = run_env_preview(&cfg, &opts);
+    assert_eq!(
+        preview.network_egress, "none",
+        "docker env with network_mode=none must report network_egress=none; got: {}",
+        preview.network_egress
+    );
+}
+
+#[test]
+fn docker_network_mode_unrestricted_preserves_default_egress() {
+    // Default config (network_mode = unrestricted) must still report "unrestricted".
+    let cfg = Config::from_toml_str(
+        r#"
+[environment]
+kind = "docker"
+docker_image = "ubuntu:22.04"
+network_mode = "unrestricted"
+"#,
+    )
+    .unwrap();
+    let opts = EnvPreviewOpts {
+        env_type: "docker".into(),
+        task: "task".into(),
+        config_path: None,
+        show_values: false,
+    };
+    let preview = run_env_preview(&cfg, &opts);
+    assert_eq!(
+        preview.network_egress, "unrestricted",
+        "docker env with explicit unrestricted must report unrestricted; got: {}",
+        preview.network_egress
+    );
+}
+
+#[test]
+fn local_env_network_egress_reports_cannot_sandbox() {
+    // Local env cannot sandbox egress; must report "cannot_sandbox" to be honest.
+    let cfg = Config::defaults().unwrap();
+    let opts = EnvPreviewOpts {
+        env_type: "local".into(),
+        task: "task".into(),
+        config_path: None,
+        show_values: false,
+    };
+    let preview = run_env_preview(&cfg, &opts);
+    assert_eq!(
+        preview.network_egress, "cannot_sandbox",
+        "local env must report network_egress=cannot_sandbox; got: {}",
+        preview.network_egress
+    );
+}
+
+#[test]
+fn docker_network_mode_none_does_not_add_extra_findings() {
+    // network_mode=none is a known, safe config; it must not produce any additional
+    // warning findings beyond the standard docker checks.
+    let cfg = Config::from_toml_str(
+        r#"
+[environment]
+kind = "docker"
+docker_image = "ubuntu:22.04"
+network_mode = "none"
+"#,
+    )
+    .unwrap();
+    let opts = EnvPreviewOpts {
+        env_type: "docker".into(),
+        task: "task".into(),
+        config_path: None,
+        show_values: false,
+    };
+    let preview = run_env_preview(&cfg, &opts);
+    // With a valid docker image and network_mode=none, no findings should appear
+    // beyond the standard "compiled without docker" warning (present in non-docker builds).
+    let unexpected: Vec<_> = preview
+        .findings
+        .iter()
+        .filter(|f| !f.message.contains("compiled without the 'docker' feature"))
+        .collect();
+    assert!(
+        unexpected.is_empty(),
+        "network_mode=none must not introduce extra findings; got: {:?}",
+        unexpected
+    );
+}
+
+#[test]
+fn invalid_network_mode_in_config_produces_error() {
+    // An empty network_mode value must fail to parse — clear validation error.
+    let result = Config::from_toml_str(
+        r#"
+[environment]
+network_mode = ""
+"#,
+    );
+    assert!(
+        result.is_err(),
+        "empty network_mode must fail config parsing"
+    );
+}

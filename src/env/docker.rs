@@ -41,17 +41,49 @@ pub struct DockerEnvironment {
     cleanup_on_drop: bool,
 }
 
+/// Build the argument list for `docker run … <image> sleep infinity`.
+///
+/// Extracted so unit tests can assert the exact arg shape without running
+/// Docker. `network` is the value to pass after `--network` (e.g. `"none"`),
+/// or `None` to omit the flag entirely (preserving today's default behavior).
+fn build_run_args(image: &str, workdir: &str, label: &str, network: Option<&str>) -> Vec<String> {
+    let mut args = vec![
+        "run".to_owned(),
+        "-d".to_owned(),
+        "--rm".to_owned(),
+        "--label".to_owned(),
+        label.to_owned(),
+        "-w".to_owned(),
+        workdir.to_owned(),
+    ];
+    if let Some(net) = network {
+        args.push("--network".to_owned());
+        args.push(net.to_owned());
+    }
+    args.push(image.to_owned());
+    args.push("sleep".to_owned());
+    args.push("infinity".to_owned());
+    args
+}
+
 impl DockerEnvironment {
     /// Start a new container and return the handle.
-    pub async fn start(image: impl Into<String>, workdir: PathBuf) -> Result<Self, EnvError> {
+    ///
+    /// `network` controls the `--network` flag passed to `docker run`:
+    /// `None` preserves today's default (bridge networking), `Some("none")`
+    /// disables all egress, and any other string is forwarded verbatim.
+    pub async fn start(
+        image: impl Into<String>,
+        workdir: PathBuf,
+        network: Option<&str>,
+    ) -> Result<Self, EnvError> {
         let image = image.into();
         preflight().await?;
 
         let wd_str = workdir.to_string_lossy().into_owned();
+        let run_args = build_run_args(&image, &wd_str, LABEL, network);
         let out = Command::new("docker")
-            .args(["run", "-d", "--rm", "--label", LABEL, "-w", &wd_str])
-            .arg(&image)
-            .args(["sleep", "infinity"])
+            .args(&run_args)
             .stdin(StdStdio::null())
             .output()
             .await
@@ -490,5 +522,41 @@ mod tests {
     #[test]
     fn cleanup_labels_cover_current_and_legacy_rename_labels() {
         assert_eq!(cleanup_labels(), [LABEL, "rust-swe-agent=1"]);
+    }
+
+    // ── Network mode RED-phase tests ─────────────────────────────────────────
+
+    #[test]
+    fn build_run_args_include_network_none_when_mode_is_none() {
+        let args = build_run_args("my-image", "/workspace", LABEL, Some("none"));
+        let network_pos = args.iter().position(|a| a == "--network");
+        assert!(
+            network_pos.is_some(),
+            "expected --network flag in args: {args:?}"
+        );
+        assert_eq!(
+            args.get(network_pos.unwrap() + 1).map(String::as_str),
+            Some("none")
+        );
+    }
+
+    #[test]
+    fn build_run_args_unchanged_for_unrestricted_mode() {
+        let args_unrestricted = build_run_args("my-image", "/workspace", LABEL, None);
+        assert!(
+            !args_unrestricted.contains(&"--network".to_owned()),
+            "unrestricted mode must not add --network flag: {args_unrestricted:?}"
+        );
+    }
+
+    #[test]
+    fn build_run_args_network_none_positioned_before_image() {
+        let args = build_run_args("my-image", "/workspace", LABEL, Some("none"));
+        let network_pos = args.iter().position(|a| a == "--network").unwrap();
+        let image_pos = args.iter().position(|a| a == "my-image").unwrap();
+        assert!(
+            network_pos < image_pos,
+            "--network must appear before the image name"
+        );
     }
 }
