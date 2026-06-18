@@ -4,7 +4,7 @@
 //! the selected failed instances and merges their outcomes back into the same
 //! `results.json` with full provenance in `retry_history`.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
@@ -191,156 +191,7 @@ pub fn merge_retry_results<S: std::hash::BuildHasher>(
 
     // Recompute all aggregates from the merged instance list so reports and
     // comparisons don't see stale counters from the pre-retry sweep.
-    let total = merged_instances.len();
-    let submitted = merged_instances
-        .iter()
-        .filter(|r| r.outcome.as_deref() == Some("submitted") && r.exit_reason != "skipped_resume")
-        .count();
-    let submitted_with_tests = merged_instances
-        .iter()
-        .filter(|r| {
-            r.outcome.as_deref() == Some("submitted")
-                && r.exit_reason != "skipped_resume"
-                && r.tests_run_before_submit
-        })
-        .count();
-    let skipped = merged_instances
-        .iter()
-        .filter(|r| r.exit_reason == "skipped_resume")
-        .count();
-    let errored = merged_instances
-        .iter()
-        .filter(|r| r.outcome.as_deref() == Some("error"))
-        .count();
-    let budget_halted = merged_instances
-        .iter()
-        .filter(|r| r.exit_reason.starts_with("budget_halt"))
-        .count();
-    let with_patch = merged_instances
-        .iter()
-        .filter(|r| r.non_empty_patch && r.outcome.as_deref() == Some("submitted"))
-        .count();
-    let patch_empty = merged_instances.iter().filter(|r| r.patch_empty()).count();
-    let patch_apply_invalid = merged_instances
-        .iter()
-        .filter(|r| r.failure_category == Some(FailureCategory::PatchApplyInvalid))
-        .count();
-    let github_pr_failures = merged_instances
-        .iter()
-        .filter(|r| r.github_pr_error.is_some())
-        .count();
-    let failures_by_category: BTreeMap<FailureCategory, usize> = {
-        let mut map = BTreeMap::new();
-        for r in &merged_instances {
-            if let Some(cat) = r.failure_category {
-                *map.entry(cat).or_insert(0) += 1;
-            }
-        }
-        map
-    };
-    // Count rows with any resolved run (pass@k semantics: resolved_count > 0 means
-    // at least one of the k runs submitted successfully, regardless of value).
-    let resolved_any = merged_instances
-        .iter()
-        .filter(|r| r.resolved_count > 0)
-        .count();
-    #[allow(clippy::cast_precision_loss)]
-    let pass_at_k = if merged_instances.is_empty() {
-        0.0
-    } else {
-        resolved_any as f64 / merged_instances.len() as f64
-    };
-    let total_prompt_tokens: u64 = merged_instances
-        .iter()
-        .filter_map(|r| r.prompt_tokens)
-        .sum();
-    let total_cache_read_tokens: u64 = merged_instances
-        .iter()
-        .filter_map(|r| r.cache_read_tokens)
-        .sum();
-    let total_cache_creation_tokens: u64 = merged_instances
-        .iter()
-        .filter_map(|r| r.cache_creation_tokens)
-        .sum();
-    let total_completion_tokens: u64 = merged_instances
-        .iter()
-        .filter_map(|r| r.completion_tokens)
-        .sum();
-    let estimated_cost_usd: f64 = merged_instances.iter().filter_map(|r| r.cost_usd).sum();
-    // actual_cost_usd is the sum of per-instance cost_usd when all rows have it.
-    let actual_cost_usd: Option<f64> = if merged_instances.iter().all(|r| r.cost_usd.is_some()) {
-        Some(estimated_cost_usd)
-    } else {
-        None
-    };
-    let baseline_cost_usd = crate::run::swebench::estimate_cost_usd(
-        total_prompt_tokens,
-        total_cache_read_tokens,
-        total_cache_creation_tokens,
-        total_completion_tokens,
-        crate::run::swebench::BASELINE_COST_MODEL,
-    );
-    #[allow(clippy::cast_precision_loss)]
-    let cache_hit_rate =
-        if total_prompt_tokens + total_cache_read_tokens + total_cache_creation_tokens > 0 {
-            (total_cache_read_tokens + total_cache_creation_tokens) as f64
-                / (total_prompt_tokens + total_cache_read_tokens + total_cache_creation_tokens)
-                    as f64
-        } else {
-            0.0
-        };
-    let retried_instances = merged_instances
-        .iter()
-        .filter(|r| !r.retry_reasons.is_empty())
-        .count();
-    let retries: u64 = merged_instances
-        .iter()
-        .map(|r| r.retry_reasons.len() as u64)
-        .sum();
-    let total_fallbacks: u64 = merged_instances
-        .iter()
-        .filter_map(|r| r.fallback_count)
-        .map(u64::from)
-        .sum();
-    let model_mix: BTreeMap<String, usize> = {
-        let mut map = BTreeMap::new();
-        for r in &merged_instances {
-            if let Some(m) = &r.final_model {
-                *map.entry(m.clone()).or_insert(0) += 1;
-            }
-        }
-        map
-    };
-
-    let mut result = original.clone();
-    result.total = total;
-    result.submitted = submitted;
-    result.submitted_with_tests = submitted_with_tests;
-    result.skipped = skipped;
-    result.errored = errored;
-    result.budget_halted = budget_halted;
-    result.with_patch = with_patch;
-    result.patch_empty = patch_empty;
-    result.patch_apply_invalid = patch_apply_invalid;
-    result.github_pr_failures = github_pr_failures;
-    result.failures_by_category = failures_by_category;
-    result.pass_at_k = pass_at_k;
-    result.total_prompt_tokens = total_prompt_tokens;
-    result.total_cache_read_tokens = total_cache_read_tokens;
-    result.total_cache_creation_tokens = total_cache_creation_tokens;
-    result.total_completion_tokens = total_completion_tokens;
-    result.estimated_cost_usd = estimated_cost_usd;
-    result.actual_cost_usd = actual_cost_usd;
-    result.actual_cost_source =
-        actual_cost_usd.map(|_| crate::run::swebench::CostSource::RateCardEstimate);
-    result.baseline_cost_usd = Some(baseline_cost_usd);
-    result.baseline_cost_model = Some(crate::run::swebench::BASELINE_COST_MODEL.to_owned());
-    result.cache_hit_rate = cache_hit_rate;
-    result.retried_instances = retried_instances;
-    result.retries = retries;
-    result.total_fallbacks = total_fallbacks;
-    result.model_mix = model_mix;
-    result.instances = merged_instances;
+    let mut result = crate::run::swebench::recompute_aggregates(original, merged_instances);
     result.retry_history.push(entry);
     result
 }
@@ -651,14 +502,3 @@ pub fn build_history_entry(
     }
 }
 
-// ─── trait helpers used in merge ──────────────────────────────────────────────
-
-trait InstanceResultExt {
-    fn patch_empty(&self) -> bool;
-}
-
-impl InstanceResultExt for InstanceResult {
-    fn patch_empty(&self) -> bool {
-        self.patch_present && !self.non_empty_patch
-    }
-}

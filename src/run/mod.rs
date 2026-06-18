@@ -48,6 +48,7 @@ pub mod inspect;
 pub mod instance_history;
 pub mod ladder;
 pub mod matrix;
+pub mod merge;
 pub mod mini;
 pub mod mini_result;
 pub mod near_miss;

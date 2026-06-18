@@ -472,6 +472,7 @@ pub fn run(args: &ImportArgs) -> Result<ImportSummary, Error> {
         import_predictions_path: Some(predictions_path_str),
         import_predictions_sha256: Some(predictions_sha256.clone()),
         reproduced_from: None,
+        merged_from: None,
     };
 
     // 8. Build SweepResults.
