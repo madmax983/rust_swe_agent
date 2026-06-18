@@ -213,9 +213,11 @@ pub fn run(args: &MergeCmd) -> Result<MergeReport, Error> {
     // Prefer the authoritative resolved count from the merged evaluation.json
     // when present; otherwise fall back to the pass@k/submission proxy.
     let resolved = eval_resolved.unwrap_or_else(|| {
+        // `resolved_count` handles legacy rows (pre-`runs`/`resolved_count`), where
+        // the raw field is 0; a raw `> 0` check would report all-legacy merges as 0.
         union_instances
             .iter()
-            .filter(|r| r.resolved_count > 0)
+            .filter(|r| crate::run::swebench::resolved_count(r) > 0)
             .count()
     });
 
@@ -684,35 +686,43 @@ fn merge_evaluation_json(
             }
         }
 
-        // Parse modern format: instances[].{instance_id, resolved}
-        if let Some(instances) = eval.get("instances").and_then(Value::as_array) {
-            for inst in instances {
-                let id = inst
-                    .get("instance_id")
-                    .and_then(Value::as_str)
-                    .unwrap_or("");
-                if !id.is_empty() && owns(id) {
-                    eval_entries.push(inst.clone());
-                }
+        // Index whatever verdicts the shard's evaluation.json carries, in either
+        // the modern (`instances[]`) or legacy (`resolved_ids`) shape.
+        let modern: HashMap<&str, &Value> = eval
+            .get("instances")
+            .and_then(Value::as_array)
+            .map(|a| {
+                a.iter()
+                    .filter_map(|e| {
+                        e.get("instance_id")
+                            .and_then(Value::as_str)
+                            .map(|id| (id, e))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        let resolved_ids: HashSet<&str> = eval
+            .get("resolved_ids")
+            .and_then(Value::as_array)
+            .map(|a| a.iter().filter_map(Value::as_str).collect())
+            .unwrap_or_default();
+
+        // Emit exactly one entry for every owned instance (each has a copied
+        // trajectory), reusing the shard's rich modern entry when present and
+        // synthesizing an unresolved one otherwise. This guarantees exact coverage
+        // and never emits unknown/extra IDs, so a stale or partial shard eval still
+        // yields a merged modern evaluation.json that passes audit/budget-fit.
+        for inst in &shard_results.instances {
+            let id = inst.instance_id.as_str();
+            if !owns(id) {
+                continue;
             }
-        } else {
-            // Legacy sb-cli format: resolved_ids / submitted_ids arrays. These omit
-            // errored/no-patch instances, but the merged file is modern, so audit
-            // wants an entry for *every* owned trajectory. Synthesize an entry for
-            // each owned instance, marking those absent from resolved_ids unresolved.
-            let resolved_ids: HashSet<&str> = eval
-                .get("resolved_ids")
-                .and_then(Value::as_array)
-                .map(|a| a.iter().filter_map(Value::as_str).collect())
-                .unwrap_or_default();
-            for inst in &shard_results.instances {
-                let id = inst.instance_id.as_str();
-                if !owns(id) {
-                    continue;
-                }
-                let resolved = resolved_ids.contains(id);
+            if let Some(entry) = modern.get(id) {
+                eval_entries.push((*entry).clone());
+            } else {
                 // `eval_exit_reason` is required by `InstanceEvaluation`; downstream
                 // commands (report/triage/inspect) reject rows that omit it.
+                let resolved = resolved_ids.contains(id);
                 eval_entries.push(serde_json::json!({
                     "instance_id": id,
                     "resolved": resolved,
@@ -773,15 +783,50 @@ fn merge_evaluation_json(
     Ok(Some(resolved_count))
 }
 
-/// Evaluator identity fields that must match across shards before their verdicts
-/// can be merged into one authoritative `evaluation.json`.
-fn evaluator_identity(prov: &Value) -> (String, String, String) {
-    let field = |k: &str| prov.get(k).and_then(Value::as_str).unwrap_or("").to_owned();
-    (
-        field("backend"),
-        field("backend_version"),
-        field("dataset_sha256"),
-    )
+/// The scoring-relevant evaluator identity that must match across shards before
+/// their verdicts can be merged. We compare the whole provenance object with the
+/// per-shard *volatile* fields (run ids, file paths/hashes, timestamps, command
+/// shapes, per-slot source reports) recursively stripped, so scoring-relevant
+/// settings — dataset subset/split, Docker image names, timeouts, parallelism —
+/// are all included.
+fn evaluator_identity(prov: &Value) -> Value {
+    let mut v = prov.clone();
+    strip_volatile_provenance(&mut v);
+    v
+}
+
+fn strip_volatile_provenance(v: &mut Value) {
+    const VOLATILE: &[&str] = &[
+        "run_id",
+        "prediction_path",
+        "prediction_sha256",
+        "eval_started_at",
+        "eval_ended_at",
+        "report_source",
+        "report_paths",
+        "report_hashes",
+        "submit_command",
+        "report_command",
+        "report_path",
+        "report_sha256",
+        "source_reports",
+    ];
+    match v {
+        Value::Object(obj) => {
+            for k in VOLATILE {
+                obj.remove(*k);
+            }
+            for child in obj.values_mut() {
+                strip_volatile_provenance(child);
+            }
+        }
+        Value::Array(arr) => {
+            for child in arr.iter_mut() {
+                strip_volatile_provenance(child);
+            }
+        }
+        _ => {}
+    }
 }
 
 /// Best-effort absolute, symlink-resolved path. Falls back to a lexical absolute
