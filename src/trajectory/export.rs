@@ -95,6 +95,14 @@ pub fn registry() -> Vec<ExportFormat> {
         render: MermaidExporter::export,
     });
 
+    #[cfg(feature = "jsonl-export")]
+    formats.push(ExportFormat {
+        name: "jsonl",
+        tier: StabilityTier::Stable,
+        consumer: "streaming parsers, jq, big data pipelines",
+        render: JsonlExporter::export,
+    });
+
     formats
 }
 
@@ -109,6 +117,7 @@ pub const FEATURE_GATED_FORMATS: &[(&str, &str)] = &[
     ("csv", "csv-export"),
     ("html", "html-export"),
     ("mermaid", "mermaid-export"),
+    ("jsonl", "jsonl-export"),
 ];
 
 /// Returns `true` if `name` is a trajectory export format known to this codebase,
@@ -162,6 +171,9 @@ pub struct CsvExporter;
 
 #[cfg(feature = "mermaid-export")]
 pub struct MermaidExporter;
+
+#[cfg(feature = "jsonl-export")]
+pub struct JsonlExporter;
 
 #[cfg(feature = "html-export")]
 pub struct HtmlExporter;
@@ -307,6 +319,33 @@ impl TrajectoryExporter for HtmlExporter {
     }
 }
 
+#[cfg(feature = "jsonl-export")]
+impl TrajectoryExporter for JsonlExporter {
+    fn export(trajectory: &Trajectory) -> String {
+        let redactor = Redactor::default_enabled();
+        let mut jsonl = String::new();
+
+        for msg in &trajectory.messages {
+            let mut msg_clone = serde_json::json!({
+                "role": msg.role,
+                "content": msg.content,
+            });
+
+            if let Some(content_str) = msg_clone.get_mut("content") {
+                redactor.redact_json_value(content_str, surface::EXPORT);
+            }
+
+            if let Ok(line) = serde_json::to_string(&msg_clone) {
+                if !line.is_empty() {
+                    jsonl.push_str(&line);
+                    jsonl.push('\n');
+                }
+            }
+        }
+        jsonl
+    }
+}
+
 #[cfg(feature = "mermaid-export")]
 impl TrajectoryExporter for MermaidExporter {
     fn export(trajectory: &Trajectory) -> String {
@@ -405,6 +444,31 @@ mod tests {
         assert!(csv.contains("system,System prompt"));
         assert!(csv.contains("user,\"Hello agent\nMulti-line\""));
         assert!(csv.contains("assistant,\"Hello \"\"user\"\"\""));
+    }
+
+    #[cfg(feature = "jsonl-export")]
+    #[test]
+    fn test_jsonl_export_format() {
+        let mut t = Trajectory::new();
+        t.info.task = Some("Add a feature".to_string());
+        t.info.outcome = Some(outcome::SUBMITTED.to_string());
+
+        t.record_message(&Message::system("System prompt"));
+        t.record_message(&Message::user("Hello agent\nMulti-line"));
+        t.record_message(&Message::assistant("Hello \"user\""));
+
+        let jsonl = JsonlExporter::export(&t);
+        let lines: Vec<&str> = jsonl.lines().collect();
+
+        assert_eq!(lines.len(), 3);
+        assert!(lines[0].contains("\"role\":\"system\""));
+        assert!(lines[0].contains("\"content\":\"System prompt\""));
+
+        assert!(lines[1].contains("\"role\":\"user\""));
+        assert!(lines[1].contains("\"content\":\"Hello agent\\nMulti-line\""));
+
+        assert!(lines[2].contains("\"role\":\"assistant\""));
+        assert!(lines[2].contains("\"content\":\"Hello \\\"user\\\"\""));
     }
 
     #[cfg(feature = "mermaid-export")]
