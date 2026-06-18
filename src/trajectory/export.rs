@@ -95,6 +95,14 @@ pub fn registry() -> Vec<ExportFormat> {
         render: MermaidExporter::export,
     });
 
+    #[cfg(feature = "jupyter-export")]
+    formats.push(ExportFormat {
+        name: "jupyter",
+        tier: StabilityTier::Experimental,
+        consumer: "Jupyter notebooks for interactive exploration",
+        render: JupyterExporter::export,
+    });
+
     formats
 }
 
@@ -109,6 +117,7 @@ pub const FEATURE_GATED_FORMATS: &[(&str, &str)] = &[
     ("csv", "csv-export"),
     ("html", "html-export"),
     ("mermaid", "mermaid-export"),
+    ("jupyter", "jupyter-export"),
 ];
 
 /// Returns `true` if `name` is a trajectory export format known to this codebase,
@@ -165,6 +174,9 @@ pub struct MermaidExporter;
 
 #[cfg(feature = "html-export")]
 pub struct HtmlExporter;
+
+#[cfg(feature = "jupyter-export")]
+pub struct JupyterExporter;
 
 use std::fmt::Write;
 
@@ -358,6 +370,65 @@ impl TrajectoryExporter for MermaidExporter {
     }
 }
 
+#[cfg(feature = "jupyter-export")]
+impl TrajectoryExporter for JupyterExporter {
+    fn export(trajectory: &Trajectory) -> String {
+        let redactor = Redactor::default_enabled();
+
+        let mut cells = Vec::new();
+
+        let mut header_src = vec!["# Trajectory Export\n\n".to_string()];
+
+        if let Some(task) = &trajectory.info.task {
+            let task = redactor.redact_text(task, surface::EXPORT).text;
+            header_src.push(format!("**Task:** {task}\n\n"));
+        }
+
+        if let Some(outcome) = &trajectory.info.outcome {
+            let outcome = redactor.redact_text(outcome, surface::EXPORT).text;
+            header_src.push(format!("**Outcome:** {outcome}\n\n"));
+        }
+
+        cells.push(serde_json::json!({
+            "cell_type": "markdown",
+            "metadata": {},
+            "source": header_src
+        }));
+
+        for msg in &trajectory.messages {
+            let role_title = match msg.role.as_str() {
+                "system" => "System",
+                "user" => "User",
+                "assistant" => "Assistant",
+                "tool" => "Tool",
+                other => other,
+            };
+
+            let content = redactor.redact_text(&msg.content, surface::EXPORT).text;
+
+            let cell_src = vec![
+                format!("### {role_title}\n\n"),
+                format!("```text\n{content}\n```\n"),
+            ];
+
+            cells.push(serde_json::json!({
+                "cell_type": "markdown",
+                "metadata": {},
+                "source": cell_src
+            }));
+        }
+
+        let notebook = serde_json::json!({
+            "cells": cells,
+            "metadata": {},
+            "nbformat": 4,
+            "nbformat_minor": 5
+        });
+
+        serde_json::to_string_pretty(&notebook).unwrap_or_default()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -452,5 +523,37 @@ mod tests {
         assert!(html.contains("submitted"));
         assert!(html.contains("Hello agent"));
         assert!(html.contains("Hello user"));
+    }
+
+    #[cfg(feature = "jupyter-export")]
+    #[test]
+    #[allow(clippy::unwrap_used)]
+    fn test_jupyter_export_format() {
+        let mut t = Trajectory::new();
+        t.info.task = Some("Add a jupyter feature".to_string());
+        t.info.outcome = Some(outcome::SUBMITTED.to_string());
+
+        t.record_message(&Message::system("System prompt"));
+        t.record_message(&Message::user("Hello agent"));
+
+        let jupyter = JupyterExporter::export(&t);
+
+        let parsed: serde_json::Value = serde_json::from_str(&jupyter).unwrap();
+        assert_eq!(parsed["nbformat"], 4);
+        assert_eq!(parsed["nbformat_minor"], 5);
+
+        let cells = parsed["cells"].as_array().unwrap();
+        assert_eq!(cells.len(), 3); // 1 header + 2 messages
+
+        let header_source = cells[0]["source"].as_array().unwrap();
+        assert!(
+            header_source[1]
+                .as_str()
+                .unwrap()
+                .contains("Add a jupyter feature")
+        );
+
+        let user_source = cells[2]["source"].as_array().unwrap();
+        assert!(user_source[1].as_str().unwrap().contains("Hello agent"));
     }
 }
