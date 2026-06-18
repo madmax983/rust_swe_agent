@@ -5,7 +5,8 @@
 #![allow(
     clippy::cast_precision_loss,
     clippy::cast_possible_truncation,
-    clippy::cast_sign_loss
+    clippy::cast_sign_loss,
+    clippy::too_many_lines
 )]
 
 use std::path::PathBuf;
@@ -107,7 +108,38 @@ pub fn compute_variance(args: &BenchVarianceArgs) -> Result<BenchVarianceReport,
         ))));
     }
 
+    let explicit_status: Option<String> = std::fs::read_to_string(&results_path)
+        .ok()
+        .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
+        .and_then(|v| {
+            v.get("sweep_status")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned)
+        });
+    if let Some(ref s) = explicit_status {
+        if s != crate::run::swebench::SWEEP_STATUS_COMPLETED {
+            return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+                "bench variance: sweep status is '{s}', not 'completed'; \
+                 flakiness metrics over partial sweeps are misleading"
+            ))));
+        }
+    }
+
     let loaded = load_sweep(&args.sweep_dir)?;
+
+    if explicit_status.is_none() {
+        let finished = loaded
+            .manifest
+            .as_ref()
+            .and_then(|m| m.runtime.finished_at_utc.as_ref());
+        if finished.is_none() {
+            return Err(Error::Config(crate::error::ConfigError::Invalid(
+                "bench variance: legacy results.json lacks sweep_status and \
+                 manifest.runtime.finished_at_utc; cannot confirm sweep completed"
+                    .into(),
+            )));
+        }
+    }
 
     let mut instances: Vec<_> = loaded.instances.values().collect();
     instances.sort_by(|a, b| a.instance_id.cmp(&b.instance_id));
@@ -244,13 +276,17 @@ fn compute_recommended_reruns(
     ci_width: f64,
     current_total_slots: u64,
 ) -> Option<u32> {
-    let variance = pass_at_1 * (1.0 - pass_at_1);
-    if variance < 1e-12 {
+    let (ci_lo, ci_hi) = wilson_ci(pass_at_1, current_total_slots);
+    if (ci_hi - ci_lo) / 2.0 <= ci_width {
         return None;
     }
-    let n_required = (Z95 / ci_width).powi(2) * variance;
-    let avg_current = current_total_slots as f64 / n_instances as f64;
+    // For p=0 or p=1 the observed variance is 0, but the CI may still be wide
+    // for small n. Use worst-case variance (p=0.5) for a conservative recommendation.
+    let variance = pass_at_1 * (1.0 - pass_at_1);
+    let effective_variance = if variance < 1e-12 { 0.25 } else { variance };
+    let n_required = (Z95 / ci_width).powi(2) * effective_variance;
     let k_required = (n_required / n_instances as f64).ceil() as u32;
+    let avg_current = current_total_slots as f64 / n_instances as f64;
     if f64::from(k_required) <= avg_current {
         None
     } else {

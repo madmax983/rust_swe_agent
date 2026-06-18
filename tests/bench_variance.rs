@@ -250,6 +250,31 @@ fn ac1_rejects_missing_results_json() {
     assert!(result.is_err(), "expected error for missing results.json");
 }
 
+#[test]
+fn ac1_rejects_incomplete_sweep() {
+    let dir = tempfile::tempdir().unwrap();
+    let cancelled = serde_json::json!({"total": 2, "sweep_status": "cancelled", "instances": []});
+    std::fs::write(
+        dir.path().join("results.json"),
+        serde_json::to_string(&cancelled).unwrap(),
+    )
+    .unwrap();
+
+    let result = compute_variance(&BenchVarianceArgs {
+        sweep_dir: dir.path().to_path_buf(),
+        ci_width: None,
+        filter: vec![],
+        class: None,
+    });
+
+    assert!(result.is_err(), "expected error for cancelled sweep");
+    let msg = result.unwrap_err().to_string();
+    assert!(
+        msg.contains("cancelled") || msg.contains("completed") || msg.contains("status"),
+        "error should mention sweep status, got: {msg}"
+    );
+}
+
 // ── AC2: per-instance stability classes ───────────────────────────────────────
 
 #[test]
@@ -551,6 +576,34 @@ fn ac4_current_reruns_already_sufficient() {
             "recommended reruns ({rec}) should not exceed current 5 when CI already sufficient"
         );
     }
+}
+
+#[test]
+fn ac4_recommends_reruns_for_extreme_p_small_n() {
+    let dir = tempfile::tempdir().unwrap();
+    // 3 instances × 2 reruns, all pass → p=1.0 but only 6 total slots
+    write_results(
+        dir.path(),
+        vec![
+            rerun_instance("a", 2, 2),
+            rerun_instance("b", 2, 2),
+            rerun_instance("c", 2, 2),
+        ],
+    );
+
+    let report = compute_variance(&BenchVarianceArgs {
+        sweep_dir: dir.path().to_path_buf(),
+        ci_width: Some(0.05),
+        filter: vec![],
+        class: None,
+    })
+    .unwrap();
+
+    // Wilson CI half-width for p=1, n=6 is ~0.20 >> 0.05 target
+    assert!(
+        report.noise.recommended_reruns.is_some(),
+        "should recommend reruns when p=1 but Wilson CI is still wide"
+    );
 }
 
 // ── AC5: --format text|json ───────────────────────────────────────────────────
