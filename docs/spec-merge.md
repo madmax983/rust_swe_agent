@@ -97,6 +97,8 @@ the output sweep directory, preserving the source shard's on-disk layout:
   subdirectory is copied recursively.
 - **Legacy flat layout** `<instance_id>.traj.json` — individual files are
   copied to the output root.
+- **Bundled layout** `trajectories/<instance_id>.traj.json` and
+  `patches/<instance_id>.patch` — as produced by an extracted `bench bundle`.
 
 This preserves the bijection that `bench audit` enforces: every `instance_id`
 in `results.json` must have a corresponding trajectory file on disk, and every
@@ -108,18 +110,66 @@ All top-line metrics are recomputed from the union instance list — no numbers
 are summed from per-shard headers, which prevents double-counting:
 
 - `total_cost_usd`, token counts — summed over the union
-- `submitted`, `errored`, `with_patch`, `failures_by_category` — counted over the union
-- `pass_at_k`, resolved rate — derived from the union counts
+- `with_patch`, `failures_by_category` — counted over the union
+- `pass_at_k`, resolved rate — derived per-instance from the union
+
+The outcome **slot** counts (`submitted`, `errored`, `skipped`, `budget_halted`)
+are recounted from the copied run trajectories — exactly the way `bench audit`
+recomputes them — rather than from the collapsed per-task rows. For a pass@k /
+multi-run sweep one task spans several run slots (e.g. 2 runs both submitted →
+2 submitted slots), so a per-task count would disagree with the on-disk
+trajectories and fail audit. Counting per slot keeps the merged `results.json`
+reconciled with the trajectories for both single-run and multi-run sweeps.
 
 Only `retry_history` is carried from shard 0 (documented limitation; retries
 are per-sweep, not per-merge).
 
+## Predictions (`bench evaluate` compatibility)
+
+`bench evaluate` scores a sweep from `<sweep>/all_preds.jsonl`. Merge produces a
+complete prediction set for the union:
+
+- `all_preds.jsonl` — the aggregate file, restricted to union-owned rows. For
+  multi-run shards each row keeps its unique `<id>::run-k` id plus
+  `original_instance_id`, and the regenerated metadata marks
+  `swebench_evaluator_compatible: false` (duplicate ids are not sb-cli-safe).
+- `all_preds.run-k.jsonl` — one per run index, original SWE-bench ids, safe to
+  hand directly to sb-cli.
+- `all_preds.metadata.json` / `all_preds.run-k.metadata.json` — regenerated with
+  the merged row counts.
+
+Prediction rows are filtered by the same owning shard used for trajectories, so
+collision-dropped instances never appear twice.
+
+## Subset Metadata
+
+Both `results.json.filter_spec` and `manifest.dataset.filter_spec` are rebuilt
+to describe the merged union (the sorted union instance-id list), not shard 0's
+per-shard filter. This keeps `bench compare`'s "same subset?" check honest when
+shards used different `--instance-ids`/filters.
+
+## Output Isolation
+
+`--output` must not be equal to, contain, or be contained by any input shard.
+Because `--force` clears a non-empty output directory with `remove_dir_all`, an
+overlapping output path would delete shard artifacts before they are copied;
+merge rejects such paths up front with a clear error.
+
 ## `evaluation.json` Handling
 
-If any shard contains an `evaluation.json`, the merged output will contain one
-that is the union of all shard evaluations. Both modern (`instances[].resolved`)
-and legacy (`resolved_ids` / `submitted_ids`) formats are normalized to the
-modern format on merge. Instances dropped by the collision policy are excluded.
+Evaluation is merged **all-or-nothing**: the merged output gets an
+`evaluation.json` only when *every* shard carries one. A modern `evaluation.json`
+requires an entry for every on-disk trajectory, so a partial merge (some shards
+evaluated, some not) would turn the unevaluated shards' trajectories into
+`audit:orphan:evaluation` failures. When evaluation is present in only some
+shards, merge warns and omits the file so the merged sweep still audits cleanly
+as an unevaluated sweep — re-run `bench evaluate` on the merged output, or
+evaluate every shard first.
+
+When all shards are evaluated, both modern (`instances[].resolved`) and legacy
+(`resolved_ids` / `submitted_ids`) formats are normalized to the modern format
+(legacy rows gain the required `eval_exit_reason`). Instances dropped by the
+collision policy are excluded.
 
 ## JSON Summary Format (AC6)
 
