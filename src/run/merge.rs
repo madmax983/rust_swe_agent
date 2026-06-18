@@ -95,6 +95,7 @@ pub fn run(args: &MergeCmd) -> Result<MergeReport, Error> {
 
     // Check provenance compatibility
     check_provenance_compatibility(&loaded)?;
+    check_uniform_rerun_count(&loaded)?;
 
     // Detect collisions and build union instance list
     let policy = args.on_collision;
@@ -377,6 +378,31 @@ fn check_provenance_compatibility(loaded: &[(String, PathBuf, SweepResults)]) ->
     Ok(())
 }
 
+/// Reject shards sampled with different `--rerun` (pass@k) counts. `runs` is a
+/// per-row sweep-shaping value, not part of `config.resolved`, so a `--rerun 1`
+/// shard and a `--rerun 3` shard would otherwise pass the config check and yield
+/// a single pass@k summary over tasks sampled with different k.
+fn check_uniform_rerun_count(loaded: &[(String, PathBuf, SweepResults)]) -> Result<(), Error> {
+    let mut reference: Option<(&str, u32)> = None;
+    for (label, _, results) in loaded {
+        let Some(runs) = results.instances.iter().map(|r| r.runs).max() else {
+            continue; // empty shard contributes no rerun signal
+        };
+        match reference {
+            None => reference = Some((label, runs)),
+            Some((ref_label, ref_runs)) if runs != ref_runs => {
+                return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+                    "merge: shard '{label}' rerun count ({runs}) differs from shard \
+                     '{ref_label}' ({ref_runs}); bench merge requires the same --rerun \
+                     (pass@k) count across shards"
+                ))));
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
 type UnionResult = Result<
     (
         Vec<crate::run::swebench::InstanceResult>,
@@ -545,30 +571,31 @@ fn copy_instance_artifacts(
                 "merge: failed to copy instance artifacts for '{instance_id}': {e}"
             )))
         })?;
-    } else {
-        // Legacy flat layout: <id>.traj.json / <id>.patch at the sweep root.
-        for ext in [".traj.json", ".patch"] {
-            let name = format!("{instance_id}{ext}");
-            copy_file(src_sweep.join(&name), dst_sweep.join(&name))?;
-        }
-        // Bundled layout: trajectories/<id>.traj.json and patches/<id>.patch.
-        copy_file(
-            src_sweep
-                .join("trajectories")
-                .join(format!("{instance_id}.traj.json")),
-            dst_sweep
-                .join("trajectories")
-                .join(format!("{instance_id}.traj.json")),
-        )?;
-        copy_file(
-            src_sweep
-                .join("patches")
-                .join(format!("{instance_id}.patch")),
-            dst_sweep
-                .join("patches")
-                .join(format!("{instance_id}.patch")),
-        )?;
     }
+    // Always also copy the flat and bundled artifacts: a shard can store the
+    // trajectory under a nested `<id>/` dir while keeping the submitted patch at
+    // the root (`<id>.patch`) or under `patches/<id>.patch`. copy_file no-ops on
+    // missing sources, so this is safe regardless of the source layout.
+    for ext in [".traj.json", ".patch"] {
+        let name = format!("{instance_id}{ext}");
+        copy_file(src_sweep.join(&name), dst_sweep.join(&name))?;
+    }
+    copy_file(
+        src_sweep
+            .join("trajectories")
+            .join(format!("{instance_id}.traj.json")),
+        dst_sweep
+            .join("trajectories")
+            .join(format!("{instance_id}.traj.json")),
+    )?;
+    copy_file(
+        src_sweep
+            .join("patches")
+            .join(format!("{instance_id}.patch")),
+        dst_sweep
+            .join("patches")
+            .join(format!("{instance_id}.patch")),
+    )?;
     Ok(())
 }
 
@@ -594,6 +621,7 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> io::Result<()> {
 /// merged file when *every* shard carries evaluation data; if evaluation is
 /// present in only some shards we omit it entirely (and warn) so the merged
 /// sweep still audits cleanly as an unevaluated sweep.
+#[allow(clippy::too_many_lines)]
 fn merge_evaluation_json(
     loaded: &[(String, PathBuf, SweepResults)],
     owner_shard: &HashMap<String, usize>,
@@ -617,6 +645,7 @@ fn merge_evaluation_json(
     }
 
     let mut eval_entries: Vec<Value> = Vec::new();
+    let mut merged_provenance: Option<(String, Value)> = None; // (shard label, provenance)
 
     for (shard_idx, (label, shard_dir, shard_results)) in loaded.iter().enumerate() {
         let owns = |id: &str| owner_shard.get(id).copied().unwrap_or(shard_idx) == shard_idx;
@@ -636,6 +665,24 @@ fn merge_evaluation_json(
                 "merge: failed to parse shard '{label}' evaluation.json: {e}"
             )))
         })?;
+
+        // Evaluator provenance must agree: merging verdicts produced by different
+        // backends / versions / dataset settings into one authoritative file would
+        // hide the mismatch from downstream compare/report.
+        if let Some(prov) = eval.get("provenance").filter(|p| !p.is_null()) {
+            match &merged_provenance {
+                None => merged_provenance = Some((label.clone(), prov.clone())),
+                Some((ref0, prov0)) => {
+                    if evaluator_identity(prov) != evaluator_identity(prov0) {
+                        return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+                            "merge: shard '{label}' evaluator provenance (backend/version/dataset) \
+                             differs from shard '{ref0}'; bench merge requires shards evaluated \
+                             with the same evaluator"
+                        ))));
+                    }
+                }
+            }
+        }
 
         // Parse modern format: instances[].{instance_id, resolved}
         if let Some(instances) = eval.get("instances").and_then(Value::as_array) {
@@ -684,11 +731,33 @@ fn merge_evaluation_json(
         .filter(|e| e.get("resolved").and_then(Value::as_bool) == Some(true))
         .count();
 
-    let merged_eval = serde_json::json!({
+    let mut merged_eval = serde_json::json!({
         "artifact_kind": "evaluation_results",
         "schema_version": {"major": 1, "minor": 3},
-        "instances": eval_entries
+        "instances": eval_entries,
     });
+
+    // Recompute the top-level summary fields `bench report` (submission_class_rollup)
+    // and `bench compare` (test_only_resolved_rate) read, over the merged union.
+    let insts: Vec<crate::run::evaluate::InstanceEvaluation> = merged_eval["instances"]
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .filter_map(|e| serde_json::from_value(e.clone()).ok())
+                .collect()
+        })
+        .unwrap_or_default();
+    if insts.len() == merged_eval["instances"].as_array().map_or(0, Vec::len) {
+        let (rollup, test_only_resolved_rate) =
+            crate::run::evaluate::build_submission_class_rollup(&insts);
+        if let Ok(v) = serde_json::to_value(rollup) {
+            merged_eval["submission_class_rollup"] = v;
+        }
+        merged_eval["test_only_resolved_rate"] = serde_json::json!(test_only_resolved_rate);
+    }
+    if let Some((_, prov)) = merged_provenance {
+        merged_eval["provenance"] = prov;
+    }
 
     let eval_json = serde_json::to_string_pretty(&merged_eval).map_err(|e| {
         Error::Config(crate::error::ConfigError::Invalid(format!(
@@ -702,6 +771,17 @@ fn merge_evaluation_json(
     })?;
 
     Ok(Some(resolved_count))
+}
+
+/// Evaluator identity fields that must match across shards before their verdicts
+/// can be merged into one authoritative `evaluation.json`.
+fn evaluator_identity(prov: &Value) -> (String, String, String) {
+    let field = |k: &str| prov.get(k).and_then(Value::as_str).unwrap_or("").to_owned();
+    (
+        field("backend"),
+        field("backend_version"),
+        field("dataset_sha256"),
+    )
 }
 
 /// Best-effort absolute, symlink-resolved path. Falls back to a lexical absolute
@@ -769,16 +849,12 @@ struct SlotOutcomeCounts {
     failures_by_category: BTreeMap<crate::trajectory::FailureCategory, usize>,
 }
 
-/// Map a run-slot trajectory path to its sibling patch and report whether it is a
-/// non-empty patch (`<...>/run-k.traj.json` → `<...>/run-k.patch`, etc.).
-fn slot_has_nonempty_patch(traj_path: &Path) -> bool {
-    let Some(name) = traj_path.file_name().and_then(|n| n.to_str()) else {
-        return false;
-    };
-    let Some(stem) = name.strip_suffix(".traj.json") else {
-        return false; // e.g. legacy `trajectory.json` — no deterministic patch sibling
-    };
-    let patch_path = traj_path.with_file_name(format!("{stem}.patch"));
+/// Report whether the run slot has a non-empty patch, using the canonical patch
+/// resolver so every layout (nested `run-k.patch`, legacy `<id>.patch`, bundled
+/// `patches/<id>.patch`) is found exactly as the sweep/evaluator would.
+fn slot_has_nonempty_patch(sweep_dir: &Path, instance_id: &str, run_index: u32) -> bool {
+    let patch_path =
+        crate::run::swebench::existing_patch_path_for_run(sweep_dir, instance_id, run_index);
     fs::read_to_string(&patch_path).is_ok_and(|s| !s.trim().is_empty())
 }
 
@@ -834,7 +910,7 @@ fn recount_slot_outcomes(
         if is_skipped_resume {
             counts.skipped += 1;
         }
-        for path in runs.values() {
+        for (run_index, path) in runs {
             let Ok(content) = fs::read_to_string(path) else {
                 continue;
             };
@@ -863,7 +939,7 @@ fn recount_slot_outcomes(
                 if tests_run {
                     counts.submitted_with_tests += 1;
                 }
-                if slot_has_nonempty_patch(path) {
+                if slot_has_nonempty_patch(output, inst_id, *run_index) {
                     counts.with_patch += 1;
                 }
             }

@@ -1025,6 +1025,38 @@ fn provenance_divergence_harness_sha_exits_nonzero() {
     );
 }
 
+#[test]
+fn mixed_rerun_counts_exit_nonzero() {
+    let work = tempfile::tempdir().unwrap();
+    // shard_a is single-run (runs=1); shard_b is pass@k with runs=2.
+    let shard_a = ShardFixture::create(
+        work.path(),
+        "shard_a",
+        &[InstanceSpec::submitted("inst-001", 0.10)],
+    );
+    let shard_b =
+        ShardFixture::create_multi_run(work.path(), "shard_b", &[("inst-002", "submitted")], 2);
+
+    let out = Command::new(binary_path())
+        .args(["bench", "merge"])
+        .arg("--shard")
+        .arg(&shard_a.dir)
+        .arg("--shard")
+        .arg(&shard_b.dir)
+        .arg("--output")
+        .arg(work.path().join("merged"))
+        .output()
+        .unwrap();
+    assert!(
+        !out.status.success(),
+        "merge must reject shards with different --rerun counts"
+    );
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("rerun"),
+        "error should mention the rerun-count mismatch"
+    );
+}
+
 // ── evaluation.json handling ──────────────────────────────────────────────────
 
 #[test]
