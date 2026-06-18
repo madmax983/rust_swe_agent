@@ -12,10 +12,11 @@ use serde::Serialize;
 use serde_json::Value;
 
 use crate::artifact::ArtifactSchemaVersion;
-use crate::error::Error;
+use crate::error::{ConfigError, Error};
 
 /// Schema version for the `validation_report` JSON artifact emitted by this command.
-const ARTIFACT_CHECK_SCHEMA_VERSION: ArtifactSchemaVersion = ArtifactSchemaVersion::new(1, 0);
+/// Must match the current contract version so generated reports pass --strict gates.
+const ARTIFACT_CHECK_SCHEMA_VERSION: ArtifactSchemaVersion = ArtifactSchemaVersion::CURRENT;
 
 // ── Source ────────────────────────────────────────────────────────────────────
 
@@ -162,6 +163,20 @@ pub struct VerdictCounts {
 /// does not exist). Individual per-file parse failures are returned as
 /// `ConformanceVerdict::Invalid` rather than propagating as `Err`.
 pub fn run_artifact_check(opts: &ArtifactCheckOpts) -> Result<ArtifactCheckOutput, Error> {
+    // Explicit paths that do not exist are a usage error (exit 2), not a
+    // validation failure (exit 47).  Discovered paths from directory scans
+    // are treated differently: if the file disappears between scan and read,
+    // validate_file returns Invalid rather than aborting the whole run.
+    let ArtifactCheckSource::Paths(input_paths) = &opts.source;
+    for path in input_paths {
+        if !path.exists() {
+            return Err(Error::Config(ConfigError::Usage(format!(
+                "input path does not exist: {}",
+                path.display()
+            ))));
+        }
+    }
+
     let (paths, dir_errors) = collect_paths(&opts.source);
     let mut results = Vec::with_capacity(paths.len() + dir_errors.len());
     for (dir_path, msg) in dir_errors {
@@ -363,13 +378,17 @@ fn validate_value(path: &std::path::Path, value: &Value) -> ArtifactResult {
     }
 
     let current = ArtifactSchemaVersion::CURRENT;
+    let is_older_major = version.major < current.major;
     let is_older_minor = version.major == current.major && version.minor < current.minor;
     let is_newer_minor = version.major == current.major && version.minor > current.minor;
 
     let required = required_fields_for_kind(&kind_str);
+    // A field whose value is JSON null is treated as absent: downstream readers
+    // that deserialize into typed structs will reject null just as they reject a
+    // missing key, so certifying it as valid would be misleading.
     let mut missing_fields: Vec<String> = required
         .iter()
-        .filter(|f| value.get(f).is_none())
+        .filter(|f| value.get(f).is_none_or(Value::is_null))
         .map(|f| (*f).to_owned())
         .collect();
 
@@ -386,7 +405,12 @@ fn validate_value(path: &std::path::Path, value: &Value) -> ArtifactResult {
     }
 
     let mut warnings = Vec::new();
-    let verdict = if is_older_minor {
+    let verdict = if is_older_major {
+        warnings.push(format!(
+            "schema_version {version_str} has a lower major than current {current}; treated as supported-legacy",
+        ));
+        ConformanceVerdict::ValidWithWarnings
+    } else if is_older_minor {
         warnings.push(format!(
             "schema_version {version_str} is an older minor than current {current}; readers may default missing fields",
         ));

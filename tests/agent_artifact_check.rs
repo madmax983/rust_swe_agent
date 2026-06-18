@@ -3,6 +3,8 @@
 //! `src/run/artifact_check.rs` is created and wired up.
 #![allow(clippy::unwrap_used)]
 
+use std::path::PathBuf;
+
 use maxwells_daemon::run::artifact_check::{
     ArtifactCheckOpts, ArtifactCheckSource, ConformanceVerdict, format_json, format_text,
     run_artifact_check,
@@ -648,6 +650,93 @@ fn multiple_paths_all_validated() {
             .results
             .iter()
             .all(|r| r.verdict == ConformanceVerdict::Valid)
+    );
+}
+
+// ── JSON format schema_version is current ────────────────────────────────────
+
+#[test]
+fn json_format_schema_version_matches_current() {
+    let json = serde_json::json!({
+        "artifact_kind": "trajectory",
+        "schema_version": { "major": 1, "minor": 11 },
+        "trajectory_format": "mini-swe-agent-1.2",
+        "info": {},
+        "messages": []
+    })
+    .to_string();
+    let output = check_bytes(&json);
+    let val = format_json(&output).unwrap();
+    let minor = val
+        .get("schema_version")
+        .and_then(|sv| sv.get("minor"))
+        .and_then(serde_json::Value::as_u64);
+    assert_eq!(
+        minor,
+        Some(11),
+        "validation_report schema_version.minor must match CURRENT (11) so --strict re-checks pass"
+    );
+}
+
+// ── Older major returns valid_with_warnings ───────────────────────────────────
+
+#[test]
+fn older_major_version_returns_valid_with_warnings() {
+    let json = serde_json::json!({
+        "artifact_kind": "trajectory",
+        "schema_version": { "major": 0, "minor": 1 },
+        "trajectory_format": "old-format",
+        "info": {},
+        "messages": []
+    })
+    .to_string();
+    let output = check_bytes(&json);
+    assert_eq!(
+        output.results[0].verdict,
+        ConformanceVerdict::ValidWithWarnings,
+        "lower major must produce valid_with_warnings, not valid"
+    );
+}
+
+// ── Missing explicit path returns usage Err ───────────────────────────────────
+
+#[test]
+fn nonexistent_explicit_path_returns_err() {
+    let result = run_artifact_check(&ArtifactCheckOpts {
+        source: ArtifactCheckSource::Paths(vec![PathBuf::from(
+            "/nonexistent/path/to/nowhere.json",
+        )]),
+        strict: false,
+    });
+    assert!(
+        result.is_err(),
+        "a non-existent explicit path must return Err (usage error), not an Invalid result"
+    );
+}
+
+// ── Null required field counts as missing ─────────────────────────────────────
+
+#[test]
+fn null_required_field_returns_invalid() {
+    let json = serde_json::json!({
+        "artifact_kind": "trajectory",
+        "schema_version": { "major": 1, "minor": 11 },
+        "trajectory_format": "mini-swe-agent-1.2",
+        "info": {},
+        "messages": null
+    })
+    .to_string();
+    let output = check_bytes(&json);
+    assert_eq!(
+        output.results[0].verdict,
+        ConformanceVerdict::Invalid,
+        "a null required field must be treated as absent"
+    );
+    assert!(
+        output.results[0]
+            .missing_fields
+            .contains(&"messages".to_owned()),
+        "null messages must appear in missing_fields"
     );
 }
 
