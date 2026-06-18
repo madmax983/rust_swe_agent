@@ -1935,8 +1935,7 @@ network_mode = "none"
         .collect();
     assert!(
         unexpected.is_empty(),
-        "network_mode=none must not introduce extra findings; got: {:?}",
-        unexpected
+        "network_mode=none must not introduce extra findings; got: {unexpected:?}",
     );
 }
 

@@ -80,7 +80,7 @@ impl DockerEnvironment {
         let image = image.into();
         preflight().await?;
 
-        let wd_str = workdir.to_string_lossy().into_owned();
+        let wd_str = workdir.to_string_lossy();
         let run_args = build_run_args(&image, &wd_str, LABEL, network);
         let out = Command::new("docker")
             .args(&run_args)

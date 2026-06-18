@@ -5758,14 +5758,8 @@ fn parse_env_kind(kind: &str) -> Result<crate::config::EnvKind, Error> {
 }
 
 fn parse_network_mode(mode: &str) -> Result<crate::config::NetworkMode, Error> {
-    match mode {
-        "unrestricted" => Ok(crate::config::NetworkMode::Unrestricted),
-        "none" => Ok(crate::config::NetworkMode::None),
-        "" => Err(Error::Config(crate::error::ConfigError::Invalid(
-            "network_mode cannot be empty; use \"unrestricted\" or \"none\"".into(),
-        ))),
-        other => Ok(crate::config::NetworkMode::Custom(other.to_owned())),
-    }
+    mode.parse()
+        .map_err(|e| Error::Config(crate::error::ConfigError::Invalid(e)))
 }
 
 /// Print a non-fatal skills-preview informational section for `bench doctor`.

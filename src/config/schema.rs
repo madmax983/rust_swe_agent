@@ -59,6 +59,22 @@ impl NetworkMode {
     }
 }
 
+impl std::str::FromStr for NetworkMode {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "" => Err(
+                "network_mode cannot be empty; use \"unrestricted\", \"none\", or an allowlist string"
+                    .to_owned(),
+            ),
+            "unrestricted" => Ok(Self::Unrestricted),
+            "none" => Ok(Self::None),
+            other => Ok(Self::Custom(other.to_owned())),
+        }
+    }
+}
+
 impl Serialize for NetworkMode {
     fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
         s.serialize_str(self.as_str())
@@ -68,14 +84,7 @@ impl Serialize for NetworkMode {
 impl<'de> Deserialize<'de> for NetworkMode {
     fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
         let raw = String::deserialize(d)?;
-        match raw.as_str() {
-            "" => Err(serde::de::Error::custom(
-                "network_mode cannot be empty; use \"unrestricted\", \"none\", or an allowlist string",
-            )),
-            "unrestricted" => Ok(Self::Unrestricted),
-            "none" => Ok(Self::None),
-            other => Ok(Self::Custom(other.to_owned())),
-        }
+        raw.parse().map_err(serde::de::Error::custom)
     }
 }
 
