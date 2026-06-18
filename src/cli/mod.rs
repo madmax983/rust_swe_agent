@@ -7030,9 +7030,17 @@ fn agent_fs_audit_cmd(a: &args::FsAuditCmd) -> Result<(), Error> {
 }
 
 fn agent_artifact_check_cmd(a: &args::ArtifactCheckCmd) -> Result<(), Error> {
+    use crate::error::ConfigError;
     use crate::run::artifact_check::{
         ArtifactCheckOpts, ArtifactCheckSource, format_json, format_text, run_artifact_check,
     };
+
+    if a.format != "text" && a.format != "json" {
+        return Err(Error::Config(ConfigError::Usage(format!(
+            "unknown --format value {:?}; expected 'text' or 'json'",
+            a.format
+        ))));
+    }
 
     let opts = ArtifactCheckOpts {
         source: ArtifactCheckSource::Paths(a.paths.clone()),

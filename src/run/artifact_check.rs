@@ -162,8 +162,18 @@ pub struct VerdictCounts {
 /// does not exist). Individual per-file parse failures are returned as
 /// `ConformanceVerdict::Invalid` rather than propagating as `Err`.
 pub fn run_artifact_check(opts: &ArtifactCheckOpts) -> Result<ArtifactCheckOutput, Error> {
-    let paths = collect_paths(&opts.source);
-    let mut results = Vec::with_capacity(paths.len());
+    let (paths, dir_errors) = collect_paths(&opts.source);
+    let mut results = Vec::with_capacity(paths.len() + dir_errors.len());
+    for (dir_path, msg) in dir_errors {
+        results.push(ArtifactResult {
+            path: dir_path,
+            artifact_kind: None,
+            schema_version: None,
+            verdict: ConformanceVerdict::Invalid,
+            missing_fields: vec![],
+            warnings: vec![msg],
+        });
+    }
     for path in paths {
         results.push(validate_file(&path));
     }
@@ -175,22 +185,31 @@ pub fn run_artifact_check(opts: &ArtifactCheckOpts) -> Result<ArtifactCheckOutpu
 
 // ── Path collection ───────────────────────────────────────────────────────────
 
-fn collect_paths(source: &ArtifactCheckSource) -> Vec<PathBuf> {
+fn collect_paths(source: &ArtifactCheckSource) -> (Vec<PathBuf>, Vec<(PathBuf, String)>) {
     let ArtifactCheckSource::Paths(input_paths) = source;
     let mut out = Vec::new();
+    let mut errors = Vec::new();
     for path in input_paths {
         if path.is_dir() {
-            collect_json_recursive(path, &mut out);
+            collect_json_recursive(path, &mut out, &mut errors);
         } else {
             out.push(path.clone());
         }
     }
-    out
+    (out, errors)
 }
 
-fn collect_json_recursive(dir: &std::path::Path, out: &mut Vec<PathBuf>) {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return;
+fn collect_json_recursive(
+    dir: &std::path::Path,
+    out: &mut Vec<PathBuf>,
+    errors: &mut Vec<(PathBuf, String)>,
+) {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(e) => {
+            errors.push((dir.to_owned(), format!("cannot read directory: {e}")));
+            return;
+        }
     };
     let mut entries: Vec<_> = entries.filter_map(Result::ok).collect();
     entries.sort_by_key(std::fs::DirEntry::file_name);
@@ -200,7 +219,7 @@ fn collect_json_recursive(dir: &std::path::Path, out: &mut Vec<PathBuf>) {
         let Ok(ft) = entry.file_type() else { continue };
         let path = entry.path();
         if ft.is_dir() {
-            collect_json_recursive(&path, out);
+            collect_json_recursive(&path, out, errors);
         } else if ft.is_file() && path.extension().and_then(|e| e.to_str()) == Some("json") {
             out.push(path);
         }
@@ -249,12 +268,29 @@ struct ParsedHeader {
 
 /// Parse the artifact header fields, returning `Ok(ParsedHeader)` or an
 /// early `ArtifactResult` that should be returned directly.
-fn parse_header(path: &std::path::Path, value: &Value) -> Result<ParsedHeader, ArtifactResult> {
+///
+/// The `Err` variant is boxed to keep the `Result` size in check (clippy
+/// `result_large_err`).
+fn parse_header(
+    path: &std::path::Path,
+    value: &Value,
+) -> Result<ParsedHeader, Box<ArtifactResult>> {
+    if !value.is_object() {
+        return Err(Box::new(ArtifactResult {
+            path: path.to_owned(),
+            artifact_kind: None,
+            schema_version: None,
+            verdict: ConformanceVerdict::Invalid,
+            missing_fields: vec![],
+            warnings: vec!["JSON value is not an object".into()],
+        }));
+    }
+
     let kind_val = value.get("artifact_kind");
     let version_val = value.get("schema_version");
 
     if kind_val.is_none() && version_val.is_none() {
-        return Err(ArtifactResult {
+        return Err(Box::new(ArtifactResult {
             path: path.to_owned(),
             artifact_kind: None,
             schema_version: None,
@@ -263,11 +299,11 @@ fn parse_header(path: &std::path::Path, value: &Value) -> Result<ParsedHeader, A
             warnings: vec![
                 "pre-versioning legacy artifact: artifact_kind and schema_version absent".into(),
             ],
-        });
+        }));
     }
 
     let (Some(kind_val), Some(version_val)) = (kind_val, version_val) else {
-        return Err(ArtifactResult {
+        return Err(Box::new(ArtifactResult {
             path: path.to_owned(),
             artifact_kind: None,
             schema_version: None,
@@ -276,37 +312,37 @@ fn parse_header(path: &std::path::Path, value: &Value) -> Result<ParsedHeader, A
             warnings: vec![
                 "artifact_kind and schema_version must both be present or both absent".into(),
             ],
-        });
+        }));
     };
 
     let Some(kind_str) = kind_val.as_str().map(str::to_owned) else {
-        return Err(ArtifactResult {
+        return Err(Box::new(ArtifactResult {
             path: path.to_owned(),
             artifact_kind: None,
             schema_version: None,
             verdict: ConformanceVerdict::Invalid,
             missing_fields: vec![],
             warnings: vec!["artifact_kind must be a string".into()],
-        });
+        }));
     };
 
     match serde_json::from_value(version_val.clone()) {
         Ok(version) => Ok(ParsedHeader { kind_str, version }),
-        Err(e) => Err(ArtifactResult {
+        Err(e) => Err(Box::new(ArtifactResult {
             path: path.to_owned(),
             artifact_kind: Some(kind_str),
             schema_version: None,
             verdict: ConformanceVerdict::Invalid,
             missing_fields: vec![],
             warnings: vec![format!("schema_version malformed: {e}")],
-        }),
+        })),
     }
 }
 
 fn validate_value(path: &std::path::Path, value: &Value) -> ArtifactResult {
     let ParsedHeader { kind_str, version } = match parse_header(path, value) {
         Ok(h) => h,
-        Err(early) => return early,
+        Err(early) => return *early,
     };
 
     let version_str = version.to_string();
@@ -326,8 +362,9 @@ fn validate_value(path: &std::path::Path, value: &Value) -> ArtifactResult {
         };
     }
 
-    let is_older_minor = version.major == ArtifactSchemaVersion::CURRENT.major
-        && version.minor < ArtifactSchemaVersion::CURRENT.minor;
+    let current = ArtifactSchemaVersion::CURRENT;
+    let is_older_minor = version.major == current.major && version.minor < current.minor;
+    let is_newer_minor = version.major == current.major && version.minor > current.minor;
 
     let required = required_fields_for_kind(&kind_str);
     let mut missing_fields: Vec<String> = required
@@ -351,8 +388,12 @@ fn validate_value(path: &std::path::Path, value: &Value) -> ArtifactResult {
     let mut warnings = Vec::new();
     let verdict = if is_older_minor {
         warnings.push(format!(
-            "schema_version {version_str} is an older minor than current {}; readers may default missing fields",
-            ArtifactSchemaVersion::CURRENT
+            "schema_version {version_str} is an older minor than current {current}; readers may default missing fields",
+        ));
+        ConformanceVerdict::ValidWithWarnings
+    } else if is_newer_minor {
+        warnings.push(format!(
+            "schema_version {version_str} is a newer minor than current {current}; this harness version may not know all fields",
         ));
         ConformanceVerdict::ValidWithWarnings
     } else {

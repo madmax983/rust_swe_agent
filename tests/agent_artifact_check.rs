@@ -651,6 +651,49 @@ fn multiple_paths_all_validated() {
     );
 }
 
+// ── Non-object JSON ───────────────────────────────────────────────────────────
+
+#[test]
+fn json_array_returns_invalid() {
+    let json = serde_json::json!([1, 2, 3]).to_string();
+    let output = check_bytes(&json);
+    assert_eq!(
+        output.results[0].verdict,
+        ConformanceVerdict::Invalid,
+        "a JSON array must return Invalid, not LegacyUnversioned"
+    );
+}
+
+#[test]
+fn json_null_returns_invalid() {
+    let output = check_bytes("null");
+    assert_eq!(
+        output.results[0].verdict,
+        ConformanceVerdict::Invalid,
+        "JSON null must return Invalid"
+    );
+}
+
+// ── Newer same-major minor ────────────────────────────────────────────────────
+
+#[test]
+fn newer_same_major_minor_returns_valid_with_warnings() {
+    let json = serde_json::json!({
+        "artifact_kind": "trajectory",
+        "schema_version": { "major": 1, "minor": 99 },
+        "trajectory_format": "future-format",
+        "info": {},
+        "messages": []
+    })
+    .to_string();
+    let output = check_bytes(&json);
+    assert_eq!(
+        output.results[0].verdict,
+        ConformanceVerdict::ValidWithWarnings,
+        "newer same-major minor must produce valid_with_warnings"
+    );
+}
+
 // ── AC 2: schema_version reported as "major.minor" string ────────────────────
 
 #[test]
