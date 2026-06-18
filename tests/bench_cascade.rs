@@ -716,3 +716,237 @@ async fn cascade_artifacts_have_correct_kind_field() {
         "cascade-summary"
     );
 }
+
+// ── Unit: validate_tiers extra_args validation ────────────────────────────────
+
+/// AC: unrecognized extra_arg fails fast with a usage error naming the tier and arg.
+#[test]
+fn validate_tiers_rejects_unknown_extra_arg() {
+    let tiers = vec![TierDef {
+        name: "haiku".into(),
+        model: "m1".into(),
+        extra_args: vec!["--unknown-flag".into()],
+        ..TierDef::default()
+    }];
+    let err = validate_tiers(&tiers).unwrap_err();
+    let msg = err.to_string();
+    assert!(
+        msg.contains("haiku"),
+        "error should name the offending tier: {err}"
+    );
+    assert!(
+        msg.contains("--unknown-flag"),
+        "error should name the offending arg: {err}"
+    );
+}
+
+/// AC: malformed value for a known extra_arg fails fast naming the tier and arg.
+#[test]
+fn validate_tiers_rejects_malformed_extra_arg_value() {
+    let tiers = vec![TierDef {
+        name: "sonnet".into(),
+        model: "m1".into(),
+        extra_args: vec!["--max-rpm".into(), "not-a-number".into()],
+        ..TierDef::default()
+    }];
+    let err = validate_tiers(&tiers).unwrap_err();
+    let msg = err.to_string();
+    assert!(
+        msg.contains("sonnet"),
+        "error should name the offending tier: {err}"
+    );
+    assert!(
+        msg.contains("--max-rpm"),
+        "error should name the offending arg: {err}"
+    );
+}
+
+/// AC: missing value for a valued extra_arg fails fast naming the tier and arg.
+#[test]
+fn validate_tiers_rejects_missing_extra_arg_value() {
+    let tiers = vec![TierDef {
+        name: "opus".into(),
+        model: "m1".into(),
+        extra_args: vec!["--max-rpm".into()],
+        ..TierDef::default()
+    }];
+    let err = validate_tiers(&tiers).unwrap_err();
+    let msg = err.to_string();
+    assert!(
+        msg.contains("opus"),
+        "error should name the offending tier: {err}"
+    );
+    assert!(
+        msg.contains("--max-rpm"),
+        "error should name the offending arg: {err}"
+    );
+}
+
+/// AC: known extra_arg `--skip-patch-validation` is accepted.
+#[test]
+fn validate_tiers_accepts_skip_patch_validation() {
+    let tiers = vec![TierDef {
+        name: "haiku".into(),
+        model: "m1".into(),
+        extra_args: vec!["--skip-patch-validation".into()],
+        ..TierDef::default()
+    }];
+    assert!(validate_tiers(&tiers).is_ok());
+}
+
+/// AC: known extra_arg `--max-rpm` with a valid value is accepted.
+#[test]
+fn validate_tiers_accepts_max_rpm_with_valid_value() {
+    let tiers = vec![TierDef {
+        name: "haiku".into(),
+        model: "m1".into(),
+        extra_args: vec!["--max-rpm".into(), "1000".into()],
+        ..TierDef::default()
+    }];
+    assert!(validate_tiers(&tiers).is_ok());
+}
+
+/// AC: known extra_arg `--max-input-tpm` with a valid value is accepted.
+#[test]
+fn validate_tiers_accepts_max_input_tpm_with_valid_value() {
+    let tiers = vec![TierDef {
+        name: "haiku".into(),
+        model: "m1".into(),
+        extra_args: vec!["--max-input-tpm".into(), "500000".into()],
+        ..TierDef::default()
+    }];
+    assert!(validate_tiers(&tiers).is_ok());
+}
+
+// ── Integration: extra_args applied and isolated ──────────────────────────────
+
+/// AC: per-tier extra_args are applied to that tier's sweep.
+/// Observable via `rate_limit_events` in the tier's results.json when --max-rpm is set.
+#[tokio::test]
+async fn cascade_extra_args_max_rpm_applied_to_tier() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dataset = minimal_dataset(tmp.path(), &["inst-1"]);
+    let output = tmp.path().join("out");
+
+    let path = tmp.path().join("cascade.toml");
+    std::fs::write(
+        &path,
+        "[[tier]]\nname = \"haiku\"\nmodel = \"deterministic\"\nstep_limit = 1\n\
+         extra_args = [\"--max-rpm\", \"1000\"]\n",
+    )
+    .unwrap();
+
+    let args = default_cascade_args(path, dataset, output.clone());
+    cascade_run(args).await.unwrap();
+
+    let results_path = output.join("tier-haiku").join("results.json");
+    assert!(results_path.exists(), "tier-haiku/results.json must exist");
+    let results: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&results_path).unwrap()).unwrap();
+
+    assert!(
+        results.get("rate_limit_events").is_some(),
+        "rate_limit_events must be present when --max-rpm is applied via extra_args; \
+         keys present: {:?}",
+        results.as_object().map(|o| o.keys().collect::<Vec<_>>())
+    );
+}
+
+/// AC: extra_args apply per-tier in isolation — tier A's args do not leak into tier B.
+#[tokio::test]
+async fn cascade_extra_args_isolation_between_tiers() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dataset = minimal_dataset(tmp.path(), &["inst-1"]);
+    let output = tmp.path().join("out");
+
+    let path = tmp.path().join("cascade.toml");
+    std::fs::write(
+        &path,
+        "[[tier]]\nname = \"haiku\"\nmodel = \"deterministic\"\nstep_limit = 1\n\
+         extra_args = [\"--max-rpm\", \"1000\"]\n\n\
+         [[tier]]\nname = \"sonnet\"\nmodel = \"deterministic\"\nstep_limit = 1\n",
+    )
+    .unwrap();
+
+    let args = default_cascade_args(path, dataset, output.clone());
+    cascade_run(args).await.unwrap();
+
+    let haiku_results: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(output.join("tier-haiku").join("results.json")).unwrap(),
+    )
+    .unwrap();
+    assert!(
+        haiku_results.get("rate_limit_events").is_some(),
+        "tier-haiku should have rate_limit_events (--max-rpm set via extra_args)"
+    );
+
+    let sonnet_results: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(output.join("tier-sonnet").join("results.json")).unwrap(),
+    )
+    .unwrap();
+    assert!(
+        sonnet_results.get("rate_limit_events").is_none(),
+        "tier-sonnet must NOT have rate_limit_events (no extra_args; isolation check)"
+    );
+}
+
+/// AC: unrecognized extra_args fail fast before any model budget is spent —
+/// no tier directories are created when validation fails.
+#[tokio::test]
+async fn cascade_unknown_extra_arg_fails_fast_before_any_tier_runs() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dataset = minimal_dataset(tmp.path(), &["inst-1"]);
+    let output = tmp.path().join("out");
+
+    let path = tmp.path().join("cascade.toml");
+    std::fs::write(
+        &path,
+        "[[tier]]\nname = \"cheap\"\nmodel = \"deterministic\"\nstep_limit = 1\n\n\
+         [[tier]]\nname = \"expensive\"\nmodel = \"deterministic\"\nstep_limit = 1\n\
+         extra_args = [\"--unknown-flag\"]\n",
+    )
+    .unwrap();
+
+    let args = default_cascade_args(path, dataset, output.clone());
+    let err = cascade_run(args).await.unwrap_err();
+    let msg = err.to_string();
+
+    assert!(
+        msg.contains("expensive"),
+        "error must name the offending tier: {err}"
+    );
+    assert!(
+        msg.contains("--unknown-flag"),
+        "error must name the offending arg: {err}"
+    );
+
+    assert!(
+        !output.join("tier-cheap").join("results.json").exists(),
+        "tier-cheap must not have run (validation failed before any tier started)"
+    );
+}
+
+/// AC: a tier with empty/absent extra_args behaves exactly as today (golden path regression).
+#[tokio::test]
+async fn cascade_empty_extra_args_golden_path_unchanged() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dataset = minimal_dataset(tmp.path(), &["inst-1"]);
+    let config = write_cascade_toml(tmp.path(), &[("haiku", "deterministic")]);
+    let output = tmp.path().join("out");
+
+    let args = default_cascade_args(config, dataset, output.clone());
+    let summary = cascade_run(args).await.unwrap();
+
+    assert!(output.join("tier-haiku").join("results.json").exists());
+
+    let results: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(output.join("tier-haiku").join("results.json")).unwrap(),
+    )
+    .unwrap();
+    assert!(
+        results.get("rate_limit_events").is_none(),
+        "empty extra_args must not set rate_limit_events (golden path)"
+    );
+
+    assert_eq!(summary.tiers.len(), 1);
+}
