@@ -25,8 +25,8 @@ use std::path::Path;
 
 use maxwells_daemon::run::swebench::{
     CliManifest, ConfigManifest, DatasetManifest, HarnessManifest, InstanceResult, ModelManifest,
-    PromptTemplateManifest, ProvenanceManifest, RuntimeManifest, SweepResults,
-    SWEEP_STATUS_COMPLETED,
+    PromptTemplateManifest, ProvenanceManifest, RuntimeManifest, SWEEP_STATUS_COMPLETED,
+    SweepResults,
 };
 use maxwells_daemon::run::variance::{BenchVarianceArgs, StabilityClass, compute_variance};
 use maxwells_daemon::trajectory::outcome;
@@ -213,7 +213,10 @@ fn ac1_rejects_single_slot_sweep() {
     // Write a sweep where all instances have runs == 1 (single slot)
     write_results(
         dir.path(),
-        vec![rerun_instance("task-a", 1, 1), rerun_instance("task-b", 1, 0)],
+        vec![
+            rerun_instance("task-a", 1, 1),
+            rerun_instance("task-b", 1, 0),
+        ],
     );
 
     let result = compute_variance(&BenchVarianceArgs {
@@ -226,7 +229,10 @@ fn ac1_rejects_single_slot_sweep() {
     let err = result.unwrap_err();
     let msg = err.to_string();
     assert!(
-        msg.contains("single") || msg.contains("rerun") || msg.contains("slots") || msg.contains("runs"),
+        msg.contains("single")
+            || msg.contains("rerun")
+            || msg.contains("slots")
+            || msg.contains("runs"),
         "expected single-slot rejection message, got: {msg}"
     );
 }
@@ -333,8 +339,14 @@ fn ac2_mixed_classes_in_one_sweep() {
             .find(|i| i.instance_id == id)
             .unwrap()
     };
-    assert_eq!(find("always-resolved").stability_class, StabilityClass::AlwaysResolved);
-    assert_eq!(find("always-failed").stability_class, StabilityClass::AlwaysFailed);
+    assert_eq!(
+        find("always-resolved").stability_class,
+        StabilityClass::AlwaysResolved
+    );
+    assert_eq!(
+        find("always-failed").stability_class,
+        StabilityClass::AlwaysFailed
+    );
     assert_eq!(find("flaky").stability_class, StabilityClass::Flaky);
 }
 
@@ -364,13 +376,29 @@ fn ac3_noise_metrics_all_resolved() {
     let noise = &report.noise;
     assert_eq!(noise.flaky_count, 0);
     assert!((noise.flaky_share - 0.0).abs() < 1e-9);
-    assert!((noise.pass_at_k - 1.0).abs() < 1e-9, "pass_at_k={}", noise.pass_at_k);
-    assert!((noise.all_of_k - 1.0).abs() < 1e-9, "all_of_k={}", noise.all_of_k);
-    assert!((noise.pass_at_1 - 1.0).abs() < 1e-9, "pass_at_1={}", noise.pass_at_1);
+    assert!(
+        (noise.pass_at_k - 1.0).abs() < 1e-9,
+        "pass_at_k={}",
+        noise.pass_at_k
+    );
+    assert!(
+        (noise.all_of_k - 1.0).abs() < 1e-9,
+        "all_of_k={}",
+        noise.all_of_k
+    );
+    assert!(
+        (noise.pass_at_1 - 1.0).abs() < 1e-9,
+        "pass_at_1={}",
+        noise.pass_at_1
+    );
     // CI must include 1.0 when all pass
     assert!(noise.ci_upper >= 1.0 - 1e-9, "ci_upper={}", noise.ci_upper);
     // Wilson CI lower for p=1, n=9 slots is ~0.70; check it's meaningfully high
-    assert!(noise.ci_lower >= 0.6, "ci_lower should be high, got {}", noise.ci_lower);
+    assert!(
+        noise.ci_lower >= 0.6,
+        "ci_lower should be high, got {}",
+        noise.ci_lower
+    );
 }
 
 #[test]
@@ -397,11 +425,23 @@ fn ac3_noise_metrics_mixed() {
     let noise = &report.noise;
     // 1 flaky instance out of 3
     assert_eq!(noise.flaky_count, 1);
-    assert!((noise.flaky_share - 1.0 / 3.0).abs() < 1e-9, "flaky_share={}", noise.flaky_share);
+    assert!(
+        (noise.flaky_share - 1.0 / 3.0).abs() < 1e-9,
+        "flaky_share={}",
+        noise.flaky_share
+    );
     // pass_at_k (any-of-k): always_resolved and flaky both have resolved_count > 0 → 2/3
-    assert!((noise.pass_at_k - 2.0 / 3.0).abs() < 1e-9, "pass_at_k={}", noise.pass_at_k);
+    assert!(
+        (noise.pass_at_k - 2.0 / 3.0).abs() < 1e-9,
+        "pass_at_k={}",
+        noise.pass_at_k
+    );
     // all_of_k: only always_resolved has resolved_count == runs → 1/3
-    assert!((noise.all_of_k - 1.0 / 3.0).abs() < 1e-9, "all_of_k={}", noise.all_of_k);
+    assert!(
+        (noise.all_of_k - 1.0 / 3.0).abs() < 1e-9,
+        "all_of_k={}",
+        noise.all_of_k
+    );
     // pass_at_1 (per-slot): total_resolved/total_slots = (3+0+1)/9 = 4/9
     let expected_pass_at_1 = 4.0 / 9.0;
     assert!(
@@ -480,7 +520,10 @@ fn ac4_recommended_reruns_for_ci_width() {
         "expected a recommended rerun count"
     );
     let rec = report.noise.recommended_reruns.unwrap();
-    assert!(rec > 2, "recommended reruns ({rec}) should exceed current 2 for such a narrow CI target");
+    assert!(
+        rec > 2,
+        "recommended reruns ({rec}) should exceed current 2 for such a narrow CI target"
+    );
 }
 
 #[test]
@@ -517,10 +560,7 @@ fn ac5_json_output_is_schema_versioned() {
     let dir = tempfile::tempdir().unwrap();
     write_results(
         dir.path(),
-        vec![
-            rerun_instance("a", 3, 3),
-            rerun_instance("b", 3, 1),
-        ],
+        vec![rerun_instance("a", 3, 3), rerun_instance("b", 3, 1)],
     );
 
     // Call binary with --format json
@@ -539,8 +579,8 @@ fn ac5_json_output_is_schema_versioned() {
     );
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let val: serde_json::Value = serde_json::from_str(&stdout)
-        .expect("JSON output should be valid JSON");
+    let val: serde_json::Value =
+        serde_json::from_str(&stdout).expect("JSON output should be valid JSON");
 
     // Must have schema_version and artifact_kind fields
     assert!(
@@ -746,7 +786,10 @@ fn ac7_cli_single_slot_exits_nonzero() {
     );
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("single") || stderr.contains("rerun") || stderr.contains("slot") || stderr.contains("runs"),
+        stderr.contains("single")
+            || stderr.contains("rerun")
+            || stderr.contains("slot")
+            || stderr.contains("runs"),
         "error message should mention single-slot / rerun requirement, got: {stderr}"
     );
 }
@@ -757,10 +800,7 @@ fn ac7_reads_no_model_or_network() {
     let dir = tempfile::tempdir().unwrap();
     write_results(
         dir.path(),
-        vec![
-            rerun_instance("a", 3, 3),
-            rerun_instance("b", 3, 1),
-        ],
+        vec![rerun_instance("a", 3, 3), rerun_instance("b", 3, 1)],
     );
 
     // Deliberately unset ANTHROPIC_API_KEY so any model call would fail

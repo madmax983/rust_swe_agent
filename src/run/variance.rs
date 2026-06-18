@@ -2,7 +2,11 @@
 //!
 //! Read-only: never re-runs instances, never calls a model, never modifies input sweeps.
 
-#![allow(clippy::cast_precision_loss, clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+#![allow(
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss
+)]
 
 use std::path::PathBuf;
 
@@ -167,8 +171,11 @@ fn compute_noise_summary(instances: &[InstanceVariance], ci_width: Option<f64>) 
     let flaky_share = f64::from(flaky_count) / n_f;
 
     let pass_at_k = instances.iter().filter(|i| i.resolved_slots > 0).count() as f64 / n_f;
-    let all_of_k =
-        instances.iter().filter(|i| i.resolved_slots == i.total_slots).count() as f64 / n_f;
+    let all_of_k = instances
+        .iter()
+        .filter(|i| i.resolved_slots == i.total_slots)
+        .count() as f64
+        / n_f;
 
     let total_resolved: u64 = instances.iter().map(|i| u64::from(i.resolved_slots)).sum();
     let total_slots: u64 = instances.iter().map(|i| u64::from(i.total_slots)).sum();
@@ -181,9 +188,8 @@ fn compute_noise_summary(instances: &[InstanceVariance], ci_width: Option<f64>) 
 
     let (ci_lower, ci_upper) = wilson_ci(pass_at_1, total_slots);
 
-    let recommended_reruns = ci_width.and_then(|w| {
-        compute_recommended_reruns(pass_at_1, n, w, total_slots)
-    });
+    let recommended_reruns =
+        ci_width.and_then(|w| compute_recommended_reruns(pass_at_1, n, w, total_slots));
 
     NoiseSummary {
         flaky_count,
@@ -205,8 +211,7 @@ fn wilson_ci(p: f64, n: u64) -> (f64, f64) {
     let n_f = n as f64;
     let z2 = Z * Z;
     let center = (p + z2 / (2.0 * n_f)) / (1.0 + z2 / n_f);
-    let half = Z * (p * (1.0 - p) / n_f + z2 / (4.0 * n_f * n_f)).sqrt()
-        / (1.0 + z2 / n_f);
+    let half = Z * (p * (1.0 - p) / n_f + z2 / (4.0 * n_f * n_f)).sqrt() / (1.0 + z2 / n_f);
     let lower = (center - half).max(0.0);
     let upper = (center + half).min(1.0);
     (lower, upper)
@@ -246,10 +251,26 @@ pub fn render_text(report: &BenchVarianceReport) -> String {
     let _ = writeln!(s, "## Noise Summary");
     let _ = writeln!(s, "  flaky_count:    {}", noise.flaky_count);
     let _ = writeln!(s, "  flaky_share:    {:.3}", noise.flaky_share);
-    let _ = writeln!(s, "  pass_at_k:      {:.3}  (best-case: any slot resolved)", noise.pass_at_k);
-    let _ = writeln!(s, "  all_of_k:       {:.3}  (worst-case: all slots resolved)", noise.all_of_k);
-    let _ = writeln!(s, "  pass_at_1:      {:.3}  (per-slot pass rate)", noise.pass_at_1);
-    let _ = writeln!(s, "  CI 95%:         [{:.3}, {:.3}]", noise.ci_lower, noise.ci_upper);
+    let _ = writeln!(
+        s,
+        "  pass_at_k:      {:.3}  (best-case: any slot resolved)",
+        noise.pass_at_k
+    );
+    let _ = writeln!(
+        s,
+        "  all_of_k:       {:.3}  (worst-case: all slots resolved)",
+        noise.all_of_k
+    );
+    let _ = writeln!(
+        s,
+        "  pass_at_1:      {:.3}  (per-slot pass rate)",
+        noise.pass_at_1
+    );
+    let _ = writeln!(
+        s,
+        "  CI 95%:         [{:.3}, {:.3}]",
+        noise.ci_lower, noise.ci_upper
+    );
     if let Some(rec) = noise.recommended_reruns {
         let _ = writeln!(s, "  recommended_reruns: {rec}");
     }
