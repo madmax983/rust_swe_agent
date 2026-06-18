@@ -275,6 +275,35 @@ fn ac1_rejects_incomplete_sweep() {
     );
 }
 
+#[test]
+fn ac1_excludes_single_slot_instances_in_mixed_sweep() {
+    let dir = tempfile::tempdir().unwrap();
+    // Mixed sweep: two 3-slot instances and one 1-slot instance
+    write_results(
+        dir.path(),
+        vec![
+            rerun_instance("multi-a", 3, 2),
+            rerun_instance("multi-b", 3, 3),
+            rerun_instance("single", 1, 1), // should be excluded
+        ],
+    );
+
+    let report = compute_variance(&BenchVarianceArgs {
+        sweep_dir: dir.path().to_path_buf(),
+        ci_width: None,
+        filter: vec![],
+        class: None,
+    })
+    .unwrap();
+
+    // Only the two multi-slot instances should appear
+    assert_eq!(report.instances.len(), 2);
+    assert!(
+        report.instances.iter().all(|i| i.instance_id != "single"),
+        "single-slot instance must be excluded from variance analysis"
+    );
+}
+
 // ── AC2: per-instance stability classes ───────────────────────────────────────
 
 #[test]

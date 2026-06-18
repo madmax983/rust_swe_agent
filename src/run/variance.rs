@@ -141,7 +141,7 @@ pub fn compute_variance(args: &BenchVarianceArgs) -> Result<BenchVarianceReport,
         }
     }
 
-    let mut instances: Vec<_> = loaded.instances.values().collect();
+    let mut instances: Vec<_> = loaded.instances.values().filter(|i| i.runs > 1).collect();
     instances.sort_by(|a, b| a.instance_id.cmp(&b.instance_id));
 
     let max_runs = instances.iter().map(|i| i.runs).max().unwrap_or(0);
