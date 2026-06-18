@@ -468,12 +468,34 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> io::Result<()> {
 }
 
 /// Merge evaluation.json from all shards. Normalizes legacy format to modern.
-/// Writes merged output if any shard had eval data.
+///
+/// A modern `evaluation.json` requires an entry for every on-disk trajectory, or
+/// `bench audit` reports `audit:orphan:evaluation`. We therefore only emit a
+/// merged file when *every* shard carries evaluation data; if evaluation is
+/// present in only some shards we omit it entirely (and warn) so the merged
+/// sweep still audits cleanly as an unevaluated sweep.
 fn merge_evaluation_json(
     loaded: &[(String, PathBuf, SweepResults)],
     owner_shard: &HashMap<String, usize>,
     output: &Path,
 ) -> Result<(), Error> {
+    let shards_with_eval = loaded
+        .iter()
+        .filter(|(_, dir, _)| dir.join("evaluation.json").exists())
+        .count();
+    if shards_with_eval == 0 {
+        return Ok(());
+    }
+    if shards_with_eval < loaded.len() {
+        eprintln!(
+            "merge: warning: evaluation.json present in {shards_with_eval}/{} shards; \
+             omitting merged evaluation.json so the output audits as unevaluated \
+             (re-run `bench evaluate` on the merged sweep, or evaluate every shard first)",
+            loaded.len()
+        );
+        return Ok(());
+    }
+
     let mut eval_entries: Vec<Value> = Vec::new();
 
     for (shard_idx, (label, shard_dir, _)) in loaded.iter().enumerate() {
@@ -531,9 +553,12 @@ fn merge_evaluation_json(
             for id in resolved_ids.union(&submitted_ids) {
                 if owner_shard.get(*id).copied().unwrap_or(shard_idx) == shard_idx {
                     let resolved = resolved_ids.contains(id);
+                    // `eval_exit_reason` is required by `InstanceEvaluation`; downstream
+                    // commands (report/triage/inspect) reject rows that omit it.
                     eval_entries.push(serde_json::json!({
                         "instance_id": id,
-                        "resolved": resolved
+                        "resolved": resolved,
+                        "eval_exit_reason": if resolved { "resolved" } else { "unresolved" }
                     }));
                 }
             }

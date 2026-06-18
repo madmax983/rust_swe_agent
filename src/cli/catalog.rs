@@ -368,6 +368,12 @@ pub fn entries() -> &'static [CatalogEntry] {
             stage: "run",
         },
         CatalogEntry {
+            path: "bench merge",
+            summary: "Combine sharded sweep result directories into one aggregate",
+            cost_tier: "free",
+            stage: "analyze",
+        },
+        CatalogEntry {
             path: "bench near-miss",
             summary: "Rank unresolved sweep instances by gold-patch proximity",
             cost_tier: "free",

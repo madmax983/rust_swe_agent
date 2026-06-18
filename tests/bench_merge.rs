@@ -727,10 +727,66 @@ fn provenance_divergence_dataset_sha_exits_nonzero() {
 // ── evaluation.json handling ──────────────────────────────────────────────────
 
 #[test]
-fn eval_present_in_one_shard_is_merged() {
+fn eval_in_all_shards_is_merged_and_audits() {
     let work = tempfile::tempdir().unwrap();
 
-    // shard_a has evaluation.json, shard_b does not
+    // Both shards carry evaluation.json → the merged sweep is fully evaluated.
+    let shard_a = ShardFixture::create_with_eval(
+        work.path(),
+        "shard_a",
+        &[InstanceSpec::submitted("inst-001", 0.10)],
+        &[("inst-001", true)],
+    );
+    let shard_b = ShardFixture::create_with_eval(
+        work.path(),
+        "shard_b",
+        &[InstanceSpec::submitted("inst-002", 0.12)],
+        &[("inst-002", false)],
+    );
+
+    let output = work.path().join("merged");
+    let out = Command::new(binary_path())
+        .args(["bench", "merge"])
+        .arg("--shard")
+        .arg(&shard_a.dir)
+        .arg("--shard")
+        .arg(&shard_b.dir)
+        .arg("--output")
+        .arg(&output)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "merge failed: {:?}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    // A merged evaluation.json with an entry for every union instance.
+    let eval: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(output.join("evaluation.json")).unwrap()).unwrap();
+    let eval_instances = eval["instances"].as_array().unwrap();
+    assert_eq!(eval_instances.len(), 2, "both shards' eval entries present");
+
+    // The fully-evaluated merged sweep must still audit cleanly.
+    let audit_out = Command::new(binary_path())
+        .args(["bench", "audit", "--sweep"])
+        .arg(&output)
+        .output()
+        .unwrap();
+    assert!(
+        audit_out.status.success(),
+        "audit failed on merged evaluated sweep!\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&audit_out.stdout),
+        String::from_utf8_lossy(&audit_out.stderr)
+    );
+}
+
+#[test]
+fn eval_in_some_shards_is_omitted_and_audits() {
+    let work = tempfile::tempdir().unwrap();
+
+    // Only shard_a is evaluated. A partial modern evaluation.json would make
+    // shard_b's trajectories orphans under `bench audit`, so merge must omit it.
     let shard_a = ShardFixture::create_with_eval(
         work.path(),
         "shard_a",
@@ -751,25 +807,30 @@ fn eval_present_in_one_shard_is_merged() {
         .arg(&output)
         .output()
         .unwrap();
-
     assert!(
         out.status.success(),
         "merge failed: {:?}",
         String::from_utf8_lossy(&out.stderr)
     );
 
-    // evaluation.json should exist in output
+    // evaluation.json is omitted because not every shard was evaluated.
     assert!(
-        output.join("evaluation.json").exists(),
-        "merged evaluation.json should exist when any shard had eval data"
+        !output.join("evaluation.json").exists(),
+        "merged evaluation.json must be omitted when only some shards were evaluated"
     );
 
-    let eval: serde_json::Value =
-        serde_json::from_str(&fs::read_to_string(output.join("evaluation.json")).unwrap()).unwrap();
-    let eval_instances = eval["instances"].as_array().unwrap();
-    assert_eq!(eval_instances.len(), 1, "only inst-001 had eval data");
-    assert_eq!(eval_instances[0]["instance_id"], "inst-001");
-    assert_eq!(eval_instances[0]["resolved"], true);
+    // The (unevaluated) merged sweep still audits cleanly.
+    let audit_out = Command::new(binary_path())
+        .args(["bench", "audit", "--sweep"])
+        .arg(&output)
+        .output()
+        .unwrap();
+    assert!(
+        audit_out.status.success(),
+        "audit failed on merged unevaluated sweep!\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&audit_out.stdout),
+        String::from_utf8_lossy(&audit_out.stderr)
+    );
 }
 
 // ── AC7: error cases exit non-zero ────────────────────────────────────────────
