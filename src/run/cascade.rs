@@ -245,7 +245,9 @@ fn apply_extra_arg_overrides(
     }
     // extra_args take precedence; fall back to config-file rate limits (e.g. from prompt_file)
     tier_args.max_rpm = overrides.max_rpm.or(tier_args.config.root.sweep.max_rpm);
-    tier_args.max_input_tpm = overrides.max_input_tpm.or(tier_args.config.root.sweep.max_input_tpm);
+    tier_args.max_input_tpm = overrides
+        .max_input_tpm
+        .or(tier_args.config.root.sweep.max_input_tpm);
 }
 
 // ── Validation ────────────────────────────────────────────────────────────────
