@@ -231,6 +231,17 @@ pub fn run(args: &MergeCmd) -> Result<MergeReport, Error> {
             .count()
     });
 
+    // Keep the report's pass@k consistent with `resolved`: when the merged
+    // evaluation supplies an authoritative resolved count, derive pass@k from it
+    // rather than from `merged.pass_at_k` (the submission proxy over instance rows),
+    // so `bench merge --format json` doesn't mix evaluated and proxy rates.
+    #[allow(clippy::cast_precision_loss)]
+    let pass_at_k = if eval_resolved.is_some() && !union_instances.is_empty() {
+        resolved as f64 / union_instances.len() as f64
+    } else {
+        merged.pass_at_k
+    };
+
     Ok(MergeReport {
         shards: shard_summaries,
         total_instances: union_instances.len(),
@@ -241,7 +252,7 @@ pub fn run(args: &MergeCmd) -> Result<MergeReport, Error> {
         submitted: merged.submitted,
         errored: merged.errored,
         resolved,
-        pass_at_k: merged.pass_at_k,
+        pass_at_k,
     })
 }
 
@@ -1166,17 +1177,25 @@ fn merge_predictions(
 
     // Owning shard for a prediction row: the aggregate file may carry unique
     // `<id>::run-k` IDs plus an `original_instance_id`; per-run files keep the
-    // original SWE-bench ID. Resolve both to the underlying instance id.
-    let owned_line = |shard_idx: usize, line: &str| -> bool {
-        let Ok(val) = serde_json::from_str::<Value>(line) else {
-            return false;
-        };
+    // original SWE-bench ID. Resolve both to the underlying instance id. A
+    // malformed/idless row is corruption — fail rather than silently dropping a
+    // submission that `bench evaluate` would then see as missing.
+    let owned_line = |shard_idx: usize, line: &str, label: &str| -> Result<bool, Error> {
+        let val: Value = serde_json::from_str(line).map_err(|e| {
+            Error::Config(crate::error::ConfigError::Invalid(format!(
+                "merge: shard '{label}' has a malformed prediction row: {e}"
+            )))
+        })?;
         let orig = val
             .get("original_instance_id")
             .and_then(Value::as_str)
-            .or_else(|| val.get("instance_id").and_then(Value::as_str))
-            .unwrap_or("");
-        owner_shard.get(orig).copied() == Some(shard_idx)
+            .or_else(|| val.get("instance_id").and_then(Value::as_str));
+        let Some(orig) = orig else {
+            return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+                "merge: shard '{label}' has a prediction row without an instance_id"
+            ))));
+        };
+        Ok(owner_shard.get(orig).copied() == Some(shard_idx))
     };
 
     // Collect every run index that has a per-run prediction file in any shard.
@@ -1209,13 +1228,13 @@ fn merge_predictions(
     let mut aggregate = String::new();
     let mut aggregate_rows = 0usize;
     let mut aggregate_unique_ids = false;
-    for (shard_idx, (_, dir, _)) in loaded.iter().enumerate() {
+    for (shard_idx, (label, dir, _)) in loaded.iter().enumerate() {
         let path = predictions_path(dir);
         let Ok(text) = fs::read_to_string(&path) else {
             continue;
         };
         for line in text.lines().filter(|l| !l.trim().is_empty()) {
-            if owned_line(shard_idx, line) {
+            if owned_line(shard_idx, line, label)? {
                 if line.contains("original_instance_id") {
                     aggregate_unique_ids = true;
                 }
@@ -1262,7 +1281,7 @@ fn merge_predictions(
                 )))
             })?;
             for line in text.lines().filter(|l| !l.trim().is_empty()) {
-                if owned_line(shard_idx, line) {
+                if owned_line(shard_idx, line, label)? {
                     run_text.push_str(line);
                     run_text.push('\n');
                     run_rows += 1;
