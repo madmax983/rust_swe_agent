@@ -174,6 +174,7 @@ fn write_sweep(dir: &Path, spec: &SweepSpec) {
         import_predictions_path: None,
         import_predictions_sha256: None,
         reproduced_from: None,
+        merged_from: None,
     };
 
     let results = SweepResults {

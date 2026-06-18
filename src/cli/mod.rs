@@ -140,6 +140,7 @@ pub async fn run() -> Result<(), Error> {
             args::BenchCmd::Utilization(u) => bench_utilization(u),
             args::BenchCmd::ExportOtlp(c) => Box::pin(bench_export_otlp(c)).await,
             args::BenchCmd::Variance(v) => bench_variance(v),
+            args::BenchCmd::Merge(m) => bench_merge(&m),
         },
         Command::Agent { cmd } => match *cmd {
             args::AgentCmd::SkillsPreview(s) => agent_skills_preview_cmd(&s),
@@ -6155,6 +6156,17 @@ async fn bench_bisect(b: args::BisectCmd) -> Result<(), Error> {
 #[allow(clippy::needless_pass_by_value)]
 fn bench_audit(a: args::AuditCmd) -> Result<(), Error> {
     crate::run::audit::run(&a)
+}
+
+fn bench_merge(m: &args::MergeCmd) -> Result<(), Error> {
+    let is_json = matches!(m.format, args::MergeFormat::Json);
+    let report = crate::run::merge::run(m)?;
+    if is_json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        report.render_text();
+    }
+    Ok(())
 }
 
 fn bench_failure_digest(f: args::FailureDigestCmd) -> Result<(), Error> {

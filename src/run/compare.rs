@@ -3868,6 +3868,7 @@ mod tests {
             import_predictions_path: None,
             import_predictions_sha256: None,
             reproduced_from: None,
+            merged_from: None,
         };
         let mut candidate = baseline.clone();
         candidate.prompt_template.sha256 = "p2".into();
@@ -4330,6 +4331,7 @@ mod tests {
                 },
                 cli: crate::run::swebench::CliManifest { argv: Vec::new() },
                 reproduced_from: None,
+                merged_from: None,
                 chaos_fail_every: 0,
                 circuit_breaker: None,
                 source: None,
@@ -4528,6 +4530,7 @@ mod tests {
                 },
                 cli: crate::run::swebench::CliManifest { argv: Vec::new() },
                 reproduced_from: None,
+                merged_from: None,
                 chaos_fail_every: 0,
                 circuit_breaker: None,
                 source: None,
@@ -4652,6 +4655,7 @@ mod tests {
                     argv: vec!["max".into()],
                 },
                 reproduced_from: None,
+                merged_from: None,
                 chaos_fail_every: 0,
                 circuit_breaker: None,
                 source: None,

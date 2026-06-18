@@ -480,6 +480,11 @@ a valid trajectory in hand:
 - [`bench grep`](docs/spec-grep.md): regex search across all trajectory messages
   in a sweep — filter by role, instance, or outcome; redaction-safe; zero-cost
   (reads only on-disk artifacts).
+- [`bench merge`](docs/spec-merge.md): combine K completed sharded sweep
+  directories into one canonical aggregate — arithmetically correct cost/token/
+  pass@k recomputation, collision policies (`error`/`first-wins`/`last-wins`),
+  `merged_from` provenance manifest, and full `bench audit`/`report`/`triage`
+  compatibility. Enables horizontal scaling without sacrificing reproducibility.
 - [`bench matrix`](docs/spec-matrix.md): multi-arm experiment runner — compare
   models or configs against the same instance set, shared budget enforcement,
   `matrix.json` state, ranked `matrix-summary.json`, and `--resume` support.

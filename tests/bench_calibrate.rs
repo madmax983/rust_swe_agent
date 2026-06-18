@@ -991,6 +991,7 @@ fn manifest_for(case: ManifestCase, total: usize, wall_clock_secs: f64) -> Prove
         import_predictions_path: None,
         import_predictions_sha256: None,
         reproduced_from: None,
+        merged_from: None,
     }
 }
 

@@ -226,6 +226,7 @@ fn write_results_with_filter_spec_and_model(
             import_predictions_path: None,
             import_predictions_sha256: None,
             reproduced_from: None,
+            merged_from: None,
         }),
         cost_limit_usd: None,
         instances,
