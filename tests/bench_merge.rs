@@ -1444,6 +1444,9 @@ fn pass_at_k_multi_run_merge_audits() {
         serde_json::from_str(&fs::read_to_string(output.join("results.json")).unwrap()).unwrap();
     assert_eq!(merged["submitted"], 4, "per-slot submitted count");
     assert_eq!(merged["errored"], 2, "per-slot errored count");
+    // with_patch is per slot too: 2 submitted instances × 2 runs, each with a
+    // patch → 4 (a per-task count would report only 2).
+    assert_eq!(merged["with_patch"], 4, "per-slot with_patch count");
 
     // The merged pass@k sweep must reconcile under `bench audit`.
     let audit = Command::new(binary_path())

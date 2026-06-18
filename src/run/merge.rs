@@ -135,12 +135,28 @@ pub fn run(args: &MergeCmd) -> Result<MergeReport, Error> {
     // `recompute_aggregates` counts outcomes per-instance, but a pass@k sweep has
     // one collapsed row per task while results.json records per-run *slots* (and
     // `bench audit` recomputes the same way from the copied trajectories). Recount
-    // submitted/errored/skipped/budget_halted per slot so the merged sweep audits.
+    // the per-slot aggregates so the merged sweep audits and its report fields
+    // (with_patch / submitted_with_tests / failures_by_category) match a real sweep.
     let slots = recount_slot_outcomes(&args.output, &union_instances)?;
     merged.submitted = slots.submitted;
     merged.errored = slots.errored;
     merged.skipped = slots.skipped;
     merged.budget_halted = slots.budget_halted;
+    merged.submitted_with_tests = slots.submitted_with_tests;
+    merged.with_patch = slots.with_patch;
+    // patch_empty / patch_apply_invalid are derived from the failure histogram,
+    // exactly as a canonical sweep's finalization does.
+    merged.patch_empty = slots
+        .failures_by_category
+        .get(&crate::trajectory::FailureCategory::PatchEmpty)
+        .copied()
+        .unwrap_or(0);
+    merged.patch_apply_invalid = slots
+        .failures_by_category
+        .get(&crate::trajectory::FailureCategory::PatchApplyInvalid)
+        .copied()
+        .unwrap_or(0);
+    merged.failures_by_category = slots.failures_by_category;
 
     // Rebuild subset metadata so it describes the merged union rather than shard 0;
     // downstream `bench compare` keys "same subset?" off this filter spec.
@@ -748,11 +764,28 @@ struct SlotOutcomeCounts {
     errored: usize,
     skipped: usize,
     budget_halted: usize,
+    submitted_with_tests: usize,
+    with_patch: usize,
+    failures_by_category: BTreeMap<crate::trajectory::FailureCategory, usize>,
 }
 
-/// Recount per-run-slot outcomes from the copied trajectories, mirroring exactly
-/// what `bench audit` recomputes (see `audit::run`), so the merged results.json
-/// reconciles for pass@k/rerun sweeps where one task spans several run slots.
+/// Map a run-slot trajectory path to its sibling patch and report whether it is a
+/// non-empty patch (`<...>/run-k.traj.json` → `<...>/run-k.patch`, etc.).
+fn slot_has_nonempty_patch(traj_path: &Path) -> bool {
+    let Some(name) = traj_path.file_name().and_then(|n| n.to_str()) else {
+        return false;
+    };
+    let Some(stem) = name.strip_suffix(".traj.json") else {
+        return false; // e.g. legacy `trajectory.json` — no deterministic patch sibling
+    };
+    let patch_path = traj_path.with_file_name(format!("{stem}.patch"));
+    fs::read_to_string(&patch_path).is_ok_and(|s| !s.trim().is_empty())
+}
+
+/// Recount per-run-slot aggregates from the copied trajectories, mirroring exactly
+/// what `bench audit` recomputes and what a canonical sweep records, so the merged
+/// results.json reconciles for pass@k/rerun sweeps where one task spans several
+/// run slots (the collapsed per-task rows only carry run 1's representative).
 fn recount_slot_outcomes(
     output: &Path,
     union_instances: &[crate::run::swebench::InstanceResult],
@@ -808,8 +841,8 @@ fn recount_slot_outcomes(
             let Ok(val) = serde_json::from_str::<Value>(&content) else {
                 continue;
             };
-            let outcome = val
-                .get("info")
+            let info = val.get("info");
+            let outcome = info
                 .and_then(|i| i.get("outcome"))
                 .and_then(Value::as_str)
                 .unwrap_or("");
@@ -819,6 +852,27 @@ fn recount_slot_outcomes(
                 "skipped" if !is_skipped_resume => counts.skipped += 1,
                 "budget_halted" | "budget_halt" => counts.budget_halted += 1,
                 _ => {}
+            }
+
+            // Per-slot report fields (match a canonical sweep's finalization).
+            if outcome == "submitted" && !is_skipped_resume {
+                let tests_run = info
+                    .and_then(|i| i.get("tests_run_before_submit"))
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
+                if tests_run {
+                    counts.submitted_with_tests += 1;
+                }
+                if slot_has_nonempty_patch(path) {
+                    counts.with_patch += 1;
+                }
+            }
+            if let Some(cat) = info
+                .and_then(|i| i.get("failure_category"))
+                .cloned()
+                .and_then(|v| serde_json::from_value::<crate::trajectory::FailureCategory>(v).ok())
+            {
+                *counts.failures_by_category.entry(cat).or_insert(0) += 1;
             }
         }
     }
