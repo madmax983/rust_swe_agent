@@ -205,12 +205,12 @@ pub fn run_env_preview(cfg: &Config, opts: &EnvPreviewOpts) -> EnvPreview {
     if opts.env_type == "local"
         && cfg.root.environment.network_mode != crate::config::NetworkMode::Unrestricted
     {
+        let safe_mode = redact(&redactor, cfg.root.environment.network_mode.as_str());
         findings.push(PreviewFinding {
             severity: "warning".into(),
             message: format!(
-                "network_mode \"{}\" has no effect on local environments; \
-                 host process egress cannot be sandboxed",
-                cfg.root.environment.network_mode.as_str()
+                "network_mode \"{safe_mode}\" has no effect on local environments; \
+                 host process egress cannot be sandboxed"
             ),
         });
     }
