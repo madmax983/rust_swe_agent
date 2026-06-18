@@ -187,10 +187,11 @@ pub fn run_env_preview(cfg: &Config, opts: &EnvPreviewOpts) -> EnvPreview {
     // flag is passed and the container still has unrestricted egress.
     if opts.env_type == "docker" {
         if let crate::config::NetworkMode::Custom(ref s) = cfg.root.environment.network_mode {
+            let safe = redact(&redactor, s);
             findings.push(PreviewFinding {
                 severity: "warning".into(),
                 message: format!(
-                    "network_mode \"{s}\" is recorded but not yet enforced; \
+                    "network_mode \"{safe}\" is recorded but not yet enforced; \
                      container egress is unrestricted"
                 ),
             });
@@ -206,10 +207,12 @@ pub fn run_env_preview(cfg: &Config, opts: &EnvPreviewOpts) -> EnvPreview {
 
     // Local env cannot sandbox network egress at all; Docker reports the
     // effective configured mode so operators can confirm isolation is active.
+    // Custom values pass through the redactor in case a proxy URL or similar
+    // secret-bearing string was used as the mode value.
     let network_egress = if opts.env_type == "local" {
         "cannot_sandbox".to_owned()
     } else {
-        cfg.root.environment.network_mode.as_str().to_owned()
+        redact(&redactor, cfg.root.environment.network_mode.as_str())
     };
 
     EnvPreview {
