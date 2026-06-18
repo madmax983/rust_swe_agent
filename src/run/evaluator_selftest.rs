@@ -137,7 +137,7 @@ const EXIT_REASON_EVALUATOR_FAILED: &str = "evaluator_failed";
 /// writes `evaluator_selftest.json` to `args.output_dir`, and returns the
 /// structured result plus a pre-rendered stdout string.
 #[allow(clippy::needless_pass_by_value)]
-pub fn run(args: SelftestArgs) -> SelftestResult {
+pub fn run(args: SelftestArgs) -> Result<SelftestResult, crate::error::Error> {
     assert!(
         args.backend == "none" || args.backend == "sb-cli" || args.backend == "docker-tests",
         "unknown --backend {:?}: accepted values are `none`, `sb-cli`, and `docker-tests`",
@@ -148,19 +148,17 @@ pub fn run(args: SelftestArgs) -> SelftestResult {
         "--sample requires --seed"
     );
 
-    let dataset_bytes =
-        std::fs::read(&args.dataset_path).unwrap_or_else(|e| panic!("failed to read dataset: {e}"));
+    let dataset_bytes = std::fs::read(&args.dataset_path)?;
     let dataset_sha = sha256_hex(&dataset_bytes);
 
-    let all_instances =
-        swebench::load_dataset(&args.dataset_path).unwrap_or_else(|e| panic!("dataset parse: {e}"));
+    let all_instances = swebench::load_dataset(&args.dataset_path)?;
 
     let selected = select_instances(all_instances, &args);
 
     let mut instance_results: Vec<SelftestInstanceResult> = if args.backend == "sb-cli" {
-        evaluate_via_sb_cli(&selected, &args)
+        evaluate_via_sb_cli(&selected, &args)?
     } else if args.backend == "docker-tests" {
-        evaluate_via_docker_tests(&selected, &args)
+        evaluate_via_docker_tests(&selected, &args)?
     } else {
         selected.iter().map(evaluate_gold_patch_none).collect()
     };
@@ -185,18 +183,16 @@ pub fn run(args: SelftestArgs) -> SelftestResult {
     let stdout = render_stdout(&output, &args.format);
 
     // Write the JSON artifact.
-    std::fs::create_dir_all(&args.output_dir)
-        .unwrap_or_else(|e| panic!("cannot create output_dir: {e}"));
+    std::fs::create_dir_all(&args.output_dir)?;
     let artifact_path = args.output_dir.join("evaluator_selftest.json");
     let json = serde_json::to_string_pretty(&output).unwrap_or_default();
-    std::fs::write(&artifact_path, &json)
-        .unwrap_or_else(|e| panic!("failed to write artifact: {e}"));
+    std::fs::write(&artifact_path, &json)?;
 
-    SelftestResult {
+    Ok(SelftestResult {
         output,
         stdout,
         exit_status,
-    }
+    })
 }
 
 // ── Instance selection ────────────────────────────────────────────────────────
@@ -289,11 +285,10 @@ fn evaluate_gold_patch_none(instance: &SweBenchInstance) -> SelftestInstanceResu
 fn evaluate_via_sb_cli(
     selected: &[SweBenchInstance],
     args: &SelftestArgs,
-) -> Vec<SelftestInstanceResult> {
+) -> Result<Vec<SelftestInstanceResult>, crate::error::Error> {
     // Scratch dir for the synthetic sweep artifacts (results.json, all_preds.jsonl).
     let scratch = args.output_dir.join("_eval_scratch");
-    std::fs::create_dir_all(&scratch)
-        .unwrap_or_else(|e| panic!("cannot create eval scratch dir: {e}"));
+    std::fs::create_dir_all(&scratch)?;
 
     // Split into instances that have a gold patch and those that don't.
     let mut missing: Vec<SelftestInstanceResult> = Vec::new();
@@ -318,11 +313,11 @@ fn evaluate_via_sb_cli(
     }
 
     if eval_pairs.is_empty() {
-        return missing;
+        return Ok(missing);
     }
 
-    write_synthetic_results_json(&scratch, &eval_pairs);
-    write_synthetic_predictions(&scratch, &eval_pairs);
+    write_synthetic_results_json(&scratch, &eval_pairs)?;
+    write_synthetic_predictions(&scratch, &eval_pairs)?;
 
     let eval_args = EvaluateArgs {
         sweep_dir: scratch,
@@ -370,12 +365,15 @@ fn evaluate_via_sb_cli(
     };
 
     sb_cli_results.extend(missing);
-    sb_cli_results
+    Ok(sb_cli_results)
 }
 
 /// Write a minimal synthetic `results.json` that `evaluate::run()` / `load_sweep()`
 /// can parse. Each instance is marked as `outcome: submitted, patch_present: true`.
-fn write_synthetic_results_json(dir: &Path, pairs: &[(&SweBenchInstance, String)]) {
+fn write_synthetic_results_json(
+    dir: &Path,
+    pairs: &[(&SweBenchInstance, String)],
+) -> Result<(), crate::error::Error> {
     let n = pairs.len();
     let instances: Vec<serde_json::Value> = pairs
         .iter()
@@ -402,12 +400,15 @@ fn write_synthetic_results_json(dir: &Path, pairs: &[(&SweBenchInstance, String)
     std::fs::write(
         &path,
         serde_json::to_string_pretty(&results).unwrap_or_default(),
-    )
-    .unwrap_or_else(|e| panic!("failed to write synthetic results.json: {e}"));
+    )?;
+    Ok(())
 }
 
 /// Write `all_preds.jsonl` with the gold patch for each instance.
-fn write_synthetic_predictions(dir: &Path, pairs: &[(&SweBenchInstance, String)]) {
+fn write_synthetic_predictions(
+    dir: &Path,
+    pairs: &[(&SweBenchInstance, String)],
+) -> Result<(), crate::error::Error> {
     let mut lines = String::new();
     for (inst, patch) in pairs {
         let row = serde_json::json!({
@@ -419,8 +420,8 @@ fn write_synthetic_predictions(dir: &Path, pairs: &[(&SweBenchInstance, String)]
         lines.push('\n');
     }
     let path = swebench::predictions_path(dir);
-    std::fs::write(&path, lines)
-        .unwrap_or_else(|e| panic!("failed to write synthetic predictions: {e}"));
+    std::fs::write(&path, lines)?;
+    Ok(())
 }
 
 fn map_eval_exit_reason(reason: &EvalExitReason) -> String {
@@ -444,10 +445,9 @@ fn map_eval_exit_reason(reason: &EvalExitReason) -> String {
 fn evaluate_via_docker_tests(
     selected: &[SweBenchInstance],
     args: &SelftestArgs,
-) -> Vec<SelftestInstanceResult> {
+) -> Result<Vec<SelftestInstanceResult>, crate::error::Error> {
     let scratch = args.output_dir.join("_docker_tests_scratch");
-    std::fs::create_dir_all(&scratch)
-        .unwrap_or_else(|e| panic!("cannot create docker-tests scratch dir: {e}"));
+    std::fs::create_dir_all(&scratch)?;
 
     let mut missing: Vec<SelftestInstanceResult> = Vec::new();
     let mut eval_pairs: Vec<(&SweBenchInstance, String)> = Vec::new();
@@ -471,21 +471,19 @@ fn evaluate_via_docker_tests(
     }
 
     if eval_pairs.is_empty() {
-        return missing;
+        return Ok(missing);
     }
 
-    write_synthetic_results_json(&scratch, &eval_pairs);
-    write_synthetic_predictions(&scratch, &eval_pairs);
+    write_synthetic_results_json(&scratch, &eval_pairs)?;
+    write_synthetic_predictions(&scratch, &eval_pairs)?;
 
     // Write per-instance run-1.patch files so docker-tests can read them via
     // swebench::existing_patch_path_for_run(), which expects <sweep>/<id>/run-1.patch.
     for (inst, patch) in &eval_pairs {
         let inst_dir = scratch.join(&inst.instance_id);
-        std::fs::create_dir_all(&inst_dir)
-            .unwrap_or_else(|e| panic!("cannot create instance dir for selftest: {e}"));
+        std::fs::create_dir_all(&inst_dir)?;
         let patch_path = swebench::patch_path_for_run(&scratch, &inst.instance_id, 1);
-        std::fs::write(&patch_path, patch)
-            .unwrap_or_else(|e| panic!("failed to write selftest patch file: {e}"));
+        std::fs::write(&patch_path, patch)?;
     }
 
     // Write a minimal dataset JSONL containing the instances so docker-tests can
@@ -509,8 +507,7 @@ fn evaluate_via_docker_tests(
             lines.push_str(&serde_json::to_string(&row).unwrap_or_default());
             lines.push('\n');
         }
-        std::fs::write(&dataset_path, lines)
-            .unwrap_or_else(|e| panic!("failed to write selftest dataset: {e}"));
+        std::fs::write(&dataset_path, lines)?;
     }
 
     let eval_args = EvaluateArgs {
@@ -556,7 +553,7 @@ fn evaluate_via_docker_tests(
     };
 
     results.extend(missing);
-    results
+    Ok(results)
 }
 
 // ── Aggregate computations ────────────────────────────────────────────────────
@@ -872,7 +869,7 @@ mod tests {
             other: serde_json::Map::new(),
         };
         let pairs = vec![(&inst, "diff --git a/f.py b/f.py".to_owned())];
-        write_synthetic_predictions(dir.path(), &pairs);
+        write_synthetic_predictions(dir.path(), &pairs).unwrap();
 
         let preds_path = crate::run::swebench::predictions_path(dir.path());
         assert!(preds_path.exists(), "all_preds.jsonl must be written");
@@ -898,7 +895,7 @@ mod tests {
             other: serde_json::Map::new(),
         };
         let pairs = vec![(&inst, "diff --git a/f.py b/f.py".to_owned())];
-        write_synthetic_results_json(dir.path(), &pairs);
+        write_synthetic_results_json(dir.path(), &pairs).unwrap();
 
         let path = dir.path().join("results.json");
         assert!(path.exists());

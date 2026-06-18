@@ -387,7 +387,10 @@ fn evaluator_selftest_accepts_docker_tests_backend() {
     // Should not panic on "unknown backend" assertion
     let result = maxwells_daemon::run::evaluator_selftest::run(args);
     // With docker-tests backend and no image field, instances should be skipped (not errored)
-    assert_eq!(result.output.evaluator_backend, "docker-tests");
+    assert_eq!(
+        result.as_ref().unwrap().output.evaluator_backend,
+        "docker-tests"
+    );
 }
 
 // ---------------------------------------------------------------------------

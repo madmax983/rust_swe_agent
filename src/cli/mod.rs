@@ -5238,7 +5238,7 @@ fn bench_evaluator_selftest(s: args::EvaluatorSelftestCmd) -> Result<(), Error> 
         timeout_per_instance: s.timeout_per_instance,
         parallel: s.parallel,
     };
-    let result = crate::run::evaluator_selftest::run(selftest_args);
+    let result = crate::run::evaluator_selftest::run(selftest_args)?;
     print!("{}", result.stdout);
     let code = result.exit_status.as_exit_code();
     if code != 0 {
