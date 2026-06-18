@@ -6,6 +6,30 @@ use clap::{Args, Subcommand, ValueEnum};
 
 // ── Agent subcommands ─────────────────────────────────────────────────────────
 
+/// Container network isolation mode for `--network-mode` (issue #523).
+///
+/// `unrestricted` (default) preserves today's behavior — no `--network` flag
+/// is added to `docker run`. `none` passes `--network none` to `docker run`,
+/// disabling all container egress.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum NetworkModeArg {
+    /// Default bridge networking — no isolation, no change from current behavior.
+    Unrestricted,
+    /// Pass `--network none` to `docker run`; all outbound calls fail inside
+    /// the container.
+    None,
+}
+
+impl NetworkModeArg {
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Unrestricted => "unrestricted",
+            Self::None => "none",
+        }
+    }
+}
+
 /// Validated environment-type selector for `agent env preview`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum EnvTypeArg {
@@ -989,6 +1013,13 @@ pub struct MiniCmd {
     /// Docker image, if `--env docker`.
     #[arg(long)]
     pub docker_image: Option<String>,
+
+    /// Container network isolation mode (issue #523). Overrides
+    /// `environment.network_mode` in the config file.
+    /// `unrestricted` (default): today's behavior, no `--network` flag.
+    /// `none`: adds `--network none` to `docker run`, disabling all egress.
+    #[arg(long, value_enum)]
+    pub network_mode: Option<NetworkModeArg>,
 
     /// Output directory for trajectories.
     #[arg(long, default_value = "./runs")]
@@ -2697,6 +2728,13 @@ pub struct SwebenchCmd {
     /// Docker image, if `--env docker`.
     #[arg(long)]
     pub docker_image: Option<String>,
+
+    /// Container network isolation mode (issue #523). Overrides
+    /// `environment.network_mode` in the config file.
+    /// `unrestricted` (default): today's behavior, no `--network` flag.
+    /// `none`: adds `--network none` to `docker run`, disabling all egress.
+    #[arg(long, value_enum)]
+    pub network_mode: Option<NetworkModeArg>,
 
     /// Resume from a previous run: `complete` trajectories are skipped, `partial`
     /// (mid-run checkpoint) trajectories continue from their last completed turn

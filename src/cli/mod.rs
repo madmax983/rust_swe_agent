@@ -976,6 +976,9 @@ async fn mini_cmd(m: args::MiniCmd) -> Result<(), Error> {
     if let Some(img) = m.docker_image.clone() {
         cfg.root.environment.docker_image = Some(img);
     }
+    if let Some(nm) = m.network_mode {
+        cfg.root.environment.network_mode = parse_network_mode(nm.as_str())?;
+    }
     if m.chaos_fail_every > 0 {
         cfg.root.environment.chaos_fail_every = m.chaos_fail_every;
     }
@@ -2462,6 +2465,9 @@ fn swebench_config_from_cmd(s: &args::SwebenchCmd) -> Result<Config, Error> {
     }
     if let Some(img) = s.docker_image.clone() {
         cfg.root.environment.docker_image = Some(img);
+    }
+    if let Some(nm) = s.network_mode {
+        cfg.root.environment.network_mode = parse_network_mode(nm.as_str())?;
     }
     if s.chaos_fail_every > 0 {
         cfg.root.environment.chaos_fail_every = s.chaos_fail_every;
@@ -5751,6 +5757,11 @@ fn parse_env_kind(kind: &str) -> Result<crate::config::EnvKind, Error> {
     }
 }
 
+fn parse_network_mode(mode: &str) -> Result<crate::config::NetworkMode, Error> {
+    mode.parse()
+        .map_err(|e| Error::Config(crate::error::ConfigError::Invalid(e)))
+}
+
 /// Print a non-fatal skills-preview informational section for `bench doctor`.
 /// POST a `doctor_probe` event to the webhook URL and return a short status
 /// string for the non-fatal doctor output line.  Best-effort; never aborts.
@@ -7443,6 +7454,7 @@ mod tests {
             workdir: None,
             env: None,
             docker_image: None,
+            network_mode: None,
             output: PathBuf::from("runs"),
             trajectory_name: None,
             stream: None,

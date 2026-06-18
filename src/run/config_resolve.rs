@@ -237,6 +237,10 @@ const SCALAR_FIELDS: &[FieldDef] = &[
         path: &["environment", "workdir"],
         key: "environment.workdir",
     },
+    FieldDef {
+        path: &["environment", "network_mode"],
+        key: "environment.network_mode",
+    },
 ];
 
 fn build_resolved_fields(

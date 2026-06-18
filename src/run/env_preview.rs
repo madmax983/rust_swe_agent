@@ -182,6 +182,39 @@ pub fn run_env_preview(cfg: &Config, opts: &EnvPreviewOpts) -> EnvPreview {
         });
     }
 
+    // Custom network modes are recorded in the config and reported by env
+    // preview for forward-compat, but are not yet enforced — no `--network`
+    // flag is passed and the container still has unrestricted egress.
+    if opts.env_type == "docker" {
+        if let crate::config::NetworkMode::Custom(ref s) = cfg.root.environment.network_mode {
+            let safe = redact(&redactor, s);
+            findings.push(PreviewFinding {
+                severity: "warning".into(),
+                message: format!(
+                    "network_mode \"{safe}\" is recorded but not yet enforced; \
+                     container egress is unrestricted"
+                ),
+            });
+        }
+    }
+
+    // network_mode has no effect on local environments — the host process
+    // cannot sandbox its own egress regardless of the configured value.
+    // Warn when a non-default mode is explicitly set so operators know it
+    // will be silently ignored rather than providing the expected isolation.
+    if opts.env_type == "local"
+        && cfg.root.environment.network_mode != crate::config::NetworkMode::Unrestricted
+    {
+        let safe_mode = redact(&redactor, cfg.root.environment.network_mode.as_str());
+        findings.push(PreviewFinding {
+            severity: "warning".into(),
+            message: format!(
+                "network_mode \"{safe_mode}\" has no effect on local environments; \
+                 host process egress cannot be sandboxed"
+            ),
+        });
+    }
+
     // For docker, the workdir is the container's cwd, not a host path.
     let host_paths = if opts.env_type == "local" {
         vec![workdir]
@@ -189,11 +222,21 @@ pub fn run_env_preview(cfg: &Config, opts: &EnvPreviewOpts) -> EnvPreview {
         vec![]
     };
 
+    // Local env cannot sandbox network egress at all; Docker reports the
+    // effective configured mode so operators can confirm isolation is active.
+    // Custom values pass through the redactor in case a proxy URL or similar
+    // secret-bearing string was used as the mode value.
+    let network_egress = if opts.env_type == "local" {
+        "cannot_sandbox".to_owned()
+    } else {
+        redact(&redactor, cfg.root.environment.network_mode.as_str())
+    };
+
     EnvPreview {
         schema_version: 1,
         env_type: opts.env_type.clone(),
         host_paths,
-        network_egress: "unrestricted".to_owned(),
+        network_egress,
         hooks,
         mcp_servers,
         env_vars,
