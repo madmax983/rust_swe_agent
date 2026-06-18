@@ -80,4 +80,5 @@ pub mod triage;
 pub mod triage_diff;
 pub mod ui;
 pub mod utilization;
+pub mod variance;
 pub mod watch;

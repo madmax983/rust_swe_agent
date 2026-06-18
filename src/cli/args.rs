@@ -1334,6 +1334,8 @@ pub enum BenchCmd {
     Utilization(UtilizationCmd),
     /// Backfill OTLP traces from a completed sweep directory to a collector (zero model cost: reads only on-disk artifacts).
     ExportOtlp(ExportOtlpCmd),
+    /// Classify per-instance flakiness from a rerun sweep (zero cost: reads only on-disk artifacts).
+    Variance(BenchVarianceCmd),
 }
 
 /// `bench export-otlp` — re-export reconstructed sweep + instance spans from a
@@ -1948,6 +1950,30 @@ pub struct BudgetFitCmd {
     /// May be specified multiple times.
     #[arg(long = "filter", value_name = "KEY=VALUE", action = clap::ArgAction::Append)]
     pub filter: Vec<String>,
+}
+
+/// `bench variance` — classify per-instance flakiness from a rerun sweep (zero-cost: reads only on-disk artifacts).
+#[derive(Debug, Args)]
+pub struct BenchVarianceCmd {
+    /// Completed rerun sweep directory produced by `bench swebench --reruns N`.
+    #[arg(long)]
+    pub sweep: std::path::PathBuf,
+
+    /// Output format: `text` (default) or `json`.
+    #[arg(long, default_value = "text", value_name = "FMT")]
+    pub format: String,
+
+    /// Target CI half-width for recommended rerun count (e.g. `0.05` for ±5%).
+    #[arg(long, value_name = "WIDTH")]
+    pub ci_width: Option<f64>,
+
+    /// Instance-id substring filter. May be specified multiple times.
+    #[arg(long = "filter", value_name = "SUBSTRING", action = clap::ArgAction::Append)]
+    pub filter: Vec<String>,
+
+    /// Show only instances of this stability class: `always_resolved`, `always_failed`, or `flaky`.
+    #[arg(long, value_name = "CLASS")]
+    pub class: Option<String>,
 }
 
 /// `bench ladder` — resolved-rate and cost trend across sweeps (zero-cost: reads only on-disk artifacts).
