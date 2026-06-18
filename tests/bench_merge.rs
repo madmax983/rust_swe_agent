@@ -936,6 +936,95 @@ fn provenance_divergence_dataset_sha_exits_nonzero() {
     );
 }
 
+/// Patch a single dotted-path field inside a shard's results.json manifest.
+fn patch_manifest_field(shard_dir: &Path, pointer: &str, value: serde_json::Value) {
+    let path = shard_dir.join("results.json");
+    let mut results: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+    *results.pointer_mut(pointer).unwrap() = value;
+    fs::write(&path, serde_json::to_string_pretty(&results).unwrap()).unwrap();
+}
+
+#[test]
+fn provenance_divergence_model_endpoint_exits_nonzero() {
+    let work = tempfile::tempdir().unwrap();
+    let shard_a = ShardFixture::create(
+        work.path(),
+        "shard_a",
+        &[InstanceSpec::submitted("inst-001", 0.10)],
+    );
+    let shard_b = ShardFixture::create(
+        work.path(),
+        "shard_b",
+        &[InstanceSpec::submitted("inst-002", 0.10)],
+    );
+    // Same model name + config, but a different backend endpoint.
+    patch_manifest_field(
+        &shard_b.dir,
+        "/manifest/model/backend",
+        serde_json::json!("different-backend"),
+    );
+
+    let out = Command::new(binary_path())
+        .args(["bench", "merge"])
+        .arg("--shard")
+        .arg(&shard_a.dir)
+        .arg("--shard")
+        .arg(&shard_b.dir)
+        .arg("--output")
+        .arg(work.path().join("merged"))
+        .output()
+        .unwrap();
+    assert!(
+        !out.status.success(),
+        "merge must reject differing model endpoints"
+    );
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("endpoint"),
+        "error should mention the model endpoint"
+    );
+}
+
+#[test]
+fn provenance_divergence_harness_sha_exits_nonzero() {
+    let work = tempfile::tempdir().unwrap();
+    let shard_a = ShardFixture::create(
+        work.path(),
+        "shard_a",
+        &[InstanceSpec::submitted("inst-001", 0.10)],
+    );
+    let shard_b = ShardFixture::create(
+        work.path(),
+        "shard_b",
+        &[InstanceSpec::submitted("inst-002", 0.10)],
+    );
+    // A different harness commit produced shard_b.
+    patch_manifest_field(
+        &shard_b.dir,
+        "/manifest/harness/git_sha",
+        serde_json::json!("different-harness-sha-999"),
+    );
+
+    let out = Command::new(binary_path())
+        .args(["bench", "merge"])
+        .arg("--shard")
+        .arg(&shard_a.dir)
+        .arg("--shard")
+        .arg(&shard_b.dir)
+        .arg("--output")
+        .arg(work.path().join("merged"))
+        .output()
+        .unwrap();
+    assert!(
+        !out.status.success(),
+        "merge must reject differing harness revisions"
+    );
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("harness"),
+        "error should mention the harness revision"
+    );
+}
+
 // ── evaluation.json handling ──────────────────────────────────────────────────
 
 #[test]

@@ -128,6 +128,10 @@ pub fn run(args: &MergeCmd) -> Result<MergeReport, Error> {
         .flat_map(|(_, _, r)| r.retry_history.iter().cloned())
         .collect();
 
+    // Combine rate-limit telemetry across shards (recompute_aggregates only cloned
+    // shard 0's), or a throttled later worker would be invisible in the merged run.
+    merged.rate_limit_events = merge_rate_limit_events(&loaded);
+
     // `recompute_aggregates` counts outcomes per-instance, but a pass@k sweep has
     // one collapsed row per task while results.json records per-run *slots* (and
     // `bench audit` recomputes the same way from the copied trajectories). Recount
@@ -322,6 +326,35 @@ fn check_provenance_compatibility(loaded: &[(String, PathBuf, SweepResults)]) ->
                  bench merge requires identical config across shards \
                  (use bench matrix for cross-config comparison)"
             ))));
+        }
+
+        // Model endpoint identity lives outside config.resolved: two shards can
+        // share a model name + config yet hit a different backend/base_url.
+        if manifest.model.backend != manifest0.model.backend
+            || manifest.model.base_url != manifest0.model.base_url
+        {
+            return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+                "merge: shard '{label}' model endpoint (backend '{}', base_url {:?}) differs from \
+                 shard '{label0}' (backend '{}', base_url {:?}); \
+                 bench merge requires an identical model endpoint across shards",
+                manifest.model.backend,
+                manifest.model.base_url,
+                manifest0.model.backend,
+                manifest0.model.base_url
+            ))));
+        }
+
+        // Reject shards produced by a different harness commit — the merged
+        // manifest carries only shard 0's git_sha, so mixing revisions would
+        // misrepresent provenance. Only enforced when both shards recorded a sha.
+        if let (Some(sha), Some(sha0)) = (&manifest.harness.git_sha, &manifest0.harness.git_sha) {
+            if sha != sha0 {
+                return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+                    "merge: shard '{label}' harness git_sha '{sha}' differs from shard \
+                     '{label0}' '{sha0}'; bench merge requires shards built from the same \
+                     harness revision"
+                ))));
+            }
         }
     }
 
@@ -956,6 +989,34 @@ fn merge_predictions(
     }
 
     Ok(())
+}
+
+/// Combine per-shard rate-limit telemetry: sum throttled calls/seconds, take the
+/// peak concurrency, and keep the configured caps (identical across shards).
+fn merge_rate_limit_events(
+    loaded: &[(String, PathBuf, SweepResults)],
+) -> Option<crate::run::rate_limit::RateLimitEvents> {
+    let mut any = false;
+    let mut merged = crate::run::rate_limit::RateLimitEvents {
+        throttled_calls: 0,
+        total_throttled_seconds: 0.0,
+        peak_concurrent: 0,
+        configured_max_rpm: None,
+        configured_max_input_tpm: None,
+    };
+    for (_, _, results) in loaded {
+        if let Some(ev) = &results.rate_limit_events {
+            any = true;
+            merged.throttled_calls += ev.throttled_calls;
+            merged.total_throttled_seconds += ev.total_throttled_seconds;
+            merged.peak_concurrent = merged.peak_concurrent.max(ev.peak_concurrent);
+            merged.configured_max_rpm = merged.configured_max_rpm.or(ev.configured_max_rpm);
+            merged.configured_max_input_tpm = merged
+                .configured_max_input_tpm
+                .or(ev.configured_max_input_tpm);
+        }
+    }
+    any.then_some(merged)
 }
 
 fn config_hash(resolved_toml: &str) -> String {
