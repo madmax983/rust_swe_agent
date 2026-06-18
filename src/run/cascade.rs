@@ -198,14 +198,12 @@ fn parse_extra_args(tier_name: &str, args: &[String]) -> Result<ExtraArgOverride
             "--max-rpm" => {
                 let val_str = args.get(i + 1).ok_or_else(|| {
                     Error::Config(ConfigError::Invalid(format!(
-                        "cascade tier {:?}: extra_arg `--max-rpm` requires a value",
-                        tier_name
+                        "cascade tier {tier_name:?}: extra_arg `--max-rpm` requires a value"
                     )))
                 })?;
                 let val: u32 = val_str.parse().map_err(|_| {
                     Error::Config(ConfigError::Invalid(format!(
-                        "cascade tier {:?}: extra_arg `--max-rpm` value {:?} is not a valid u32",
-                        tier_name, val_str
+                        "cascade tier {tier_name:?}: extra_arg `--max-rpm` value {val_str:?} is not a valid u32"
                     )))
                 })?;
                 overrides.max_rpm = Some(val);
@@ -214,14 +212,12 @@ fn parse_extra_args(tier_name: &str, args: &[String]) -> Result<ExtraArgOverride
             "--max-input-tpm" => {
                 let val_str = args.get(i + 1).ok_or_else(|| {
                     Error::Config(ConfigError::Invalid(format!(
-                        "cascade tier {:?}: extra_arg `--max-input-tpm` requires a value",
-                        tier_name
+                        "cascade tier {tier_name:?}: extra_arg `--max-input-tpm` requires a value"
                     )))
                 })?;
                 let val: u64 = val_str.parse().map_err(|_| {
                     Error::Config(ConfigError::Invalid(format!(
-                        "cascade tier {:?}: extra_arg `--max-input-tpm` value {:?} is not a valid u64",
-                        tier_name, val_str
+                        "cascade tier {tier_name:?}: extra_arg `--max-input-tpm` value {val_str:?} is not a valid u64"
                     )))
                 })?;
                 overrides.max_input_tpm = Some(val);
@@ -229,10 +225,9 @@ fn parse_extra_args(tier_name: &str, args: &[String]) -> Result<ExtraArgOverride
             }
             unknown => {
                 return Err(Error::Config(ConfigError::Invalid(format!(
-                    "cascade tier {:?}: unrecognized extra_arg {:?}; \
+                    "cascade tier {tier_name:?}: unrecognized extra_arg {unknown:?}; \
                      recognized args: --skip-patch-validation, \
-                     --max-rpm <n>, --max-input-tpm <n>",
-                    tier_name, unknown
+                     --max-rpm <n>, --max-input-tpm <n>"
                 ))));
             }
         }
@@ -248,12 +243,9 @@ fn apply_extra_arg_overrides(
     if overrides.skip_patch_validation {
         tier_args.skip_patch_validation = true;
     }
-    if let Some(rpm) = overrides.max_rpm {
-        tier_args.max_rpm = Some(rpm);
-    }
-    if let Some(tpm) = overrides.max_input_tpm {
-        tier_args.max_input_tpm = Some(tpm);
-    }
+    // extra_args take precedence; fall back to config-file rate limits (e.g. from prompt_file)
+    tier_args.max_rpm = overrides.max_rpm.or(tier_args.config.root.sweep.max_rpm);
+    tier_args.max_input_tpm = overrides.max_input_tpm.or(tier_args.config.root.sweep.max_input_tpm);
 }
 
 // ── Validation ────────────────────────────────────────────────────────────────
