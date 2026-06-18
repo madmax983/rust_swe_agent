@@ -1988,3 +1988,37 @@ network_mode = "github.com"
         preview.findings
     );
 }
+
+#[test]
+fn local_env_with_nondefault_network_mode_produces_warning() {
+    // network_mode has no effect on local environments; setting it to "none"
+    // should produce a warning so operators know the setting is ignored.
+    let cfg = Config::from_toml_str(
+        r#"
+[environment]
+kind = "local"
+network_mode = "none"
+"#,
+    )
+    .unwrap();
+    let opts = EnvPreviewOpts {
+        env_type: "local".into(),
+        task: "task".into(),
+        config_path: None,
+        show_values: false,
+    };
+    let preview = run_env_preview(&cfg, &opts);
+    assert_eq!(
+        preview.network_egress, "cannot_sandbox",
+        "local env must always report cannot_sandbox"
+    );
+    let has_warning = preview
+        .findings
+        .iter()
+        .any(|f| f.message.contains("has no effect on local environments"));
+    assert!(
+        has_warning,
+        "non-default network_mode on local env must produce a warning; findings: {:?}",
+        preview.findings
+    );
+}

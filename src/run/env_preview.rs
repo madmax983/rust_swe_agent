@@ -198,6 +198,23 @@ pub fn run_env_preview(cfg: &Config, opts: &EnvPreviewOpts) -> EnvPreview {
         }
     }
 
+    // network_mode has no effect on local environments — the host process
+    // cannot sandbox its own egress regardless of the configured value.
+    // Warn when a non-default mode is explicitly set so operators know it
+    // will be silently ignored rather than providing the expected isolation.
+    if opts.env_type == "local"
+        && cfg.root.environment.network_mode != crate::config::NetworkMode::Unrestricted
+    {
+        findings.push(PreviewFinding {
+            severity: "warning".into(),
+            message: format!(
+                "network_mode \"{}\" has no effect on local environments; \
+                 host process egress cannot be sandboxed",
+                cfg.root.environment.network_mode.as_str()
+            ),
+        });
+    }
+
     // For docker, the workdir is the container's cwd, not a host path.
     let host_paths = if opts.env_type == "local" {
         vec![workdir]
