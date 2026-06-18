@@ -72,7 +72,7 @@ The `--format json` flag emits a schema-versioned `validation_report` document:
 ```json
 {
   "artifact_kind": "validation_report",
-  "schema_version": "1.0",
+  "schema_version": { "major": 1, "minor": 0 },
   "summary": {
     "total": 3,
     "valid": 2,

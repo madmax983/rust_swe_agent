@@ -49,10 +49,7 @@ fn valid_trajectory_returns_valid_verdict() {
         output.results[0].artifact_kind.as_deref(),
         Some("trajectory")
     );
-    assert_eq!(
-        output.results[0].schema_version.as_deref(),
-        Some("1.11")
-    );
+    assert_eq!(output.results[0].schema_version.as_deref(), Some("1.11"));
 }
 
 #[test]
@@ -92,7 +89,11 @@ fn trajectory_missing_info_reports_it_as_missing() {
     .to_string();
     let output = check_bytes(&json);
     assert_eq!(output.results[0].verdict, ConformanceVerdict::Invalid);
-    assert!(output.results[0].missing_fields.contains(&"info".to_owned()));
+    assert!(
+        output.results[0]
+            .missing_fields
+            .contains(&"info".to_owned())
+    );
 }
 
 #[test]
@@ -146,7 +147,10 @@ fn future_major_version_returns_unsupported_major() {
     })
     .to_string();
     let output = check_bytes(&json);
-    assert_eq!(output.results[0].verdict, ConformanceVerdict::UnsupportedMajor);
+    assert_eq!(
+        output.results[0].verdict,
+        ConformanceVerdict::UnsupportedMajor
+    );
 }
 
 #[test]
@@ -157,8 +161,14 @@ fn unsupported_major_is_a_failure() {
     })
     .to_string();
     let output = check_bytes(&json);
-    assert_eq!(output.results[0].verdict, ConformanceVerdict::UnsupportedMajor);
-    assert!(output.has_failures(), "unsupported_major must count as a failure");
+    assert_eq!(
+        output.results[0].verdict,
+        ConformanceVerdict::UnsupportedMajor
+    );
+    assert!(
+        output.has_failures(),
+        "unsupported_major must count as a failure"
+    );
 }
 
 // ── AC 5: legacy_unversioned ──────────────────────────────────────────────────
@@ -218,7 +228,14 @@ fn sweep_results_checks_required_fields() {
     .to_string();
     let output = check_bytes(&json);
     assert_eq!(output.results[0].verdict, ConformanceVerdict::Invalid);
-    for f in &["total", "submitted", "skipped", "errored", "failures_by_category", "instances"] {
+    for f in &[
+        "total",
+        "submitted",
+        "skipped",
+        "errored",
+        "failures_by_category",
+        "instances",
+    ] {
         assert!(
             output.results[0].missing_fields.contains(&(*f).to_owned()),
             "sweep_results missing field: {f}"
@@ -254,7 +271,9 @@ fn evaluation_results_checks_required_fields() {
     let output = check_bytes(&json);
     assert_eq!(output.results[0].verdict, ConformanceVerdict::Invalid);
     assert!(
-        output.results[0].missing_fields.contains(&"instances".to_owned())
+        output.results[0]
+            .missing_fields
+            .contains(&"instances".to_owned())
     );
 }
 
@@ -267,7 +286,13 @@ fn forecast_report_checks_required_fields() {
     .to_string();
     let output = check_bytes(&json);
     assert_eq!(output.results[0].verdict, ConformanceVerdict::Invalid);
-    for f in &["calibration", "per_instance", "forecast", "resolution_rate", "threshold"] {
+    for f in &[
+        "calibration",
+        "per_instance",
+        "forecast",
+        "resolution_rate",
+        "threshold",
+    ] {
         assert!(
             output.results[0].missing_fields.contains(&(*f).to_owned()),
             "forecast_report missing field: {f}"
@@ -284,7 +309,14 @@ fn calibration_report_checks_required_fields() {
     .to_string();
     let output = check_bytes(&json);
     assert_eq!(output.results[0].verdict, ConformanceVerdict::Invalid);
-    for f in &["forecast_path", "results_path", "verdict", "comparability", "metrics", "per_instance"] {
+    for f in &[
+        "forecast_path",
+        "results_path",
+        "verdict",
+        "comparability",
+        "metrics",
+        "per_instance",
+    ] {
         assert!(
             output.results[0].missing_fields.contains(&(*f).to_owned()),
             "calibration_report missing field: {f}"
@@ -318,7 +350,12 @@ fn swebench_predictions_metadata_checks_required_fields() {
     .to_string();
     let output = check_bytes(&json);
     assert_eq!(output.results[0].verdict, ConformanceVerdict::Invalid);
-    for f in &["predictions_file", "aggregate", "row_count", "swebench_evaluator_compatible"] {
+    for f in &[
+        "predictions_file",
+        "aggregate",
+        "row_count",
+        "swebench_evaluator_compatible",
+    ] {
         assert!(
             output.results[0].missing_fields.contains(&(*f).to_owned()),
             "swebench_predictions_metadata missing field: {f}"
@@ -335,7 +372,14 @@ fn bundle_manifest_checks_required_fields() {
     .to_string();
     let output = check_bytes(&json);
     assert_eq!(output.results[0].verdict, ConformanceVerdict::Invalid);
-    for f in &["source_sweep_dir", "source_manifest_hash", "harness_git_sha", "bundle_generated_at", "instance_scope", "files"] {
+    for f in &[
+        "source_sweep_dir",
+        "source_manifest_hash",
+        "harness_git_sha",
+        "bundle_generated_at",
+        "instance_scope",
+        "files",
+    ] {
         assert!(
             output.results[0].missing_fields.contains(&(*f).to_owned()),
             "bundle_manifest missing field: {f}"
@@ -352,7 +396,13 @@ fn cache_stats_report_checks_required_fields() {
     .to_string();
     let output = check_bytes(&json);
     assert_eq!(output.results[0].verdict, ConformanceVerdict::Invalid);
-    for f in &["sweep", "generated_at", "cache_disabled", "sweep_totals", "instances"] {
+    for f in &[
+        "sweep",
+        "generated_at",
+        "cache_disabled",
+        "sweep_totals",
+        "instances",
+    ] {
         assert!(
             output.results[0].missing_fields.contains(&(*f).to_owned()),
             "cache_stats_report missing field: {f}"
@@ -383,10 +433,7 @@ fn json_format_emits_validation_report_artifact_kind() {
         val.get("schema_version").is_some(),
         "JSON must have schema_version"
     );
-    assert!(
-        val.get("results").is_some(),
-        "JSON must have results array"
-    );
+    assert!(val.get("results").is_some(), "JSON must have results array");
 }
 
 #[test]
@@ -482,7 +529,10 @@ fn valid_with_warnings_not_a_failure_by_default() {
     let output = check_bytes(&json);
     // Older minor is valid_with_warnings (warning, not error)
     assert_ne!(output.results[0].verdict, ConformanceVerdict::Invalid);
-    assert!(!output.has_failures(), "valid_with_warnings must not fail by default");
+    assert!(
+        !output.has_failures(),
+        "valid_with_warnings must not fail by default"
+    );
 }
 
 #[test]
@@ -496,7 +546,10 @@ fn valid_with_warnings_is_failure_under_strict() {
     })
     .to_string();
     let output = check_bytes_strict(&json);
-    assert!(output.has_failures(), "valid_with_warnings must fail under --strict");
+    assert!(
+        output.has_failures(),
+        "valid_with_warnings must fail under --strict"
+    );
 }
 
 // ── AC 8: ArtifactCheckFailure exit code exists ───────────────────────────────
@@ -585,15 +638,17 @@ fn multiple_paths_all_validated() {
     std::fs::write(tmp2.path(), json2).unwrap();
 
     let output = run_artifact_check(&ArtifactCheckOpts {
-        source: ArtifactCheckSource::Paths(vec![
-            tmp1.path().to_owned(),
-            tmp2.path().to_owned(),
-        ]),
+        source: ArtifactCheckSource::Paths(vec![tmp1.path().to_owned(), tmp2.path().to_owned()]),
         strict: false,
     })
     .unwrap();
     assert_eq!(output.results.len(), 2);
-    assert!(output.results.iter().all(|r| r.verdict == ConformanceVerdict::Valid));
+    assert!(
+        output
+            .results
+            .iter()
+            .all(|r| r.verdict == ConformanceVerdict::Valid)
+    );
 }
 
 // ── AC 2: schema_version reported as "major.minor" string ────────────────────

@@ -118,9 +118,9 @@ impl ArtifactCheckOutput {
     /// Returns true when any result counts as a failure (given the `strict` flag).
     #[must_use]
     pub fn has_failures(&self) -> bool {
-        self.results.iter().any(|r| {
-            r.verdict.is_hard_failure() || (self.strict && r.verdict.is_strict_failure())
-        })
+        self.results
+            .iter()
+            .any(|r| r.verdict.is_hard_failure() || (self.strict && r.verdict.is_strict_failure()))
     }
 
     /// Counts by verdict.
@@ -162,7 +162,7 @@ pub struct VerdictCounts {
 /// does not exist). Individual per-file parse failures are returned as
 /// `ConformanceVerdict::Invalid` rather than propagating as `Err`.
 pub fn run_artifact_check(opts: &ArtifactCheckOpts) -> Result<ArtifactCheckOutput, Error> {
-    let paths = collect_paths(&opts.source)?;
+    let paths = collect_paths(&opts.source);
     let mut results = Vec::with_capacity(paths.len());
     for path in paths {
         results.push(validate_file(&path));
@@ -175,7 +175,7 @@ pub fn run_artifact_check(opts: &ArtifactCheckOpts) -> Result<ArtifactCheckOutpu
 
 // ── Path collection ───────────────────────────────────────────────────────────
 
-fn collect_paths(source: &ArtifactCheckSource) -> Result<Vec<PathBuf>, Error> {
+fn collect_paths(source: &ArtifactCheckSource) -> Vec<PathBuf> {
     let ArtifactCheckSource::Paths(input_paths) = source;
     let mut out = Vec::new();
     for path in input_paths {
@@ -185,20 +185,23 @@ fn collect_paths(source: &ArtifactCheckSource) -> Result<Vec<PathBuf>, Error> {
             out.push(path.clone());
         }
     }
-    Ok(out)
+    out
 }
 
 fn collect_json_recursive(dir: &std::path::Path, out: &mut Vec<PathBuf>) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
     };
-    let mut entries: Vec<_> = entries.filter_map(|e| e.ok()).collect();
-    entries.sort_by_key(|e| e.file_name());
+    let mut entries: Vec<_> = entries.filter_map(Result::ok).collect();
+    entries.sort_by_key(std::fs::DirEntry::file_name);
     for entry in entries {
+        // Use file_type() (does not follow symlinks) to avoid infinite recursion
+        // if the directory tree contains symlink cycles.
+        let Ok(ft) = entry.file_type() else { continue };
         let path = entry.path();
-        if path.is_dir() {
+        if ft.is_dir() {
             collect_json_recursive(&path, out);
-        } else if path.extension().and_then(|e| e.to_str()) == Some("json") {
+        } else if ft.is_file() && path.extension().and_then(|e| e.to_str()) == Some("json") {
             out.push(path);
         }
     }
@@ -238,13 +241,20 @@ fn validate_file(path: &std::path::Path) -> ArtifactResult {
     validate_value(path, &value)
 }
 
-fn validate_value(path: &std::path::Path, value: &Value) -> ArtifactResult {
+/// Parsed artifact header extracted from a JSON value.
+struct ParsedHeader {
+    kind_str: String,
+    version: ArtifactSchemaVersion,
+}
+
+/// Parse the artifact header fields, returning `Ok(ParsedHeader)` or an
+/// early `ArtifactResult` that should be returned directly.
+fn parse_header(path: &std::path::Path, value: &Value) -> Result<ParsedHeader, ArtifactResult> {
     let kind_val = value.get("artifact_kind");
     let version_val = value.get("schema_version");
 
-    // Legacy: both absent → legacy_unversioned
     if kind_val.is_none() && version_val.is_none() {
-        return ArtifactResult {
+        return Err(ArtifactResult {
             path: path.to_owned(),
             artifact_kind: None,
             schema_version: None,
@@ -253,12 +263,11 @@ fn validate_value(path: &std::path::Path, value: &Value) -> ArtifactResult {
             warnings: vec![
                 "pre-versioning legacy artifact: artifact_kind and schema_version absent".into(),
             ],
-        };
+        });
     }
 
-    // One present but not the other → invalid header
     let (Some(kind_val), Some(version_val)) = (kind_val, version_val) else {
-        return ArtifactResult {
+        return Err(ArtifactResult {
             path: path.to_owned(),
             artifact_kind: None,
             schema_version: None,
@@ -267,42 +276,41 @@ fn validate_value(path: &std::path::Path, value: &Value) -> ArtifactResult {
             warnings: vec![
                 "artifact_kind and schema_version must both be present or both absent".into(),
             ],
-        };
+        });
     };
 
-    // Parse artifact_kind
-    let kind_str = match kind_val.as_str() {
-        Some(s) => s.to_owned(),
-        None => {
-            return ArtifactResult {
-                path: path.to_owned(),
-                artifact_kind: None,
-                schema_version: None,
-                verdict: ConformanceVerdict::Invalid,
-                missing_fields: vec![],
-                warnings: vec!["artifact_kind must be a string".into()],
-            };
-        }
+    let Some(kind_str) = kind_val.as_str().map(str::to_owned) else {
+        return Err(ArtifactResult {
+            path: path.to_owned(),
+            artifact_kind: None,
+            schema_version: None,
+            verdict: ConformanceVerdict::Invalid,
+            missing_fields: vec![],
+            warnings: vec!["artifact_kind must be a string".into()],
+        });
     };
 
-    // Parse schema_version
-    let version: ArtifactSchemaVersion = match serde_json::from_value(version_val.clone()) {
-        Ok(v) => v,
-        Err(e) => {
-            return ArtifactResult {
-                path: path.to_owned(),
-                artifact_kind: Some(kind_str),
-                schema_version: None,
-                verdict: ConformanceVerdict::Invalid,
-                missing_fields: vec![],
-                warnings: vec![format!("schema_version malformed: {e}")],
-            };
-        }
+    match serde_json::from_value(version_val.clone()) {
+        Ok(version) => Ok(ParsedHeader { kind_str, version }),
+        Err(e) => Err(ArtifactResult {
+            path: path.to_owned(),
+            artifact_kind: Some(kind_str),
+            schema_version: None,
+            verdict: ConformanceVerdict::Invalid,
+            missing_fields: vec![],
+            warnings: vec![format!("schema_version malformed: {e}")],
+        }),
+    }
+}
+
+fn validate_value(path: &std::path::Path, value: &Value) -> ArtifactResult {
+    let ParsedHeader { kind_str, version } = match parse_header(path, value) {
+        Ok(h) => h,
+        Err(early) => return early,
     };
 
     let version_str = version.to_string();
 
-    // Check for unsupported future major
     if version.major > ArtifactSchemaVersion::CURRENT.major {
         return ArtifactResult {
             path: path.to_owned(),
@@ -318,11 +326,9 @@ fn validate_value(path: &std::path::Path, value: &Value) -> ArtifactResult {
         };
     }
 
-    // Determine if this is a legacy minor (older minor within same major)
     let is_older_minor = version.major == ArtifactSchemaVersion::CURRENT.major
         && version.minor < ArtifactSchemaVersion::CURRENT.minor;
 
-    // Check required fields for this kind
     let required = required_fields_for_kind(&kind_str);
     let mut missing_fields: Vec<String> = required
         .iter()
@@ -449,8 +455,16 @@ pub fn format_text(output: &ArtifactCheckOutput) -> String {
     }
 
     out.push('\n');
-    let _ = writeln!(out, "{:<60}  {:<24}  {:<12}  {:<14}  issues", "path", "artifact_kind", "schema_version", "verdict");
-    let _ = writeln!(out, "{:-<60}  {:-<24}  {:-<12}  {:-<14}  ------", "", "", "", "");
+    let _ = writeln!(
+        out,
+        "{:<60}  {:<24}  {:<12}  {:<14}  issues",
+        "path", "artifact_kind", "schema_version", "verdict"
+    );
+    let _ = writeln!(
+        out,
+        "{:-<60}  {:-<24}  {:-<12}  {:-<14}  ------",
+        "", "", "", ""
+    );
 
     for r in &output.results {
         let path_str = r.path.display().to_string();
@@ -504,7 +518,7 @@ pub fn format_json(output: &ArtifactCheckOutput) -> Result<serde_json::Value, se
 
     Ok(serde_json::json!({
         "artifact_kind": "validation_report",
-        "schema_version": ARTIFACT_CHECK_SCHEMA_VERSION.to_string(),
+        "schema_version": ARTIFACT_CHECK_SCHEMA_VERSION,
         "summary": {
             "total": output.results.len(),
             "valid": counts.valid,
