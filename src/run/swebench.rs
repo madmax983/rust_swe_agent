@@ -4490,16 +4490,19 @@ fn write_predictions_file(
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct PredictionsMetadata {
-    predictions_file: String,
-    aggregate: bool,
+pub(crate) struct PredictionsMetadata {
+    pub(crate) predictions_file: String,
+    pub(crate) aggregate: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    run_index: Option<u32>,
-    row_count: usize,
-    swebench_evaluator_compatible: bool,
+    pub(crate) run_index: Option<u32>,
+    pub(crate) row_count: usize,
+    pub(crate) swebench_evaluator_compatible: bool,
 }
 
-fn write_predictions_metadata(path: &Path, metadata: &PredictionsMetadata) -> Result<(), Error> {
+pub(crate) fn write_predictions_metadata(
+    path: &Path,
+    metadata: &PredictionsMetadata,
+) -> Result<(), Error> {
     let file = std::fs::File::create(path)?;
     crate::artifact::to_writer_pretty(file, ArtifactKind::SwebenchPredictionsMetadata, metadata)?;
     Ok(())

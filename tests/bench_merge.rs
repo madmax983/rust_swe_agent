@@ -25,6 +25,7 @@ impl ShardFixture {
         let mut total_cost = 0.0_f64;
         let mut total_input = 0_u64;
         let mut total_completion = 0_u64;
+        let mut preds = String::new();
 
         for spec in instances {
             total_cost += spec.cost;
@@ -33,6 +34,18 @@ impl ShardFixture {
 
             let submitted = spec.outcome == "submitted";
             let pass_at_1 = submitted;
+
+            if submitted {
+                preds.push_str(
+                    &serde_json::to_string(&serde_json::json!({
+                        "instance_id": spec.id,
+                        "model_patch": format!("--- a/{id}\n+++ b/{id}\n", id = spec.id),
+                        "model_name_or_path": "deterministic",
+                    }))
+                    .unwrap(),
+                );
+                preds.push('\n');
+            }
 
             inst_results.push(serde_json::json!({
                 "instance_id": spec.id,
@@ -95,6 +108,10 @@ impl ShardFixture {
             }
         }
 
+        // Predictions: aggregate + single-run file (mirrors a real single-run sweep).
+        fs::write(dir.join("all_preds.jsonl"), &preds).unwrap();
+        fs::write(dir.join("all_preds.run-1.jsonl"), &preds).unwrap();
+
         let submitted_count = instances
             .iter()
             .filter(|i| i.outcome == "submitted")
@@ -138,44 +155,7 @@ impl ShardFixture {
                 "original_count": instances.len(),
                 "selected_count": instances.len()
             },
-            "manifest": {
-                "harness": {
-                    "name": "maxwells-daemon",
-                    "version": "fixture",
-                    "git_sha": "fixture-sha-abc123",
-                    "git_dirty": false,
-                    "git_resolution": "ok"
-                },
-                "dataset": {
-                    "path": "dataset.jsonl",
-                    "sha256": "fixture-dataset-hash-abc",
-                    "instance_count": instances.len(),
-                    "source_kind": "local",
-                    "selected_row_count": instances.len(),
-                    "post_filter_row_count": instances.len()
-                },
-                "prompt_template": {
-                    "source": "inline",
-                    "sha256": "fixture-template-hash"
-                },
-                "config": {
-                    "resolved": "[model]\nname = \"deterministic\"\n",
-                    "overlay_paths": []
-                },
-                "model": {
-                    "name": "deterministic",
-                    "backend": "deterministic"
-                },
-                "runtime": {
-                    "started_at_utc": "2026-05-01T00:00:00Z",
-                    "finished_at_utc": "2026-05-01T00:00:01Z",
-                    "host_os": "fixture",
-                    "resume_mode": false
-                },
-                "cli": {
-                    "argv": ["max", "bench", "swebench"]
-                }
-            },
+            "manifest": fixture_manifest(instances.len()),
             "instances": inst_results
         });
 
@@ -214,6 +194,195 @@ impl ShardFixture {
         .unwrap();
         fixture
     }
+
+    /// A completed pass@k shard: each instance runs `runs` times (run-1..run-N
+    /// trajectories). Cost/tokens are zero to keep audit reconciliation trivial;
+    /// the point is per-run-slot outcome counting. `instances` is `(id, outcome)`.
+    fn create_multi_run(
+        root: &Path,
+        label: &str,
+        instances: &[(&'static str, &'static str)],
+        runs: u32,
+    ) -> Self {
+        let dir = root.join(label);
+        fs::create_dir_all(&dir).unwrap();
+
+        let mut inst_results = Vec::new();
+        let mut aggregate_preds = String::new();
+        let mut per_run_preds: Vec<String> = vec![String::new(); runs as usize];
+        let mut slot_submitted = 0usize;
+        let mut slot_errored = 0usize;
+
+        for (id, outcome) in instances {
+            let submitted = *outcome == "submitted";
+            let inst_dir = dir.join(id);
+            fs::create_dir_all(&inst_dir).unwrap();
+            for k in 1..=runs {
+                let traj = serde_json::json!({
+                    "trajectory_format": "mini-swe-agent-1.1",
+                    "artifact_kind": "trajectory",
+                    "schema_version": {"major": 1, "minor": 3},
+                    "info": {
+                        "task": id,
+                        "model_name": "deterministic",
+                        "outcome": outcome,
+                        "exit_reason": outcome,
+                        "total_cost_usd": 0.0,
+                        "token_usage": {"prompt_tokens": 0, "completion_tokens": 0},
+                        "redaction": {"enabled": false, "redacted": false},
+                        "steps": 2,
+                        "test_invocations": [],
+                        "tests_run_before_submit": false
+                    },
+                    "messages": []
+                });
+                fs::write(
+                    inst_dir.join(format!("run-{k}.traj.json")),
+                    serde_json::to_string_pretty(&traj).unwrap(),
+                )
+                .unwrap();
+                if submitted {
+                    fs::write(inst_dir.join(format!("run-{k}.patch")), "patch\n").unwrap();
+                    per_run_preds[(k - 1) as usize].push_str(
+                        &serde_json::to_string(&serde_json::json!({
+                            "instance_id": id,
+                            "model_patch": "patch",
+                            "model_name_or_path": "deterministic",
+                            "run_index": k,
+                        }))
+                        .unwrap(),
+                    );
+                    per_run_preds[(k - 1) as usize].push('\n');
+                    aggregate_preds.push_str(
+                        &serde_json::to_string(&serde_json::json!({
+                            "instance_id": format!("{id}::run-{k}"),
+                            "original_instance_id": id,
+                            "run_index": k,
+                            "model_patch": "patch",
+                            "model_name_or_path": "deterministic",
+                        }))
+                        .unwrap(),
+                    );
+                    aggregate_preds.push('\n');
+                    slot_submitted += 1;
+                } else if *outcome == "error" {
+                    slot_errored += 1;
+                }
+            }
+
+            inst_results.push(serde_json::json!({
+                "instance_id": id,
+                "exit_reason": outcome,
+                "outcome": outcome,
+                "cost_usd": 0.0,
+                "total_input_tokens": 0,
+                "total_completion_tokens": 0,
+                "duration_secs": 1.0,
+                "patch_present": submitted,
+                "non_empty_patch": submitted,
+                "attempts": runs,
+                "runs": runs,
+                "resolved_count": 0,
+                "pass_at_1": false,
+                "tests_run_before_submit": false,
+                "steps": 2
+            }));
+        }
+
+        fs::write(dir.join("all_preds.jsonl"), &aggregate_preds).unwrap();
+        for k in 1..=runs {
+            fs::write(
+                dir.join(format!("all_preds.run-{k}.jsonl")),
+                &per_run_preds[(k - 1) as usize],
+            )
+            .unwrap();
+        }
+
+        let results = serde_json::json!({
+            "artifact_kind": "sweep_results",
+            "schema_version": {"major": 1, "minor": 11},
+            "total": instances.len(),
+            "sweep_status": "completed",
+            "completed": instances.len(),
+            "in_flight_at_cancel": 0,
+            "not_started": 0,
+            "submitted": slot_submitted,
+            "submitted_with_tests": 0,
+            "skipped": 0,
+            "errored": slot_errored,
+            "failures_by_category": {},
+            "budget_halted": 0,
+            "with_patch": instances.iter().filter(|(_, o)| *o == "submitted").count(),
+            "patch_empty": 0,
+            "patch_apply_invalid": 0,
+            "github_pr_failures": 0,
+            "total_input_tokens": 0,
+            "total_cache_read_tokens": 0,
+            "total_cache_creation_tokens": 0,
+            "total_completion_tokens": 0,
+            "total_cost_usd": 0.0,
+            "cache_hit_rate": 0.0,
+            "retries": 0,
+            "retried_instances": 0,
+            "pass_at_k": 0.0,
+            "filter_spec": {
+                "original_count": instances.len(),
+                "selected_count": instances.len()
+            },
+            "manifest": fixture_manifest(instances.len()),
+            "instances": inst_results
+        });
+        fs::write(
+            dir.join("results.json"),
+            serde_json::to_string_pretty(&results).unwrap(),
+        )
+        .unwrap();
+
+        Self { dir }
+    }
+}
+
+/// Shared provenance manifest used by every fixture shard so the cross-shard
+/// dataset/model/config compatibility checks pass.
+fn fixture_manifest(instance_count: usize) -> serde_json::Value {
+    serde_json::json!({
+        "harness": {
+            "name": "maxwells-daemon",
+            "version": "fixture",
+            "git_sha": "fixture-sha-abc123",
+            "git_dirty": false,
+            "git_resolution": "ok"
+        },
+        "dataset": {
+            "path": "dataset.jsonl",
+            "sha256": "fixture-dataset-hash-abc",
+            "instance_count": instance_count,
+            "source_kind": "local",
+            "selected_row_count": instance_count,
+            "post_filter_row_count": instance_count
+        },
+        "prompt_template": {
+            "source": "inline",
+            "sha256": "fixture-template-hash"
+        },
+        "config": {
+            "resolved": "[model]\nname = \"deterministic\"\n",
+            "overlay_paths": []
+        },
+        "model": {
+            "name": "deterministic",
+            "backend": "deterministic"
+        },
+        "runtime": {
+            "started_at_utc": "2026-05-01T00:00:00Z",
+            "finished_at_utc": "2026-05-01T00:00:01Z",
+            "host_os": "fixture",
+            "resume_mode": false
+        },
+        "cli": {
+            "argv": ["max", "bench", "swebench"]
+        }
+    })
 }
 
 struct InstanceSpec {
@@ -1102,4 +1271,188 @@ fn three_shard_merge_aggregates_correctly() {
     assert_eq!(merged["total"], 5);
     assert_eq!(merged["submitted"], 2);
     assert_eq!(merged["errored"], 3);
+}
+
+// ── pass@k / predictions / safety ─────────────────────────────────────────────
+
+#[test]
+fn pass_at_k_multi_run_merge_audits() {
+    let work = tempfile::tempdir().unwrap();
+
+    // Two disjoint pass@k shards, each instance run twice.
+    let shard_a = ShardFixture::create_multi_run(
+        work.path(),
+        "shard_a",
+        &[("inst-001", "submitted"), ("inst-002", "error")],
+        2,
+    );
+    let shard_b =
+        ShardFixture::create_multi_run(work.path(), "shard_b", &[("inst-003", "submitted")], 2);
+
+    let output = work.path().join("merged");
+    let out = Command::new(binary_path())
+        .args(["bench", "merge"])
+        .arg("--shard")
+        .arg(&shard_a.dir)
+        .arg("--shard")
+        .arg(&shard_b.dir)
+        .arg("--output")
+        .arg(&output)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "multi-run merge failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    // Per-run-slot counts: 2 submitted instances × 2 runs = 4 submitted slots;
+    // 1 errored instance × 2 runs = 2 errored slots.
+    let merged: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(output.join("results.json")).unwrap()).unwrap();
+    assert_eq!(merged["submitted"], 4, "per-slot submitted count");
+    assert_eq!(merged["errored"], 2, "per-slot errored count");
+
+    // The merged pass@k sweep must reconcile under `bench audit`.
+    let audit = Command::new(binary_path())
+        .args(["bench", "audit", "--sweep"])
+        .arg(&output)
+        .output()
+        .unwrap();
+    assert!(
+        audit.status.success(),
+        "audit failed on merged pass@k sweep!\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&audit.stdout),
+        String::from_utf8_lossy(&audit.stderr)
+    );
+}
+
+#[test]
+fn merge_writes_all_preds_for_evaluate() {
+    let work = tempfile::tempdir().unwrap();
+
+    let shard_a = ShardFixture::create(
+        work.path(),
+        "shard_a",
+        &[InstanceSpec::submitted("inst-001", 0.10)],
+    );
+    let shard_b = ShardFixture::create(
+        work.path(),
+        "shard_b",
+        &[
+            InstanceSpec::submitted("inst-002", 0.12),
+            InstanceSpec::errored("inst-003"),
+        ],
+    );
+
+    let output = work.path().join("merged");
+    let out = Command::new(binary_path())
+        .args(["bench", "merge"])
+        .arg("--shard")
+        .arg(&shard_a.dir)
+        .arg("--shard")
+        .arg(&shard_b.dir)
+        .arg("--output")
+        .arg(&output)
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "merge failed");
+
+    // `bench evaluate` reads <sweep>/all_preds.jsonl; it must exist with one row
+    // per submitted instance across both shards (the errored one is excluded).
+    let preds = fs::read_to_string(output.join("all_preds.jsonl")).unwrap();
+    let ids: Vec<String> = preds
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(|l| {
+            serde_json::from_str::<serde_json::Value>(l).unwrap()["instance_id"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        })
+        .collect();
+    assert_eq!(ids.len(), 2, "two submitted instances");
+    assert!(ids.contains(&"inst-001".to_string()));
+    assert!(ids.contains(&"inst-002".to_string()));
+    assert!(!ids.contains(&"inst-003".to_string()), "errored excluded");
+
+    // Metadata is rewritten for the merged aggregate.
+    assert!(output.join("all_preds.metadata.json").exists());
+}
+
+#[test]
+fn output_overlapping_shard_exits_nonzero() {
+    let work = tempfile::tempdir().unwrap();
+    let shard_a = ShardFixture::create(
+        work.path(),
+        "shard_a",
+        &[InstanceSpec::submitted("inst-001", 0.10)],
+    );
+    let shard_b = ShardFixture::create(
+        work.path(),
+        "shard_b",
+        &[InstanceSpec::submitted("inst-002", 0.10)],
+    );
+
+    // --output IS shard_a; with --force this would delete the shard before copy.
+    let out = Command::new(binary_path())
+        .args(["bench", "merge"])
+        .arg("--shard")
+        .arg(&shard_a.dir)
+        .arg("--shard")
+        .arg(&shard_b.dir)
+        .arg("--output")
+        .arg(&shard_a.dir)
+        .arg("--force")
+        .output()
+        .unwrap();
+    assert!(
+        !out.status.success(),
+        "merge must reject an --output that overlaps an input shard"
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("overlaps input shard"),
+        "stderr should explain the overlap: {stderr}"
+    );
+    // The shard's results.json must still be intact (not deleted).
+    assert!(shard_a.dir.join("results.json").exists());
+}
+
+#[test]
+fn merged_filter_spec_lists_union_ids() {
+    let work = tempfile::tempdir().unwrap();
+    let shard_a = ShardFixture::create(
+        work.path(),
+        "shard_a",
+        &[InstanceSpec::submitted("inst-001", 0.10)],
+    );
+    let shard_b = ShardFixture::create(
+        work.path(),
+        "shard_b",
+        &[InstanceSpec::submitted("inst-002", 0.10)],
+    );
+
+    let output = work.path().join("merged");
+    let out = Command::new(binary_path())
+        .args(["bench", "merge"])
+        .arg("--shard")
+        .arg(&shard_a.dir)
+        .arg("--shard")
+        .arg(&shard_b.dir)
+        .arg("--output")
+        .arg(&output)
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "merge failed");
+
+    let merged: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(output.join("results.json")).unwrap()).unwrap();
+    let ids = merged["filter_spec"]["instance_ids"].as_array().unwrap();
+    let ids: Vec<&str> = ids.iter().map(|v| v.as_str().unwrap()).collect();
+    assert_eq!(
+        ids,
+        vec!["inst-001", "inst-002"],
+        "filter_spec must list the merged union, not just shard 0"
+    );
 }

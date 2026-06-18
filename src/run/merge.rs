@@ -5,7 +5,7 @@
 //! correct, provenance-preserving, and a drop-in for `bench evaluate`, `bench
 //! report`, `bench triage`, and `bench audit`.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -99,18 +99,40 @@ pub fn run(args: &MergeCmd) -> Result<MergeReport, Error> {
     let policy = args.on_collision;
     let (union_instances, duplicates, owner_shard) = build_union_instances(&loaded, policy)?;
 
+    // Refuse to write into (or delete, under --force) a directory that overlaps an
+    // input shard — that would destroy the very artifacts we are about to copy.
+    validate_output_isolation(&args.output, &args.shards)?;
+
     // Prepare output directory
     prepare_output_dir(&args.output, args.force)?;
 
     // Copy artifacts for each instance from its owning shard
     copy_artifacts(&loaded, &union_instances, &owner_shard, &args.output)?;
 
-    // Merge evaluation.json if any shard has one
+    // Merge prediction files (all_preds*.jsonl + metadata) for `bench evaluate`.
+    merge_predictions(&loaded, &owner_shard, &args.output)?;
+
+    // Merge evaluation.json if every shard has one
     merge_evaluation_json(&loaded, &owner_shard, &args.output)?;
 
     // Recompute aggregates over the union
     let base = &loaded[0].2;
     let mut merged = crate::run::swebench::recompute_aggregates(base, union_instances.clone());
+
+    // `recompute_aggregates` counts outcomes per-instance, but a pass@k sweep has
+    // one collapsed row per task while results.json records per-run *slots* (and
+    // `bench audit` recomputes the same way from the copied trajectories). Recount
+    // submitted/errored/skipped/budget_halted per slot so the merged sweep audits.
+    let slots = recount_slot_outcomes(&args.output, &union_instances)?;
+    merged.submitted = slots.submitted;
+    merged.errored = slots.errored;
+    merged.skipped = slots.skipped;
+    merged.budget_halted = slots.budget_halted;
+
+    // Rebuild subset metadata so it describes the merged union rather than shard 0;
+    // downstream `bench compare` keys "same subset?" off this filter spec.
+    let union_filter_spec = merged_filter_spec(base, &union_instances);
+    merged.filter_spec = union_filter_spec.clone();
 
     // Build merged manifest (clone shard0's, add merged_from)
     let merged_from: Vec<MergeShardProvenance> = loaded
@@ -135,6 +157,7 @@ pub fn run(args: &MergeCmd) -> Result<MergeReport, Error> {
         manifest.dataset.instance_count = union_instances.len();
         manifest.dataset.selected_row_count = union_instances.len();
         manifest.dataset.post_filter_row_count = union_instances.len();
+        manifest.dataset.filter_spec = Some(union_filter_spec);
     }
 
     // Update sweep_status to completed
@@ -417,14 +440,37 @@ fn copy_artifacts(
     Ok(())
 }
 
-/// Copy all artifact files for a single instance from `src_sweep` to `dst_sweep`.
-/// Supports both the nested layout (`<id>/run-N.traj.json`) and legacy flat layout
-/// (`<id>.traj.json`). Copies the entire per-instance subdirectory if it exists.
+/// Copy all artifact files for a single instance from `src_sweep` to `dst_sweep`,
+/// preserving the source shard's on-disk layout so the copied paths still satisfy
+/// `bench audit`. Recognizes the same three layouts audit does:
+///   * nested      `<id>/run-N.traj.json`   (whole per-instance dir)
+///   * legacy flat `<id>.traj.json` / `<id>.patch`
+///   * bundled     `trajectories/<id>.traj.json` / `patches/<id>.patch`
 fn copy_instance_artifacts(
     src_sweep: &Path,
     dst_sweep: &Path,
     instance_id: &str,
 ) -> Result<(), Error> {
+    let copy_file = |src: PathBuf, dst: PathBuf| -> Result<(), Error> {
+        if src.exists() {
+            if let Some(parent) = dst.parent() {
+                fs::create_dir_all(parent).map_err(|e| {
+                    Error::Config(crate::error::ConfigError::Invalid(format!(
+                        "merge: failed to create '{}': {e}",
+                        parent.display()
+                    )))
+                })?;
+            }
+            fs::copy(&src, &dst).map_err(|e| {
+                Error::Config(crate::error::ConfigError::Invalid(format!(
+                    "merge: failed to copy '{}': {e}",
+                    src.display()
+                )))
+            })?;
+        }
+        Ok(())
+    };
+
     let inst_dir = src_sweep.join(instance_id);
     if inst_dir.is_dir() {
         // Nested layout: copy the whole per-instance directory
@@ -435,19 +481,28 @@ fn copy_instance_artifacts(
             )))
         })?;
     } else {
-        // Legacy flat layout: copy <id>.traj.json and <id>.patch if they exist
+        // Legacy flat layout: <id>.traj.json / <id>.patch at the sweep root.
         for ext in [".traj.json", ".patch"] {
-            let src = src_sweep.join(format!("{instance_id}{ext}"));
-            if src.exists() {
-                let dst = dst_sweep.join(format!("{instance_id}{ext}"));
-                fs::copy(&src, &dst).map_err(|e| {
-                    Error::Config(crate::error::ConfigError::Invalid(format!(
-                        "merge: failed to copy '{}': {e}",
-                        src.display()
-                    )))
-                })?;
-            }
+            let name = format!("{instance_id}{ext}");
+            copy_file(src_sweep.join(&name), dst_sweep.join(&name))?;
         }
+        // Bundled layout: trajectories/<id>.traj.json and patches/<id>.patch.
+        copy_file(
+            src_sweep
+                .join("trajectories")
+                .join(format!("{instance_id}.traj.json")),
+            dst_sweep
+                .join("trajectories")
+                .join(format!("{instance_id}.traj.json")),
+        )?;
+        copy_file(
+            src_sweep
+                .join("patches")
+                .join(format!("{instance_id}.patch")),
+            dst_sweep
+                .join("patches")
+                .join(format!("{instance_id}.patch")),
+        )?;
     }
     Ok(())
 }
@@ -585,6 +640,252 @@ fn merge_evaluation_json(
             "merge: failed to write evaluation.json: {e}"
         )))
     })?;
+
+    Ok(())
+}
+
+/// Best-effort absolute, symlink-resolved path. Falls back to a lexical absolute
+/// path when the target does not exist yet (e.g. the not-yet-created output dir).
+fn abs_path(p: &Path) -> PathBuf {
+    p.canonicalize()
+        .or_else(|_| std::path::absolute(p))
+        .unwrap_or_else(|_| p.to_path_buf())
+}
+
+/// Reject an `--output` that is equal to, contains, or is contained by any input
+/// shard. Under `--force` the output dir is `remove_dir_all`'d, so an overlapping
+/// path would delete the shard artifacts before they are copied.
+fn validate_output_isolation(output: &Path, shards: &[PathBuf]) -> Result<(), Error> {
+    let out_abs = abs_path(output);
+    for shard in shards {
+        let shard_abs = abs_path(shard);
+        if out_abs == shard_abs
+            || out_abs.starts_with(&shard_abs)
+            || shard_abs.starts_with(&out_abs)
+        {
+            return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+                "merge: output directory '{}' overlaps input shard '{}'; \
+                 choose an --output path that is outside every shard",
+                output.display(),
+                shard.display()
+            ))));
+        }
+    }
+    Ok(())
+}
+
+/// Rebuild the subset filter spec so it describes the merged union (sorted
+/// instance IDs) rather than inheriting shard 0's per-shard filter.
+fn merged_filter_spec(
+    base: &SweepResults,
+    union_instances: &[crate::run::swebench::InstanceResult],
+) -> crate::run::swebench::FilterSpec {
+    let mut ids: Vec<String> = union_instances
+        .iter()
+        .map(|r| r.instance_id.clone())
+        .collect();
+    ids.sort();
+    crate::run::swebench::FilterSpec {
+        // The full dataset size is identical across shards (provenance-checked).
+        original_count: base.filter_spec.original_count,
+        selected_count: ids.len(),
+        instance_ids: Some(ids),
+        limit: None,
+        sample: None,
+        seed: None,
+        stratify_by: None,
+        stratify_mode: None,
+    }
+}
+
+#[derive(Default)]
+struct SlotOutcomeCounts {
+    submitted: usize,
+    errored: usize,
+    skipped: usize,
+    budget_halted: usize,
+}
+
+/// Recount per-run-slot outcomes from the copied trajectories, mirroring exactly
+/// what `bench audit` recomputes (see `audit::run`), so the merged results.json
+/// reconciles for pass@k/rerun sweeps where one task spans several run slots.
+fn recount_slot_outcomes(
+    output: &Path,
+    union_instances: &[crate::run::swebench::InstanceResult],
+) -> Result<SlotOutcomeCounts, Error> {
+    let exit_reasons: HashMap<&str, &str> = union_instances
+        .iter()
+        .map(|r| (r.instance_id.as_str(), r.exit_reason.as_str()))
+        .collect();
+
+    // Map each instance to its run-slot trajectory files, reusing audit's
+    // discovery + path parsing so merge and audit agree on what counts.
+    let trajectories = crate::run::audit::collect_trajectories_on_disk(output).map_err(|e| {
+        Error::Config(crate::error::ConfigError::Invalid(format!(
+            "merge: failed to scan merged trajectories: {e}"
+        )))
+    })?;
+    let mut instances_runs: HashMap<String, BTreeMap<u32, PathBuf>> = HashMap::new();
+    for path in &trajectories {
+        if let Some((inst_id, run_index)) = crate::run::audit::parse_trajectory_path(output, path) {
+            instances_runs
+                .entry(inst_id)
+                .or_default()
+                .entry(run_index)
+                .or_insert_with(|| path.clone());
+        }
+    }
+
+    let mut counts = SlotOutcomeCounts::default();
+    for (inst_id, runs) in &instances_runs {
+        let is_skipped_resume =
+            exit_reasons.get(inst_id.as_str()).copied() == Some("skipped_resume");
+        if is_skipped_resume {
+            counts.skipped += 1;
+        }
+        for path in runs.values() {
+            let Ok(content) = fs::read_to_string(path) else {
+                continue;
+            };
+            let Ok(val) = serde_json::from_str::<Value>(&content) else {
+                continue;
+            };
+            let outcome = val
+                .get("info")
+                .and_then(|i| i.get("outcome"))
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            match outcome {
+                "submitted" if !is_skipped_resume => counts.submitted += 1,
+                "errored" | "error" => counts.errored += 1,
+                "skipped" if !is_skipped_resume => counts.skipped += 1,
+                "budget_halted" | "budget_halt" => counts.budget_halted += 1,
+                _ => {}
+            }
+        }
+    }
+    Ok(counts)
+}
+
+/// Merge prediction files so the merged sweep can be scored by `bench evaluate`,
+/// which reads `<sweep>/all_preds.jsonl`. Keeps only rows owned by the merged
+/// union, preserves per-run `all_preds.run-k.jsonl` files, and rewrites metadata.
+fn merge_predictions(
+    loaded: &[(String, PathBuf, SweepResults)],
+    owner_shard: &HashMap<String, usize>,
+    output: &Path,
+) -> Result<(), Error> {
+    use crate::run::swebench::{
+        PredictionsMetadata, predictions_metadata_path, predictions_metadata_path_for_run,
+        predictions_path, predictions_path_for_run, write_predictions_metadata,
+    };
+
+    // Only merge predictions if the shards actually wrote them.
+    if !loaded
+        .iter()
+        .any(|(_, dir, _)| predictions_path(dir).exists())
+    {
+        return Ok(());
+    }
+
+    // Owning shard for a prediction row: the aggregate file may carry unique
+    // `<id>::run-k` IDs plus an `original_instance_id`; per-run files keep the
+    // original SWE-bench ID. Resolve both to the underlying instance id.
+    let owned_line = |shard_idx: usize, line: &str| -> bool {
+        let Ok(val) = serde_json::from_str::<Value>(line) else {
+            return false;
+        };
+        let orig = val
+            .get("original_instance_id")
+            .and_then(Value::as_str)
+            .or_else(|| val.get("instance_id").and_then(Value::as_str))
+            .unwrap_or("");
+        owner_shard.get(orig).copied() == Some(shard_idx)
+    };
+
+    // Collect the set of run indices present across shards (uniform by config).
+    let mut run_indices: Vec<u32> = Vec::new();
+    for (_, dir, _) in loaded {
+        let mut k = 1u32;
+        while predictions_path_for_run(dir, k).exists() {
+            if !run_indices.contains(&k) {
+                run_indices.push(k);
+            }
+            k += 1;
+        }
+    }
+    run_indices.sort_unstable();
+
+    // Merge the aggregate all_preds.jsonl.
+    let mut aggregate = String::new();
+    let mut aggregate_rows = 0usize;
+    let mut aggregate_unique_ids = false;
+    for (shard_idx, (_, dir, _)) in loaded.iter().enumerate() {
+        let path = predictions_path(dir);
+        let Ok(text) = fs::read_to_string(&path) else {
+            continue;
+        };
+        for line in text.lines().filter(|l| !l.trim().is_empty()) {
+            if owned_line(shard_idx, line) {
+                if line.contains("original_instance_id") {
+                    aggregate_unique_ids = true;
+                }
+                aggregate.push_str(line);
+                aggregate.push('\n');
+                aggregate_rows += 1;
+            }
+        }
+    }
+    fs::write(predictions_path(output), aggregate).map_err(|e| {
+        Error::Config(crate::error::ConfigError::Invalid(format!(
+            "merge: failed to write all_preds.jsonl: {e}"
+        )))
+    })?;
+    write_predictions_metadata(
+        &predictions_metadata_path(output),
+        &PredictionsMetadata {
+            predictions_file: "all_preds.jsonl".to_owned(),
+            aggregate: true,
+            run_index: None,
+            row_count: aggregate_rows,
+            // The aggregate is sb-cli-safe only when it carries no duplicate
+            // (per-run) instance IDs — i.e. a single-run merge.
+            swebench_evaluator_compatible: !aggregate_unique_ids,
+        },
+    )?;
+
+    // Merge each per-run all_preds.run-k.jsonl.
+    for &k in &run_indices {
+        let mut run_text = String::new();
+        let mut run_rows = 0usize;
+        for (shard_idx, (_, dir, _)) in loaded.iter().enumerate() {
+            let Ok(text) = fs::read_to_string(predictions_path_for_run(dir, k)) else {
+                continue;
+            };
+            for line in text.lines().filter(|l| !l.trim().is_empty()) {
+                if owned_line(shard_idx, line) {
+                    run_text.push_str(line);
+                    run_text.push('\n');
+                    run_rows += 1;
+                }
+            }
+        }
+        fs::write(predictions_path_for_run(output, k), run_text).map_err(|e| {
+            Error::Config(crate::error::ConfigError::Invalid(format!(
+                "merge: failed to write all_preds.run-{k}.jsonl: {e}"
+            )))
+        })?;
+        write_predictions_metadata(
+            &predictions_metadata_path_for_run(output, k),
+            &PredictionsMetadata {
+                predictions_file: format!("all_preds.run-{k}.jsonl"),
+                aggregate: false,
+                run_index: Some(k),
+                row_count: run_rows,
+                swebench_evaluator_compatible: true,
+            },
+        )?;
+    }
 
     Ok(())
 }

@@ -674,7 +674,7 @@ pub fn run(args: &AuditCmd) -> Result<(), Error> {
 }
 
 /// Recursively collect all trajectory files in the sweep directory.
-fn collect_trajectories_on_disk(dir: &Path) -> Result<Vec<PathBuf>, std::io::Error> {
+pub(crate) fn collect_trajectories_on_disk(dir: &Path) -> Result<Vec<PathBuf>, std::io::Error> {
     let mut files = Vec::new();
     if dir.is_dir() {
         for entry in fs::read_dir(dir)? {
@@ -698,7 +698,7 @@ fn collect_trajectories_on_disk(dir: &Path) -> Result<Vec<PathBuf>, std::io::Err
 /// 1. Root: <sweep_dir>/<instance_id>.traj.json
 /// 2. Nested: <sweep_dir>/<instance_id>/run-<run_index>.traj.json or trajectory.json
 /// 3. Bundled: <sweep_dir>/trajectories/<instance_id>.traj.json
-fn parse_trajectory_path(sweep_dir: &Path, path: &Path) -> Option<(String, u32)> {
+pub(crate) fn parse_trajectory_path(sweep_dir: &Path, path: &Path) -> Option<(String, u32)> {
     let rel = path.strip_prefix(sweep_dir).ok()?;
     let components: Vec<_> = rel
         .components()
