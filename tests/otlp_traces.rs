@@ -191,7 +191,7 @@ fn instance_result_has_trace_id() {
         trace_id: Some("deadbeef00000000deadbeef00000000".into()),
     };
     assert_eq!(
-        ir.trace_id.as_deref(),
+        ir.trace_id.as_ref().map(maxwells_daemon::ids::TraceId::as_str),
         Some("deadbeef00000000deadbeef00000000")
     );
 }
@@ -207,7 +207,7 @@ fn trajectory_info_has_trace_id() {
         ..Default::default()
     };
     assert_eq!(
-        info.trace_id.as_deref(),
+        info.trace_id.as_ref().map(maxwells_daemon::ids::TraceId::as_str),
         Some("aabbccdd00000000aabbccdd00000000")
     );
 }
@@ -223,7 +223,7 @@ fn trajectory_trace_id_serialises_and_deserialises() {
     let json = serde_json::to_string(&traj).unwrap();
     let decoded: Trajectory = serde_json::from_str(&json).unwrap();
     assert_eq!(
-        decoded.info.trace_id.as_deref(),
+        decoded.info.trace_id.as_ref().map(maxwells_daemon::ids::TraceId::as_str),
         Some("cafebabe00000000cafebabe00000000")
     );
 }
@@ -420,7 +420,7 @@ async fn trace_id_written_to_instance_result_and_trajectory() {
             "instance {} missing trace_id",
             inst.instance_id
         );
-        let tid = inst.trace_id.as_deref().unwrap();
+        let tid = inst.trace_id.as_ref().map(maxwells_daemon::ids::TraceId::as_str).unwrap();
         assert_eq!(tid.len(), 32, "trace_id must be 32 hex chars, got: {tid}");
         assert!(
             tid.chars().all(|c| c.is_ascii_hexdigit()),

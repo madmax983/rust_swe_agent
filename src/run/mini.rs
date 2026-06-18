@@ -209,7 +209,7 @@ pub struct MiniArgs {
     /// is active. Written into `trajectory.info.trace_id` before the first
     /// save so the trajectory and its span share the same correlation key.
     /// `None` when OTLP is not configured.
-    pub trace_id: Option<String>,
+    pub trace_id: Option<crate::ids::TraceId>,
     /// Optional webhook URL for per-step push streaming (issue #324).
     /// When `Some`, each `StreamEvent` is POSTed as a JSON envelope to this
     /// URL by a background task.  Absent = no background task spawned.

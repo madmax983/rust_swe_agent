@@ -41,6 +41,8 @@ macro_rules! string_id {
 
 string_id!(ContainerId);
 string_id!(TaskId);
+string_id!(TraceId);
+string_id!(SpanId);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(transparent)]

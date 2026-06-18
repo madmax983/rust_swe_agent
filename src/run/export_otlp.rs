@@ -236,7 +236,7 @@ pub fn reconstruct(sweep_dir: &Path) -> Result<Reconstructed, Error> {
 fn reconstruct_instance(
     sweep_dir: &Path,
     sweep_id: &str,
-    sweep_span_id: &str,
+    sweep_span_id: &crate::ids::SpanId,
     last_run: u32,
     sweep_start_nanos: u64,
     sweep_end_nanos: u64,

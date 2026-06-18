@@ -192,7 +192,7 @@ pub struct InspectReport {
     /// 32 lowercase hex chars. Deep-link to the operator's observability backend
     /// via their dashboard's trace search. `None` when OTLP was not enabled.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub trace_id: Option<String>,
+    pub trace_id: Option<crate::ids::TraceId>,
     /// Metadata recording how this trajectory was forked from a parent run.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fork_lineage: Option<crate::trajectory::ForkLineage>,

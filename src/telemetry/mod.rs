@@ -28,10 +28,10 @@ use sha2::{Digest, Sha256};
 // ---------------------------------------------------------------------------
 
 /// A 128-bit OTel trace ID encoded as 32 lowercase hex chars.
-pub type TraceId = String;
+use crate::ids::{TraceId, SpanId};
 
-/// A 64-bit OTel span ID encoded as 16 lowercase hex chars.
-pub type SpanId = String;
+
+
 
 /// Generates a deterministic but collision-resistant 128-bit trace ID by
 /// hashing `instance_id + sweep_id + monotonic_nanos`.
@@ -44,7 +44,7 @@ pub fn new_trace_id(instance_id: &str, sweep_id: &str) -> TraceId {
     // Use the first 16 bytes (128 bits) as the trace ID.
     let mut bytes = [0u8; 16];
     bytes.copy_from_slice(&hash[..16]);
-    format!("{:032x}", u128::from_be_bytes(bytes))
+    TraceId::new(format!("{:032x}", u128::from_be_bytes(bytes)))
 }
 
 /// Generates a 64-bit span ID by taking the first 8 bytes of a SHA-256 hash.
@@ -52,11 +52,11 @@ pub fn new_span_id(salt: &str, trace_id: &TraceId) -> SpanId {
     let mut hasher = Sha256::new();
     hasher.update(salt.as_bytes());
     hasher.update(b"\x01");
-    hasher.update(trace_id.as_bytes());
+    hasher.update(trace_id.as_str().as_bytes());
     let hash = hasher.finalize();
     let mut bytes = [0u8; 8];
     bytes.copy_from_slice(&hash[..8]);
-    format!("{:016x}", u64::from_be_bytes(bytes))
+    SpanId::new(format!("{:016x}", u64::from_be_bytes(bytes)))
 }
 
 fn now_unix_nanos() -> u64 {
@@ -348,9 +348,9 @@ fn bool_attr(key: &str, val: bool) -> serde_json::Value {
 
 #[allow(clippy::too_many_arguments)]
 fn span_json(
-    trace_id: &str,
-    span_id: &str,
-    parent_span_id: Option<&str>,
+    trace_id: &crate::ids::TraceId,
+    span_id: &SpanId,
+    parent_span_id: Option<&SpanId>,
     name: &str,
     start_nanos: u64,
     end_nanos: u64,
@@ -417,8 +417,8 @@ fn u64_to_i64(v: u64) -> i64 {
 
 fn build_instance_spans(
     sweep_id: &str,
-    sweep_trace_id: &str,
-    sweep_span_id: &str,
+    sweep_trace_id: &crate::ids::TraceId,
+    sweep_span_id: &crate::ids::SpanId,
     inst: &InstanceSpanData,
 ) -> Vec<serde_json::Value> {
     let inst_span_id = new_span_id(&format!("inst_{}", inst.instance_id), &inst.trace_id);
@@ -876,8 +876,8 @@ pub(crate) mod build {
     /// when a trajectory is available.
     #[allow(clippy::too_many_arguments)]
     pub fn instance_span_data_from_result(
-        trace_id: &str,
-        sweep_span_id: &str,
+        trace_id: &crate::ids::TraceId,
+        sweep_span_id: &crate::ids::SpanId,
         instance_id: &str,
         repo: &str,
         result: &crate::run::swebench::InstanceResult,
@@ -886,8 +886,8 @@ pub(crate) mod build {
         end_nanos: u64,
     ) -> InstanceSpanData {
         InstanceSpanData {
-            trace_id: trace_id.to_owned(),
-            sweep_span_id: sweep_span_id.to_owned(),
+            trace_id: trace_id.clone(),
+            sweep_span_id: sweep_span_id.clone(),
             instance_id: instance_id.to_owned(),
             repo: repo.to_owned(),
             outcome: result.outcome.as_deref().unwrap_or("unknown").to_owned(),
@@ -907,8 +907,8 @@ pub(crate) mod build {
     /// never placed in span attributes — only numeric counters, exit codes,
     /// and model metadata.
     pub fn instance_span_data_from_trajectory(
-        trace_id: &str,
-        sweep_span_id: &str,
+        trace_id: &crate::ids::TraceId,
+        sweep_span_id: &crate::ids::SpanId,
         instance_id: &str,
         repo: &str,
         traj: &Trajectory,
@@ -1021,8 +1021,8 @@ pub(crate) mod build {
         }
 
         InstanceSpanData {
-            trace_id: trace_id.to_owned(),
-            sweep_span_id: sweep_span_id.to_owned(),
+            trace_id: trace_id.clone(),
+            sweep_span_id: sweep_span_id.clone(),
             instance_id: instance_id.to_owned(),
             repo: repo.to_owned(),
             outcome,
@@ -1138,16 +1138,16 @@ mod tests {
     #[test]
     fn trace_id_is_32_hex_chars() {
         let tid = new_trace_id("django__django__1234", "sweep-abc");
-        assert_eq!(tid.len(), 32);
-        assert!(tid.chars().all(|c| c.is_ascii_hexdigit()));
+        assert_eq!(tid.as_str().len(), 32);
+        assert!(tid.as_str().chars().all(|c| c.is_ascii_hexdigit()));
     }
 
     #[test]
     fn span_id_is_16_hex_chars() {
         let tid = new_trace_id("repo__issue__1", "sweep-xyz");
         let sid = new_span_id("sweep_span", &tid);
-        assert_eq!(sid.len(), 16);
-        assert!(sid.chars().all(|c| c.is_ascii_hexdigit()));
+        assert_eq!(sid.as_str().len(), 16);
+        assert!(sid.as_str().chars().all(|c| c.is_ascii_hexdigit()));
     }
 
     #[test]

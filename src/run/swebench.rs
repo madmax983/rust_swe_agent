@@ -426,7 +426,7 @@ pub struct InstanceResult {
     /// 32 lowercase hex chars (128-bit). Set when `--otlp-endpoint` is active
     /// (or `OTEL_EXPORTER_OTLP_ENDPOINT` is set). `None` otherwise.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub trace_id: Option<String>,
+    pub trace_id: Option<crate::ids::TraceId>,
 }
 
 /// Selection criteria recorded in a retry history entry.
@@ -2826,7 +2826,8 @@ pub async fn run(mut args: SwebenchArgs) -> Result<SweepResults, Error> {
             if needs_generated_id {
                 ir.trace_id = Some(crate::telemetry::new_trace_id(&ir.instance_id, &sweep_id));
             }
-            let trace_id = ir.trace_id.as_deref().unwrap_or_default();
+            let empty_trace_id = crate::ids::TraceId::new("");
+            let trace_id = ir.trace_id.as_ref().unwrap_or(&empty_trace_id);
             // Run indices are 1-based (the sweep loop runs `for run_index in 1..=reruns`).
             // Use reruns=1 as the default; if the instance ran multiple times take the last.
             let last_run_index = args.reruns.max(1);
@@ -3733,7 +3734,7 @@ struct CancelledWaitContext<'a> {
     attempts: u32,
     retry_reasons: &'a [FailureCategory],
     current: Option<InstanceResult>,
-    trace_id: Option<String>,
+    trace_id: Option<crate::ids::TraceId>,
 }
 
 fn cancelled_wait_result(ctx: CancelledWaitContext<'_>) -> InstanceResult {
@@ -3743,7 +3744,7 @@ fn cancelled_wait_result(ctx: CancelledWaitContext<'_>) -> InstanceResult {
         ctx.run_index,
         ctx.task,
         ctx.model_name,
-        ctx.trace_id.as_deref(),
+        ctx.trace_id.as_ref(),
     );
     let mut result = ctx.current.unwrap_or_else(|| InstanceResult {
         instance_id: ctx.instance_id.to_owned(),
@@ -3801,7 +3802,7 @@ fn persist_cancelled_wait_trajectory(
     run_index: u32,
     task: &str,
     model_name: &str,
-    trace_id: Option<&str>,
+    trace_id: Option<&crate::ids::TraceId>,
 ) {
     let traj_path = trajectory_path_for_run(output_dir, instance_id, run_index);
     let mut trajectory = std::fs::read_to_string(&traj_path)
@@ -3830,7 +3831,7 @@ fn persist_cancelled_wait_trajectory(
     trajectory.info.duration_secs.get_or_insert(0.0);
     trajectory.info.steps.get_or_insert(0);
     if trajectory.info.trace_id.is_none() {
-        trajectory.info.trace_id = trace_id.map(str::to_owned);
+        trajectory.info.trace_id = trace_id.cloned();
     }
 
     if let Some(parent) = traj_path.parent() {
@@ -4655,7 +4656,7 @@ struct RunOneParams {
     resume_from: Option<crate::trajectory::Trajectory>,
     /// OTel trace ID to embed in the trajectory and instance result.
     /// `None` when OTLP export is not configured.
-    trace_id: Option<String>,
+    trace_id: Option<crate::ids::TraceId>,
     rehearse: bool,
     /// Optional append-only JSONL stream target forwarded to mini runs.
     event_log: Option<PathBuf>,

@@ -667,7 +667,7 @@ pub struct TrajectoryInfo {
     /// spans in the operator's observability backend.
     /// `None` for sweeps run without OTLP export.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub trace_id: Option<String>,
+    pub trace_id: Option<crate::ids::TraceId>,
     /// Absolute canonicalized local working directory for the agent run.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub local_workdir: Option<String>,
