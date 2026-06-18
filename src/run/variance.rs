@@ -108,14 +108,15 @@ pub fn compute_variance(args: &BenchVarianceArgs) -> Result<BenchVarianceReport,
         ))));
     }
 
-    let explicit_status: Option<String> = std::fs::read_to_string(&results_path)
+    let results_json: Option<serde_json::Value> = std::fs::read_to_string(&results_path)
         .ok()
-        .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
-        .and_then(|v| {
-            v.get("sweep_status")
-                .and_then(serde_json::Value::as_str)
-                .map(str::to_owned)
-        });
+        .and_then(|t| serde_json::from_str(&t).ok());
+
+    let explicit_status: Option<String> = results_json.as_ref().and_then(|v| {
+        v.get("sweep_status")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned)
+    });
     if let Some(ref s) = explicit_status {
         if s != crate::run::swebench::SWEEP_STATUS_COMPLETED {
             return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
@@ -123,6 +124,17 @@ pub fn compute_variance(args: &BenchVarianceArgs) -> Result<BenchVarianceReport,
                  flakiness metrics over partial sweeps are misleading"
             ))));
         }
+    }
+
+    let budget_halted = results_json
+        .as_ref()
+        .and_then(|v| v.get("budget_halted").and_then(serde_json::Value::as_u64))
+        .unwrap_or(0);
+    if budget_halted > 0 {
+        return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+            "bench variance: sweep had {budget_halted} budget-halted instance(s); \
+             budget-halted slots appear as failed runs and bias flakiness metrics"
+        ))));
     }
 
     let loaded = load_sweep(&args.sweep_dir)?;

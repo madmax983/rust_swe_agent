@@ -251,6 +251,36 @@ fn ac1_rejects_missing_results_json() {
 }
 
 #[test]
+fn ac1_rejects_budget_halted_sweep() {
+    let dir = tempfile::tempdir().unwrap();
+    let halted = serde_json::json!({
+        "total": 3,
+        "sweep_status": "completed",
+        "budget_halted": 2,
+        "instances": []
+    });
+    std::fs::write(
+        dir.path().join("results.json"),
+        serde_json::to_string(&halted).unwrap(),
+    )
+    .unwrap();
+
+    let result = compute_variance(&BenchVarianceArgs {
+        sweep_dir: dir.path().to_path_buf(),
+        ci_width: None,
+        filter: vec![],
+        class: None,
+    });
+
+    assert!(result.is_err(), "expected error for budget-halted sweep");
+    let msg = result.unwrap_err().to_string();
+    assert!(
+        msg.contains("budget") || msg.contains("halted"),
+        "error should mention budget halt, got: {msg}"
+    );
+}
+
+#[test]
 fn ac1_rejects_incomplete_sweep() {
     let dir = tempfile::tempdir().unwrap();
     let cancelled = serde_json::json!({"total": 2, "sweep_status": "cancelled", "instances": []});
