@@ -1772,6 +1772,19 @@ fn legacy_eval_emits_entry_for_every_owned_instance() {
     );
     assert!(ids.contains(&"inst-003"));
 
+    // inst-002 errored with no patch → never scored → skipped_no_patch, not a
+    // real `unresolved` verdict.
+    let entry = eval["instances"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["instance_id"] == "inst-002")
+        .unwrap();
+    assert_eq!(
+        entry["eval_exit_reason"], "skipped_no_patch",
+        "no-patch legacy row should be skipped_no_patch"
+    );
+
     let audit = Command::new(binary_path())
         .args(["bench", "audit", "--sweep"])
         .arg(&output)

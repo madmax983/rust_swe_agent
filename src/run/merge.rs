@@ -133,6 +133,11 @@ pub fn run(args: &MergeCmd) -> Result<MergeReport, Error> {
     // shard 0's), or a throttled later worker would be invisible in the merged run.
     merged.rate_limit_events = merge_rate_limit_events(&loaded);
 
+    // A merged multi-shard sweep ran under no single global cost cap — shard 0's
+    // `--sweep-cost-limit-usd` does not bound the union's ~K× spend, so clear it
+    // rather than presenting one shard's cap over all shards' cost.
+    merged.cost_limit_usd = None;
+
     // `recompute_aggregates` counts outcomes per-instance, but a pass@k sweep has
     // one collapsed row per task while results.json records per-run *slots* (and
     // `bench audit` recomputes the same way from the copied trajectories). Recount
@@ -734,12 +739,22 @@ fn merge_evaluation_json(
                 eval_entries.push(normalize_eval_entry(entry));
             } else {
                 // `eval_exit_reason` is required by `InstanceEvaluation`; downstream
-                // commands (report/triage/inspect) reject rows that omit it.
+                // commands (report/triage/inspect) reject rows that omit it. A row
+                // with no submitted patch was never scored, so label it
+                // `skipped_no_patch` (evaluator-unavailable) rather than `unresolved`
+                // (a real failed verdict), matching canonical `bench evaluate`.
                 let resolved = resolved_ids.contains(id);
+                let eval_exit_reason = if resolved {
+                    "resolved"
+                } else if inst.non_empty_patch {
+                    "unresolved"
+                } else {
+                    "skipped_no_patch"
+                };
                 eval_entries.push(serde_json::json!({
                     "instance_id": id,
                     "resolved": resolved,
-                    "eval_exit_reason": if resolved { "resolved" } else { "unresolved" }
+                    "eval_exit_reason": eval_exit_reason
                 }));
             }
         }
@@ -1089,6 +1104,27 @@ fn merge_predictions(
         return Ok(());
     }
 
+    // If any shard has predictions, every shard must — otherwise we would silently
+    // drop a shard's submissions while still keeping its rows/patches, and
+    // `bench evaluate` would treat those submissions as missing. Fail loudly with
+    // the incomplete shard instead of writing a partial predictions artifact.
+    for (label, dir, _) in loaded {
+        let path = predictions_path(dir);
+        if !path.exists() {
+            return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+                "merge: shard '{label}' is missing all_preds.jsonl while other shards have \
+                 predictions; cannot produce a complete merged predictions set \
+                 (re-run the shard's sweep or evaluate the merged sweep instead)"
+            ))));
+        }
+        if fs::read_to_string(&path).is_err() {
+            return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+                "merge: shard '{label}' all_preds.jsonl is unreadable; cannot produce a \
+                 complete merged predictions set"
+            ))));
+        }
+    }
+
     // Owning shard for a prediction row: the aggregate file may carry unique
     // `<id>::run-k` IDs plus an `original_instance_id`; per-run files keep the
     // original SWE-bench ID. Resolve both to the underlying instance id.
@@ -1205,31 +1241,53 @@ fn merge_predictions(
 }
 
 /// Combine per-shard rate-limit telemetry: sum throttled calls/seconds, take the
-/// peak concurrency, and keep the configured caps (identical across shards).
+/// peak concurrency. The configured caps are kept only when every shard that
+/// recorded telemetry used the same value; a mix is reported as `None` rather
+/// than presenting one shard's cap as if it applied to all.
 fn merge_rate_limit_events(
     loaded: &[(String, PathBuf, SweepResults)],
 ) -> Option<crate::run::rate_limit::RateLimitEvents> {
     let mut any = false;
-    let mut merged = crate::run::rate_limit::RateLimitEvents {
-        throttled_calls: 0,
-        total_throttled_seconds: 0.0,
-        peak_concurrent: 0,
-        configured_max_rpm: None,
-        configured_max_input_tpm: None,
-    };
+    let mut throttled_calls = 0u64;
+    let mut total_throttled_seconds = 0.0;
+    let mut peak_concurrent = 0u32;
+    let mut rpm_caps: HashSet<u32> = HashSet::new();
+    let mut tpm_caps: HashSet<u64> = HashSet::new();
     for (_, _, results) in loaded {
         if let Some(ev) = &results.rate_limit_events {
             any = true;
-            merged.throttled_calls += ev.throttled_calls;
-            merged.total_throttled_seconds += ev.total_throttled_seconds;
-            merged.peak_concurrent = merged.peak_concurrent.max(ev.peak_concurrent);
-            merged.configured_max_rpm = merged.configured_max_rpm.or(ev.configured_max_rpm);
-            merged.configured_max_input_tpm = merged
-                .configured_max_input_tpm
-                .or(ev.configured_max_input_tpm);
+            throttled_calls += ev.throttled_calls;
+            total_throttled_seconds += ev.total_throttled_seconds;
+            peak_concurrent = peak_concurrent.max(ev.peak_concurrent);
+            if let Some(rpm) = ev.configured_max_rpm {
+                rpm_caps.insert(rpm);
+            }
+            if let Some(tpm) = ev.configured_max_input_tpm {
+                tpm_caps.insert(tpm);
+            }
         }
     }
-    any.then_some(merged)
+    if !any {
+        return None;
+    }
+    // Only a single agreed value survives; mixed (or absent) caps become None.
+    let agreed_rpm = if rpm_caps.len() == 1 {
+        rpm_caps.iter().next().copied()
+    } else {
+        None
+    };
+    let agreed_input_tpm = if tpm_caps.len() == 1 {
+        tpm_caps.iter().next().copied()
+    } else {
+        None
+    };
+    Some(crate::run::rate_limit::RateLimitEvents {
+        throttled_calls,
+        total_throttled_seconds,
+        peak_concurrent,
+        configured_max_rpm: agreed_rpm,
+        configured_max_input_tpm: agreed_input_tpm,
+    })
 }
 
 fn config_hash(resolved_toml: &str) -> String {
