@@ -163,15 +163,22 @@ pub struct VerdictCounts {
 /// does not exist). Individual per-file parse failures are returned as
 /// `ConformanceVerdict::Invalid` rather than propagating as `Err`.
 pub fn run_artifact_check(opts: &ArtifactCheckOpts) -> Result<ArtifactCheckOutput, Error> {
-    // Explicit paths that do not exist are a usage error (exit 2), not a
-    // validation failure (exit 47).  Discovered paths from directory scans
-    // are treated differently: if the file disappears between scan and read,
-    // validate_file returns Invalid rather than aborting the whole run.
+    // Validate explicit paths before scanning.  Non-existent paths and
+    // special files (FIFOs, device nodes) are usage errors (exit 2).
+    // Discovered paths from directory scans are treated differently: if a
+    // file disappears between scan and read, validate_file returns Invalid
+    // rather than aborting the whole run.
     let ArtifactCheckSource::Paths(input_paths) = &opts.source;
     for path in input_paths {
         if !path.exists() {
             return Err(Error::Config(ConfigError::Usage(format!(
                 "input path does not exist: {}",
+                path.display()
+            ))));
+        }
+        if !path.is_dir() && !path.is_file() {
+            return Err(Error::Config(ConfigError::Usage(format!(
+                "input path is not a regular file or directory: {}",
                 path.display()
             ))));
         }
@@ -226,12 +233,26 @@ fn collect_json_recursive(
             return;
         }
     };
-    let mut entries: Vec<_> = entries.filter_map(Result::ok).collect();
+    let mut entries: Vec<_> = entries
+        .filter_map(|res| match res {
+            Ok(e) => Some(e),
+            Err(e) => {
+                errors.push((dir.to_owned(), format!("directory entry error: {e}")));
+                None
+            }
+        })
+        .collect();
     entries.sort_by_key(std::fs::DirEntry::file_name);
     for entry in entries {
         // Use file_type() (does not follow symlinks) to avoid infinite recursion
         // if the directory tree contains symlink cycles.
-        let Ok(ft) = entry.file_type() else { continue };
+        let ft = match entry.file_type() {
+            Ok(ft) => ft,
+            Err(e) => {
+                errors.push((entry.path(), format!("cannot read file type: {e}")));
+                continue;
+            }
+        };
         let path = entry.path();
         if ft.is_dir() {
             collect_json_recursive(&path, out, errors);
