@@ -119,6 +119,7 @@ fn default_evaluate_args(sweep_dir: &Path) -> EvaluateArgs {
         run_id: None,
         breakdown: BreakdownSelection::none(),
         cost_attribution: false,
+        force: false,
     }
 }
 
@@ -330,6 +331,7 @@ fn docker_tests_args_carry_timeout_field() {
         run_id: None,
         breakdown: BreakdownSelection::none(),
         cost_attribution: false,
+        force: false,
     };
     assert_eq!(args.timeout_per_instance_secs, 120);
     assert!(matches!(args.backend, EvaluateBackend::DockerTests));
@@ -411,6 +413,7 @@ fn instance_evaluation_skipped_no_image_round_trips() {
         eval_log_path: None,
         patch_stats: None,
         patch_error_log: None,
+        submission_fingerprint: None,
     };
 
     let json = serde_json::to_string(&inst).unwrap();

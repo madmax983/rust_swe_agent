@@ -694,6 +694,7 @@ pub async fn run(args: CascadeArgs) -> Result<CascadeSummary, Error> {
                 run_id: None,
                 breakdown: BreakdownSelection::none(),
                 cost_attribution: false,
+                force: false,
             };
             tokio::task::spawn_blocking(move || crate::run::evaluate::run(&eval_args))
                 .await

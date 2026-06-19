@@ -442,6 +442,7 @@ pub fn run(args: &EvalFlakeArgs) -> Result<EvalFlakeReport, Error> {
             run_id: Some(format!("eval-flake-replay-{}", replay_idx + 1)),
             breakdown: BreakdownSelection::none(),
             cost_attribution: false,
+            force: false,
         };
 
         let eval_result = crate::run::evaluate::run(&eval_args)?;

@@ -335,6 +335,7 @@ fn evaluate_via_sb_cli(
         run_id: None,
         breakdown: BreakdownSelection::none(),
         cost_attribution: false,
+        force: false,
     };
 
     let start = Instant::now();
@@ -524,6 +525,7 @@ fn evaluate_via_docker_tests(
         run_id: None,
         breakdown: BreakdownSelection::none(),
         cost_attribution: false,
+        force: false,
     };
 
     let start = std::time::Instant::now();

@@ -240,6 +240,7 @@ async fn evaluate_run_writes_versioned_evaluation_json() {
         run_id: None,
         breakdown: maxwells_daemon::run::evaluate::BreakdownSelection::none(),
         cost_attribution: false,
+        force: false,
     })
     .unwrap();
 
@@ -531,6 +532,7 @@ async fn current_contract_fixtures_match_emitted_artifact_top_level_fields() {
         run_id: None,
         breakdown: maxwells_daemon::run::evaluate::BreakdownSelection::none(),
         cost_attribution: false,
+        force: false,
     })
     .unwrap();
     let eval_json = serde_json::from_str(

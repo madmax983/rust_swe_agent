@@ -430,6 +430,7 @@ pub fn run(args: &EvalParityArgs) -> Result<EvalParityReport, Error> {
         run_id: Some("eval-parity-offline".to_owned()),
         breakdown: BreakdownSelection::none(),
         cost_attribution: false,
+        force: false,
     })?;
 
     // Run canonical backend.
@@ -444,6 +445,7 @@ pub fn run(args: &EvalParityArgs) -> Result<EvalParityReport, Error> {
         run_id: Some("eval-parity-canonical".to_owned()),
         breakdown: BreakdownSelection::none(),
         cost_attribution: false,
+        force: false,
     })?;
 
     let offline_map = results_to_verdict_map(&offline_result);

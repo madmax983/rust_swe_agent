@@ -155,6 +155,8 @@ pub struct EvaluateArgs {
     pub run_id: Option<String>,
     pub breakdown: BreakdownSelection,
     pub cost_attribution: bool,
+    /// Re-evaluate every instance regardless of cached verdicts.
+    pub force: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -221,6 +223,10 @@ pub struct InstanceEvaluation {
     /// secret-redactor before being persisted or printed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub patch_error_log: Option<String>,
+    /// SHA-256 fingerprint of the submission patch artifact(s) at evaluation
+    /// time. Used on re-run to detect stale cached verdicts (issue #530).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub submission_fingerprint: Option<String>,
 }
 
 #[allow(clippy::trivially_copy_pass_by_ref)]
@@ -250,6 +256,18 @@ pub struct SubmissionClassRollup {
     pub empty: SubmissionClassStats,
 }
 
+/// Counts from the reuse/resume pass: how many instances were evaluated fresh,
+/// reused from a prior `evaluation.json`, or invalidated due to a changed patch.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ReuseSummary {
+    /// Total instances the backend executed (new + invalidated).
+    pub evaluated: u32,
+    /// Instances whose cached verdict was preserved unchanged.
+    pub reused: u32,
+    /// Subset of `evaluated` that were re-run because the patch artifact changed.
+    pub invalidated: u32,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct EvaluationResults {
     pub instances: Vec<InstanceEvaluation>,
@@ -276,6 +294,9 @@ pub struct EvaluationResults {
     pub submission_class_rollup: Option<SubmissionClassRollup>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub test_only_resolved_rate: Option<f64>,
+    /// Reuse/resume counts populated by the resume pass (issue #530).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reuse_summary: Option<ReuseSummary>,
 }
 
 /// p50 / p95 of each wall-clock stage measured across every trajectory in
@@ -435,21 +456,54 @@ pub fn run(args: &EvaluateArgs) -> Result<EvaluationResults, Error> {
         ));
     }
     let results = loaded.instances;
+
+    // Resume/reuse pass: classify instances into reused vs. needs-eval.
+    let plan = classify_for_reuse(args, &results)?;
+    let fresh_ids: std::collections::HashSet<&str> =
+        plan.needs_eval.keys().map(String::as_str).collect();
+
     let eval_started_at = utc_now_iso8601();
     let run_output = match args.backend {
         EvaluateBackend::None => {
-            EvaluateRunOutput::without_run_resolution(build_none_eval(&results))
+            EvaluateRunOutput::without_run_resolution(build_none_eval(&plan.needs_eval))
         }
-        EvaluateBackend::SbCli => run_sb_cli(args, &results)?,
-        EvaluateBackend::Rehearsal => run_rehearsal_eval(args, &results)?,
-        EvaluateBackend::DockerTests => run_docker_tests(args, &results)?,
+        EvaluateBackend::SbCli => run_sb_cli(args, &plan.needs_eval)?,
+        EvaluateBackend::Rehearsal => run_rehearsal_eval(args, &plan.needs_eval)?,
+        EvaluateBackend::DockerTests => run_docker_tests(args, &plan.needs_eval)?,
     };
     let EvaluateRunOutput {
         mut eval,
-        resolved_by_run,
+        mut resolved_by_run,
         effective_run_id,
         docker_image_names,
     } = run_output;
+
+    // Populate submission fingerprints for fresh instances before merge.
+    for inst in &mut eval.instances {
+        let runs = results
+            .get(&inst.instance_id)
+            .map(effective_runs)
+            .unwrap_or(1);
+        inst.submission_fingerprint =
+            submission_fingerprint_for_instance(&args.sweep_dir, &inst.instance_id, runs);
+    }
+
+    // Merge reused cached verdicts with freshly evaluated ones.
+    // Reconstruct resolved_by_run for reused instances so that cost/model-mix
+    // aggregates are correct over the full merged set.
+    for cached in &plan.reused {
+        for run_idx in 1..=cached.runs.max(1) {
+            let resolved = if cached.runs <= 1 {
+                cached.resolved
+            } else {
+                run_idx <= cached.resolved_count
+            };
+            resolved_by_run.insert(RunSlotKey::new(&cached.instance_id, run_idx), resolved);
+        }
+    }
+    eval.instances.extend(plan.reused);
+    eval.instances.sort_by(|a, b| a.instance_id.cmp(&b.instance_id));
+
     let (dataset_sha256, dataset_instance_count) = if let Some(ref dataset_path) = args.dataset_path
     {
         let sha = sha256_file(dataset_path).ok();
@@ -472,7 +526,8 @@ pub fn run(args: &EvaluateArgs) -> Result<EvaluationResults, Error> {
         dataset_instance_count,
         docker_image_names,
     );
-    attach_patch_stats(&mut eval, args, &resolved_by_run)?;
+    // Recompute patch_stats only for fresh instances; reused keep cached stats.
+    attach_patch_stats(&mut eval, args, &resolved_by_run, &fresh_ids)?;
     let (rollup, test_only_resolved_rate) = build_submission_class_rollup(&eval.instances);
     eval.submission_class_rollup = Some(rollup);
     eval.test_only_resolved_rate = Some(test_only_resolved_rate);
@@ -500,6 +555,7 @@ pub fn run(args: &EvaluateArgs) -> Result<EvaluationResults, Error> {
     eval.model_mix_summary = build_model_mix_summary_from_slots(&run_slots, &resolved_by_run);
     eval.latency_summary = build_latency_summary_from_slots(&args.sweep_dir, &run_slots);
     eval.provenance = Some(provenance);
+    eval.reuse_summary = Some(plan.counts);
     let redactor = Redactor::default_enabled();
     for inst in &mut eval.instances {
         inst.patch_error_log = inst
@@ -732,6 +788,126 @@ fn sha256_file(path: &Path) -> Result<String, std::io::Error> {
     Ok(format!("{digest:x}"))
 }
 
+// ---------------------------------------------------------------------------
+// Resume/reuse infrastructure (issue #530)
+// ---------------------------------------------------------------------------
+
+/// Compute a fingerprint for an instance's submission patch artifact(s).
+///
+/// Hashes all existing `run-<N>.patch` files (1..=runs) as
+/// `"<N>:<sha256>\n"` lines. Returns `None` when no patch files exist
+/// (instance was not submitted, or submission left no artifact).
+fn submission_fingerprint_for_instance(
+    sweep_dir: &Path,
+    instance_id: &str,
+    runs: u32,
+) -> Option<String> {
+    use sha2::{Digest as _, Sha256};
+    let mut hasher = Sha256::new();
+    let mut any = false;
+    for run_index in 1..=runs {
+        let path = existing_patch_path_for_run(sweep_dir, instance_id, run_index);
+        if let Ok(sha) = sha256_file(&path) {
+            hasher.update(format!("{run_index}:{sha}\n").as_bytes());
+            any = true;
+        }
+    }
+    if any { Some(format!("{:x}", hasher.finalize())) } else { None }
+}
+
+/// Outcome of the reuse classification pass.
+struct ReusePlan {
+    /// Cached `InstanceEvaluation` entries to carry forward unchanged.
+    reused: Vec<InstanceEvaluation>,
+    /// Subset of the current sweep that must be sent to the backend.
+    needs_eval: HashMap<String, InstanceResult>,
+    /// Counts for the one-line summary and JSON artifact.
+    counts: ReuseSummary,
+}
+
+/// Classify each instance in the current sweep as reused / invalidated / new.
+///
+/// When `args.force` is set, all instances are sent to the backend (today's
+/// behaviour as an explicit opt-in). Otherwise we:
+///   1. Load the prior `evaluation.json` (absent ⇒ empty map, all new).
+///   2. Compute the current submission fingerprint for every instance.
+///   3. Reuse cached verdicts whose fingerprint matches; invalidate the rest.
+fn classify_for_reuse(
+    args: &EvaluateArgs,
+    results: &HashMap<String, InstanceResult>,
+) -> Result<ReusePlan, Error> {
+    // --force: skip all reuse logic and send everything to the backend.
+    if args.force {
+        return Ok(ReusePlan {
+            reused: vec![],
+            needs_eval: results.clone(),
+            counts: ReuseSummary {
+                evaluated: results.len() as u32,
+                reused: 0,
+                invalidated: 0,
+            },
+        });
+    }
+
+    // Load the prior evaluation.json (tolerate absence / parse errors).
+    let prior_map: HashMap<String, InstanceEvaluation> = {
+        let path = evaluation_path(&args.sweep_dir);
+        if path.exists() {
+            match std::fs::read_to_string(&path)
+                .ok()
+                .and_then(|s| serde_json::from_str::<EvaluationResults>(&s).ok())
+            {
+                Some(prior) => prior
+                    .instances
+                    .into_iter()
+                    .map(|e| (e.instance_id.clone(), e))
+                    .collect(),
+                None => HashMap::new(),
+            }
+        } else {
+            HashMap::new()
+        }
+    };
+
+    let mut reused = Vec::new();
+    let mut needs_eval: HashMap<String, InstanceResult> = HashMap::new();
+    let mut reuse_count = 0u32;
+    let mut invalidated_count = 0u32;
+
+    for (id, r) in results {
+        let runs = effective_runs(r);
+        let current_fp = submission_fingerprint_for_instance(&args.sweep_dir, id, runs);
+
+        match prior_map.get(id) {
+            Some(cached) if cached.submission_fingerprint == current_fp => {
+                // Fingerprints match (including None == None for no-patch instances).
+                reused.push(cached.clone());
+                reuse_count += 1;
+            }
+            Some(_) => {
+                // Prior exists but patch artifact changed — invalidate.
+                needs_eval.insert(id.clone(), r.clone());
+                invalidated_count += 1;
+            }
+            None => {
+                // No prior verdict — new instance.
+                needs_eval.insert(id.clone(), r.clone());
+            }
+        }
+    }
+
+    let evaluated_count = needs_eval.len() as u32;
+    Ok(ReusePlan {
+        reused,
+        needs_eval,
+        counts: ReuseSummary {
+            evaluated: evaluated_count,
+            reused: reuse_count,
+            invalidated: invalidated_count,
+        },
+    })
+}
+
 fn probe_sb_cli_version() -> Option<String> {
     let output = Command::new("sb-cli").arg("--version").output().ok()?;
     let text = String::from_utf8_lossy(&output.stdout);
@@ -751,10 +927,15 @@ fn attach_patch_stats(
     eval: &mut EvaluationResults,
     args: &EvaluateArgs,
     resolved_by_run: &HashMap<RunSlotKey, bool>,
+    fresh_ids: &std::collections::HashSet<&str>,
 ) -> Result<(), Error> {
     let classifiers = PatchClassifiers::from_default_toml()?;
     let gold_patches = load_gold_patches(args.dataset_path.as_deref())?;
     for row in &mut eval.instances {
+        // Skip reused instances — their patch_stats are preserved unchanged.
+        if !fresh_ids.contains(row.instance_id.as_str()) {
+            continue;
+        }
         let run_index = patch_stats_run_index(&row.instance_id, resolved_by_run);
         let patch_text = read_patch_or_empty(&args.sweep_dir, &row.instance_id, run_index)?;
         row.patch_stats = Some(score_patch(
@@ -1194,6 +1375,7 @@ fn run_rehearsal_eval(
             eval_log_path: None,
             patch_stats: None,
             patch_error_log: None,
+            submission_fingerprint: None,
         });
     }
 
@@ -1240,6 +1422,7 @@ fn none_eval_for_result(id: &str, r: &InstanceResult) -> InstanceEvaluation {
         eval_log_path: None,
         patch_stats: None,
         patch_error_log: None,
+        submission_fingerprint: None,
     }
 }
 
@@ -1286,6 +1469,7 @@ fn run_docker_tests(
                 eval_log_path: None,
                 patch_stats: None,
                 patch_error_log: None,
+                submission_fingerprint: None,
             });
             continue;
         }
@@ -1305,6 +1489,7 @@ fn run_docker_tests(
                 eval_log_path: None,
                 patch_stats: None,
                 patch_error_log: None,
+                submission_fingerprint: None,
             });
             continue;
         };
@@ -1384,6 +1569,7 @@ fn run_docker_tests(
                 eval_log_path: None,
                 patch_stats: None,
                 patch_error_log: None,
+                submission_fingerprint: None,
             });
             continue;
         }
@@ -1467,6 +1653,7 @@ fn run_docker_tests(
             eval_log_path: None,
             patch_stats: None,
             patch_error_log,
+            submission_fingerprint: None,
         });
     }
 
@@ -2250,6 +2437,7 @@ fn parse_sb_cli_results(path: &Path) -> Result<HashMap<String, InstanceEvaluatio
                             eval_log_path: None,
                             patch_stats: None,
                             patch_error_log: None,
+                            submission_fingerprint: None,
                         },
                     );
                 }
@@ -2269,6 +2457,7 @@ fn parse_sb_cli_results(path: &Path) -> Result<HashMap<String, InstanceEvaluatio
                                 eval_log_path: None,
                                 patch_stats: None,
                                 patch_error_log: None,
+                                submission_fingerprint: None,
                             },
                         );
                     }
@@ -2338,6 +2527,7 @@ fn parse_generic_eval_row(v: &serde_json::Value) -> Option<InstanceEvaluation> {
         eval_log_path,
         patch_stats: None,
         patch_error_log,
+        submission_fingerprint: None,
     })
 }
 
@@ -2380,6 +2570,7 @@ fn merge_with_results(
             eval_log_path: None,
             patch_stats: None,
             patch_error_log: None,
+            submission_fingerprint: None,
         });
     }
     instances.sort_by(|a, b| a.instance_id.cmp(&b.instance_id));
@@ -2584,6 +2775,7 @@ fn missing_eval_for_result(id: &str, result: &InstanceResult) -> InstanceEvaluat
         eval_log_path: None,
         patch_stats: None,
         patch_error_log: None,
+        submission_fingerprint: None,
     }
 }
 
@@ -3232,6 +3424,7 @@ mod tests {
             eval_log_path: None,
             patch_stats: None,
             patch_error_log: None,
+            submission_fingerprint: None,
         }
     }
 
@@ -3332,6 +3525,7 @@ mod tests {
                         eval_log_path: None,
                         patch_stats: None,
                         patch_error_log: None,
+                        submission_fingerprint: None,
                     },
                 )]),
             ),
@@ -3351,6 +3545,7 @@ mod tests {
                         eval_log_path: None,
                         patch_stats: None,
                         patch_error_log: None,
+                        submission_fingerprint: None,
                     },
                 )]),
             ),
@@ -3393,6 +3588,7 @@ mod tests {
             eval_log_path: None,
             patch_stats: None,
             patch_error_log: None,
+            submission_fingerprint: None,
         }];
         let rows = build_breakdown(
             &evals,
@@ -3839,6 +4035,7 @@ mod tests {
             run_id: Some("test-run".into()),
             breakdown: BreakdownSelection::none(),
             cost_attribution: false,
+            force: false,
         };
         let report_dir = dir.path().join("sb_cli_reports");
         let paths = collect_report_paths(&report_dir, "test-run", &args);
@@ -3863,6 +4060,7 @@ mod tests {
             run_id: Some("test-run".into()),
             breakdown: BreakdownSelection::none(),
             cost_attribution: false,
+            force: false,
         };
         let paths = collect_report_paths(&report_dir, "test-run", &args);
         assert_eq!(paths.len(), 1);
@@ -3882,6 +4080,7 @@ mod tests {
             run_id: Some("r".into()),
             breakdown: BreakdownSelection::none(),
             cost_attribution: false,
+            force: false,
         };
         let entries = build_source_reports(&HashMap::new(), &args, "r");
         assert!(entries.is_empty());
@@ -3902,6 +4101,7 @@ mod tests {
             run_id: Some("r".into()),
             breakdown: BreakdownSelection::none(),
             cost_attribution: false,
+            force: false,
         };
         let entries = build_source_reports(&resolved_by_run, &args, "r");
         assert!(
@@ -3924,6 +4124,7 @@ mod tests {
             run_id: Some("my-run".into()),
             breakdown: BreakdownSelection::none(),
             cost_attribution: false,
+            force: false,
         };
         let prov = build_provenance(
             &args,
@@ -3963,6 +4164,7 @@ mod tests {
             run_id: None,
             breakdown: BreakdownSelection::none(),
             cost_attribution: false,
+            force: false,
         };
         let prov = build_provenance(
             &args,
@@ -3990,6 +4192,7 @@ mod tests {
             run_id: Some("test-run".into()),
             breakdown: BreakdownSelection::none(),
             cost_attribution: false,
+            force: false,
         };
         let preds = dir.path().join("all_preds.jsonl");
         let report_dir = dir.path().join("sb_cli_reports");
@@ -4016,6 +4219,7 @@ mod tests {
             run_id: Some("test-run".into()),
             breakdown: BreakdownSelection::none(),
             cost_attribution: false,
+            force: false,
         };
         let report_dir = dir.path().join("sb_cli_reports");
         let cmd = build_redacted_report_command(&args, &report_dir, "test-run");

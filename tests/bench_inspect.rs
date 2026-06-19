@@ -1980,6 +1980,7 @@ fn patch_error_log_round_trips_through_evaluation_json() {
         eval_log_path: None,
         patch_stats: None,
         patch_error_log: Some(log_text.to_owned()),
+        submission_fingerprint: None,
     };
     let json = serde_json::to_string(&inst).unwrap();
     let back: maxwells_daemon::run::evaluate::InstanceEvaluation =
@@ -2001,6 +2002,7 @@ fn patch_error_log_is_null_for_non_patch_apply_failed_in_schema() {
         eval_log_path: None,
         patch_stats: None,
         patch_error_log: None,
+        submission_fingerprint: None,
     };
     let json = serde_json::to_string(&inst).unwrap();
     let v: serde_json::Value = serde_json::from_str(&json).unwrap();
