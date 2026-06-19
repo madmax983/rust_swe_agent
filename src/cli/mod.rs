@@ -3896,9 +3896,15 @@ fn parse_breakdown_selection(
 fn bench_inspect(i: args::InspectCmd) -> Result<(), Error> {
     if i.list_formats {
         use crate::trajectory::export::registry;
+        let mut table = comfy_table::Table::new();
+        table
+            .load_preset(comfy_table::presets::UTF8_FULL)
+            .apply_modifier(comfy_table::modifiers::UTF8_ROUND_CORNERS)
+            .set_header(vec!["Format", "Tier", "Consumer"]);
         for fmt in registry() {
-            println!("{:<12}{:<14}{}", fmt.name, fmt.tier.as_str(), fmt.consumer);
+            table.add_row(vec![fmt.name, fmt.tier.as_str(), fmt.consumer]);
         }
+        println!("{table}");
         return Ok(());
     }
 
