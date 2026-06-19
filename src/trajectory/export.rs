@@ -95,6 +95,14 @@ pub fn registry() -> Vec<ExportFormat> {
         render: MermaidExporter::export,
     });
 
+    #[cfg(feature = "jsonl-export")]
+    formats.push(ExportFormat {
+        name: "jsonl",
+        tier: StabilityTier::Stable,
+        consumer: "Unix pipelines, jq, data engineering, fine-tuning datasets",
+        render: JsonlExporter::export,
+    });
+
     formats
 }
 
@@ -109,6 +117,7 @@ pub const FEATURE_GATED_FORMATS: &[(&str, &str)] = &[
     ("csv", "csv-export"),
     ("html", "html-export"),
     ("mermaid", "mermaid-export"),
+    ("jsonl", "jsonl-export"),
 ];
 
 /// Returns `true` if `name` is a trajectory export format known to this codebase,
@@ -165,6 +174,9 @@ pub struct MermaidExporter;
 
 #[cfg(feature = "html-export")]
 pub struct HtmlExporter;
+
+#[cfg(feature = "jsonl-export")]
+pub struct JsonlExporter;
 
 use std::fmt::Write;
 
@@ -229,6 +241,26 @@ impl TrajectoryExporter for MarkdownExporter {
         }
 
         md
+    }
+}
+
+#[cfg(feature = "jsonl-export")]
+impl TrajectoryExporter for JsonlExporter {
+    fn export(trajectory: &Trajectory) -> String {
+        let redactor = Redactor::default_enabled();
+        let mut jsonl = String::new();
+
+        for msg in &trajectory.messages {
+            let role = msg.role.as_str();
+            let content = redactor.redact_text(&msg.content, surface::EXPORT).text;
+            let value = serde_json::json!({
+                "role": role,
+                "content": content
+            });
+            let _ = writeln!(jsonl, "{}", serde_json::to_string(&value).unwrap_or_default());
+        }
+
+        jsonl
     }
 }
 
@@ -452,5 +484,21 @@ mod tests {
         assert!(html.contains("submitted"));
         assert!(html.contains("Hello agent"));
         assert!(html.contains("Hello user"));
+    }
+
+    #[cfg(feature = "jsonl-export")]
+    #[test]
+    fn test_jsonl_export_format() {
+        let mut t = Trajectory::new();
+        t.record_message(&Message::system("System prompt"));
+        t.record_message(&Message::user("Hello agent\nMulti-line"));
+
+        let jsonl = JsonlExporter::export(&t);
+        let lines: Vec<&str> = jsonl.lines().collect();
+        assert_eq!(lines.len(), 2);
+        assert!(lines[0].contains(r#""role":"system""#));
+        assert!(lines[0].contains(r#""content":"System prompt""#));
+        assert!(lines[1].contains(r#""role":"user""#));
+        assert!(lines[1].contains(r#"Hello agent\nMulti-line"#));
     }
 }
