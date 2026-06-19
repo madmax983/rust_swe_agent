@@ -13,10 +13,10 @@ use tokio::sync::watch;
 
 use crate::error::EnvError;
 
-pub mod chaos;
+pub(crate) mod chaos;
 #[cfg(feature = "docker")]
-pub mod docker;
-pub mod local;
+pub(crate) mod docker;
+pub(crate) mod local;
 
 /// Stderr sentinel written on a [`RunResult`] synthesized by
 /// [`chaos::ChaosEnvironment`]. The agent loop and `bench inspect` use it to

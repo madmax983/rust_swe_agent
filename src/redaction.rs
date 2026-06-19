@@ -43,7 +43,7 @@ pub struct CheckResult {
     pub unmatched_pattern_indices: Vec<usize>,
 }
 
-pub mod surface {
+pub(crate) mod surface {
     pub const TRAJECTORY: &str = "trajectory";
     pub const MODEL_OBSERVATION: &str = "model_observation";
     pub const STREAM: &str = "stream";

@@ -14,7 +14,7 @@ use std::collections::BTreeMap;
 use crate::error::ModelError;
 
 pub mod deterministic;
-pub mod fallback;
+pub(crate) mod fallback;
 pub mod litellm;
 
 pub use deterministic::DeterministicModel;
