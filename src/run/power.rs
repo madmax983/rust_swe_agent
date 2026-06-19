@@ -578,18 +578,11 @@ pub fn run(cmd: &PowerCmd) -> Result<PowerReport, Error> {
 }
 
 pub fn render_text(report: &PowerReport) -> String {
-    use comfy_table::Table;
-    use comfy_table::modifiers::UTF8_ROUND_CORNERS;
-    use comfy_table::presets::UTF8_FULL;
-
     let mut out = String::new();
     out.push_str("\n📊 Statistical Power Analysis Report\n");
 
-    let mut table = Table::new();
-    table
-        .load_preset(UTF8_FULL)
-        .apply_modifier(UTF8_ROUND_CORNERS)
-        .set_header(vec!["Parameter", "Value"]);
+    let mut table = crate::ui::create_table();
+    table.set_header(vec!["Parameter", "Value"]);
 
     table.add_row(vec![
         "Baseline Rate",

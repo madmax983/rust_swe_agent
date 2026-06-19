@@ -7,7 +7,6 @@
 use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
 
-use comfy_table::{Table, modifiers::UTF8_ROUND_CORNERS, presets::UTF8_FULL};
 use serde::{Deserialize, Serialize};
 
 use crate::config::Config;
@@ -999,19 +998,16 @@ fn build_summary(tier_stats: &[TierStats], state: &CascadeState) -> CascadeSumma
 }
 
 fn render_summary_table(summary: &CascadeSummary) -> String {
-    let mut table = Table::new();
-    table
-        .load_preset(UTF8_FULL)
-        .apply_modifier(UTF8_ROUND_CORNERS)
-        .set_header(vec![
-            "Tier",
-            "Model",
-            "Attempted",
-            "Resolved",
-            "Rate%",
-            "Cost($)",
-            "$/Resolved",
-        ]);
+    let mut table = crate::ui::create_table();
+    table.set_header(vec![
+        "Tier",
+        "Model",
+        "Attempted",
+        "Resolved",
+        "Rate%",
+        "Cost($)",
+        "$/Resolved",
+    ]);
 
     for row in &summary.tiers {
         let rate_pct = format!("{:.1}", row.resolved_rate * 100.0);

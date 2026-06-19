@@ -300,10 +300,6 @@ pub fn run(args: &TriageArgs) -> Result<TriageReport, Error> {
 }
 
 pub fn render_text(report: &TriageReport, top: usize) -> String {
-    use comfy_table::Table;
-    use comfy_table::modifiers::UTF8_ROUND_CORNERS;
-    use comfy_table::presets::UTF8_FULL;
-
     let mut out = String::new();
     out.push_str("\n=== bench triage ===\n");
     let _ = writeln!(out, "Sweep: {}", report.sweep);
@@ -314,20 +310,17 @@ pub fn render_text(report: &TriageReport, top: usize) -> String {
     );
     out.push('\n');
 
-    let mut table = Table::new();
-    table
-        .load_preset(UTF8_FULL)
-        .apply_modifier(UTF8_ROUND_CORNERS)
-        .set_header(vec![
-            "rank",
-            "failure_category",
-            "instance_count",
-            "total_usd",
-            "% unresolved cost",
-            "exemplar_instance_id",
-            "annotations",
-            "signature_summary",
-        ]);
+    let mut table = crate::ui::create_table();
+    table.set_header(vec![
+        "rank",
+        "failure_category",
+        "instance_count",
+        "total_usd",
+        "% unresolved cost",
+        "exemplar_instance_id",
+        "annotations",
+        "signature_summary",
+    ]);
 
     for (idx, cluster) in report.clusters.iter().take(top).enumerate() {
         let share = if report.totals.unresolved_cost_usd > 0.0 {

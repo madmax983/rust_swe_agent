@@ -298,10 +298,6 @@ pub fn test_progress_compare_section(baseline: &Path, candidate: &Path) -> Optio
 }
 
 pub fn render_text(report: &TestProgressReport, bucket_filter: Option<&str>) -> String {
-    use comfy_table::Table;
-    use comfy_table::modifiers::UTF8_ROUND_CORNERS;
-    use comfy_table::presets::UTF8_FULL;
-
     let mut out = String::new();
     out.push_str("\n=== bench test-progress ===\n");
     let _ = writeln!(out, "Sweep: {}", report.sweep);
@@ -331,17 +327,14 @@ pub fn render_text(report: &TestProgressReport, bucket_filter: Option<&str>) -> 
     out.push('\n');
 
     // Per-instance table
-    let mut table = Table::new();
-    table
-        .load_preset(UTF8_FULL)
-        .apply_modifier(UTF8_ROUND_CORNERS)
-        .set_header(vec![
-            "instance_id",
-            "verdict_bucket",
-            "score",
-            "ftp_passed",
-            "ptp_regressed",
-        ]);
+    let mut table = crate::ui::create_table();
+    table.set_header(vec![
+        "instance_id",
+        "verdict_bucket",
+        "score",
+        "ftp_passed",
+        "ptp_regressed",
+    ]);
 
     for row in &report.per_instance {
         if let Some(filter) = bucket_filter {
@@ -369,10 +362,8 @@ pub fn render_text(report: &TestProgressReport, bucket_filter: Option<&str>) -> 
     // Hot failing tests
     if !report.hot_failing_tests.is_empty() {
         out.push_str("\nHot failing FAIL_TO_PASS tests:\n");
-        let mut t = Table::new();
-        t.load_preset(UTF8_FULL)
-            .apply_modifier(UTF8_ROUND_CORNERS)
-            .set_header(vec!["rank", "test_name", "instance_count"]);
+        let mut t = crate::ui::create_table();
+        t.set_header(vec!["rank", "test_name", "instance_count"]);
         for (idx, entry) in report.hot_failing_tests.iter().enumerate() {
             t.add_row(vec![
                 (idx + 1).to_string(),
@@ -387,10 +378,8 @@ pub fn render_text(report: &TestProgressReport, bucket_filter: Option<&str>) -> 
     // Hot regressed tests
     if !report.hot_regressed_tests.is_empty() {
         out.push_str("\nHot regressed PASS_TO_PASS tests:\n");
-        let mut t = Table::new();
-        t.load_preset(UTF8_FULL)
-            .apply_modifier(UTF8_ROUND_CORNERS)
-            .set_header(vec!["rank", "test_name", "instance_count"]);
+        let mut t = crate::ui::create_table();
+        t.set_header(vec!["rank", "test_name", "instance_count"]);
         for (idx, entry) in report.hot_regressed_tests.iter().enumerate() {
             t.add_row(vec![
                 (idx + 1).to_string(),

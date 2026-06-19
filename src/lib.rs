@@ -28,6 +28,7 @@ pub mod telemetry;
 pub mod template;
 pub mod tool;
 pub mod trajectory;
+pub mod ui;
 
 pub use run::dataset::{
     CacheStatus, DatasetSource, DatasetSourceKind, SwebenchAlias, SwebenchSplit, cache_path_for,

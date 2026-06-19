@@ -773,10 +773,6 @@ pub fn inspect(args: &InspectArgs, _format: &InspectFormat) -> Result<String, Er
     Ok(render_text(&output))
 }
 
-use comfy_table::Table;
-use comfy_table::modifiers::UTF8_ROUND_CORNERS;
-use comfy_table::presets::UTF8_FULL;
-
 fn render_summary_text(report: &SummaryReport) -> String {
     let mut s = String::new();
     s.push_str("\n=== bench inspect summary ===\n");
@@ -817,17 +813,14 @@ fn render_summary_text(report: &SummaryReport) -> String {
     }
     s.push('\n');
 
-    let mut table = Table::new();
-    table
-        .load_preset(UTF8_FULL)
-        .apply_modifier(UTF8_ROUND_CORNERS)
-        .set_header(vec![
-            "instance_id",
-            "outcome",
-            "failure_category",
-            "cost_usd",
-            "resolved",
-        ]);
+    let mut table = crate::ui::create_table();
+    table.set_header(vec![
+        "instance_id",
+        "outcome",
+        "failure_category",
+        "cost_usd",
+        "resolved",
+    ]);
 
     for row in &report.rows {
         table.add_row(vec![

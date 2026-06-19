@@ -74,10 +74,6 @@ pub fn run(args: &CommandStatsArgs) -> Result<CommandStatsReport, Error> {
 }
 
 pub fn render_text(report: &CommandStatsReport, top: usize) -> String {
-    use comfy_table::Table;
-    use comfy_table::modifiers::UTF8_ROUND_CORNERS;
-    use comfy_table::presets::UTF8_FULL;
-
     let mut out = String::new();
     out.push_str("\n=== bench command-stats ===\n");
     let _ = writeln!(out, "Sweep: {}", report.sweep);
@@ -90,19 +86,16 @@ pub fn render_text(report: &CommandStatsReport, top: usize) -> String {
 
     for (bucket, rows) in &report.by_outcome {
         let _ = writeln!(out, "--- Outcome: {bucket} ---");
-        let mut table = Table::new();
-        table
-            .load_preset(UTF8_FULL)
-            .apply_modifier(UTF8_ROUND_CORNERS)
-            .set_header(vec![
-                "rank",
-                "command_head",
-                "instance_count",
-                "invocation_count",
-                "mean_calls/instance",
-                "nonzero_exit_rate",
-                "attributed_cost_usd",
-            ]);
+        let mut table = crate::ui::create_table();
+        table.set_header(vec![
+            "rank",
+            "command_head",
+            "instance_count",
+            "invocation_count",
+            "mean_calls/instance",
+            "nonzero_exit_rate",
+            "attributed_cost_usd",
+        ]);
 
         for (idx, row) in rows.iter().take(top).enumerate() {
             table.add_row(vec![
@@ -122,16 +115,13 @@ pub fn render_text(report: &CommandStatsReport, top: usize) -> String {
 
     for comparison in &report.comparisons {
         let _ = writeln!(out, "--- Comparison: {} ---", comparison.name);
-        let mut table = Table::new();
-        table
-            .load_preset(UTF8_FULL)
-            .apply_modifier(UTF8_ROUND_CORNERS)
-            .set_header(vec![
-                "command_head",
-                "resolved_share",
-                "unresolved_share",
-                "delta",
-            ]);
+        let mut table = crate::ui::create_table();
+        table.set_header(vec![
+            "command_head",
+            "resolved_share",
+            "unresolved_share",
+            "delta",
+        ]);
 
         for row in &comparison.rows {
             table.add_row(vec![

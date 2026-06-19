@@ -5242,13 +5242,10 @@ async fn bench_matrix(m: args::MatrixCmd) -> Result<(), Error> {
 
     let summary = Box::pin(crate::run::matrix::run(matrix_args)).await?;
 
-    let mut table = comfy_table::Table::new();
-    table
-        .load_preset(comfy_table::presets::UTF8_FULL)
-        .apply_modifier(comfy_table::modifiers::UTF8_ROUND_CORNERS)
-        .set_header(vec![
-            "Rank", "Name", "Model", "State", "Resolved", "Cost($)",
-        ]);
+    let mut table = crate::ui::create_table();
+    table.set_header(vec![
+        "Rank", "Name", "Model", "State", "Resolved", "Cost($)",
+    ]);
     for arm in &summary.arms {
         table.add_row(vec![
             arm.rank.to_string(),

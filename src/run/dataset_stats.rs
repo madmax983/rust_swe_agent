@@ -1,8 +1,5 @@
 //! Analysis logic for previewing SWE-bench dataset statistics offline (`bench dataset-stats`).
 
-use comfy_table::Table;
-use comfy_table::modifiers::UTF8_ROUND_CORNERS;
-use comfy_table::presets::UTF8_FULL;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::ffi::OsStr;
@@ -414,11 +411,8 @@ pub fn render_text(report: &DatasetStatsReport) -> String {
     let _ = writeln!(out, "Languages Present: {}", report.languages.join(", "));
     let _ = writeln!(out, "\n--- Repository Share ---");
 
-    let mut table = Table::new();
-    table
-        .load_preset(UTF8_FULL)
-        .apply_modifier(UTF8_ROUND_CORNERS)
-        .set_header(vec!["Repository", "Instance Count", "Percent Share"]);
+    let mut table = crate::ui::create_table();
+    table.set_header(vec!["Repository", "Instance Count", "Percent Share"]);
 
     for repo in &report.repos {
         table.add_row(vec![

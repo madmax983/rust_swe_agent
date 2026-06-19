@@ -185,10 +185,6 @@ pub fn run(args: &StagnationReportArgs) -> Result<StagnationReport, Error> {
 
 /// Render the report as a human-readable table (default output).
 pub fn render_text(report: &StagnationReport) -> String {
-    use comfy_table::Table;
-    use comfy_table::modifiers::UTF8_ROUND_CORNERS;
-    use comfy_table::presets::UTF8_FULL;
-
     let mut out = String::new();
     let _ = writeln!(out, "\n=== bench stagnation-report ===");
     let _ = writeln!(out, "Sweep: {}", report.sweep_path);
@@ -198,19 +194,16 @@ pub fn render_text(report: &StagnationReport) -> String {
         let _ = writeln!(out);
         let _ = writeln!(out, "── Per-instance table (ranked by USD burned) ──");
 
-        let mut table = Table::new();
-        table
-            .load_preset(UTF8_FULL)
-            .apply_modifier(UTF8_ROUND_CORNERS)
-            .set_header(vec![
-                "instance_id",
-                "fingerprint",
-                "canonical_action",
-                "K",
-                "halt_step",
-                "burned_usd",
-                "saved_est_usd",
-            ]);
+        let mut table = crate::ui::create_table();
+        table.set_header(vec![
+            "instance_id",
+            "fingerprint",
+            "canonical_action",
+            "K",
+            "halt_step",
+            "burned_usd",
+            "saved_est_usd",
+        ]);
 
         for row in &report.instances {
             table.add_row(vec![
@@ -228,17 +221,14 @@ pub fn render_text(report: &StagnationReport) -> String {
 
         let _ = writeln!(out, "── Cluster view (ranked by instance count) ──");
 
-        let mut ctable = Table::new();
-        ctable
-            .load_preset(UTF8_FULL)
-            .apply_modifier(UTF8_ROUND_CORNERS)
-            .set_header(vec![
-                "fingerprint",
-                "exemplar_action",
-                "instances",
-                "total_burned_usd",
-                "exemplar_ids",
-            ]);
+        let mut ctable = crate::ui::create_table();
+        ctable.set_header(vec![
+            "fingerprint",
+            "exemplar_action",
+            "instances",
+            "total_burned_usd",
+            "exemplar_ids",
+        ]);
         for c in &report.clusters {
             ctable.add_row(vec![
                 c.fingerprint.clone(),

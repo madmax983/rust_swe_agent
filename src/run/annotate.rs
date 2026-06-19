@@ -166,10 +166,6 @@ pub fn render_add_text(report: &AnnotateAddReport) -> String {
 }
 
 pub fn render_list_text(report: &AnnotateListReport) -> String {
-    use comfy_table::Table;
-    use comfy_table::modifiers::UTF8_ROUND_CORNERS;
-    use comfy_table::presets::UTF8_FULL;
-
     if report.annotations.is_empty() {
         return format!(
             "annotate: no annotations found in {}\n",
@@ -184,11 +180,8 @@ pub fn render_list_text(report: &AnnotateListReport) -> String {
         report.store_path.display()
     );
 
-    let mut table = Table::new();
-    table
-        .load_preset(UTF8_FULL)
-        .apply_modifier(UTF8_ROUND_CORNERS)
-        .set_header(vec!["instance_id", "tag", "note", "updated_at"]);
+    let mut table = crate::ui::create_table();
+    table.set_header(vec!["instance_id", "tag", "note", "updated_at"]);
 
     for ann in &report.annotations {
         table.add_row(vec![

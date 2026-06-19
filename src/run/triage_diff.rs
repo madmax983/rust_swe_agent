@@ -452,10 +452,6 @@ pub fn run(args: &TriageDiffArgs) -> Result<TriageDiffReport, Error> {
 }
 
 pub fn render_text(report: &TriageDiffReport, top: usize) -> String {
-    use comfy_table::Table;
-    use comfy_table::modifiers::UTF8_ROUND_CORNERS;
-    use comfy_table::presets::UTF8_FULL;
-
     let mut out = String::new();
     out.push_str("\n=== bench triage-diff ===\n");
     let _ = writeln!(out, "Baseline:  {}", report.baseline_sweep);
@@ -506,20 +502,17 @@ pub fn render_text(report: &TriageDiffReport, top: usize) -> String {
 
     // 3. Cluster Deltas Table
     out.push_str("=== Failure Cluster Deltas ===\n");
-    let mut table = Table::new();
-    table
-        .load_preset(UTF8_FULL)
-        .apply_modifier(UTF8_ROUND_CORNERS)
-        .set_header(vec![
-            "rank",
-            "cluster_signature_short",
-            "failure_category",
-            "baseline",
-            "candidate",
-            "delta",
-            "delta_pct",
-            "signature_summary",
-        ]);
+    let mut table = crate::ui::create_table();
+    table.set_header(vec![
+        "rank",
+        "cluster_signature_short",
+        "failure_category",
+        "baseline",
+        "candidate",
+        "delta",
+        "delta_pct",
+        "signature_summary",
+    ]);
 
     for (idx, delta) in report.cluster_deltas.iter().take(top).enumerate() {
         let pct_str = delta.delta_pct.map_or_else(

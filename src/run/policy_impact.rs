@@ -1,6 +1,5 @@
 #![allow(clippy::too_many_lines, clippy::cast_precision_loss)]
 
-use comfy_table::{Table, modifiers::UTF8_ROUND_CORNERS, presets::UTF8_FULL};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write;
@@ -339,11 +338,8 @@ pub fn render_text(report: &PolicyImpactReport) -> String {
     let r = &report.policy_impact_report;
 
     out.push_str("=== Sweep Policy Totals ===\n\n");
-    let mut totals_table = Table::new();
-    totals_table
-        .load_preset(UTF8_FULL)
-        .apply_modifier(UTF8_ROUND_CORNERS)
-        .set_header(vec!["Metric", "Count"]);
+    let mut totals_table = crate::ui::create_table();
+    totals_table.set_header(vec!["Metric", "Count"]);
     totals_table.add_row(vec!["Allowed", &r.totals.allowed.to_string()]);
     totals_table.add_row(vec!["Asked", &r.totals.asked.to_string()]);
     totals_table.add_row(vec!["Blocked", &r.totals.blocked.to_string()]);
@@ -355,16 +351,13 @@ pub fn render_text(report: &PolicyImpactReport) -> String {
     if r.rules.is_empty() {
         out.push_str("No policy rules were triggered.\n");
     } else {
-        let mut rules_table = Table::new();
-        rules_table
-            .load_preset(UTF8_FULL)
-            .apply_modifier(UTF8_ROUND_CORNERS)
-            .set_header(vec![
-                "Rule Label",
-                "Block Count",
-                "Affected Instances",
-                "Top Blocked Command",
-            ]);
+        let mut rules_table = crate::ui::create_table();
+        rules_table.set_header(vec![
+            "Rule Label",
+            "Block Count",
+            "Affected Instances",
+            "Top Blocked Command",
+        ]);
         for rule in &r.rules {
             rules_table.add_row(vec![
                 rule.rule_label.clone(),
@@ -378,18 +371,15 @@ pub fn render_text(report: &PolicyImpactReport) -> String {
     out.push_str("\n\n");
 
     out.push_str("=== Outcome Correlation ===\n\n");
-    let mut corr_table = Table::new();
-    corr_table
-        .load_preset(UTF8_FULL)
-        .apply_modifier(UTF8_ROUND_CORNERS)
-        .set_header(vec![
-            "Group",
-            "Total",
-            "Resolved",
-            "Unresolved",
-            "Errored",
-            "Resolved Rate",
-        ]);
+    let mut corr_table = crate::ui::create_table();
+    corr_table.set_header(vec![
+        "Group",
+        "Total",
+        "Resolved",
+        "Unresolved",
+        "Errored",
+        "Resolved Rate",
+    ]);
 
     let bg = &r.outcome_correlation.blocked_group;
     corr_table.add_row(vec![

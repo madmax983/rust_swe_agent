@@ -136,10 +136,6 @@ pub fn run(args: &SkillCoverageArgs) -> Result<SkillCoverageReport, Error> {
 
 #[allow(clippy::too_many_lines)]
 pub fn render_text(report: &SkillCoverageReport, bucket_filter: Option<&str>) -> String {
-    use comfy_table::Table;
-    use comfy_table::modifiers::UTF8_ROUND_CORNERS;
-    use comfy_table::presets::UTF8_FULL;
-
     let display_bucket = bucket_filter.unwrap_or("all");
 
     let mut out = String::new();
@@ -186,21 +182,18 @@ pub fn render_text(report: &SkillCoverageReport, bucket_filter: Option<&str>) ->
     });
 
     if !rows.is_empty() {
-        let mut table = Table::new();
-        table
-            .load_preset(UTF8_FULL)
-            .apply_modifier(UTF8_ROUND_CORNERS)
-            .set_header(vec![
-                "skill",
-                "total_activations",
-                "instances_activated",
-                "activation_rate",
-                "share",
-                "reasons (explicit/auto)",
-                "resolved_rate_when_active",
-                "resolved_rate_when_not_active",
-                "delta",
-            ]);
+        let mut table = crate::ui::create_table();
+        table.set_header(vec![
+            "skill",
+            "total_activations",
+            "instances_activated",
+            "activation_rate",
+            "share",
+            "reasons (explicit/auto)",
+            "resolved_rate_when_active",
+            "resolved_rate_when_not_active",
+            "delta",
+        ]);
 
         for (name, m) in &rows {
             let bucket_metrics = m.by_outcome.get(display_bucket);

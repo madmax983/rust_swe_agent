@@ -197,10 +197,6 @@ pub fn run(args: &LadderArgs) -> Result<LadderReport, Error> {
 // ── rendering ─────────────────────────────────────────────────────────────────
 
 pub fn render_text(report: &LadderReport) -> String {
-    use comfy_table::Table;
-    use comfy_table::modifiers::UTF8_ROUND_CORNERS;
-    use comfy_table::presets::UTF8_FULL;
-
     let mut out = String::new();
     let _ = writeln!(out, "\n=== bench ladder ===");
     let _ = writeln!(out, "Root: {}", report.root);
@@ -230,11 +226,8 @@ pub fn render_text(report: &LadderReport) -> String {
             headers.push("Δ vs baseline");
         }
 
-        let mut table = Table::new();
-        table
-            .load_preset(UTF8_FULL)
-            .apply_modifier(UTF8_ROUND_CORNERS)
-            .set_header(headers);
+        let mut table = crate::ui::create_table();
+        table.set_header(headers);
 
         for row in &report.rows {
             let mut cells: Vec<String> = vec![

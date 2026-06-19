@@ -127,10 +127,6 @@ pub fn run(args: &CacheStatsArgs) -> Result<CacheStatsReport, Error> {
 // ── rendering ─────────────────────────────────────────────────────────────────
 
 pub fn render_text(report: &CacheStatsReport, top: usize) -> String {
-    use comfy_table::Table;
-    use comfy_table::modifiers::UTF8_ROUND_CORNERS;
-    use comfy_table::presets::UTF8_FULL;
-
     let mut out = String::new();
     let _ = writeln!(out, "\n=== bench cache-stats ===");
     let _ = writeln!(out, "Sweep: {}", report.sweep);
@@ -152,10 +148,8 @@ pub fn render_text(report: &CacheStatsReport, top: usize) -> String {
     let t = &report.sweep_totals;
     let _ = writeln!(out);
     let _ = writeln!(out, "Sweep-level cache summary:");
-    let mut sweep_table = Table::new();
+    let mut sweep_table = crate::ui::create_table();
     sweep_table
-        .load_preset(UTF8_FULL)
-        .apply_modifier(UTF8_ROUND_CORNERS)
         .set_header(vec![
             "total_input_tokens",
             "cache_read_tokens",
@@ -184,19 +178,16 @@ pub fn render_text(report: &CacheStatsReport, top: usize) -> String {
         out,
         "Per-instance breakdown (worst cache efficiency first, top {display_top}):"
     );
-    let mut inst_table = Table::new();
-    inst_table
-        .load_preset(UTF8_FULL)
-        .apply_modifier(UTF8_ROUND_CORNERS)
-        .set_header(vec![
-            "instance_id",
-            "input_tokens",
-            "cache_read",
-            "cache_creation",
-            "cache_hit_rate",
-            "est_savings_usd",
-            "realized_spend_usd",
-        ]);
+    let mut inst_table = crate::ui::create_table();
+    inst_table.set_header(vec![
+        "instance_id",
+        "input_tokens",
+        "cache_read",
+        "cache_creation",
+        "cache_hit_rate",
+        "est_savings_usd",
+        "realized_spend_usd",
+    ]);
     for row in report.instances.iter().take(display_top) {
         inst_table.add_row(vec![
             row.instance_id.clone(),

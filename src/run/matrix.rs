@@ -6,7 +6,6 @@
 //! cost across completed arms meets the limit, remaining arms are recorded as
 //! `skipped_budget`.
 
-use comfy_table::{Table, modifiers::UTF8_ROUND_CORNERS, presets::UTF8_FULL};
 use std::collections::HashSet;
 
 use std::path::{Path, PathBuf};
@@ -626,13 +625,10 @@ fn build_summary(state: &MatrixState) -> MatrixSummary {
 
 fn render_summary_text(summary: &MatrixSummary, state: &MatrixState) -> String {
     let n = state.instance_ids.len();
-    let mut table = Table::new();
-    table
-        .load_preset(UTF8_FULL)
-        .apply_modifier(UTF8_ROUND_CORNERS)
-        .set_header(vec![
-            "Rank", "Name", "Model", "State", "Resolved", "Rate%", "Cost($)",
-        ]);
+    let mut table = crate::ui::create_table();
+    table.set_header(vec![
+        "Rank", "Name", "Model", "State", "Resolved", "Rate%", "Cost($)",
+    ]);
 
     for row in &summary.arms {
         let rate_pct = if n > 0 {

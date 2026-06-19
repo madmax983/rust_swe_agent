@@ -5,7 +5,6 @@
 //! are collected in `tool-ablation.json` (schema `tool-ablation-1.0`) and a
 //! ranked text summary ordered by `|delta_resolved_vs_baseline|`.
 
-use comfy_table::{Table, modifiers::UTF8_ROUND_CORNERS, presets::UTF8_FULL};
 use sha2::{Digest as _, Sha256};
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
@@ -213,11 +212,8 @@ pub fn render_manifest_text(manifest: &ArmManifest) -> String {
     let _ = writeln!(out, "total arms: {}", manifest.arms.len());
     let _ = writeln!(out);
 
-    let mut table = Table::new();
-    table
-        .load_preset(UTF8_FULL)
-        .apply_modifier(UTF8_ROUND_CORNERS)
-        .set_header(vec!["Arm", "Ablated Tool(s)"]);
+    let mut table = crate::ui::create_table();
+    table.set_header(vec!["Arm", "Ablated Tool(s)"]);
 
     for arm in &manifest.arms {
         let ablated = if let Some(tool) = &arm.ablated_tool {
@@ -255,19 +251,16 @@ pub fn render_text_summary(report: &ToolAblationReport) -> String {
             .unwrap_or(std::cmp::Ordering::Equal)
     });
 
-    let mut table = Table::new();
-    table
-        .load_preset(UTF8_FULL)
-        .apply_modifier(UTF8_ROUND_CORNERS)
-        .set_header(vec![
-            "Arm",
-            "Ablated Tool",
-            "Status",
-            "Resolved",
-            "Cost($)",
-            "Δresolved",
-            "Δcost/resolve",
-        ]);
+    let mut table = crate::ui::create_table();
+    table.set_header(vec![
+        "Arm",
+        "Ablated Tool",
+        "Status",
+        "Resolved",
+        "Cost($)",
+        "Δresolved",
+        "Δcost/resolve",
+    ]);
 
     for arm in &arms {
         let ablated = if let Some(tool) = &arm.ablated_tool {

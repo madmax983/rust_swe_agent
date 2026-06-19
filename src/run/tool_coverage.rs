@@ -126,10 +126,6 @@ pub fn render_text(
     bucket_filter: Option<&str>,
     min_invocations: usize,
 ) -> String {
-    use comfy_table::Table;
-    use comfy_table::modifiers::UTF8_ROUND_CORNERS;
-    use comfy_table::presets::UTF8_FULL;
-
     // Which by_outcome slice to show in the main table.
     let display_bucket = bucket_filter.unwrap_or("all");
     let bucket_scoped = display_bucket != "all";
@@ -175,20 +171,17 @@ pub fn render_text(
     });
 
     if !rows.is_empty() {
-        let mut table = Table::new();
-        table
-            .load_preset(UTF8_FULL)
-            .apply_modifier(UTF8_ROUND_CORNERS)
-            .set_header(vec![
-                "tool",
-                "source",
-                "total_invocations",
-                "instances_used",
-                "mean_calls/using_instance",
-                "share",
-                "resolved_rate_when_used",
-                "resolved_rate_when_not_used",
-            ]);
+        let mut table = crate::ui::create_table();
+        table.set_header(vec![
+            "tool",
+            "source",
+            "total_invocations",
+            "instances_used",
+            "mean_calls/using_instance",
+            "share",
+            "resolved_rate_when_used",
+            "resolved_rate_when_not_used",
+        ]);
 
         for (name, m) in &rows {
             let bucket_metrics = m.by_outcome.get(display_bucket);

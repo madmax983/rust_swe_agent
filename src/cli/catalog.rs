@@ -1,6 +1,5 @@
 use super::args::CatalogCmd;
 use crate::error::Error;
-use comfy_table::{Table, modifiers::UTF8_ROUND_CORNERS, presets::UTF8_FULL};
 use serde::Serialize;
 
 pub const STAGES: &[&str] = &["preflight", "run", "inspect", "analyze", "publish"];
@@ -535,11 +534,8 @@ pub fn run_catalog(cmd: CatalogCmd) -> Result<(), Error> {
     }
 
     // Text table output
-    let mut table = Table::new();
-    table
-        .load_preset(UTF8_FULL)
-        .apply_modifier(UTF8_ROUND_CORNERS)
-        .set_header(["Command", "Summary", "Cost", "Stage"]);
+    let mut table = crate::ui::create_table();
+    table.set_header(["Command", "Summary", "Cost", "Stage"]);
 
     for entry in &filtered {
         table.add_row([entry.path, entry.summary, entry.cost_tier, entry.stage]);

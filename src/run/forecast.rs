@@ -1,6 +1,5 @@
 //! `bench forecast`: run a small calibration sweep and extrapolate cost.
 
-use comfy_table::{Table, modifiers::UTF8_ROUND_CORNERS, presets::UTF8_FULL};
 use std::fmt::Write as _;
 use std::path::Path;
 
@@ -384,10 +383,7 @@ pub fn to_json(report: &ForecastReport) -> Result<String, Error> {
 pub fn render_text(report: &ForecastReport) -> String {
     let mut out = String::new();
     let _ = writeln!(out, "\n=== SWE-bench forecast ===");
-    let mut meta_table = Table::new();
-    meta_table
-        .load_preset(UTF8_FULL)
-        .apply_modifier(UTF8_ROUND_CORNERS);
+    let mut meta_table = crate::ui::create_table();
     meta_table.set_header(vec!["Calibration", "Target", "Confidence"]);
     meta_table.add_row(vec![
         format!(
@@ -402,12 +398,9 @@ pub fn render_text(report: &ForecastReport) -> String {
     ]);
     let _ = writeln!(out, "{meta_table}");
 
-    let mut p_table = Table::new();
-    p_table
-        .load_preset(UTF8_FULL)
-        .apply_modifier(UTF8_ROUND_CORNERS);
+    let mut p_table = crate::ui::create_table();
     p_table.set_header(vec!["Per-instance Metric", "p10", "Median", "p90"]);
-    let add_q = |t: &mut Table, label: &str, q: &QuantileSummary| {
+    let add_q = |t: &mut comfy_table::Table, label: &str, q: &QuantileSummary| {
         t.add_row(vec![
             label.to_string(),
             format!("{:.4}", q.p10),
@@ -434,16 +427,13 @@ pub fn render_text(report: &ForecastReport) -> String {
     );
     let _ = writeln!(out, "{p_table}");
 
-    let mut t_table = Table::new();
-    t_table
-        .load_preset(UTF8_FULL)
-        .apply_modifier(UTF8_ROUND_CORNERS);
+    let mut t_table = crate::ui::create_table();
     t_table.set_header(vec![
         "Forecast Totals",
         "Point Estimate",
         "Confidence Interval",
     ]);
-    let add_i = |t: &mut Table, label: &str, i: &IntervalEstimate, prefix: &str| {
+    let add_i = |t: &mut comfy_table::Table, label: &str, i: &IntervalEstimate, prefix: &str| {
         t.add_row(vec![
             label.to_string(),
             format!("{prefix}{:.4}", i.point),
@@ -479,10 +469,7 @@ pub fn render_text(report: &ForecastReport) -> String {
     );
     let _ = writeln!(out, "{t_table}");
 
-    let mut res_table = Table::new();
-    res_table
-        .load_preset(UTF8_FULL)
-        .apply_modifier(UTF8_ROUND_CORNERS);
+    let mut res_table = crate::ui::create_table();
     res_table.set_header(vec!["Resolution Signal", "Threshold"]);
     res_table.add_row(vec![
         format!(

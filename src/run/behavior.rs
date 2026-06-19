@@ -178,10 +178,6 @@ pub fn run(args: &BehaviorArgs) -> Result<BehaviorReport, Error> {
 
 #[allow(clippy::too_many_lines)]
 pub fn render_text(report: &BehaviorReport, bucket_filter: Option<&str>, min_share: f64) -> String {
-    use comfy_table::Table;
-    use comfy_table::modifiers::UTF8_ROUND_CORNERS;
-    use comfy_table::presets::UTF8_FULL;
-
     let mut out = String::new();
     out.push_str("\n=== bench behavior ===\n");
     let _ = writeln!(out, "Sweep: {}", report.sweep);
@@ -229,17 +225,14 @@ pub fn render_text(report: &BehaviorReport, bucket_filter: Option<&str>, min_sha
         }
 
         let _ = writeln!(out, "--- Outcome: {bucket_name} ---");
-        let mut table = Table::new();
-        table
-            .load_preset(UTF8_FULL)
-            .apply_modifier(UTF8_ROUND_CORNERS)
-            .set_header(vec![
-                "action_class",
-                "turn_count",
-                "share",
-                "mean_turns/instance",
-                "attributed_cost_usd",
-            ]);
+        let mut table = crate::ui::create_table();
+        table.set_header(vec![
+            "action_class",
+            "turn_count",
+            "share",
+            "mean_turns/instance",
+            "attributed_cost_usd",
+        ]);
 
         for (cls, m) in visible {
             table.add_row(vec![
@@ -273,16 +266,13 @@ pub fn render_text(report: &BehaviorReport, bucket_filter: Option<&str>, min_sha
             );
         }
         out.push_str("--- Action-Shape: resolved vs unresolved ---\n");
-        let mut table = Table::new();
-        table
-            .load_preset(UTF8_FULL)
-            .apply_modifier(UTF8_ROUND_CORNERS)
-            .set_header(vec![
-                "action_class",
-                "resolved_share",
-                "unresolved_share",
-                "share_delta",
-            ]);
+        let mut table = crate::ui::create_table();
+        table.set_header(vec![
+            "action_class",
+            "resolved_share",
+            "unresolved_share",
+            "share_delta",
+        ]);
         for d in deltas {
             table.add_row(vec![
                 d.action_class.clone(),
