@@ -879,16 +879,30 @@ fn reuse_consistent_with_submission(cached: &InstanceEvaluation, current_submitt
     current_submitted || cached.eval_exit_reason == EvalExitReason::SkippedNoPatch
 }
 
+/// Read the prior `evaluation.json` *only* if it classifies as a supported
+/// `EvaluationResults` artifact. Mirrors the artifact header check other readers
+/// use, so a future-major (breaking) schema whose rows happen to still
+/// deserialize is rejected here (returns None) rather than being reused. Legacy
+/// pre-versioning and older-minor artifacts remain supported.
+fn load_supported_prior_evaluation(sweep_dir: &Path) -> Option<EvaluationResults> {
+    let path = evaluation_path(sweep_dir);
+    let text = std::fs::read_to_string(&path).ok()?;
+    let value: serde_json::Value = serde_json::from_str(&text).ok()?;
+    crate::artifact::classify_json_value(
+        &value,
+        crate::artifact::ArtifactKind::EvaluationResults,
+        "evaluation.json",
+    )
+    .ok()?;
+    serde_json::from_value(value).ok()
+}
+
 /// Read the evaluator provenance recorded in the prior `evaluation.json`, if any.
 /// Used to preserve comparability metadata (run_id, report paths, docker
 /// image_names, dataset hash) verbatim across a full cache-hit resume, where the
 /// backend is skipped and a freshly rebuilt provenance would otherwise blank it.
 fn prior_provenance(sweep_dir: &Path) -> Option<EvaluatorProvenance> {
-    let path = evaluation_path(sweep_dir);
-    let prior: EvaluationResults = std::fs::read_to_string(&path)
-        .ok()
-        .and_then(|s| serde_json::from_str(&s).ok())?;
-    prior.provenance
+    load_supported_prior_evaluation(sweep_dir)?.provenance
 }
 
 /// Classify each instance in the current sweep as reused / invalidated / new.
@@ -912,25 +926,18 @@ fn classify_for_reuse(args: &EvaluateArgs, results: &HashMap<String, InstanceRes
         };
     }
 
-    // Load the prior evaluation.json (tolerate absence / parse errors).
-    let prior_map: HashMap<String, InstanceEvaluation> = {
-        let path = evaluation_path(&args.sweep_dir);
-        if path.exists() {
-            match std::fs::read_to_string(&path)
-                .ok()
-                .and_then(|s| serde_json::from_str::<EvaluationResults>(&s).ok())
-            {
-                Some(prior) => prior
+    // Load the prior evaluation.json (tolerate absence / parse errors and reject
+    // unsupported future-major artifacts → empty prior ⇒ re-evaluate).
+    let prior_map: HashMap<String, InstanceEvaluation> =
+        load_supported_prior_evaluation(&args.sweep_dir)
+            .map(|prior| {
+                prior
                     .instances
                     .into_iter()
                     .map(|e| (e.instance_id.clone(), e))
-                    .collect(),
-                None => HashMap::new(),
-            }
-        } else {
-            HashMap::new()
-        }
-    };
+                    .collect()
+            })
+            .unwrap_or_default();
 
     let mut reused = Vec::new();
     let mut needs_eval: HashMap<String, InstanceResult> = HashMap::new();

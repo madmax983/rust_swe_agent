@@ -822,3 +822,32 @@ fn cached_resume_preserves_full_provenance_verbatim() {
         "dataset hash preserved"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Review hardening (PR #809): reject unsupported future-major cached artifacts
+// ---------------------------------------------------------------------------
+
+/// A prior evaluation.json from a future (breaking) major schema must not be
+/// reused even if its rows still deserialize — it is re-evaluated instead.
+#[test]
+fn future_major_prior_evaluation_is_not_reused() {
+    let dir = tempfile::tempdir().unwrap();
+    write_results(dir.path(), vec![minimal_instance_result("task-a")]);
+    write_patch(dir.path(), "task-a", "--- patch a ---");
+
+    // Seed a valid evaluation.json, then rewrite its schema to a future major.
+    let args = default_evaluate_args(dir.path());
+    maxwells_daemon::run::evaluate::run(&args).unwrap();
+
+    let path = dir.path().join("evaluation.json");
+    let mut v: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    v["schema_version"] = serde_json::json!({"major": 2, "minor": 0});
+    std::fs::write(&path, serde_json::to_string_pretty(&v).unwrap()).unwrap();
+
+    // Resume must reject the unsupported artifact and re-evaluate, not reuse.
+    let eval = maxwells_daemon::run::evaluate::run(&args).unwrap();
+    let rs = eval.reuse_summary.expect("reuse_summary present");
+    assert_eq!(rs.reused, 0, "future-major prior must not be reused");
+    assert_eq!(rs.evaluated, 1, "instance must be re-evaluated");
+}
