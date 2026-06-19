@@ -643,7 +643,7 @@ mod tests {
         assert_eq!(val["artifact_kind"], "agent_runs_report");
         // schema_version must be an object {major, minor} matching CURRENT
         assert_eq!(val["schema_version"]["major"], 1);
-        assert_eq!(val["schema_version"]["minor"], 11);
+        assert_eq!(val["schema_version"]["minor"], 12);
         assert!(val["rows"].is_array());
     }
 

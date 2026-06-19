@@ -3124,6 +3124,11 @@ pub struct EvaluateCmd {
     /// Attribute sweep USD cost to terminal buckets in the evaluation report.
     #[arg(long, value_enum, default_value_t = OnOffArg::On)]
     pub cost_attribution: OnOffArg,
+
+    /// Re-evaluate all instances, ignoring cached verdicts in evaluation.json.
+    /// Without this flag (the default), already-scored instances are reused.
+    #[arg(long, default_value_t = false)]
+    pub force: bool,
 }
 
 #[derive(Debug, Args)]

@@ -553,6 +553,7 @@ pub fn run(args: &ImportArgs) -> Result<ImportSummary, Error> {
             run_id: args.run_id.clone(),
             breakdown: crate::run::evaluate::BreakdownSelection::default_axes(),
             cost_attribution: true,
+            force: false,
         };
         Some(crate::run::evaluate::run(&eval_args)?)
     } else {

@@ -71,6 +71,7 @@ fn minimal_evaluation_results(resolved: bool) -> EvaluationResults {
             eval_log_path: None,
             patch_stats: None,
             patch_error_log: None,
+            submission_fingerprint: None,
         }],
         ..Default::default()
     }
@@ -1530,6 +1531,7 @@ fn evaluate_custom_dataset_override_stamps_its_hash_and_count() {
         run_id: None,
         breakdown: maxwells_daemon::run::evaluate::BreakdownSelection::none(),
         cost_attribution: false,
+        force: false,
     })
     .unwrap();
 

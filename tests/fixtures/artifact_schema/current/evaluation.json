@@ -1,6 +1,6 @@
 {
   "artifact_kind": "evaluation_results",
-  "schema_version": {"major": 1, "minor": 11},
+  "schema_version": {"major": 1, "minor": 12},
   "instances": [
     {
       "instance_id": "task-a",
@@ -9,6 +9,7 @@
       "tests_passed": [],
       "tests_failed": [],
       "eval_exit_reason": "eval_error",
+      "submission_fingerprint": "placeholder",
       "patch_stats": {
         "is_empty": true,
         "lines_added": 0,
@@ -38,6 +39,11 @@
     "dataset_instance_count": 1,
     "eval_started_at": "2026-01-01T00:00:00Z",
     "eval_ended_at": "2026-01-01T00:00:01Z"
+  },
+  "reuse_summary": {
+    "evaluated": 1,
+    "reused": 0,
+    "invalidated": 0
   },
   "submission_class_rollup": {
     "total_submitted": 1,

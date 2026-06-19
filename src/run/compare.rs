@@ -4078,6 +4078,7 @@ mod tests {
                 eval_log_path: None,
                 patch_stats: None,
                 patch_error_log: None,
+                submission_fingerprint: None,
             }],
             ..Default::default()
         };
@@ -4094,6 +4095,7 @@ mod tests {
                 eval_log_path: None,
                 patch_stats: None,
                 patch_error_log: None,
+                submission_fingerprint: None,
             }],
             ..Default::default()
         };
@@ -4150,6 +4152,7 @@ mod tests {
                 eval_log_path: None,
                 patch_stats: None,
                 patch_error_log: None,
+                submission_fingerprint: None,
             }],
             ..Default::default()
         };

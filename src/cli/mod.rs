@@ -2165,6 +2165,7 @@ pub async fn bench_swebench(s: args::SwebenchCmd) -> Result<(), Error> {
                 run_id: None,
                 breakdown: crate::run::evaluate::BreakdownSelection::default_axes(),
                 cost_attribution: true,
+                force: false,
             };
             let eval = crate::run::evaluate::run(&eval_args)?;
             let loaded_sweep = crate::run::compare::load_sweep(&output_dir)?;
@@ -3355,6 +3356,7 @@ fn bench_evaluate(e: args::EvaluateCmd) -> Result<(), Error> {
         run_id: e.run_id,
         breakdown,
         cost_attribution: matches!(e.cost_attribution, args::OnOffArg::On),
+        force: e.force,
     };
     let eval = crate::run::evaluate::run(&args)?;
     let loaded_sweep = crate::run::compare::load_sweep(&e.sweep)?;
@@ -3382,6 +3384,12 @@ fn bench_evaluate(e: args::EvaluateCmd) -> Result<(), Error> {
         evaluation_path = %crate::run::evaluate::evaluation_path(&e.sweep).display(),
         "evaluation complete"
     );
+    if let Some(rs) = &eval.reuse_summary {
+        println!(
+            "reuse: {} evaluated, {} reused, {} invalidated",
+            rs.evaluated, rs.reused, rs.invalidated
+        );
+    }
     print!("{}", crate::run::evaluate::render_summary_table(&summary));
     if let Some(latency) = &eval.latency_summary {
         print!("{}", crate::run::evaluate::render_latency_summary(latency));

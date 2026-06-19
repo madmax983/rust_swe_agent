@@ -830,6 +830,7 @@ async fn calibration_writes_only_inside_forecast_subdirectory_and_marks_manifest
         run_id: None,
         breakdown: BreakdownSelection::none(),
         cost_attribution: true,
+        force: false,
     })
     .unwrap_err();
     assert!(
