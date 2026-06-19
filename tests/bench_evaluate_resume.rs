@@ -661,3 +661,85 @@ fn submission_state_change_invalidates_cached_verdict() {
         "re-evaluation must reflect the new non-submitted state"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Review hardening (PR #809): submitted-but-skipped verdicts stay reusable
+// ---------------------------------------------------------------------------
+
+/// A submitted instance whose patch is empty is skipped (SkippedNoPatch) by the
+/// DockerTests/Rehearsal backends. On resume — with the submission unchanged —
+/// that cached skip verdict must still be reused, not invalidated on every run.
+#[test]
+fn submitted_skip_verdict_is_reused_when_submission_unchanged() {
+    let dir = tempfile::tempdir().unwrap();
+    write_results(dir.path(), vec![minimal_instance_result("task-a")]);
+    write_patch(dir.path(), "task-a", "--- patch a ---");
+
+    // Seed evaluation.json with correct fingerprints via the none backend.
+    let args = default_evaluate_args(dir.path());
+    maxwells_daemon::run::evaluate::run(&args).unwrap();
+
+    // Simulate a backend that skipped this submitted instance (empty patch):
+    // rewrite the cached verdict to skipped_no_patch, keeping its fingerprint.
+    let path = dir.path().join("evaluation.json");
+    let mut v: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    v["instances"][0]["eval_exit_reason"] = serde_json::json!("skipped_no_patch");
+    std::fs::write(&path, serde_json::to_string_pretty(&v).unwrap()).unwrap();
+
+    // Resume: submission state is unchanged, so the skip verdict must be reused.
+    let eval = maxwells_daemon::run::evaluate::run(&args).unwrap();
+    let rs = eval.reuse_summary.expect("reuse_summary present");
+    assert_eq!(rs.reused, 1, "submitted skip verdict must be reused");
+    assert_eq!(
+        rs.invalidated, 0,
+        "no invalidation when submission unchanged"
+    );
+    assert_eq!(rs.evaluated, 0, "backend must not be re-entered");
+}
+
+// ---------------------------------------------------------------------------
+// Review hardening (PR #809): cache hits preserve DockerTests image provenance
+// ---------------------------------------------------------------------------
+
+/// A fully-cached DockerTests resume short-circuits the backend and observes no
+/// images, but must not overwrite the prior provenance's image_names with [].
+#[test]
+fn cached_docker_tests_resume_preserves_image_provenance() {
+    let dir = tempfile::tempdir().unwrap();
+    write_results(dir.path(), vec![minimal_instance_result("task-a")]);
+    write_patch(dir.path(), "task-a", "--- patch a ---");
+
+    // Seed correct fingerprints via the none backend, then graft on a
+    // docker-tests provenance carrying a real image name.
+    let none_args = default_evaluate_args(dir.path());
+    maxwells_daemon::run::evaluate::run(&none_args).unwrap();
+
+    let path = dir.path().join("evaluation.json");
+    let mut v: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    v["provenance"]["backend"] = serde_json::json!("docker-tests");
+    v["provenance"]["docker_tests"] = serde_json::json!({
+        "timeout_per_instance_secs": 1,
+        "parallel": 1,
+        "image_names": ["sweb.eval.x86_64.task-a:latest"],
+    });
+    std::fs::write(&path, serde_json::to_string_pretty(&v).unwrap()).unwrap();
+
+    // Fully-cached DockerTests resume (no Docker, no dataset needed).
+    let mut args = default_evaluate_args(dir.path());
+    args.backend = EvaluateBackend::DockerTests;
+    let eval = maxwells_daemon::run::evaluate::run(&args).unwrap();
+
+    assert_eq!(eval.reuse_summary.unwrap().reused, 1, "instance reused");
+    let images = eval
+        .provenance
+        .expect("provenance present")
+        .docker_tests
+        .expect("docker_tests provenance present")
+        .image_names;
+    assert!(
+        images.contains(&"sweb.eval.x86_64.task-a:latest".to_string()),
+        "prior image names must be preserved on a cache hit, got {images:?}"
+    );
+}

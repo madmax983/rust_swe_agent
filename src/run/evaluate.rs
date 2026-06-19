@@ -524,6 +524,16 @@ pub fn run(args: &EvaluateArgs) -> Result<EvaluationResults, Error> {
     } else {
         (None, None)
     };
+    // Reused DockerTests rows were produced with real testbed images that the
+    // (possibly empty) fresh run no longer observed. Union the fresh image set
+    // with the prior provenance so a cache hit / partial resume doesn't drop
+    // image names and trip bench compare's evaluator-provenance mismatch check.
+    let docker_image_names =
+        if args.backend == EvaluateBackend::DockerTests && plan.counts.reused > 0 {
+            merge_prior_docker_image_names(&args.sweep_dir, docker_image_names)
+        } else {
+            docker_image_names
+        };
     let provenance = build_provenance(
         args,
         &resolved_by_run,
@@ -838,14 +848,32 @@ struct ReusePlan {
 
 /// Whether a cached verdict is consistent with the current submission state.
 ///
-/// `SkippedNoPatch` is only a valid verdict while the instance is non-submitted;
-/// any other verdict implies the instance was evaluated with a submitted patch.
-/// If the current submission state disagrees with the cached verdict's
-/// assumption, the cached row must not be reused (it would otherwise carry a
-/// stale `resolved`/skip verdict forward).
+/// The check is one-directional: a cached verdict is only rejected when the
+/// instance is *no longer submitted* (so a prior resolved/unresolved/eval-error
+/// verdict would be stale and must become `SkippedNoPatch`). The reverse — a
+/// currently-submitted instance with a cached `SkippedNoPatch` — is left to the
+/// patch fingerprint, because a submitted-but-empty patch is legitimately
+/// skipped by the DockerTests/Rehearsal backends and should still be a cache hit
+/// on resume. New patch bytes (None → Some) are caught by the fingerprint.
 fn reuse_consistent_with_submission(cached: &InstanceEvaluation, current_submitted: bool) -> bool {
-    let cached_was_skip = cached.eval_exit_reason == EvalExitReason::SkippedNoPatch;
-    current_submitted != cached_was_skip
+    current_submitted || cached.eval_exit_reason == EvalExitReason::SkippedNoPatch
+}
+
+/// Union the freshly observed DockerTests image names with those recorded in the
+/// prior `evaluation.json` provenance, so reused rows don't lose their testbed
+/// image attribution. Returns a sorted, de-duplicated list.
+fn merge_prior_docker_image_names(sweep_dir: &Path, fresh: Vec<String>) -> Vec<String> {
+    let mut names: std::collections::BTreeSet<String> = fresh.into_iter().collect();
+    let path = evaluation_path(sweep_dir);
+    if let Some(prior) = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|s| serde_json::from_str::<EvaluationResults>(&s).ok())
+    {
+        if let Some(docker) = prior.provenance.and_then(|p| p.docker_tests) {
+            names.extend(docker.image_names);
+        }
+    }
+    names.into_iter().collect()
 }
 
 /// Classify each instance in the current sweep as reused / invalidated / new.
