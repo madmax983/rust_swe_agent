@@ -95,6 +95,14 @@ pub fn registry() -> Vec<ExportFormat> {
         render: MermaidExporter::export,
     });
 
+    #[cfg(feature = "asciicast-export")]
+    formats.push(ExportFormat {
+        name: "asciicast",
+        tier: StabilityTier::Experimental,
+        consumer: "Asciinema player (terminal session replay)",
+        render: AsciicastExporter::export,
+    });
+
     formats
 }
 
@@ -109,6 +117,7 @@ pub const FEATURE_GATED_FORMATS: &[(&str, &str)] = &[
     ("csv", "csv-export"),
     ("html", "html-export"),
     ("mermaid", "mermaid-export"),
+    ("asciicast", "asciicast-export"),
 ];
 
 /// Returns `true` if `name` is a trajectory export format known to this codebase,
@@ -162,6 +171,9 @@ pub struct CsvExporter;
 
 #[cfg(feature = "mermaid-export")]
 pub struct MermaidExporter;
+
+#[cfg(feature = "asciicast-export")]
+pub struct AsciicastExporter;
 
 #[cfg(feature = "html-export")]
 pub struct HtmlExporter;
@@ -452,5 +464,65 @@ mod tests {
         assert!(html.contains("submitted"));
         assert!(html.contains("Hello agent"));
         assert!(html.contains("Hello user"));
+    }
+}
+
+#[cfg(feature = "asciicast-export")]
+impl TrajectoryExporter for AsciicastExporter {
+    fn export(trajectory: &Trajectory) -> String {
+        let redactor = Redactor::default_enabled();
+        let mut cast = String::new();
+
+        // Asciicast v2 header
+        let _ = writeln!(
+            cast,
+            r#"{{"version": 2, "width": 100, "height": 40, "timestamp": 0, "env": {{"TERM": "xterm-256color"}}}}"#
+        );
+
+        let mut current_time = 0.0;
+
+        for msg in &trajectory.messages {
+            let role = msg.role.as_str();
+            let content = redactor.redact_text(&msg.content, surface::EXPORT).text;
+
+            let formatted = match role {
+                "system" => format!("\x1b[1;35m[System]\x1b[0m {content}\r\n"),
+                "user" => format!("\x1b[1;34m[User]\x1b[0m {content}\r\n"),
+                "assistant" => format!("\x1b[1;32m[Assistant]\x1b[0m {content}\r\n"),
+                "tool" => format!("\x1b[1;36m[Tool]\x1b[0m {content}\r\n"),
+                _ => format!("[{role}] {content}\r\n"),
+            };
+
+            let escaped_text = match serde_json::to_string(&formatted) {
+                Ok(s) => s,
+                Err(_) => format!("\"{}\"", formatted.replace('"', "\\\"")),
+            };
+
+            current_time += 1.0;
+            let _ = writeln!(cast, "[{current_time:.3}, \"o\", {escaped_text}]");
+        }
+
+        cast
+    }
+}
+
+#[cfg(test)]
+mod asciicast_tests {
+    use super::*;
+    use crate::model::Message;
+
+    #[cfg(feature = "asciicast-export")]
+    #[test]
+    fn test_asciicast_export_format() {
+        let mut t = Trajectory::new();
+        t.info.task = Some("Add a feature".to_string());
+
+        t.record_message(&Message::user("Hello agent"));
+
+        let cast = AsciicastExporter::export(&t);
+
+        assert!(cast.starts_with(r#"{"version": 2"#));
+        assert!(cast.contains(r#"[User]"#));
+        assert!(cast.contains("Hello agent"));
     }
 }
