@@ -506,12 +506,11 @@ impl TrajectoryExporter for AsciicastExporter {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "asciicast-export"))]
 mod asciicast_tests {
     use super::*;
     use crate::model::Message;
 
-    #[cfg(feature = "asciicast-export")]
     #[test]
     fn test_asciicast_export_format() {
         let mut t = Trajectory::new();
