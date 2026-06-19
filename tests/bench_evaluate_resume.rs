@@ -162,7 +162,10 @@ fn resume_fully_scored_does_zero_work() {
     let eval = maxwells_daemon::run::evaluate::run(&args).unwrap();
 
     let rs = eval.reuse_summary.expect("reuse_summary must be present");
-    assert_eq!(rs.evaluated, 0, "zero new evaluations on fully-scored sweep");
+    assert_eq!(
+        rs.evaluated, 0,
+        "zero new evaluations on fully-scored sweep"
+    );
     assert_eq!(rs.reused, 3, "all 3 instances must be reused");
     assert_eq!(rs.invalidated, 0, "no invalidations");
 }
@@ -303,7 +306,11 @@ fn interrupted_eval_resumes_from_first_unscored() {
     let rs = eval.reuse_summary.expect("reuse_summary must be present");
     assert_eq!(rs.reused, 2, "A and B reused from partial evaluation.json");
     assert_eq!(rs.evaluated, 1, "only C evaluated");
-    assert_eq!(eval.instances.len(), 3, "all three instances present in output");
+    assert_eq!(
+        eval.instances.len(),
+        3,
+        "all three instances present in output"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -338,7 +345,10 @@ fn force_reevaluates_all() {
     let rs = eval.reuse_summary.expect("reuse_summary must be present");
     assert_eq!(rs.evaluated, 3, "all 3 re-evaluated under --force");
     assert_eq!(rs.reused, 0, "nothing reused under --force");
-    assert_eq!(rs.invalidated, 0, "invalidated is 0 under --force (force ≠ invalidation)");
+    assert_eq!(
+        rs.invalidated, 0,
+        "invalidated is 0 under --force (force ≠ invalidation)"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -377,7 +387,10 @@ fn changed_patch_is_invalidated() {
     let second = maxwells_daemon::run::evaluate::run(&args).unwrap();
 
     let rs = second.reuse_summary.expect("reuse_summary must be present");
-    assert_eq!(rs.invalidated, 1, "A must be invalidated after patch change");
+    assert_eq!(
+        rs.invalidated, 1,
+        "A must be invalidated after patch change"
+    );
     assert_eq!(rs.evaluated, 1, "A must be re-evaluated");
     assert_eq!(rs.reused, 1, "B still reused");
 
@@ -435,10 +448,16 @@ fn counts_in_json_and_match() {
         .reuse_summary
         .expect("reuse_summary present in evaluation.json");
 
-    assert_eq!(in_memory, on_disk, "in-memory and on-disk reuse_summary must match");
+    assert_eq!(
+        in_memory, on_disk,
+        "in-memory and on-disk reuse_summary must match"
+    );
     assert_eq!(on_disk.reused, 1, "B reused");
     assert_eq!(on_disk.invalidated, 1, "A invalidated");
-    assert_eq!(on_disk.evaluated, 2, "A (invalidated) + C (new) = 2 evaluated");
+    assert_eq!(
+        on_disk.evaluated, 2,
+        "A (invalidated) + C (new) = 2 evaluated"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -461,14 +480,18 @@ fn resume_is_default_no_flag() {
     // First run — no prior evaluation.json
     let args = default_evaluate_args(dir.path());
     let first = maxwells_daemon::run::evaluate::run(&args).unwrap();
-    let rs = first.reuse_summary.expect("reuse_summary present on first run");
+    let rs = first
+        .reuse_summary
+        .expect("reuse_summary present on first run");
     assert_eq!(rs.evaluated, 2, "first run: all instances evaluated");
     assert_eq!(rs.reused, 0, "first run: nothing reused");
     assert_eq!(rs.invalidated, 0, "first run: no invalidations");
 
     // Second run — same inputs, no --force flag
     let second = maxwells_daemon::run::evaluate::run(&args).unwrap();
-    let rs2 = second.reuse_summary.expect("reuse_summary present on second run");
+    let rs2 = second
+        .reuse_summary
+        .expect("reuse_summary present on second run");
     assert_eq!(rs2.evaluated, 0, "second run: 0 evaluated (default resume)");
     assert_eq!(rs2.reused, 2, "second run: 2 reused");
     assert_eq!(rs2.invalidated, 0);
@@ -484,7 +507,10 @@ fn prior_eval_absent_treats_all_as_new() {
     let dir = tempfile::tempdir().unwrap();
     write_results(
         dir.path(),
-        vec![minimal_instance_result("task-a"), minimal_instance_result("task-b")],
+        vec![
+            minimal_instance_result("task-a"),
+            minimal_instance_result("task-b"),
+        ],
     );
     write_patch(dir.path(), "task-a", "--- patch a ---");
     write_patch(dir.path(), "task-b", "--- patch b ---");
