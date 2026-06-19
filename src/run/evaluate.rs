@@ -464,13 +464,21 @@ pub fn run(args: &EvaluateArgs) -> Result<EvaluationResults, Error> {
         plan.needs_eval.keys().map(String::as_str).collect();
 
     let eval_started_at = utc_now_iso8601();
-    let run_output = match args.backend {
-        EvaluateBackend::None => {
-            EvaluateRunOutput::without_run_resolution(build_none_eval(&plan.needs_eval))
+    // Fully-cached resume: skip the backend entirely. The backends eagerly load
+    // the dataset / predictions file up front, so dispatching with an empty plan
+    // would needlessly fail when those artifacts have moved even though no
+    // instance needs evaluation.
+    let run_output = if plan.needs_eval.is_empty() {
+        EvaluateRunOutput::without_run_resolution(EvaluationResults::default())
+    } else {
+        match args.backend {
+            EvaluateBackend::None => {
+                EvaluateRunOutput::without_run_resolution(build_none_eval(&plan.needs_eval))
+            }
+            EvaluateBackend::SbCli => run_sb_cli(args, &plan.needs_eval)?,
+            EvaluateBackend::Rehearsal => run_rehearsal_eval(args, &plan.needs_eval)?,
+            EvaluateBackend::DockerTests => run_docker_tests(args, &plan.needs_eval)?,
         }
-        EvaluateBackend::SbCli => run_sb_cli(args, &plan.needs_eval)?,
-        EvaluateBackend::Rehearsal => run_rehearsal_eval(args, &plan.needs_eval)?,
-        EvaluateBackend::DockerTests => run_docker_tests(args, &plan.needs_eval)?,
     };
     let EvaluateRunOutput {
         mut eval,
@@ -828,6 +836,18 @@ struct ReusePlan {
     counts: ReuseSummary,
 }
 
+/// Whether a cached verdict is consistent with the current submission state.
+///
+/// `SkippedNoPatch` is only a valid verdict while the instance is non-submitted;
+/// any other verdict implies the instance was evaluated with a submitted patch.
+/// If the current submission state disagrees with the cached verdict's
+/// assumption, the cached row must not be reused (it would otherwise carry a
+/// stale `resolved`/skip verdict forward).
+fn reuse_consistent_with_submission(cached: &InstanceEvaluation, current_submitted: bool) -> bool {
+    let cached_was_skip = cached.eval_exit_reason == EvalExitReason::SkippedNoPatch;
+    current_submitted != cached_was_skip
+}
+
 /// Classify each instance in the current sweep as reused / invalidated / new.
 ///
 /// When `args.force` is set, all instances are sent to the backend (today's
@@ -877,15 +897,26 @@ fn classify_for_reuse(args: &EvaluateArgs, results: &HashMap<String, InstanceRes
     for (id, r) in results {
         let runs = effective_runs(r);
         let current_fp = submission_fingerprint_for_instance(&args.sweep_dir, id, runs);
+        // Whether the current sweep would submit this instance for evaluation.
+        // A cached verdict is only reusable if the current submission state still
+        // agrees with the state that produced it (a SkippedNoPatch verdict is only
+        // valid while the instance remains non-submitted, and vice versa).
+        let current_submitted = r.outcome.as_deref() == Some(outcome::SUBMITTED) && r.patch_present;
 
         match prior_map.get(id) {
-            Some(cached) if cached.submission_fingerprint == current_fp => {
-                // Fingerprints match (including None == None for no-patch instances).
+            Some(cached)
+                if cached.runs == runs
+                    && cached.submission_fingerprint == current_fp
+                    && reuse_consistent_with_submission(cached, current_submitted) =>
+            {
+                // Patch bytes, run count, and submission state all match
+                // (including None == None for no-patch instances).
                 reused.push(cached.clone());
                 reuse_count += 1;
             }
             Some(_) => {
-                // Prior exists but patch artifact changed — invalidate.
+                // Prior exists but patch artifact, run count, or submission
+                // state changed — invalidate.
                 needs_eval.insert(id.clone(), r.clone());
                 invalidated_count += 1;
             }
@@ -929,6 +960,11 @@ fn attach_patch_stats(
     resolved_by_run: &HashMap<RunSlotKey, bool>,
     fresh_ids: &std::collections::HashSet<&str>,
 ) -> Result<(), Error> {
+    // Nothing fresh to recompute (e.g. a fully-cached resume): reused instances
+    // keep their cached patch_stats, so avoid loading the dataset / gold patches.
+    if fresh_ids.is_empty() {
+        return Ok(());
+    }
     let classifiers = PatchClassifiers::from_default_toml()?;
     let gold_patches = load_gold_patches(args.dataset_path.as_deref())?;
     for row in &mut eval.instances {

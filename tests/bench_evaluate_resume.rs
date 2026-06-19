@@ -552,3 +552,112 @@ fn instance_removed_from_sweep_is_dropped() {
     assert_eq!(eval.instances.len(), 1, "only A in output; B dropped");
     assert_eq!(eval.instances[0].instance_id, "task-a");
 }
+
+// ---------------------------------------------------------------------------
+// Review hardening (PR #809): fully-cached resume must not enter the backend
+// ---------------------------------------------------------------------------
+
+/// A fully-cached resume must not depend on the dataset file, since no instance
+/// needs evaluation. Backends eagerly load the dataset up front, so the empty
+/// plan must short-circuit before backend dispatch.
+#[test]
+fn fully_cached_resume_skips_backend_dataset_load() {
+    let dir = tempfile::tempdir().unwrap();
+    write_results(
+        dir.path(),
+        vec![
+            minimal_instance_result("task-a"),
+            minimal_instance_result("task-b"),
+        ],
+    );
+    write_patch(dir.path(), "task-a", "--- patch a ---");
+    write_patch(dir.path(), "task-b", "--- patch b ---");
+
+    // First run seeds evaluation.json (DockerTests backend, dataset present).
+    let mut args = default_evaluate_args(dir.path());
+    args.backend = EvaluateBackend::DockerTests;
+    let dataset = dir.path().join("dataset.jsonl");
+    std::fs::write(
+        &dataset,
+        "{\"instance_id\":\"task-a\"}\n{\"instance_id\":\"task-b\"}\n",
+    )
+    .unwrap();
+    args.dataset_path = Some(dataset.clone());
+    maxwells_daemon::run::evaluate::run(&args).unwrap();
+
+    // Dataset disappears, but every instance is cached → resume must still succeed.
+    std::fs::remove_file(&dataset).unwrap();
+    let eval = maxwells_daemon::run::evaluate::run(&args)
+        .expect("fully-cached resume must not require the dataset file");
+
+    let rs = eval.reuse_summary.expect("reuse_summary present");
+    assert_eq!(rs.evaluated, 0, "no instance evaluated on full cache hit");
+    assert_eq!(rs.reused, 2, "both instances reused");
+}
+
+// ---------------------------------------------------------------------------
+// Review hardening (PR #809): run-count change invalidates a cached verdict
+// ---------------------------------------------------------------------------
+
+/// When the sweep's run count grows (e.g. a pass@k rerun), a single-run cached
+/// verdict must not be reused even though the run-1 patch is unchanged.
+#[test]
+fn increased_run_count_invalidates_cached_verdict() {
+    let dir = tempfile::tempdir().unwrap();
+    write_results(dir.path(), vec![minimal_instance_result("task-a")]);
+    write_patch(dir.path(), "task-a", "--- patch a ---");
+
+    let args = default_evaluate_args(dir.path());
+    maxwells_daemon::run::evaluate::run(&args).unwrap();
+
+    // Bump the sweep to a 2-run pass@k sweep; run-1 patch unchanged.
+    let mut multi = minimal_instance_result("task-a");
+    multi.runs = 2;
+    write_results(dir.path(), vec![multi]);
+
+    let eval = maxwells_daemon::run::evaluate::run(&args).unwrap();
+    let rs = eval.reuse_summary.expect("reuse_summary present");
+    assert_eq!(rs.invalidated, 1, "run-count change must invalidate");
+    assert_eq!(rs.evaluated, 1, "instance must be re-evaluated");
+    assert_eq!(rs.reused, 0);
+}
+
+// ---------------------------------------------------------------------------
+// Review hardening (PR #809): submission-state change invalidates reuse
+// ---------------------------------------------------------------------------
+
+/// If results.json now marks a previously-submitted instance as non-submitted
+/// (while a stale patch file remains on disk), the cached non-skip verdict must
+/// be invalidated rather than carried forward.
+#[test]
+fn submission_state_change_invalidates_cached_verdict() {
+    use maxwells_daemon::run::evaluate::EvalExitReason;
+
+    let dir = tempfile::tempdir().unwrap();
+    write_results(dir.path(), vec![minimal_instance_result("task-a")]);
+    write_patch(dir.path(), "task-a", "--- patch a ---");
+
+    let args = default_evaluate_args(dir.path());
+    let first = maxwells_daemon::run::evaluate::run(&args).unwrap();
+    assert_eq!(
+        first.instances[0].eval_exit_reason,
+        EvalExitReason::EvalError
+    );
+
+    // Instance is no longer submitted, but the patch file is still on disk.
+    let mut unsubmitted = minimal_instance_result("task-a");
+    unsubmitted.outcome = Some("errored".into());
+    unsubmitted.patch_present = false;
+    unsubmitted.non_empty_patch = false;
+    write_results(dir.path(), vec![unsubmitted]);
+
+    let eval = maxwells_daemon::run::evaluate::run(&args).unwrap();
+    let rs = eval.reuse_summary.expect("reuse_summary present");
+    assert_eq!(rs.invalidated, 1, "submission-state change must invalidate");
+    assert_eq!(rs.reused, 0);
+    assert_eq!(
+        eval.instances[0].eval_exit_reason,
+        EvalExitReason::SkippedNoPatch,
+        "re-evaluation must reflect the new non-submitted state"
+    );
+}
