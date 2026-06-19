@@ -511,19 +511,29 @@ pub fn run(args: &EvaluateArgs) -> Result<EvaluationResults, Error> {
     eval.instances
         .sort_by(|a, b| a.instance_id.cmp(&b.instance_id));
 
-    let (dataset_sha256, dataset_instance_count) = if let Some(ref dataset_path) = args.dataset_path
-    {
-        let sha = sha256_file(dataset_path).ok();
-        let count = swebench::load_dataset(dataset_path).ok().map(|v| v.len());
-        (sha, count)
-    } else if let Some(ref manifest) = loaded.manifest {
-        (
-            Some(manifest.dataset.sha256.clone()),
-            Some(manifest.dataset.instance_count),
-        )
-    } else {
-        (None, None)
-    };
+    let (mut dataset_sha256, mut dataset_instance_count) =
+        if let Some(ref dataset_path) = args.dataset_path {
+            let sha = sha256_file(dataset_path).ok();
+            let count = swebench::load_dataset(dataset_path).ok().map(|v| v.len());
+            (sha, count)
+        } else if let Some(ref manifest) = loaded.manifest {
+            (
+                Some(manifest.dataset.sha256.clone()),
+                Some(manifest.dataset.instance_count),
+            )
+        } else {
+            (None, None)
+        };
+    // On a cache-hit resume the current dataset may be unreadable (moved/cleaned)
+    // even though every verdict was reused from the prior evaluation. Backfill the
+    // dataset provenance from the old evaluation.json rather than overwriting it
+    // with None, which downstream compare treats as unavailable/legacy.
+    if plan.counts.reused > 0 && (dataset_sha256.is_none() || dataset_instance_count.is_none()) {
+        if let Some(prior) = prior_dataset_provenance(&args.sweep_dir) {
+            dataset_sha256 = dataset_sha256.or(prior.0);
+            dataset_instance_count = dataset_instance_count.or(prior.1);
+        }
+    }
     // Reused DockerTests rows were produced with real testbed images that the
     // (possibly empty) fresh run no longer observed. Union the fresh image set
     // with the prior provenance so a cache hit / partial resume doesn't drop
@@ -857,6 +867,18 @@ struct ReusePlan {
 /// on resume. New patch bytes (None → Some) are caught by the fingerprint.
 fn reuse_consistent_with_submission(cached: &InstanceEvaluation, current_submitted: bool) -> bool {
     current_submitted || cached.eval_exit_reason == EvalExitReason::SkippedNoPatch
+}
+
+/// Read the `(dataset_sha256, dataset_instance_count)` recorded in the prior
+/// `evaluation.json` provenance, if any. Used to preserve dataset comparability
+/// metadata across a cache-hit resume when the current dataset is unreadable.
+fn prior_dataset_provenance(sweep_dir: &Path) -> Option<(Option<String>, Option<usize>)> {
+    let path = evaluation_path(sweep_dir);
+    let prior: EvaluationResults = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())?;
+    let provenance = prior.provenance?;
+    Some((provenance.dataset_sha256, provenance.dataset_instance_count))
 }
 
 /// Union the freshly observed DockerTests image names with those recorded in the

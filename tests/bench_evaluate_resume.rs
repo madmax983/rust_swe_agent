@@ -743,3 +743,45 @@ fn cached_docker_tests_resume_preserves_image_provenance() {
         "prior image names must be preserved on a cache hit, got {images:?}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Review hardening (PR #809): cache hits preserve dataset provenance
+// ---------------------------------------------------------------------------
+
+/// A fully-cached resume whose dataset file has moved must not blank out the
+/// prior dataset_sha256 / dataset_instance_count in evaluation.json.
+#[test]
+fn cached_resume_preserves_dataset_provenance_when_dataset_missing() {
+    let dir = tempfile::tempdir().unwrap();
+    write_results(dir.path(), vec![minimal_instance_result("task-a")]);
+    write_patch(dir.path(), "task-a", "--- patch a ---");
+
+    // Seed correct fingerprints, then graft on dataset provenance.
+    let none_args = default_evaluate_args(dir.path());
+    maxwells_daemon::run::evaluate::run(&none_args).unwrap();
+
+    let path = dir.path().join("evaluation.json");
+    let mut v: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    v["provenance"]["dataset_sha256"] = serde_json::json!("deadbeefcafe");
+    v["provenance"]["dataset_instance_count"] = serde_json::json!(1);
+    std::fs::write(&path, serde_json::to_string_pretty(&v).unwrap()).unwrap();
+
+    // Resume pointing at a dataset path that does not exist.
+    let mut args = default_evaluate_args(dir.path());
+    args.dataset_path = Some(dir.path().join("missing-dataset.jsonl"));
+    let eval = maxwells_daemon::run::evaluate::run(&args).unwrap();
+
+    assert_eq!(eval.reuse_summary.unwrap().reused, 1, "instance reused");
+    let prov = eval.provenance.expect("provenance present");
+    assert_eq!(
+        prov.dataset_sha256.as_deref(),
+        Some("deadbeefcafe"),
+        "prior dataset_sha256 must be preserved on a cache hit"
+    );
+    assert_eq!(
+        prov.dataset_instance_count,
+        Some(1),
+        "prior dataset_instance_count must be preserved on a cache hit"
+    );
+}
