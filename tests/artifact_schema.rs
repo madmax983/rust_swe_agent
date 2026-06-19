@@ -29,6 +29,8 @@ fn artifact_schema_current_minor_bumped_for_replay_fingerprinting() {
     // 1.9 added patch_error_log to InstanceEvaluation (issue #273).
     // 1.10 added local_workdir option to RenderOnlyReport (issue #341).
     // 1.11 added info.parse_retries to TrajectoryInfo (issue #517).
+    // 1.12 added reuse_summary to EvaluationResults and submission_fingerprint to
+    //   InstanceEvaluation for resumable bench evaluate (issue #530).
     // NO-BUMP (issue #329): info.manifest was added as Option<MiniProvenanceManifest>
     //   with skip_serializing_if="is_none".  It is absent from pre-#329 trajectories
     //   (reads as None in new code, is silently ignored by all old readers) and no
@@ -36,7 +38,7 @@ fn artifact_schema_current_minor_bumped_for_replay_fingerprinting() {
     //   The change is fully reader-transparent under the major-1 additive policy.
     assert_eq!(
         ArtifactSchemaVersion::CURRENT,
-        ArtifactSchemaVersion::new(1, 11)
+        ArtifactSchemaVersion::new(1, 12)
     );
 }
 
@@ -44,7 +46,7 @@ fn artifact_schema_current_minor_bumped_for_replay_fingerprinting() {
 fn artifact_classifier_marks_exact_current_version_supported_current() {
     let payload = serde_json::json!({
         "artifact_kind": "sweep_results",
-        "schema_version": {"major": 1, "minor": 11},
+        "schema_version": {"major": 1, "minor": 12},
         "total": 0,
         "instances": []
     });
@@ -154,7 +156,7 @@ fn trajectory_serialization_includes_artifact_header() {
     assert_eq!(value["artifact_kind"], "trajectory");
     assert_eq!(
         value["schema_version"],
-        serde_json::json!({"major": 1, "minor": 11})
+        serde_json::json!({"major": 1, "minor": 12})
     );
 }
 
@@ -182,7 +184,7 @@ async fn swebench_run_writes_versioned_results_and_prediction_metadata() {
     assert_eq!(results["artifact_kind"], "sweep_results");
     assert_eq!(
         results["schema_version"],
-        serde_json::json!({"major": 1, "minor": 11})
+        serde_json::json!({"major": 1, "minor": 12})
     );
 
     let predictions = std::fs::read_to_string(output.join("all_preds.jsonl")).unwrap();
@@ -206,7 +208,7 @@ async fn swebench_run_writes_versioned_results_and_prediction_metadata() {
     assert_eq!(metadata["artifact_kind"], "swebench_predictions_metadata");
     assert_eq!(
         metadata["schema_version"],
-        serde_json::json!({"major": 1, "minor": 11})
+        serde_json::json!({"major": 1, "minor": 12})
     );
     assert_eq!(metadata["predictions_file"], "all_preds.jsonl");
     assert_eq!(metadata["row_count"], 1);
@@ -250,7 +252,7 @@ async fn evaluate_run_writes_versioned_evaluation_json() {
     assert_eq!(eval["artifact_kind"], "evaluation_results");
     assert_eq!(
         eval["schema_version"],
-        serde_json::json!({"major": 1, "minor": 11})
+        serde_json::json!({"major": 1, "minor": 12})
     );
 }
 
@@ -265,7 +267,7 @@ fn forecast_json_includes_artifact_header() {
     assert_eq!(value["artifact_kind"], "forecast_report");
     assert_eq!(
         value["schema_version"],
-        serde_json::json!({"major": 1, "minor": 11})
+        serde_json::json!({"major": 1, "minor": 12})
     );
 }
 
@@ -300,7 +302,7 @@ async fn forecast_run_keeps_calibration_results_versioned_after_manifest_mark() 
     assert_eq!(calibration_results["artifact_kind"], "sweep_results");
     assert_eq!(
         calibration_results["schema_version"],
-        serde_json::json!({"major": 1, "minor": 11})
+        serde_json::json!({"major": 1, "minor": 12})
     );
 }
 
@@ -549,7 +551,7 @@ async fn current_contract_fixtures_match_emitted_artifact_top_level_fields() {
 
     let preflight = serde_json::json!({
         "artifact_kind": "preflight_report",
-        "schema_version": {"major": 1, "minor": 11},
+        "schema_version": {"major": 1, "minor": 12},
         "mode": "doctor",
         "checks": [{
             "status": "ok",

@@ -475,7 +475,15 @@ pub fn run(args: &EvaluateArgs) -> Result<EvaluationResults, Error> {
             EvaluateBackend::None => {
                 EvaluateRunOutput::without_run_resolution(build_none_eval(&plan.needs_eval))
             }
-            EvaluateBackend::SbCli => run_sb_cli(args, &plan.needs_eval)?,
+            EvaluateBackend::SbCli => {
+                // Decide single-run vs per-run submission from the FULL sweep, not
+                // the filtered plan: a pass@k sweep whose only fresh instance is
+                // single-run must still use the per-run predictions files (the
+                // aggregate all_preds.jsonl uses synthetic <id>::run-k IDs for
+                // multi-run sweeps and yields no verdict on the single-run path).
+                let sweep_max_runs = results.values().map(effective_runs).max().unwrap_or(1);
+                run_sb_cli(args, &plan.needs_eval, sweep_max_runs)?
+            }
             EvaluateBackend::Rehearsal => run_rehearsal_eval(args, &plan.needs_eval)?,
             EvaluateBackend::DockerTests => run_docker_tests(args, &plan.needs_eval)?,
         }
@@ -2304,6 +2312,7 @@ fn parse_pytest_output(output: &str, all_tests: &[&str]) -> (Vec<String>, Vec<St
 fn run_sb_cli(
     args: &EvaluateArgs,
     results: &HashMap<String, InstanceResult>,
+    sweep_max_runs: u32,
 ) -> Result<EvaluateRunOutput, Error> {
     let preds = swebench::predictions_path(&args.sweep_dir);
     if !preds.exists() {
@@ -2317,7 +2326,9 @@ fn run_sb_cli(
     std::fs::create_dir_all(&report_dir)?;
     let run_id = args.run_id.clone().unwrap_or_else(generated_run_id);
 
-    let max_runs = results.values().map(effective_runs).max().unwrap_or(1);
+    // Run-mode is a sweep-level property; use the full sweep's run count so a
+    // partial resume of a pass@k sweep doesn't fall back to the single-run path.
+    let max_runs = sweep_max_runs.max(results.values().map(effective_runs).max().unwrap_or(1));
     let mut resolved_by_run = HashMap::new();
     if max_runs > 1 {
         let mut reports = BTreeMap::new();

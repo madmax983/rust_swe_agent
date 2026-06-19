@@ -22,7 +22,7 @@ pub struct ArtifactSchemaVersion {
 impl ArtifactSchemaVersion {
     pub const CURRENT: Self = Self {
         major: 1,
-        minor: 11,
+        minor: 12,
     };
     pub const LEGACY_PRE_VERSIONING: Self = Self { major: 0, minor: 0 };
 

@@ -38,7 +38,7 @@ fn check_bytes_strict(json: &str) -> maxwells_daemon::run::artifact_check::Artif
 fn valid_trajectory_returns_valid_verdict() {
     let json = serde_json::json!({
         "artifact_kind": "trajectory",
-        "schema_version": { "major": 1, "minor": 11 },
+        "schema_version": { "major": 1, "minor": 12 },
         "trajectory_format": "mini-swe-agent-1.2",
         "info": { "task": "fix the bug" },
         "messages": []
@@ -51,14 +51,14 @@ fn valid_trajectory_returns_valid_verdict() {
         output.results[0].artifact_kind.as_deref(),
         Some("trajectory")
     );
-    assert_eq!(output.results[0].schema_version.as_deref(), Some("1.11"));
+    assert_eq!(output.results[0].schema_version.as_deref(), Some("1.12"));
 }
 
 #[test]
 fn invalid_trajectory_missing_required_fields_returns_invalid() {
     let json = serde_json::json!({
         "artifact_kind": "trajectory",
-        "schema_version": { "major": 1, "minor": 11 }
+        "schema_version": { "major": 1, "minor": 12 }
         // missing: trajectory_format, info, messages
     })
     .to_string();
@@ -83,7 +83,7 @@ fn invalid_trajectory_missing_required_fields_returns_invalid() {
 fn trajectory_missing_info_reports_it_as_missing() {
     let json = serde_json::json!({
         "artifact_kind": "trajectory",
-        "schema_version": { "major": 1, "minor": 11 },
+        "schema_version": { "major": 1, "minor": 12 },
         "trajectory_format": "mini-swe-agent-1.2",
         "messages": []
         // missing: info
@@ -102,7 +102,7 @@ fn trajectory_missing_info_reports_it_as_missing() {
 fn trajectory_missing_messages_reports_it_as_missing() {
     let json = serde_json::json!({
         "artifact_kind": "trajectory",
-        "schema_version": { "major": 1, "minor": 11 },
+        "schema_version": { "major": 1, "minor": 12 },
         "trajectory_format": "mini-swe-agent-1.2",
         "info": {}
         // missing: messages
@@ -121,7 +121,7 @@ fn trajectory_missing_messages_reports_it_as_missing() {
 fn trajectory_unknown_additive_field_does_not_fail_major_one() {
     let json = serde_json::json!({
         "artifact_kind": "trajectory",
-        "schema_version": { "major": 1, "minor": 11 },
+        "schema_version": { "major": 1, "minor": 12 },
         "trajectory_format": "mini-swe-agent-1.2",
         "info": {},
         "messages": [],
@@ -249,7 +249,7 @@ fn sweep_results_checks_required_fields() {
 fn valid_sweep_results_returns_valid() {
     let json = serde_json::json!({
         "artifact_kind": "sweep_results",
-        "schema_version": { "major": 1, "minor": 11 },
+        "schema_version": { "major": 1, "minor": 12 },
         "total": 10,
         "submitted": 8,
         "skipped": 1,
@@ -418,7 +418,7 @@ fn cache_stats_report_checks_required_fields() {
 fn json_format_emits_validation_report_artifact_kind() {
     let json = serde_json::json!({
         "artifact_kind": "trajectory",
-        "schema_version": { "major": 1, "minor": 11 },
+        "schema_version": { "major": 1, "minor": 12 },
         "trajectory_format": "mini-swe-agent-1.2",
         "info": {},
         "messages": []
@@ -442,7 +442,7 @@ fn json_format_emits_validation_report_artifact_kind() {
 fn json_format_includes_verdict_counts() {
     let json = serde_json::json!({
         "artifact_kind": "trajectory",
-        "schema_version": { "major": 1, "minor": 11 },
+        "schema_version": { "major": 1, "minor": 12 },
         "trajectory_format": "mini-swe-agent-1.2",
         "info": {},
         "messages": []
@@ -462,7 +462,7 @@ fn json_format_includes_verdict_counts() {
 fn text_format_includes_verdict_and_path() {
     let json = serde_json::json!({
         "artifact_kind": "trajectory",
-        "schema_version": { "major": 1, "minor": 11 },
+        "schema_version": { "major": 1, "minor": 12 },
         "trajectory_format": "mini-swe-agent-1.2",
         "info": {},
         "messages": []
@@ -477,7 +477,7 @@ fn text_format_includes_verdict_and_path() {
 fn text_format_shows_missing_fields_for_invalid() {
     let json = serde_json::json!({
         "artifact_kind": "trajectory",
-        "schema_version": { "major": 1, "minor": 11 }
+        "schema_version": { "major": 1, "minor": 12 }
         // missing required fields
     })
     .to_string();
@@ -495,7 +495,7 @@ fn text_format_shows_missing_fields_for_invalid() {
 fn has_failures_false_when_all_valid() {
     let json = serde_json::json!({
         "artifact_kind": "trajectory",
-        "schema_version": { "major": 1, "minor": 11 },
+        "schema_version": { "major": 1, "minor": 12 },
         "trajectory_format": "mini-swe-agent-1.2",
         "info": {},
         "messages": []
@@ -509,7 +509,7 @@ fn has_failures_false_when_all_valid() {
 fn has_failures_true_when_any_invalid() {
     let json = serde_json::json!({
         "artifact_kind": "trajectory",
-        "schema_version": { "major": 1, "minor": 11 }
+        "schema_version": { "major": 1, "minor": 12 }
     })
     .to_string();
     let output = check_bytes(&json);
@@ -574,7 +574,7 @@ fn artifact_check_failure_exit_code_is_47() {
 fn no_api_key_required() {
     let json = serde_json::json!({
         "artifact_kind": "trajectory",
-        "schema_version": { "major": 1, "minor": 11 },
+        "schema_version": { "major": 1, "minor": 12 },
         "trajectory_format": "mini-swe-agent-1.2",
         "info": {},
         "messages": []
@@ -594,7 +594,7 @@ fn directory_scan_finds_json_files_recursively() {
 
     let valid_json = serde_json::json!({
         "artifact_kind": "trajectory",
-        "schema_version": { "major": 1, "minor": 11 },
+        "schema_version": { "major": 1, "minor": 12 },
         "trajectory_format": "mini-swe-agent-1.2",
         "info": {},
         "messages": []
@@ -621,7 +621,7 @@ fn directory_scan_finds_json_files_recursively() {
 fn multiple_paths_all_validated() {
     let json1 = serde_json::json!({
         "artifact_kind": "trajectory",
-        "schema_version": { "major": 1, "minor": 11 },
+        "schema_version": { "major": 1, "minor": 12 },
         "trajectory_format": "mini-swe-agent-1.2",
         "info": {},
         "messages": []
@@ -629,7 +629,7 @@ fn multiple_paths_all_validated() {
     .to_string();
     let json2 = serde_json::json!({
         "artifact_kind": "sweep_results",
-        "schema_version": { "major": 1, "minor": 11 },
+        "schema_version": { "major": 1, "minor": 12 },
         "total": 1, "submitted": 1, "skipped": 0, "errored": 0,
         "failures_by_category": {}, "instances": []
     })
@@ -659,7 +659,7 @@ fn multiple_paths_all_validated() {
 fn json_format_schema_version_matches_current() {
     let json = serde_json::json!({
         "artifact_kind": "trajectory",
-        "schema_version": { "major": 1, "minor": 11 },
+        "schema_version": { "major": 1, "minor": 12 },
         "trajectory_format": "mini-swe-agent-1.2",
         "info": {},
         "messages": []
@@ -673,8 +673,8 @@ fn json_format_schema_version_matches_current() {
         .and_then(serde_json::Value::as_u64);
     assert_eq!(
         minor,
-        Some(11),
-        "validation_report schema_version.minor must match CURRENT (11) so --strict re-checks pass"
+        Some(12),
+        "validation_report schema_version.minor must match CURRENT (12) so --strict re-checks pass"
     );
 }
 
@@ -720,7 +720,7 @@ fn nonexistent_explicit_path_returns_err() {
 fn null_required_field_returns_invalid() {
     let json = serde_json::json!({
         "artifact_kind": "trajectory",
-        "schema_version": { "major": 1, "minor": 11 },
+        "schema_version": { "major": 1, "minor": 12 },
         "trajectory_format": "mini-swe-agent-1.2",
         "info": {},
         "messages": null
