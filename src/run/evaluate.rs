@@ -458,7 +458,7 @@ pub fn run(args: &EvaluateArgs) -> Result<EvaluationResults, Error> {
     let results = loaded.instances;
 
     // Resume/reuse pass: classify instances into reused vs. needs-eval.
-    let plan = classify_for_reuse(args, &results)?;
+    let plan = classify_for_reuse(args, &results);
     let fresh_ids: std::collections::HashSet<&str> =
         plan.needs_eval.keys().map(String::as_str).collect();
 
@@ -502,7 +502,8 @@ pub fn run(args: &EvaluateArgs) -> Result<EvaluationResults, Error> {
         }
     }
     eval.instances.extend(plan.reused);
-    eval.instances.sort_by(|a, b| a.instance_id.cmp(&b.instance_id));
+    eval.instances
+        .sort_by(|a, b| a.instance_id.cmp(&b.instance_id));
 
     let (dataset_sha256, dataset_instance_count) = if let Some(ref dataset_path) = args.dataset_path
     {
@@ -806,13 +807,17 @@ fn submission_fingerprint_for_instance(
     let mut hasher = Sha256::new();
     let mut any = false;
     for run_index in 1..=runs {
-        let path = existing_patch_path_for_run(sweep_dir, instance_id, run_index);
+        let path = swebench::existing_patch_path_for_run(sweep_dir, instance_id, run_index);
         if let Ok(sha) = sha256_file(&path) {
             hasher.update(format!("{run_index}:{sha}\n").as_bytes());
             any = true;
         }
     }
-    if any { Some(format!("{:x}", hasher.finalize())) } else { None }
+    if any {
+        Some(format!("{:x}", hasher.finalize()))
+    } else {
+        None
+    }
 }
 
 /// Outcome of the reuse classification pass.
@@ -832,21 +837,18 @@ struct ReusePlan {
 ///   1. Load the prior `evaluation.json` (absent ⇒ empty map, all new).
 ///   2. Compute the current submission fingerprint for every instance.
 ///   3. Reuse cached verdicts whose fingerprint matches; invalidate the rest.
-fn classify_for_reuse(
-    args: &EvaluateArgs,
-    results: &HashMap<String, InstanceResult>,
-) -> Result<ReusePlan, Error> {
+fn classify_for_reuse(args: &EvaluateArgs, results: &HashMap<String, InstanceResult>) -> ReusePlan {
     // --force: skip all reuse logic and send everything to the backend.
     if args.force {
-        return Ok(ReusePlan {
+        return ReusePlan {
             reused: vec![],
             needs_eval: results.clone(),
             counts: ReuseSummary {
-                evaluated: results.len() as u32,
+                evaluated: u32::try_from(results.len()).unwrap_or(u32::MAX),
                 reused: 0,
                 invalidated: 0,
             },
-        });
+        };
     }
 
     // Load the prior evaluation.json (tolerate absence / parse errors).
@@ -896,8 +898,8 @@ fn classify_for_reuse(
         }
     }
 
-    let evaluated_count = needs_eval.len() as u32;
-    Ok(ReusePlan {
+    let evaluated_count = u32::try_from(needs_eval.len()).unwrap_or(u32::MAX);
+    ReusePlan {
         reused,
         needs_eval,
         counts: ReuseSummary {
@@ -905,7 +907,7 @@ fn classify_for_reuse(
             reused: reuse_count,
             invalidated: invalidated_count,
         },
-    })
+    }
 }
 
 fn probe_sb_cli_version() -> Option<String> {
