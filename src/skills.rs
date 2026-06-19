@@ -540,16 +540,24 @@ fn searchable_tokens(name: &str, description: &str) -> BTreeSet<String> {
         .collect()
 }
 
+/// Optimizes search text normalization by removing intermediate allocations (`split_whitespace().collect::<Vec<_>>().join(" ")`).
+/// It avoids allocating intermediate arrays and strings during whitespace normalization.
 fn normalize_search_text(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
+    let mut in_whitespace = true;
     for ch in text.chars() {
         if ch.is_ascii_alphanumeric() || ch == '$' || ch == '@' || ch == '/' {
             out.push(ch.to_ascii_lowercase());
-        } else {
+            in_whitespace = false;
+        } else if !in_whitespace {
             out.push(' ');
+            in_whitespace = true;
         }
     }
-    out.split_whitespace().collect::<Vec<_>>().join(" ")
+    if out.ends_with(' ') {
+        out.pop();
+    }
+    out
 }
 
 fn is_stopword(token: &str) -> bool {
@@ -623,4 +631,28 @@ fn expand_skill_path(path: &String) -> PathBuf {
         }
     }
     PathBuf::from(path)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_normalize_search_text() {
+        assert_eq!(normalize_search_text("Hello World!"), "hello world");
+        assert_eq!(
+            normalize_search_text("  leading and trailing  "),
+            "leading and trailing"
+        );
+        assert_eq!(
+            normalize_search_text("multiple   spaces"),
+            "multiple spaces"
+        );
+        assert_eq!(normalize_search_text("symbols&*^here"), "symbols here");
+        assert_eq!(normalize_search_text("$/@are/kept!"), "$/@are/kept");
+        assert_eq!(normalize_search_text("!@#onlysymbols"), "@ onlysymbols");
+        assert_eq!(normalize_search_text(""), "");
+        assert_eq!(normalize_search_text("a"), "a");
+        assert_eq!(normalize_search_text(" a "), "a");
+    }
 }
