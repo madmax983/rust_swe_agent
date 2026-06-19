@@ -447,6 +447,7 @@ pub fn evaluation_path(sweep_dir: &Path) -> PathBuf {
     sweep_dir.join("evaluation.json")
 }
 
+#[allow(clippy::too_many_lines)]
 pub fn run(args: &EvaluateArgs) -> Result<EvaluationResults, Error> {
     let loaded = load_sweep(&args.sweep_dir)?;
     let model_name = loaded.manifest.as_ref().map(|m| m.model.name.clone());
@@ -480,10 +481,7 @@ pub fn run(args: &EvaluateArgs) -> Result<EvaluationResults, Error> {
 
     // Populate submission fingerprints for fresh instances before merge.
     for inst in &mut eval.instances {
-        let runs = results
-            .get(&inst.instance_id)
-            .map(effective_runs)
-            .unwrap_or(1);
+        let runs = results.get(&inst.instance_id).map_or(1, effective_runs);
         inst.submission_fingerprint =
             submission_fingerprint_for_instance(&args.sweep_dir, &inst.instance_id, runs);
     }

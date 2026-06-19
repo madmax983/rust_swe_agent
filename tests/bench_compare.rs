@@ -1455,6 +1455,7 @@ fn evaluate_cost_attribution_off_matches_legacy_stdout() {
     );
     let stdout = String::from_utf8_lossy(&out.stdout);
     let expected = "\
+reuse: 2 evaluated, 0 reused, 0 invalidated\n\
 resolved: 0\n\
 resolved_rate: 0.0000\n\
 pass@1: 0.0000\n\
