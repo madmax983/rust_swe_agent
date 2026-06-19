@@ -511,48 +511,50 @@ pub fn run(args: &EvaluateArgs) -> Result<EvaluationResults, Error> {
     eval.instances
         .sort_by(|a, b| a.instance_id.cmp(&b.instance_id));
 
-    let (mut dataset_sha256, mut dataset_instance_count) =
-        if let Some(ref dataset_path) = args.dataset_path {
-            let sha = sha256_file(dataset_path).ok();
-            let count = swebench::load_dataset(dataset_path).ok().map(|v| v.len());
-            (sha, count)
-        } else if let Some(ref manifest) = loaded.manifest {
-            (
-                Some(manifest.dataset.sha256.clone()),
-                Some(manifest.dataset.instance_count),
+    let (dataset_sha256, dataset_instance_count) = if let Some(ref dataset_path) = args.dataset_path
+    {
+        let sha = sha256_file(dataset_path).ok();
+        let count = swebench::load_dataset(dataset_path).ok().map(|v| v.len());
+        (sha, count)
+    } else if let Some(ref manifest) = loaded.manifest {
+        (
+            Some(manifest.dataset.sha256.clone()),
+            Some(manifest.dataset.instance_count),
+        )
+    } else {
+        (None, None)
+    };
+    // On a full cache hit (no instance re-evaluated) the backend was skipped, so a
+    // freshly rebuilt provenance would blank out comparability metadata (run_id,
+    // report paths, docker image_names, dataset hash) even though every verdict
+    // came from the prior evaluation. Preserve the prior provenance verbatim — it
+    // is exactly correct, since nothing changed. Falls back to a rebuild if no
+    // prior provenance exists. (Partial resumes keep the fresh backend's
+    // provenance; its aggregate docker image_names cover only freshly evaluated
+    // rows, since the artifact has no per-instance image attribution.)
+    let provenance = if plan.needs_eval.is_empty() {
+        prior_provenance(&args.sweep_dir).unwrap_or_else(|| {
+            build_provenance(
+                args,
+                &resolved_by_run,
+                effective_run_id.as_deref(),
+                eval_started_at,
+                dataset_sha256,
+                dataset_instance_count,
+                docker_image_names,
             )
-        } else {
-            (None, None)
-        };
-    // On a cache-hit resume the current dataset may be unreadable (moved/cleaned)
-    // even though every verdict was reused from the prior evaluation. Backfill the
-    // dataset provenance from the old evaluation.json rather than overwriting it
-    // with None, which downstream compare treats as unavailable/legacy.
-    if plan.counts.reused > 0 && (dataset_sha256.is_none() || dataset_instance_count.is_none()) {
-        if let Some(prior) = prior_dataset_provenance(&args.sweep_dir) {
-            dataset_sha256 = dataset_sha256.or(prior.0);
-            dataset_instance_count = dataset_instance_count.or(prior.1);
-        }
-    }
-    // Reused DockerTests rows were produced with real testbed images that the
-    // (possibly empty) fresh run no longer observed. Union the fresh image set
-    // with the prior provenance so a cache hit / partial resume doesn't drop
-    // image names and trip bench compare's evaluator-provenance mismatch check.
-    let docker_image_names =
-        if args.backend == EvaluateBackend::DockerTests && plan.counts.reused > 0 {
-            merge_prior_docker_image_names(&args.sweep_dir, docker_image_names)
-        } else {
-            docker_image_names
-        };
-    let provenance = build_provenance(
-        args,
-        &resolved_by_run,
-        effective_run_id.as_deref(),
-        eval_started_at,
-        dataset_sha256,
-        dataset_instance_count,
-        docker_image_names,
-    );
+        })
+    } else {
+        build_provenance(
+            args,
+            &resolved_by_run,
+            effective_run_id.as_deref(),
+            eval_started_at,
+            dataset_sha256,
+            dataset_instance_count,
+            docker_image_names,
+        )
+    };
     // Recompute patch_stats only for fresh instances; reused keep cached stats.
     attach_patch_stats(&mut eval, args, &resolved_by_run, &fresh_ids)?;
     let (rollup, test_only_resolved_rate) = build_submission_class_rollup(&eval.instances);
@@ -869,33 +871,16 @@ fn reuse_consistent_with_submission(cached: &InstanceEvaluation, current_submitt
     current_submitted || cached.eval_exit_reason == EvalExitReason::SkippedNoPatch
 }
 
-/// Read the `(dataset_sha256, dataset_instance_count)` recorded in the prior
-/// `evaluation.json` provenance, if any. Used to preserve dataset comparability
-/// metadata across a cache-hit resume when the current dataset is unreadable.
-fn prior_dataset_provenance(sweep_dir: &Path) -> Option<(Option<String>, Option<usize>)> {
+/// Read the evaluator provenance recorded in the prior `evaluation.json`, if any.
+/// Used to preserve comparability metadata (run_id, report paths, docker
+/// image_names, dataset hash) verbatim across a full cache-hit resume, where the
+/// backend is skipped and a freshly rebuilt provenance would otherwise blank it.
+fn prior_provenance(sweep_dir: &Path) -> Option<EvaluatorProvenance> {
     let path = evaluation_path(sweep_dir);
     let prior: EvaluationResults = std::fs::read_to_string(&path)
         .ok()
         .and_then(|s| serde_json::from_str(&s).ok())?;
-    let provenance = prior.provenance?;
-    Some((provenance.dataset_sha256, provenance.dataset_instance_count))
-}
-
-/// Union the freshly observed DockerTests image names with those recorded in the
-/// prior `evaluation.json` provenance, so reused rows don't lose their testbed
-/// image attribution. Returns a sorted, de-duplicated list.
-fn merge_prior_docker_image_names(sweep_dir: &Path, fresh: Vec<String>) -> Vec<String> {
-    let mut names: std::collections::BTreeSet<String> = fresh.into_iter().collect();
-    let path = evaluation_path(sweep_dir);
-    if let Some(prior) = std::fs::read_to_string(&path)
-        .ok()
-        .and_then(|s| serde_json::from_str::<EvaluationResults>(&s).ok())
-    {
-        if let Some(docker) = prior.provenance.and_then(|p| p.docker_tests) {
-            names.extend(docker.image_names);
-        }
-    }
-    names.into_iter().collect()
+    prior.provenance
 }
 
 /// Classify each instance in the current sweep as reused / invalidated / new.

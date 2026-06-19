@@ -785,3 +785,40 @@ fn cached_resume_preserves_dataset_provenance_when_dataset_missing() {
         "prior dataset_instance_count must be preserved on a cache hit"
     );
 }
+
+/// A fully-cached sb-cli resume without --run-id must not blank the prior
+/// provenance's run_id / report metadata, which downstream tools filter on.
+#[test]
+fn cached_resume_preserves_full_provenance_verbatim() {
+    let dir = tempfile::tempdir().unwrap();
+    write_results(dir.path(), vec![minimal_instance_result("task-a")]);
+    write_patch(dir.path(), "task-a", "--- patch a ---");
+
+    // Seed correct fingerprints, then graft on rich sb-cli provenance.
+    let args = default_evaluate_args(dir.path());
+    maxwells_daemon::run::evaluate::run(&args).unwrap();
+
+    let path = dir.path().join("evaluation.json");
+    let mut v: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    v["provenance"]["backend"] = serde_json::json!("sb-cli");
+    v["provenance"]["run_id"] = serde_json::json!("sweep-run-123");
+    v["provenance"]["dataset_sha256"] = serde_json::json!("deadbeefcafe");
+    std::fs::write(&path, serde_json::to_string_pretty(&v).unwrap()).unwrap();
+
+    // Full cache hit on resume → prior provenance preserved verbatim.
+    let eval = maxwells_daemon::run::evaluate::run(&args).unwrap();
+    assert_eq!(eval.reuse_summary.unwrap().reused, 1, "instance reused");
+    let prov = eval.provenance.expect("provenance present");
+    assert_eq!(
+        prov.run_id.as_deref(),
+        Some("sweep-run-123"),
+        "run_id preserved"
+    );
+    assert_eq!(prov.backend, "sb-cli", "backend preserved");
+    assert_eq!(
+        prov.dataset_sha256.as_deref(),
+        Some("deadbeefcafe"),
+        "dataset hash preserved"
+    );
+}
