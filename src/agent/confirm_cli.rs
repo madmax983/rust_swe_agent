@@ -312,6 +312,7 @@ mod tests {
             step_limit: 7,
             cost_usd: 0.0123,
             cache_marker: "cache:explicit",
+            rationale: String::new(),
         }
     }
 
@@ -436,6 +437,7 @@ mod tests {
             step_limit: 1,
             cost_usd: 0.0,
             cache_marker: "cache:auto-or-none",
+            rationale: String::new(),
         };
         let d = c.confirm(&ctx).await;
         MOCK_STDIN_EOF.store(false, std::sync::atomic::Ordering::Relaxed);

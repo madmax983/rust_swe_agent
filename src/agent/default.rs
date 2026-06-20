@@ -17,7 +17,7 @@ use std::time::{Duration, Instant};
 
 use super::{
     Action, Agent, ExitReason, StepOutcome, extract_action_for_tools,
-    extract_action_from_model_response,
+    extract_action_from_model_response, strip_action_block,
 };
 use crate::config::{Config, ToolHookCfg};
 use crate::cost::{BASELINE_COST_MODEL, CostSource, estimate_cost_usd, is_free_tier_model};
@@ -1198,6 +1198,12 @@ impl Agent for DefaultAgent {
             }
         }
 
+        // Prose-only rationale for the confirm modal (issue #655): the
+        // assistant's reasoning with the proposed command fence removed, so the
+        // command is not echoed back as its own justification. Captured here
+        // while `action` is still available (it is consumed by the match below).
+        let action_rationale = strip_action_block(&resp.content, &action);
+
         // 5. Policy gate: check bash commands before hooks or execution.
         let tool_call = match action {
             Action::Bash(cmd) => ToolCall::bash(cmd),
@@ -1347,7 +1353,10 @@ impl Agent for DefaultAgent {
         // PreToolUse hook layer already blocked the tool — the operator
         // never sees a prompt for a command that won't run anyway.
         if !tool_use_blocked {
-            if let Some(decision) = self.confirm_operator_action(&tool_name, &tool_input).await {
+            if let Some(decision) = self
+                .confirm_operator_action(&tool_name, &tool_input, &action_rationale)
+                .await
+            {
                 match decision {
                     super::ConfirmDecision::Approve => {}
                     super::ConfirmDecision::AutoApprove(scope) => {
@@ -2087,6 +2096,7 @@ impl DefaultAgent {
         &self,
         tool_name: &str,
         tool_input: &str,
+        rationale: &str,
     ) -> Option<super::ConfirmDecision> {
         let cb = self.confirm_callback.as_ref()?;
         let ctx = super::ConfirmContext {
@@ -2103,6 +2113,16 @@ impl DefaultAgent {
             } else {
                 "cache:auto-or-none"
             },
+            // Display-only retention of the assistant prose that proposed this
+            // command (issue #655): redact first so secrets never surface, then
+            // bound the length so an adversarial message cannot exhaust the
+            // dashboard's memory.
+            rationale: super::confirm::cap_rationale(
+                &self
+                    .redactor
+                    .redact_text(rationale, surface::TRAJECTORY)
+                    .text,
+            ),
         };
         let scope = ctx.derive_scope();
         let has_rule = {

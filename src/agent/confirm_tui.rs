@@ -51,6 +51,15 @@ struct DashboardState {
     should_exit: bool,
     is_monitor: bool,
     search: Option<SearchState>,
+    /// Scroll offset (in wrapped display rows) within the confirm modal's
+    /// reasoning region (issue #655). Reset to 0 each time a new prompt opens.
+    rationale_scroll: usize,
+    /// Total wrapped display rows of the current rationale, and the number of
+    /// rows visible in its region — captured by the renderer (`draw_frame`) so
+    /// the key handler can clamp scrolling by display rows, not logical lines
+    /// (a long no-newline rationale wraps to many rows).
+    last_rationale_total_rows: usize,
+    last_rationale_visible_rows: usize,
 }
 
 impl Default for DashboardState {
@@ -75,6 +84,9 @@ impl Default for DashboardState {
             should_exit: false,
             is_monitor: false,
             search: None,
+            rationale_scroll: 0,
+            last_rationale_total_rows: 0,
+            last_rationale_visible_rows: 0,
         }
     }
 }
@@ -377,6 +389,7 @@ impl ConfirmCallback for RatatuiDashboard {
             s.step = ctx.step;
             s.step_limit = ctx.step_limit;
             s.cost_usd = ctx.cost_usd;
+            s.rationale_scroll = 0;
             s.pending = Some(PendingPrompt {
                 ctx: ctx.clone(),
                 responder: tx,
@@ -749,6 +762,40 @@ fn perform_scroll(s: &mut DashboardState, code: KeyCode) -> bool {
     }
 }
 
+/// Scroll the confirm modal's reasoning region (issue #655), reusing the
+/// feed's scroll convention (line up/down, page up/down, home/end).
+///
+/// Scroll bounds are in wrapped display rows, using the metrics the renderer
+/// stored on the last frame (`last_rationale_total_rows` /
+/// `last_rationale_visible_rows`) so a long rationale with few newlines — which
+/// wraps to many screen rows — is fully reachable. Returns `false` when the
+/// rationale is empty or fits within its region (nothing to scroll), so the
+/// caller falls through to feed scrolling and scroll keys are never silently
+/// swallowed.
+fn perform_rationale_scroll(s: &mut DashboardState, ctx: &ConfirmContext, code: KeyCode) -> bool {
+    if ctx.rationale.trim().is_empty() {
+        return false;
+    }
+    let visible = s.last_rationale_visible_rows;
+    let max_scroll = s.last_rationale_total_rows.saturating_sub(visible);
+    if max_scroll == 0 {
+        return false;
+    }
+    let page = visible.max(1);
+    let current = s.rationale_scroll.min(max_scroll);
+    let next = match code {
+        KeyCode::Up => current.saturating_sub(1),
+        KeyCode::Down => (current + 1).min(max_scroll),
+        KeyCode::PageUp => current.saturating_sub(page),
+        KeyCode::PageDown => (current + page).min(max_scroll),
+        KeyCode::Home => 0,
+        KeyCode::End => max_scroll,
+        _ => return false,
+    };
+    s.rationale_scroll = next;
+    true
+}
+
 fn handle_key_normal(
     dash: &RatatuiDashboard,
     s: &mut DashboardState,
@@ -757,6 +804,15 @@ fn handle_key_normal(
 ) {
     if !key.modifiers.is_empty() && key.modifiers != KeyModifiers::SHIFT {
         s.pending = Some(pending);
+        return;
+    }
+
+    // Scroll keys drive the in-modal rationale first; when the rationale fits
+    // (nothing to scroll) they fall through to feed scrolling. Decision verbs
+    // are never scroll keys, so this never shadows y/n/e/a/A/Esc.
+    if perform_rationale_scroll(s, &pending.ctx, key.code) {
+        s.pending = Some(pending);
+        dash.notify.notify_waiters();
         return;
     }
 
@@ -887,6 +943,31 @@ fn draw_frame(
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         s.last_log_width = log_width;
         s.last_log_height = log_height;
+
+        // Capture the modal's rationale layout metrics (in wrapped display
+        // rows) so the key handler can clamp scrolling correctly (issue #655).
+        let (total_rows, visible_rows) = if let Some(pending) = &s.pending {
+            let inner = modal_inner_rect(area);
+            let body_width = inner.width as usize;
+            let top_rows = wrapped_rows(&modal_top_lines(&pending.ctx, true, true), body_width);
+            let control_rows = wrapped_rows(
+                &modal_control_lines(
+                    &pending.ctx,
+                    s.feedback_input.as_ref(),
+                    s.edit_input.as_ref(),
+                ),
+                body_width,
+            );
+            let (_, body_h, _) = modal_body_layout(inner.height, top_rows, control_rows);
+            let total =
+                count_wrapped_lines(&rationale_body_string(&pending.ctx.rationale), body_width);
+            (total, body_h as usize)
+        } else {
+            (0, 0)
+        };
+        s.last_rationale_total_rows = total_rows;
+        s.last_rationale_visible_rows = visible_rows;
+
         DashboardSnapshot {
             task: s.task.clone(),
             model: s.model.clone(),
@@ -905,6 +986,7 @@ fn draw_frame(
             last_log_height: s.last_log_height,
             is_monitor: s.is_monitor,
             search: s.search.clone(),
+            rationale_scroll: s.rationale_scroll,
         }
     };
     terminal.draw(|frame| draw(frame, &snapshot))?;
@@ -929,6 +1011,7 @@ struct DashboardSnapshot {
     last_log_height: usize,
     is_monitor: bool,
     search: Option<SearchState>,
+    rationale_scroll: usize,
 }
 
 fn draw(frame: &mut ratatui::Frame, snap: &DashboardSnapshot) {
@@ -952,6 +1035,7 @@ fn draw(frame: &mut ratatui::Frame, snap: &DashboardSnapshot) {
             ctx,
             snap.feedback_input.as_ref(),
             snap.edit_input.as_ref(),
+            snap.rationale_scroll,
             area,
         );
     }
@@ -1113,15 +1197,131 @@ fn footer_paragraph(snap: &DashboardSnapshot) -> Paragraph<'_> {
     .block(Block::default().borders(Borders::ALL))
 }
 
+/// Render the confirm modal (issue #655).
+///
+/// The modal is split into three stacked regions inside its border:
+/// a fixed **top** (step/cost, tool, command, reasoning label), a flexible
+/// **rationale body** that wraps and scrolls by display rows, and a fixed
+/// **controls** region (decision keys / feedback / edit input). The controls
+/// are reserved first, so they are always visible regardless of how tall the
+/// rationale or command is — the operator never types or decides blind.
 fn draw_modal(
     frame: &mut ratatui::Frame,
     ctx: &ConfirmContext,
     feedback_input: Option<&String>,
     edit_input: Option<&String>,
+    rationale_scroll: usize,
     area: Rect,
 ) {
     let modal = centered_rect(70, 50, area);
     frame.render_widget(Clear, modal);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(" confirm action ");
+    let inner = block.inner(modal);
+    frame.render_widget(block, modal);
+
+    let body_width = inner.width as usize;
+    let control_lines = modal_control_lines(ctx, feedback_input, edit_input);
+    // Size the top and controls by wrapped display rows, not logical lines, so a
+    // long single-line command (or edit buffer) that wraps is fully reserved and
+    // never clipped before the operator sees it. The top is sized with the
+    // worst-case reasoning label (both affordances present) so the label never
+    // under-reserves regardless of scroll state.
+    let top_rows = wrapped_rows(&modal_top_lines(ctx, true, true), body_width);
+    let control_rows = wrapped_rows(&control_lines, body_width);
+    let (top_h, body_h, control_h) = modal_body_layout(inner.height, top_rows, control_rows);
+
+    // Scroll bounds in wrapped display rows for the rationale body.
+    let total_rows = count_wrapped_lines(&rationale_body_string(&ctx.rationale), body_width);
+    let visible = body_h as usize;
+    let max_scroll = total_rows.saturating_sub(visible);
+    let scroll = rationale_scroll.min(max_scroll);
+    let can_up = scroll > 0;
+    let can_down = scroll + visible < total_rows;
+
+    let top_lines = modal_top_lines(ctx, can_up, can_down);
+
+    let top_area = Rect {
+        x: inner.x,
+        y: inner.y,
+        width: inner.width,
+        height: top_h,
+    };
+    let body_area = Rect {
+        x: inner.x,
+        y: inner.y + top_h,
+        width: inner.width,
+        height: body_h,
+    };
+    let control_area = Rect {
+        x: inner.x,
+        y: inner.y + top_h + body_h,
+        width: inner.width,
+        height: control_h,
+    };
+
+    frame.render_widget(
+        Paragraph::new(top_lines).wrap(Wrap { trim: false }),
+        top_area,
+    );
+    let scroll_y = u16::try_from(scroll).unwrap_or(u16::MAX);
+    frame.render_widget(
+        Paragraph::new(rationale_body_lines(&ctx.rationale))
+            .wrap(Wrap { trim: false })
+            .scroll((scroll_y, 0)),
+        body_area,
+    );
+    frame.render_widget(
+        Paragraph::new(control_lines).wrap(Wrap { trim: false }),
+        control_area,
+    );
+}
+
+/// Inner (border-stripped) rectangle of the confirm modal for a given screen
+/// `area`. Shared by the renderer and `draw_frame` so scroll metrics match.
+fn modal_inner_rect(area: Rect) -> Rect {
+    let modal = centered_rect(70, 50, area);
+    Block::default().borders(Borders::ALL).inner(modal)
+}
+
+/// Reserve modal rows bottom-up: controls first (always visible), then the
+/// fixed top, then whatever remains becomes the scrollable rationale body.
+/// `top_rows` / `control_rows` are **wrapped display rows** (see [`wrapped_rows`]).
+fn modal_body_layout(inner_h: u16, top_rows: usize, control_rows: usize) -> (u16, u16, u16) {
+    let control_h = u16::try_from(control_rows).unwrap_or(u16::MAX).min(inner_h);
+    let remaining = inner_h - control_h;
+    let top_h = u16::try_from(top_rows).unwrap_or(u16::MAX).min(remaining);
+    let body_h = remaining - top_h;
+    (top_h, body_h, control_h)
+}
+
+/// Total wrapped display rows that `lines` occupy at `width`, matching how
+/// `Paragraph` with `Wrap { trim: false }` renders them. Used to size the
+/// modal's fixed regions so wrapped content is never clipped.
+fn wrapped_rows(lines: &[Line<'_>], width: usize) -> usize {
+    if width == 0 {
+        return lines.len();
+    }
+    lines
+        .iter()
+        .map(|line| {
+            let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+            count_wrapped_line(&text, width)
+        })
+        .sum()
+}
+
+/// Fixed top region: step/cost header, tool, the proposed command (capped at
+/// 12 lines), then the magenta `reasoning:` label. The label carries the
+/// more-above / more-below scroll affordances; its line *count* is invariant to
+/// those flags, so `draw_frame` can call this with `false, false` purely to
+/// size the layout.
+fn modal_top_lines(
+    ctx: &ConfirmContext,
+    can_scroll_up: bool,
+    can_scroll_down: bool,
+) -> Vec<Line<'static>> {
     let mut lines = vec![
         Line::from(Span::styled(
             format!(
@@ -1140,8 +1340,6 @@ fn draw_modal(
     for cmd_line in ctx.command.lines().take(12) {
         lines.push(Line::from(format!("  {cmd_line}")));
     }
-    // Short-circuit at the first line past the cap instead of counting
-    // every line in a long command string.
     if ctx.command.lines().nth(12).is_some() {
         lines.push(Line::from(Span::styled(
             "  …",
@@ -1150,6 +1348,65 @@ fn draw_modal(
     }
     lines.push(Line::from(""));
 
+    // Reasoning label (issue #655): magenta keeps it visually distinct from the
+    // white "command:" so justification text is never mistaken for the command
+    // being authorized. Scroll affordances ride on this single line.
+    let mut label = String::from("reasoning:");
+    if can_scroll_up {
+        label.push_str("   ↑ more above");
+    }
+    if can_scroll_down {
+        label.push_str("   ↓ more below");
+    }
+    lines.push(Line::from(Span::styled(
+        label,
+        Style::default()
+            .fg(Color::Magenta)
+            .add_modifier(Modifier::BOLD),
+    )));
+    lines
+}
+
+/// The rationale body as styled lines: magenta prose, or a dim
+/// `(no rationale provided)` indicator when empty/whitespace-only. Kept in sync
+/// with [`rationale_body_string`] (used for wrapped-row counting).
+fn rationale_body_lines(rationale: &str) -> Vec<Line<'static>> {
+    let empty = rationale.trim().is_empty();
+    rationale_body_string(rationale)
+        .split('\n')
+        .map(|l| {
+            let style = if empty {
+                Style::default()
+                    .fg(Color::DarkGray)
+                    .add_modifier(Modifier::DIM)
+            } else {
+                Style::default().fg(Color::Magenta)
+            };
+            Line::from(Span::styled(l.to_owned(), style))
+        })
+        .collect()
+}
+
+/// The plain text rendered in the rationale body, used both for display and for
+/// counting wrapped display rows so the rendered region and the scroll bounds
+/// agree.
+fn rationale_body_string(rationale: &str) -> String {
+    if rationale.trim().is_empty() {
+        "(no rationale provided)".to_owned()
+    } else {
+        rationale.to_owned()
+    }
+}
+
+/// Controls region: the reject-feedback prompt, the edit buffer, or the default
+/// decision keys. Always reserved space by [`modal_body_layout`] so it stays on
+/// screen.
+fn modal_control_lines(
+    ctx: &ConfirmContext,
+    feedback_input: Option<&String>,
+    edit_input: Option<&String>,
+) -> Vec<Line<'static>> {
+    let mut lines = Vec::new();
     if let Some(buffer) = feedback_input {
         lines.push(Line::from(Span::styled(
             "Provide corrective feedback (optional):",
@@ -1205,14 +1462,7 @@ fn draw_modal(
             Style::default().add_modifier(Modifier::BOLD),
         )));
     }
-
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title(" confirm action ");
-    let p = Paragraph::new(lines)
-        .block(block)
-        .wrap(Wrap { trim: false });
-    frame.render_widget(p, modal);
+    lines
 }
 
 fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
@@ -1823,6 +2073,7 @@ mod tests {
             last_log_height: s.last_log_height,
             is_monitor: s.is_monitor,
             search: s.search.clone(),
+            rationale_scroll: s.rationale_scroll,
         }
     }
 
@@ -1993,6 +2244,7 @@ mod tests {
             step_limit: 5,
             cost_usd: 0.0,
             cache_marker: "cache:auto-or-none",
+            rationale: String::new(),
         };
         let task = tokio::spawn(async move { d2.confirm(&ctx).await });
         // Spin briefly until the pending slot is populated.
@@ -2021,6 +2273,7 @@ mod tests {
             step_limit: 1,
             cost_usd: 0.0,
             cache_marker: "cache:auto-or-none",
+            rationale: String::new(),
         };
         let task = tokio::spawn(async move { d2.confirm(&ctx).await });
         for _ in 0..50 {
@@ -2057,6 +2310,7 @@ mod tests {
                 step_limit: 1,
                 cost_usd: 0.0,
                 cache_marker: "cache:auto-or-none",
+                rationale: String::new(),
             },
             responder: tx,
         });
@@ -2679,6 +2933,7 @@ mod tests {
                     step_limit: 5,
                     cost_usd: 0.0099,
                     cache_marker: "cache:explicit",
+                    rationale: String::new(),
                 },
                 responder: tx,
             });
@@ -2701,6 +2956,253 @@ mod tests {
     }
 
     #[test]
+    fn draw_modal_renders_rationale_and_keeps_decision_keys() {
+        // AC: rationale sentinel line AND the command both appear in the
+        // confirm frame, and y/n/a still map to Approve/Reject/Abort.
+        let sentinel = "RATIONALE_SENTINEL_because_directory_is_stale";
+        let d = make_dashboard();
+        {
+            let (tx, _rx) = oneshot::channel();
+            let mut s = d
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            s.pending = Some(PendingPrompt {
+                ctx: ConfirmContext {
+                    tool_name: "bash".into(),
+                    command: "rm -rf /tmp/dangerous".into(),
+                    step: 2,
+                    step_limit: 5,
+                    cost_usd: 0.0099,
+                    cache_marker: "cache:explicit",
+                    rationale: format!("{sentinel}\nsecond reasoning line"),
+                },
+                responder: tx,
+            });
+        }
+        let s = snap(&d);
+        let buf = render_to_buffer(&s, 100, 30);
+        let text = buffer_text(&buf);
+        assert!(
+            text.contains(sentinel),
+            "modal should show rationale; got:\n{text}"
+        );
+        assert!(
+            text.contains("rm -rf /tmp/dangerous"),
+            "modal should still show command; got:\n{text}"
+        );
+        assert!(
+            text.contains("reasoning"),
+            "rationale region should be labelled; got:\n{text}"
+        );
+
+        // Decision keys unchanged: y -> Approve, a -> Abort, n -> reject mode.
+        let mut rx = make_pending(&d);
+        handle_key(&d, KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE));
+        assert_eq!(rx.try_recv().unwrap(), ConfirmDecision::Approve);
+
+        let mut rx = make_pending(&d);
+        handle_key(&d, KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE));
+        assert_eq!(rx.try_recv().unwrap(), ConfirmDecision::Abort);
+
+        let _rx = make_pending(&d);
+        handle_key(&d, KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE));
+        let (feedback_some, pending_some) = {
+            let s = d.state.lock().unwrap();
+            (s.feedback_input.is_some(), s.pending.is_some())
+        };
+        assert!(feedback_some, "n should enter reject mode");
+        assert!(pending_some);
+    }
+
+    #[test]
+    fn draw_modal_shows_no_rationale_indicator_when_empty() {
+        let d = make_dashboard();
+        {
+            let (tx, _rx) = oneshot::channel();
+            let mut s = d.state.lock().unwrap();
+            s.pending = Some(PendingPrompt {
+                ctx: ConfirmContext {
+                    tool_name: "bash".into(),
+                    command: "ls".into(),
+                    step: 0,
+                    step_limit: 1,
+                    cost_usd: 0.0,
+                    cache_marker: "cache:explicit",
+                    rationale: "   \n  ".into(),
+                },
+                responder: tx,
+            });
+        }
+        let s = snap(&d);
+        let buf = render_to_buffer(&s, 100, 25);
+        let text = buffer_text(&buf);
+        assert!(
+            text.contains("(no rationale provided)"),
+            "empty rationale should degrade gracefully; got:\n{text}"
+        );
+        assert!(text.contains("ls"), "command still shown; got:\n{text}");
+    }
+
+    #[test]
+    fn draw_modal_marks_truncated_rationale() {
+        let d = make_dashboard();
+        let many_lines = (0..crate::agent::confirm::RATIONALE_MAX_LINES + 50)
+            .map(|i| format!("reasoning line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let capped = crate::agent::confirm::cap_rationale(&many_lines);
+        {
+            let (tx, _rx) = oneshot::channel();
+            let mut s = d.state.lock().unwrap();
+            s.pending = Some(PendingPrompt {
+                ctx: ConfirmContext {
+                    tool_name: "bash".into(),
+                    command: "ls".into(),
+                    step: 0,
+                    step_limit: 1,
+                    cost_usd: 0.0,
+                    cache_marker: "cache:explicit",
+                    rationale: capped,
+                },
+                responder: tx,
+            });
+            s.rationale_scroll = usize::MAX; // jump to end so the marker is visible
+        }
+        let s = snap(&d);
+        let buf = render_to_buffer(&s, 100, 40);
+        let text = buffer_text(&buf);
+        assert!(
+            text.contains("truncated"),
+            "truncation marker must be visible; got:\n{text}"
+        );
+    }
+
+    #[test]
+    fn draw_modal_shows_full_wrapped_command() {
+        // A long single-line command wraps to several rows; the top region must
+        // be sized by wrapped rows so the tail (UNIQUETAIL) stays visible and the
+        // operator never approves a command they can't fully see.
+        let mut command = "run".to_string();
+        for i in 0..60 {
+            command.push_str(" step");
+            command.push_str(&i.to_string());
+        }
+        command.push_str(" UNIQUETAIL");
+        let d = make_dashboard();
+        {
+            let (tx, _rx) = oneshot::channel();
+            let mut s = d.state.lock().unwrap();
+            s.pending = Some(PendingPrompt {
+                ctx: ConfirmContext {
+                    tool_name: "bash".into(),
+                    command,
+                    step: 0,
+                    step_limit: 1,
+                    cost_usd: 0.0,
+                    cache_marker: "cache:explicit",
+                    rationale: "because reasons".into(),
+                },
+                responder: tx,
+            });
+        }
+        let s = snap(&d);
+        let buf = render_to_buffer(&s, 100, 40);
+        let text = buffer_text(&buf);
+        assert!(
+            text.contains("UNIQUETAIL"),
+            "the full wrapped command must be visible; got:\n{text}"
+        );
+    }
+
+    #[test]
+    fn rationale_scroll_keys_move_window_when_modal_open() {
+        let d = make_dashboard();
+        let long = (0..40)
+            .map(|i| format!("rline{i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let (tx, _rx) = oneshot::channel();
+        {
+            let mut s = d.state.lock().unwrap();
+            s.pending = Some(PendingPrompt {
+                ctx: ConfirmContext {
+                    tool_name: "bash".into(),
+                    command: "ls".into(),
+                    step: 0,
+                    step_limit: 1,
+                    cost_usd: 0.0,
+                    cache_marker: "cache:explicit",
+                    rationale: long,
+                },
+                responder: tx,
+            });
+            // Render-time metrics the key handler clamps against (normally set
+            // by draw_frame): 40 display rows visible 8 at a time.
+            s.last_rationale_total_rows = 40;
+            s.last_rationale_visible_rows = 8;
+        }
+        // PageDown should advance the rationale window and keep the modal open.
+        handle_key(&d, KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE));
+        let (scroll_after_pgdn, pending_after_pgdn) = {
+            let s = d.state.lock().unwrap();
+            (s.rationale_scroll, s.pending.is_some())
+        };
+        assert!(scroll_after_pgdn > 0, "rationale should have scrolled");
+        assert!(pending_after_pgdn, "modal must stay open");
+
+        // Home returns to the top.
+        handle_key(&d, KeyEvent::new(KeyCode::Home, KeyModifiers::NONE));
+        let (scroll_after_home, pending_after_home) = {
+            let s = d.state.lock().unwrap();
+            (s.rationale_scroll, s.pending.is_some())
+        };
+        assert_eq!(scroll_after_home, 0);
+        assert!(pending_after_home);
+    }
+
+    #[test]
+    fn whitespace_rationale_does_not_consume_scroll_keys() {
+        // A whitespace-only rationale renders "(no rationale provided)" with no
+        // scrollable lines, so scroll keys must fall through to the feed rather
+        // than being silently swallowed by the rationale scroller.
+        let d = make_dashboard();
+        let (tx, _rx) = oneshot::channel();
+        {
+            let mut s = d.state.lock().unwrap();
+            s.last_log_height = 5;
+            s.last_log_width = 10;
+            for i in 1..=8 {
+                s.log.push_back(LogLine {
+                    kind: LineKind::Info,
+                    text: format!("line{i}"),
+                });
+            }
+            // Many blank lines: trims to empty, but raw line count is non-zero.
+            s.pending = Some(PendingPrompt {
+                ctx: ConfirmContext {
+                    tool_name: "bash".into(),
+                    command: "ls".into(),
+                    step: 0,
+                    step_limit: 1,
+                    cost_usd: 0.0,
+                    cache_marker: "cache:explicit",
+                    rationale: "\n".repeat(20),
+                },
+                responder: tx,
+            });
+        }
+        handle_key(&d, KeyEvent::new(KeyCode::PageUp, KeyModifiers::NONE));
+        let (rationale_scroll, auto_follow, pending_some) = {
+            let s = d.state.lock().unwrap();
+            (s.rationale_scroll, s.auto_follow, s.pending.is_some())
+        };
+        assert_eq!(rationale_scroll, 0, "rationale must not have scrolled");
+        assert!(!auto_follow, "scroll key should have driven the feed");
+        assert!(pending_some, "modal must stay open");
+    }
+
+    #[test]
     fn draw_modal_renders_multiline_edit_buffer() {
         let d = make_dashboard();
         {
@@ -2717,6 +3219,7 @@ mod tests {
                     step_limit: 1,
                     cost_usd: 0.0,
                     cache_marker: "cache:auto-or-none",
+                    rationale: String::new(),
                 },
                 responder: tx,
             });
@@ -2761,6 +3264,7 @@ mod tests {
                     step_limit: 1,
                     cost_usd: 0.0,
                     cache_marker: "cache:explicit",
+                    rationale: String::new(),
                 },
                 responder: tx,
             });
