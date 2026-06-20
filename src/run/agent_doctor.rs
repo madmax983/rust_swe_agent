@@ -102,6 +102,9 @@ pub struct DoctorOpts {
     pub model: String,
     /// Runs/output directory whose writability is checked.
     pub output_dir: PathBuf,
+    /// Configured Docker image (`environment.docker_image`), if any. A docker
+    /// environment with no image cannot start, so the docker check requires it.
+    pub docker_image: Option<String>,
 }
 
 /// Map a model name to the environment variable that must hold its provider
@@ -133,7 +136,7 @@ pub fn run_doctor(opts: &DoctorOpts) -> DoctorReport {
     let checks = vec![
         check_git(),
         check_credential(&opts.model),
-        check_docker(&opts.env_kind),
+        check_docker(&opts.env_kind, opts.docker_image.as_deref()),
         check_output_dir(&opts.output_dir),
         check_toolchain(),
     ];
@@ -186,15 +189,34 @@ fn check_credential(model: &str) -> DoctorCheck {
 /// so a wedged daemon socket must not hang it indefinitely.
 const DOCKER_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
-/// (c) Docker daemon reachability. Skipped for local environments. For docker
-/// environments, pings the daemon with a `docker version` subprocess (so the
-/// check compiles without the `docker` Cargo feature) bounded by
-/// `DOCKER_PROBE_TIMEOUT` — on expiry the child is killed and the check fails
-/// rather than blocking. This is a local probe, not a provider network call.
-fn check_docker(env_kind: &EnvKind) -> DoctorCheck {
+/// (c) Docker readiness. Skipped for local environments. For docker
+/// environments this mirrors the run path's preflight (`build_docker_env` in
+/// `crate::run::mini`): the binary must be built with the `docker` feature, a
+/// `docker_image` must be configured, and the daemon must be reachable. The
+/// daemon ping is a `docker version` subprocess (so the check compiles without
+/// the `docker` Cargo feature) bounded by `DOCKER_PROBE_TIMEOUT` — on expiry the
+/// child is killed and the check fails rather than blocking. This is a local
+/// probe, not a provider network call.
+fn check_docker(env_kind: &EnvKind, docker_image: Option<&str>) -> DoctorCheck {
     use std::process::{Command, Stdio};
     if *env_kind == EnvKind::Local {
         return DoctorCheck::skip("docker", "docker not required for local environment");
+    }
+    // A binary built without the `docker` feature cannot start a container,
+    // regardless of daemon state — `build_docker_env` rejects it up front.
+    if !cfg!(feature = "docker") {
+        return DoctorCheck::fail(
+            "docker",
+            "this binary was built without docker support; rebuild with --features docker, or use --env local",
+        );
+    }
+    // A docker environment with no image cannot start — mirror the run path's
+    // `environment.kind=docker requires environment.docker_image` rejection.
+    if docker_image.is_none_or(str::is_empty) {
+        return DoctorCheck::fail(
+            "docker",
+            "environment.kind=docker requires environment.docker_image; set it in your config",
+        );
     }
     let mut child = match Command::new("docker")
         .arg("version")
@@ -454,6 +476,7 @@ mod tests {
             env_kind: EnvKind::Local,
             model: "claude-opus-4-7".to_owned(),
             output_dir: dir.path().to_path_buf(),
+            docker_image: None,
         });
         let docker = report
             .checks
@@ -471,6 +494,7 @@ mod tests {
             env_kind: EnvKind::Local,
             model: "deterministic".to_owned(),
             output_dir: dir.path().to_path_buf(),
+            docker_image: None,
         });
         let cred = report
             .checks
@@ -487,12 +511,39 @@ mod tests {
             env_kind: EnvKind::Local,
             model: "deterministic".to_owned(),
             output_dir: dir.path().to_path_buf(),
+            docker_image: None,
         });
         let ids: Vec<&str> = report.checks.iter().map(|c| c.check.as_str()).collect();
         assert_eq!(
             ids,
             vec!["git", "credential", "docker", "output_dir", "toolchain"]
         );
+    }
+
+    // ── docker readiness preconditions (AC#2c) ───────────────────────────
+
+    #[cfg(not(feature = "docker"))]
+    #[test]
+    fn docker_without_feature_fails() {
+        // Built without the docker feature: a docker env is un-runnable.
+        let check = check_docker(&EnvKind::Docker, Some("ubuntu:24.04"));
+        assert_eq!(check.status, CheckStatus::Fail);
+        assert!(check.detail.contains("feature"));
+    }
+
+    #[cfg(feature = "docker")]
+    #[test]
+    fn docker_with_feature_but_no_image_fails() {
+        // Built with the docker feature but no configured image → cannot start.
+        let check = check_docker(&EnvKind::Docker, None);
+        assert_eq!(check.status, CheckStatus::Fail);
+        assert!(check.detail.contains("docker_image"));
+    }
+
+    #[test]
+    fn docker_skip_for_local_regardless_of_image() {
+        let check = check_docker(&EnvKind::Local, None);
+        assert_eq!(check.status, CheckStatus::Skip);
     }
 
     // ── output dir writability (AC#2d) ───────────────────────────────────

@@ -206,7 +206,7 @@ fn doctor_docker_skip_when_local() {
 // ── --env falls back to config when omitted ──────────────────────────────────
 // A docker-backed config must not be silently validated as local. With no
 // `--env` flag and `[environment] kind = "docker"`, the docker check runs
-// (status != skip) — here it fails because no daemon is reachable in CI.
+// (status != skip) rather than being skipped as it would be for a local env.
 
 #[test]
 fn doctor_env_falls_back_to_docker_config() {
@@ -231,6 +231,45 @@ fn doctor_env_falls_back_to_docker_config() {
     assert_ne!(
         docker["status"], "skip",
         "docker check must run for a docker-backed config even without --env"
+    );
+}
+
+// ── Docker check mirrors the run path's "no docker feature" rejection ─────────
+// The test binary is built without `--features docker`, so a docker environment
+// is un-runnable regardless of daemon state — the docker check must fail and
+// name the missing feature (mirrors `build_docker_env`).
+
+#[test]
+fn doctor_docker_env_without_feature_fails() {
+    let tmp = tempfile::tempdir().unwrap();
+    let out = doctor()
+        .args([
+            "--env",
+            "docker",
+            "--model",
+            "claude-opus-4-7",
+            "--format",
+            "json",
+        ])
+        .arg("--output")
+        .arg(tmp.path())
+        .env("ANTHROPIC_API_KEY", "present")
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(48));
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let docker = v["checks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["check"] == "docker")
+        .unwrap();
+    assert_eq!(docker["status"], "fail");
+    let detail = docker["detail"].as_str().unwrap();
+    assert!(detail.contains("docker"), "detail: {detail}");
+    assert!(
+        detail.contains("feature"),
+        "should name the docker feature: {detail}"
     );
 }
 

@@ -228,6 +228,7 @@ fn agent_doctor_cmd(d: &args::AgentDoctorCmd) -> Result<(), Error> {
         env_kind,
         model,
         output_dir: d.output.clone(),
+        docker_image: cfg.root.environment.docker_image,
     };
 
     let report = run_doctor(&opts);
