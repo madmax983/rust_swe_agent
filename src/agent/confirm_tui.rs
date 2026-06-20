@@ -31,11 +31,6 @@ use crate::stream::{StreamEvent, StreamSink};
 
 const MAX_LOG_LINES: usize = 400;
 
-/// Number of rationale lines visible at once in the confirm modal's reasoning
-/// region before the operator must scroll (issue #655). Both the renderer and
-/// the scroll handler use this so the window and the offset clamp agree.
-const RATIONALE_VISIBLE_LINES: usize = 8;
-
 struct DashboardState {
     task: Option<String>,
     model: Option<String>,
@@ -56,9 +51,15 @@ struct DashboardState {
     should_exit: bool,
     is_monitor: bool,
     search: Option<SearchState>,
-    /// Scroll offset (in logical rationale lines) within the confirm modal's
+    /// Scroll offset (in wrapped display rows) within the confirm modal's
     /// reasoning region (issue #655). Reset to 0 each time a new prompt opens.
     rationale_scroll: usize,
+    /// Total wrapped display rows of the current rationale, and the number of
+    /// rows visible in its region — captured by the renderer (`draw_frame`) so
+    /// the key handler can clamp scrolling by display rows, not logical lines
+    /// (a long no-newline rationale wraps to many rows).
+    last_rationale_total_rows: usize,
+    last_rationale_visible_rows: usize,
 }
 
 impl Default for DashboardState {
@@ -84,6 +85,8 @@ impl Default for DashboardState {
             is_monitor: false,
             search: None,
             rationale_scroll: 0,
+            last_rationale_total_rows: 0,
+            last_rationale_visible_rows: 0,
         }
     }
 }
@@ -762,27 +765,29 @@ fn perform_scroll(s: &mut DashboardState, code: KeyCode) -> bool {
 /// Scroll the confirm modal's reasoning region (issue #655), reusing the
 /// feed's scroll convention (line up/down, page up/down, home/end).
 ///
-/// Returns `false` when the rationale fits within its window (nothing to
-/// scroll) so the caller falls through to feed scrolling, preserving the
-/// pre-existing scroll-while-modal-open behaviour for command-only prompts.
+/// Scroll bounds are in wrapped display rows, using the metrics the renderer
+/// stored on the last frame (`last_rationale_total_rows` /
+/// `last_rationale_visible_rows`) so a long rationale with few newlines — which
+/// wraps to many screen rows — is fully reachable. Returns `false` when the
+/// rationale is empty or fits within its region (nothing to scroll), so the
+/// caller falls through to feed scrolling and scroll keys are never silently
+/// swallowed.
 fn perform_rationale_scroll(s: &mut DashboardState, ctx: &ConfirmContext, code: KeyCode) -> bool {
-    // A whitespace-only rationale renders as `(no rationale provided)` with no
-    // scrollable lines, yet its raw line count could be non-zero. Guard here so
-    // scroll keys are not silently swallowed (they should fall through to the
-    // background feed), matching `push_rationale_region`'s empty handling.
     if ctx.rationale.trim().is_empty() {
         return false;
     }
-    let max_scroll = rationale_max_scroll(ctx.rationale.lines().count());
+    let visible = s.last_rationale_visible_rows;
+    let max_scroll = s.last_rationale_total_rows.saturating_sub(visible);
     if max_scroll == 0 {
         return false;
     }
+    let page = visible.max(1);
     let current = s.rationale_scroll.min(max_scroll);
     let next = match code {
         KeyCode::Up => current.saturating_sub(1),
         KeyCode::Down => (current + 1).min(max_scroll),
-        KeyCode::PageUp => current.saturating_sub(RATIONALE_VISIBLE_LINES),
-        KeyCode::PageDown => (current + RATIONALE_VISIBLE_LINES).min(max_scroll),
+        KeyCode::PageUp => current.saturating_sub(page),
+        KeyCode::PageDown => (current + page).min(max_scroll),
         KeyCode::Home => 0,
         KeyCode::End => max_scroll,
         _ => return false,
@@ -938,6 +943,30 @@ fn draw_frame(
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         s.last_log_width = log_width;
         s.last_log_height = log_height;
+
+        // Capture the modal's rationale layout metrics (in wrapped display
+        // rows) so the key handler can clamp scrolling correctly (issue #655).
+        let (total_rows, visible_rows) = if let Some(pending) = &s.pending {
+            let inner = modal_inner_rect(area);
+            let top_full = modal_top_lines(&pending.ctx, false, false).len();
+            let control_len = modal_control_lines(
+                &pending.ctx,
+                s.feedback_input.as_ref(),
+                s.edit_input.as_ref(),
+            )
+            .len();
+            let (_, body_h, _) = modal_body_layout(inner.height, top_full, control_len);
+            let total = count_wrapped_lines(
+                &rationale_body_string(&pending.ctx.rationale),
+                inner.width as usize,
+            );
+            (total, body_h as usize)
+        } else {
+            (0, 0)
+        };
+        s.last_rationale_total_rows = total_rows;
+        s.last_rationale_visible_rows = visible_rows;
+
         DashboardSnapshot {
             task: s.task.clone(),
             model: s.model.clone(),
@@ -1167,6 +1196,14 @@ fn footer_paragraph(snap: &DashboardSnapshot) -> Paragraph<'_> {
     .block(Block::default().borders(Borders::ALL))
 }
 
+/// Render the confirm modal (issue #655).
+///
+/// The modal is split into three stacked regions inside its border:
+/// a fixed **top** (step/cost, tool, command, reasoning label), a flexible
+/// **rationale body** that wraps and scrolls by display rows, and a fixed
+/// **controls** region (decision keys / feedback / edit input). The controls
+/// are reserved first, so they are always visible regardless of how tall the
+/// rationale or command is — the operator never types or decides blind.
 fn draw_modal(
     frame: &mut ratatui::Frame,
     ctx: &ConfirmContext,
@@ -1177,6 +1214,90 @@ fn draw_modal(
 ) {
     let modal = centered_rect(70, 50, area);
     frame.render_widget(Clear, modal);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(" confirm action ");
+    let inner = block.inner(modal);
+    frame.render_widget(block, modal);
+
+    let control_lines = modal_control_lines(ctx, feedback_input, edit_input);
+    let top_full = modal_top_lines(ctx, false, false).len();
+    let (top_h, body_h, control_h) = modal_body_layout(inner.height, top_full, control_lines.len());
+
+    // Scroll bounds in wrapped display rows for the rationale body.
+    let body_width = inner.width as usize;
+    let total_rows = count_wrapped_lines(&rationale_body_string(&ctx.rationale), body_width);
+    let visible = body_h as usize;
+    let max_scroll = total_rows.saturating_sub(visible);
+    let scroll = rationale_scroll.min(max_scroll);
+    let can_up = scroll > 0;
+    let can_down = scroll + visible < total_rows;
+
+    let top_lines = modal_top_lines(ctx, can_up, can_down);
+
+    let top_area = Rect {
+        x: inner.x,
+        y: inner.y,
+        width: inner.width,
+        height: top_h,
+    };
+    let body_area = Rect {
+        x: inner.x,
+        y: inner.y + top_h,
+        width: inner.width,
+        height: body_h,
+    };
+    let control_area = Rect {
+        x: inner.x,
+        y: inner.y + top_h + body_h,
+        width: inner.width,
+        height: control_h,
+    };
+
+    frame.render_widget(
+        Paragraph::new(top_lines).wrap(Wrap { trim: false }),
+        top_area,
+    );
+    let scroll_y = u16::try_from(scroll).unwrap_or(u16::MAX);
+    frame.render_widget(
+        Paragraph::new(rationale_body_lines(&ctx.rationale))
+            .wrap(Wrap { trim: false })
+            .scroll((scroll_y, 0)),
+        body_area,
+    );
+    frame.render_widget(
+        Paragraph::new(control_lines).wrap(Wrap { trim: false }),
+        control_area,
+    );
+}
+
+/// Inner (border-stripped) rectangle of the confirm modal for a given screen
+/// `area`. Shared by the renderer and `draw_frame` so scroll metrics match.
+fn modal_inner_rect(area: Rect) -> Rect {
+    let modal = centered_rect(70, 50, area);
+    Block::default().borders(Borders::ALL).inner(modal)
+}
+
+/// Reserve modal rows bottom-up: controls first (always visible), then the
+/// fixed top, then whatever remains becomes the scrollable rationale body.
+fn modal_body_layout(inner_h: u16, top_full: usize, control_len: usize) -> (u16, u16, u16) {
+    let control_h = u16::try_from(control_len).unwrap_or(u16::MAX).min(inner_h);
+    let remaining = inner_h - control_h;
+    let top_h = u16::try_from(top_full).unwrap_or(u16::MAX).min(remaining);
+    let body_h = remaining - top_h;
+    (top_h, body_h, control_h)
+}
+
+/// Fixed top region: step/cost header, tool, the proposed command (capped at
+/// 12 lines), then the magenta `reasoning:` label. The label carries the
+/// more-above / more-below scroll affordances; its line *count* is invariant to
+/// those flags, so `draw_frame` can call this with `false, false` purely to
+/// size the layout.
+fn modal_top_lines(
+    ctx: &ConfirmContext,
+    can_scroll_up: bool,
+    can_scroll_down: bool,
+) -> Vec<Line<'static>> {
     let mut lines = vec![
         Line::from(Span::styled(
             format!(
@@ -1195,8 +1316,6 @@ fn draw_modal(
     for cmd_line in ctx.command.lines().take(12) {
         lines.push(Line::from(format!("  {cmd_line}")));
     }
-    // Short-circuit at the first line past the cap instead of counting
-    // every line in a long command string.
     if ctx.command.lines().nth(12).is_some() {
         lines.push(Line::from(Span::styled(
             "  …",
@@ -1205,13 +1324,65 @@ fn draw_modal(
     }
     lines.push(Line::from(""));
 
-    // Reasoning region (issue #655): the agent's stated rationale for the
-    // pending command, adjacent to the command so the operator sees *why* and
-    // *what* in one view. Magenta label keeps it visually distinct from the
-    // white "command:" region above so justification text is never mistaken
-    // for the command being authorized.
-    push_rationale_region(&mut lines, &ctx.rationale, rationale_scroll);
+    // Reasoning label (issue #655): magenta keeps it visually distinct from the
+    // white "command:" so justification text is never mistaken for the command
+    // being authorized. Scroll affordances ride on this single line.
+    let mut label = String::from("reasoning:");
+    if can_scroll_up {
+        label.push_str("   ↑ more above");
+    }
+    if can_scroll_down {
+        label.push_str("   ↓ more below");
+    }
+    lines.push(Line::from(Span::styled(
+        label,
+        Style::default()
+            .fg(Color::Magenta)
+            .add_modifier(Modifier::BOLD),
+    )));
+    lines
+}
 
+/// The rationale body as styled lines: magenta prose, or a dim
+/// `(no rationale provided)` indicator when empty/whitespace-only. Kept in sync
+/// with [`rationale_body_string`] (used for wrapped-row counting).
+fn rationale_body_lines(rationale: &str) -> Vec<Line<'static>> {
+    let empty = rationale.trim().is_empty();
+    rationale_body_string(rationale)
+        .split('\n')
+        .map(|l| {
+            let style = if empty {
+                Style::default()
+                    .fg(Color::DarkGray)
+                    .add_modifier(Modifier::DIM)
+            } else {
+                Style::default().fg(Color::Magenta)
+            };
+            Line::from(Span::styled(l.to_owned(), style))
+        })
+        .collect()
+}
+
+/// The plain text rendered in the rationale body, used both for display and for
+/// counting wrapped display rows so the rendered region and the scroll bounds
+/// agree.
+fn rationale_body_string(rationale: &str) -> String {
+    if rationale.trim().is_empty() {
+        "(no rationale provided)".to_owned()
+    } else {
+        rationale.to_owned()
+    }
+}
+
+/// Controls region: the reject-feedback prompt, the edit buffer, or the default
+/// decision keys. Always reserved space by [`modal_body_layout`] so it stays on
+/// screen.
+fn modal_control_lines(
+    ctx: &ConfirmContext,
+    feedback_input: Option<&String>,
+    edit_input: Option<&String>,
+) -> Vec<Line<'static>> {
+    let mut lines = Vec::new();
     if let Some(buffer) = feedback_input {
         lines.push(Line::from(Span::styled(
             "Provide corrective feedback (optional):",
@@ -1267,88 +1438,7 @@ fn draw_modal(
             Style::default().add_modifier(Modifier::BOLD),
         )));
     }
-
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title(" confirm action ");
-    let p = Paragraph::new(lines)
-        .block(block)
-        .wrap(Wrap { trim: false });
-    frame.render_widget(p, modal);
-}
-
-/// Maximum scroll offset (in logical lines) for a rationale of `total_lines`,
-/// given the fixed [`RATIONALE_VISIBLE_LINES`] window. Zero means the whole
-/// rationale fits and there is nothing to scroll.
-fn rationale_max_scroll(total_lines: usize) -> usize {
-    total_lines.saturating_sub(RATIONALE_VISIBLE_LINES)
-}
-
-/// Render the confirm modal's reasoning region into `lines` (issue #655).
-///
-/// Degrades to a `(no rationale provided)` indicator for empty/whitespace
-/// rationale, and shows `↑ more above` / `↓ more below` affordances when the
-/// content exceeds the visible window so the operator knows there is more to
-/// scroll. `scroll` is clamped to the available range.
-fn push_rationale_region(lines: &mut Vec<Line<'static>>, rationale: &str, scroll: usize) {
-    lines.push(Line::from(Span::styled(
-        "reasoning:",
-        Style::default()
-            .fg(Color::Magenta)
-            .add_modifier(Modifier::BOLD),
-    )));
-
-    if rationale.trim().is_empty() {
-        lines.push(Line::from(Span::styled(
-            "  (no rationale provided)",
-            Style::default()
-                .fg(Color::DarkGray)
-                .add_modifier(Modifier::DIM),
-        )));
-        lines.push(Line::from(""));
-        return;
-    }
-
-    let rlines: Vec<&str> = rationale.lines().collect();
-    let total = rlines.len();
-    let offset = scroll.min(rationale_max_scroll(total));
-
-    // Keep the region a constant height while scrollable: reserve the
-    // more-above / more-below slots with blank placeholders when the
-    // corresponding indicator is inactive, so the elements below (feedback /
-    // edit boxes, action keys) don't jump as the operator scrolls.
-    let is_scrollable = total > RATIONALE_VISIBLE_LINES;
-    if is_scrollable {
-        if offset > 0 {
-            lines.push(Line::from(Span::styled(
-                "  ↑ more above",
-                Style::default()
-                    .fg(Color::Magenta)
-                    .add_modifier(Modifier::DIM),
-            )));
-        } else {
-            lines.push(Line::from(""));
-        }
-    }
-    for rline in rlines.iter().skip(offset).take(RATIONALE_VISIBLE_LINES) {
-        lines.push(Line::from(Span::styled(
-            format!("  {rline}"),
-            Style::default().fg(Color::Magenta),
-        )));
-    }
-    if is_scrollable {
-        if offset + RATIONALE_VISIBLE_LINES < total {
-            lines.push(Line::from(Span::styled(
-                "  ↓ more below",
-                Style::default()
-                    .fg(Color::Magenta)
-                    .add_modifier(Modifier::DIM),
-            )));
-        } else {
-            lines.push(Line::from(""));
-        }
-    }
-    lines.push(Line::from(""));
+    lines
 }
 
 fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
@@ -2986,6 +3076,10 @@ mod tests {
                 },
                 responder: tx,
             });
+            // Render-time metrics the key handler clamps against (normally set
+            // by draw_frame): 40 display rows visible 8 at a time.
+            s.last_rationale_total_rows = 40;
+            s.last_rationale_visible_rows = 8;
         }
         // PageDown should advance the rationale window and keep the modal open.
         handle_key(&d, KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE));

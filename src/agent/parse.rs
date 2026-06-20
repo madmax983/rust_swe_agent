@@ -131,6 +131,49 @@ pub fn extract_action_from_model_response(
     text_action
 }
 
+/// Remove the action's fenced command block from an assistant message,
+/// yielding prose-only text suitable as display rationale (issue #655).
+///
+/// Strips the first fence whose language tag matches the action (` ```bash `
+/// for a bash action, ` ```<tool> ` for a registered tool) so the proposed
+/// command is not repeated as justification text. When the action carried no
+/// matching fence in `content` (e.g. it arrived as a native provider
+/// `tool_call`), the content is returned trimmed and otherwise unchanged.
+#[must_use]
+pub fn strip_action_block(content: &str, action: &Action) -> String {
+    let stripped = match action {
+        Action::Bash(_) => strip_first_tagged_fence(content, BASH_TOOL_NAME),
+        Action::Tool(call) => strip_first_tagged_fence(content, &call.name),
+        Action::Submit(_) | Action::None => None,
+    };
+    stripped.unwrap_or_else(|| content.trim().to_owned())
+}
+
+/// Remove the first ` ```<tag> … ``` ` fence from `content`, returning the
+/// remaining text trimmed. The opening fence line must carry only `tag`
+/// (mirroring the extractor's matching) so a `bash`-prefixed word does not
+/// falsely match. Returns `None` when no such complete fence exists.
+fn strip_first_tagged_fence(content: &str, tag: &str) -> Option<String> {
+    let needle = format!("```{tag}");
+    let mut search_from = 0;
+    while let Some(rel) = content[search_from..].find(&needle) {
+        let start = search_from + rel;
+        let after_tag = &content[start + needle.len()..];
+        let line_break = after_tag.find('\n')?;
+        if after_tag[..line_break].trim().is_empty() {
+            let body = &after_tag[line_break + 1..];
+            let end = body.find("```")?;
+            let block_end = start + needle.len() + line_break + 1 + end + 3;
+            let mut out = String::with_capacity(content.len());
+            out.push_str(&content[..start]);
+            out.push_str(&content[block_end..]);
+            return Some(out.trim().to_owned());
+        }
+        search_from = start + needle.len();
+    }
+    None
+}
+
 /// Extracts the intended action using the supplied runtime tool names.
 pub fn extract_action_for_tools(content: &str, tool_names: &[String]) -> Action {
     // 1) Submit wins if the sentinel appears on its own line.
@@ -282,6 +325,41 @@ mod tests {
     fn no_fenced_block_is_none() {
         let s = "I think we should do stuff.";
         assert_eq!(extract_action(s), Action::None);
+    }
+
+    #[test]
+    fn strip_action_block_removes_bash_fence_leaving_prose() {
+        let s = "I will inspect the files.\n```bash\nls -la\n```\nThen proceed.";
+        let action = Action::Bash("ls -la".into());
+        let prose = strip_action_block(s, &action);
+        assert!(
+            !prose.contains("ls -la"),
+            "command must be removed: {prose:?}"
+        );
+        assert!(prose.contains("I will inspect the files."));
+        assert!(prose.contains("Then proceed."));
+    }
+
+    #[test]
+    fn strip_action_block_removes_tool_fence() {
+        let s = "Need a diagnostic.\n```diagnose\ncheck flaky test\n```";
+        let action = Action::Tool(ToolCall {
+            name: "diagnose".into(),
+            input: "check flaky test".into(),
+        });
+        let prose = strip_action_block(s, &action);
+        assert_eq!(prose, "Need a diagnostic.");
+    }
+
+    #[test]
+    fn strip_action_block_returns_trimmed_content_when_no_fence() {
+        // Native tool_call path: prose carries no fence.
+        let s = "  Let me inspect the repository.  ";
+        let action = Action::Bash("pwd".into());
+        assert_eq!(
+            strip_action_block(s, &action),
+            "Let me inspect the repository."
+        );
     }
 
     #[test]

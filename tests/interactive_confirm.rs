@@ -337,6 +337,11 @@ async fn confirm_context_carries_assistant_rationale() {
         "rationale should carry the assistant prose; got: {:?}",
         ctx.rationale
     );
+    assert!(
+        !ctx.rationale.contains("echo context-probe"),
+        "rationale should not echo the proposed command; got: {:?}",
+        ctx.rationale
+    );
 }
 
 #[tokio::test]
