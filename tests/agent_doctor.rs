@@ -203,6 +203,37 @@ fn doctor_docker_skip_when_local() {
     assert!(docker["detail"].as_str().unwrap().contains("local"));
 }
 
+// ── --env falls back to config when omitted ──────────────────────────────────
+// A docker-backed config must not be silently validated as local. With no
+// `--env` flag and `[environment] kind = "docker"`, the docker check runs
+// (status != skip) — here it fails because no daemon is reachable in CI.
+
+#[test]
+fn doctor_env_falls_back_to_docker_config() {
+    let tmp = tempfile::tempdir().unwrap();
+    let cfg = tmp.path().join("docker.toml");
+    std::fs::write(&cfg, "[environment]\nkind = \"docker\"\n").unwrap();
+    let out = doctor()
+        .args(["--model", "deterministic", "--format", "json"])
+        .arg("--config")
+        .arg(&cfg)
+        .arg("--output")
+        .arg(tmp.path())
+        .output()
+        .unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let docker = v["checks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["check"] == "docker")
+        .unwrap();
+    assert_ne!(
+        docker["status"], "skip",
+        "docker check must run for a docker-backed config even without --env"
+    );
+}
+
 // ── AC#2a: git resolvable on PATH (present in CI) ─────────────────────────────
 
 #[test]

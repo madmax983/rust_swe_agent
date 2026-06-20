@@ -182,47 +182,80 @@ fn check_credential(model: &str) -> DoctorCheck {
     }
 }
 
+/// Deadline for the Docker daemon probe. `agent doctor` is a CI preflight gate,
+/// so a wedged daemon socket must not hang it indefinitely.
+const DOCKER_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
 /// (c) Docker daemon reachability. Skipped for local environments. For docker
-/// environments, pings the daemon with a synchronous `docker version` so the
-/// check compiles without the `docker` Cargo feature. This is a local probe,
-/// not a provider network call.
+/// environments, pings the daemon with a `docker version` subprocess (so the
+/// check compiles without the `docker` Cargo feature) bounded by
+/// `DOCKER_PROBE_TIMEOUT` — on expiry the child is killed and the check fails
+/// rather than blocking. This is a local probe, not a provider network call.
 fn check_docker(env_kind: &EnvKind) -> DoctorCheck {
     use std::process::{Command, Stdio};
     if *env_kind == EnvKind::Local {
         return DoctorCheck::skip("docker", "docker not required for local environment");
     }
-    match Command::new("docker")
+    let mut child = match Command::new("docker")
         .arg("version")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
-        .output()
+        .spawn()
     {
-        Ok(out) if out.status.success() => {
-            DoctorCheck::pass("docker", "docker daemon is reachable")
+        Ok(child) => child,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return DoctorCheck::fail(
+                "docker",
+                "docker not installed; install Docker or use --env local",
+            );
         }
-        Ok(out) => {
-            let first = String::from_utf8_lossy(&out.stderr)
-                .lines()
-                .next()
-                .unwrap_or("")
-                .trim()
-                .to_owned();
-            let detail = if first.is_empty() {
-                "docker daemon unreachable; start or install Docker".to_owned()
-            } else {
-                format!("docker daemon unreachable ({first}); start or install Docker")
-            };
-            DoctorCheck::fail("docker", detail)
+        Err(e) => {
+            return DoctorCheck::fail(
+                "docker",
+                format!("could not probe docker ({e}); start or install Docker"),
+            );
         }
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => DoctorCheck::fail(
-            "docker",
-            "docker not installed; install Docker or use --env local",
-        ),
-        Err(e) => DoctorCheck::fail(
-            "docker",
-            format!("could not probe docker ({e}); start or install Docker"),
-        ),
+    };
+
+    let deadline = std::time::Instant::now() + DOCKER_PROBE_TIMEOUT;
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                if status.success() {
+                    return DoctorCheck::pass("docker", "docker daemon is reachable");
+                }
+                let mut stderr = String::new();
+                if let Some(mut handle) = child.stderr.take() {
+                    use std::io::Read as _;
+                    let _ = handle.read_to_string(&mut stderr);
+                }
+                let first = stderr.lines().next().unwrap_or("").trim();
+                let detail = if first.is_empty() {
+                    "docker daemon unreachable; start or install Docker".to_owned()
+                } else {
+                    format!("docker daemon unreachable ({first}); start or install Docker")
+                };
+                return DoctorCheck::fail("docker", detail);
+            }
+            Ok(None) => {
+                if std::time::Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return DoctorCheck::fail(
+                        "docker",
+                        "docker probe timed out after 5s; the daemon may be unresponsive — start or restart Docker",
+                    );
+                }
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            Err(e) => {
+                return DoctorCheck::fail(
+                    "docker",
+                    format!("could not probe docker ({e}); start or install Docker"),
+                );
+            }
+        }
     }
 }
 

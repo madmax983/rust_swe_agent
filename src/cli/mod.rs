@@ -216,9 +216,13 @@ fn agent_doctor_cmd(d: &args::AgentDoctorCmd) -> Result<(), Error> {
         .model
         .clone()
         .unwrap_or_else(|| cfg.root.model.name.clone());
+    // An explicit `--env` wins; otherwise fall back to the environment kind
+    // resolved from config so a docker-backed config is not silently validated
+    // as local (which would skip the Docker daemon check).
     let env_kind = match d.env {
-        args::EnvTypeArg::Local => crate::config::schema::EnvKind::Local,
-        args::EnvTypeArg::Docker => crate::config::schema::EnvKind::Docker,
+        Some(args::EnvTypeArg::Local) => crate::config::schema::EnvKind::Local,
+        Some(args::EnvTypeArg::Docker) => crate::config::schema::EnvKind::Docker,
+        None => cfg.root.environment.kind,
     };
     let opts = DoctorOpts {
         env_kind,

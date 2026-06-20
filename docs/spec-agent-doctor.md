@@ -30,7 +30,7 @@ max agent doctor \
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--env` | `local` | Environment type to validate. The Docker daemon check only runs when `docker` is selected; for `local` it is reported as `skip`. |
+| `--env` | config kind (default `local`) | Environment type to validate. When omitted, the environment kind from the resolved config (`[environment] kind`) is used, so a docker-backed config is validated as docker rather than silently skipped. The Docker daemon check only runs when `docker` is in effect; for `local` it is reported as `skip`. |
 | `--model` | resolved config model | Override the model name used to pick the expected provider credential env var. |
 | `--config` | — | Path to a TOML config file (overlays defaults). Used to resolve the model and environment. |
 | `--format` | `text` | `text` (human checklist) or `json` (machine-readable). |
@@ -47,7 +47,7 @@ Each check produces one checklist row with a stable `check` id and a
 |---------|------------------|-------------|------------------------|
 | `git` | `git` is resolvable on `PATH` (by directory inspection — the program is **not** executed). | never | "install git and ensure it is on your PATH" |
 | `credential` | The provider credential env var expected for the resolved model is **present** (presence only). `claude*` → `ANTHROPIC_API_KEY`; a `provider/model` prefix → `PROVIDER_API_KEY`; anything else → `OPENAI_API_KEY`. | model is `deterministic` (no credential needed) | "export `<VAR>` before a live run" |
-| `docker` | The Docker daemon is reachable (synchronous `docker version` ping — a local probe, not a provider call). | `--env local` | "start or install Docker", or "docker not installed; install Docker or use --env local" |
+| `docker` | The Docker daemon is reachable (a `docker version` subprocess — a local probe, not a provider call — bounded by a 5s timeout so a wedged daemon cannot hang the gate). | environment is `local` | "start or install Docker"; "docker not installed; install Docker or use --env local"; or "docker probe timed out after 5s…" |
 | `output_dir` | The runs/output directory is writable (creates it if needed, then writes and removes a probe file). | never | "check permissions or pass --output `<dir>`" |
 | `toolchain` | The active `rustc` meets the crate `rust-version` (currently 1.85). | `rustc` is not found or its version cannot be parsed (unknowable) | "run rustup update" |
 

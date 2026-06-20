@@ -742,10 +742,11 @@ pub enum AgentCmd {
 /// machine-readable `{ check, status, detail }` checklist suitable for CI gating.
 #[derive(Debug, Args)]
 pub struct AgentDoctorCmd {
-    /// Environment type to validate: `local` (default) or `docker`. Docker
-    /// daemon reachability is only checked when `docker` is selected.
-    #[arg(long, default_value = "local")]
-    pub env: EnvTypeArg,
+    /// Environment type to validate: `local` or `docker`. When omitted, the
+    /// environment kind from the resolved config is used (default `local`).
+    /// Docker daemon reachability is only checked when `docker` is in effect.
+    #[arg(long)]
+    pub env: Option<EnvTypeArg>,
 
     /// Override the model name used to pick the expected credential env var.
     /// When omitted the resolved config model is used.
