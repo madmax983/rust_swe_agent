@@ -34,6 +34,7 @@ max bench inspect --list-formats
 | `csv` | stable | `csv-export` | spreadsheets, jq pipelines, tabular tools |
 | `html` | stable | `html-export` | self-contained browser view, shared notebooks |
 | `mermaid` | experimental | `mermaid-export` | Mermaid sequence-diagram renderers (GitLab, GitHub markdown, mermaid.live) |
+| `sharegpt` | experimental | `sharegpt-export` | finetuning datasets and interoperability |
 
 Feature-gated formats require rebuilding with the corresponding feature:
 

@@ -95,6 +95,14 @@ pub fn registry() -> Vec<ExportFormat> {
         render: MermaidExporter::export,
     });
 
+    #[cfg(feature = "sharegpt-export")]
+    formats.push(ExportFormat {
+        name: "sharegpt",
+        tier: StabilityTier::Experimental,
+        consumer: "finetuning datasets and interoperability",
+        render: SharegptExporter::export,
+    });
+
     formats
 }
 
@@ -109,6 +117,7 @@ pub const FEATURE_GATED_FORMATS: &[(&str, &str)] = &[
     ("csv", "csv-export"),
     ("html", "html-export"),
     ("mermaid", "mermaid-export"),
+    ("sharegpt", "sharegpt-export"),
 ];
 
 /// Returns `true` if `name` is a trajectory export format known to this codebase,
@@ -452,5 +461,70 @@ mod tests {
         assert!(html.contains("submitted"));
         assert!(html.contains("Hello agent"));
         assert!(html.contains("Hello user"));
+    }
+}
+
+#[cfg(feature = "sharegpt-export")]
+pub struct SharegptExporter;
+
+#[cfg(test)]
+mod sharegpt_tests {
+    use super::*;
+    use crate::model::Message;
+    use crate::trajectory::Trajectory;
+
+    #[cfg(feature = "sharegpt-export")]
+    #[test]
+    fn test_sharegpt_export_format() {
+        let mut t = Trajectory::new();
+        t.info.task = Some("Add a feature".to_string());
+        t.info.outcome = Some("submitted".to_string());
+        t.record_message(&Message::system("System prompt"));
+        t.record_message(&Message::user("Hello agent"));
+        t.record_message(&Message::assistant("Hello user"));
+
+        let json = SharegptExporter::export(&t);
+        assert!(json.starts_with('{'));
+        assert!(json.contains("\"conversations\":"));
+        assert!(json.contains("\"task\": \"Add a feature\""));
+    }
+}
+
+#[cfg(feature = "sharegpt-export")]
+impl TrajectoryExporter for SharegptExporter {
+    fn export(trajectory: &Trajectory) -> String {
+        use serde_json::json;
+
+        let redactor = Redactor::default_enabled();
+
+        let mut conversations = Vec::new();
+        for msg in &trajectory.messages {
+            let role = match msg.role.as_str() {
+                "system" => "system",
+                "assistant" => "gpt",
+                "tool" => "tool",
+                _ => "human",
+            };
+            let content = redactor.redact_text(&msg.content, surface::EXPORT).text;
+            conversations.push(json!({
+                "from": role,
+                "value": content
+            }));
+        }
+
+        let mut export_json = json!({
+            "conversations": conversations
+        });
+
+        if let Some(obj) = export_json.as_object_mut() {
+            if let Some(task) = &trajectory.info.task {
+                obj.insert("task".to_string(), json!(redactor.redact_text(task, surface::EXPORT).text));
+            }
+            if let Some(outcome) = &trajectory.info.outcome {
+                 obj.insert("outcome".to_string(), json!(redactor.redact_text(outcome, surface::EXPORT).text));
+            }
+        }
+
+        serde_json::to_string_pretty(&export_json).unwrap_or_else(|_| "{}".to_string())
     }
 }
