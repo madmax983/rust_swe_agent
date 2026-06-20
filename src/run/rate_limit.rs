@@ -287,7 +287,9 @@ impl RateLimitGovernor {
         inner.events.throttled_calls += 1;
 
         if let Some(secs) = retry_after_secs {
-            let until = now + Duration::from_secs(secs);
+            let until = now
+                .checked_add(Duration::from_secs(secs))
+                .unwrap_or_else(|| now + Duration::from_secs(60 * 60 * 24 * 365));
             // Keep the furthest-future floor if multiple workers race.
             match inner.retry_after_until {
                 Some(existing) if existing >= until => {}
@@ -496,6 +498,14 @@ mod tests {
         fn test_civil_to_unix_no_panic(year in any::<i64>(), month in any::<i64>(), day in any::<i64>(), h in any::<u64>(), m in any::<u64>(), s in any::<u64>()) {
             let _ = civil_to_unix(year, month, day, h, m, s);
         }
+    }
+
+    #[test]
+    fn test_report_429_handles_large_retry_after_without_panic() {
+        let gov = RateLimitGovernor::new(Some(100), None, 1).unwrap();
+        // Using tokio's current thread runtime to await report_429 directly
+        let rt = tokio::runtime::Builder::new_current_thread().build().unwrap();
+        rt.block_on(gov.report_429(Some(u64::MAX)));
     }
 
     #[test]
