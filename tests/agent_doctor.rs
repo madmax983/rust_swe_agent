@@ -152,15 +152,19 @@ fn doctor_never_prints_secret_value() {
     );
 }
 
-// ── AC#2b: deterministic model needs no credential → skip, exit 0 ────────────
+// ── AC#2b: the literal model name `deterministic` is not a skip signal ───────
+// A live run routes `deterministic` to LiteLLM (→ OPENAI_API_KEY), so the
+// credential check runs like any other model: present → pass, absent → fail.
 
 #[test]
-fn doctor_deterministic_model_skips_credential() {
+fn doctor_deterministic_model_checks_openai_credential() {
     let tmp = tempfile::tempdir().unwrap();
+    // With OPENAI_API_KEY present, the check passes and the command exits 0.
     let out = doctor()
         .args(["--model", "deterministic", "--format", "json"])
         .arg("--output")
         .arg(tmp.path())
+        .env("OPENAI_API_KEY", "present")
         .output()
         .unwrap();
     assert_eq!(out.status.code(), Some(0));
@@ -171,7 +175,8 @@ fn doctor_deterministic_model_skips_credential() {
         .iter()
         .find(|c| c["check"] == "credential")
         .unwrap();
-    assert_eq!(cred["status"], "skip");
+    assert_eq!(cred["status"], "pass");
+    assert!(cred["detail"].as_str().unwrap().contains("OPENAI_API_KEY"));
 }
 
 // ── AC#2c: docker is skipped for a local environment ─────────────────────────
