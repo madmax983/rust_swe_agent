@@ -696,3 +696,50 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod chaos_tests {
+    #![allow(clippy::unwrap_used)]
+    use super::*;
+    use crate::model::{Model, QueryOpts, deterministic::DeterministicModel};
+    use std::sync::Arc;
+    use tokio::task;
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn test_chaos_race_condition() {
+        let responses = std::iter::repeat("response".to_owned()).take(1000).collect::<Vec<_>>();
+        let inner = DeterministicModel::new(responses);
+        let redactor = crate::redaction::Redactor::disabled();
+        let expected_fps = std::iter::repeat(Some("fp".to_owned())).take(1000).collect::<Vec<_>>();
+        let m = Arc::new(FingerprintCheckingModel {
+            inner,
+            redactor,
+            expected_fps,
+            expected_canonicals: vec![],
+            step: Mutex::new(0),
+            allow_unfingerprinted: true,
+            report_only: true,
+            drift_cap_bytes: 100,
+            drift_steps: Arc::new(Mutex::new(Vec::new())),
+        });
+
+        let mut handlers = vec![];
+        for _ in 0..10 {
+            let m_clone = Arc::clone(&m);
+            handlers.push(task::spawn(async move {
+                for _ in 0..100 {
+                    let _ = m_clone.query(&[], &QueryOpts::default()).await;
+                }
+            }));
+        }
+
+        for handler in handlers {
+            handler.await.unwrap();
+        }
+
+        // We expect 1000 steps if it's thread-safe.
+        // However, the split lock/read and lock/write around `await` causes lost updates.
+        let step = *m.step.lock().unwrap();
+        assert_eq!(step, 1000, "Race condition detected! Lost updates.");
+    }
+}
