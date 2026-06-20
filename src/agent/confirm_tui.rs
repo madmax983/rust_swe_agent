@@ -766,6 +766,13 @@ fn perform_scroll(s: &mut DashboardState, code: KeyCode) -> bool {
 /// scroll) so the caller falls through to feed scrolling, preserving the
 /// pre-existing scroll-while-modal-open behaviour for command-only prompts.
 fn perform_rationale_scroll(s: &mut DashboardState, ctx: &ConfirmContext, code: KeyCode) -> bool {
+    // A whitespace-only rationale renders as `(no rationale provided)` with no
+    // scrollable lines, yet its raw line count could be non-zero. Guard here so
+    // scroll keys are not silently swallowed (they should fall through to the
+    // background feed), matching `push_rationale_region`'s empty handling.
+    if ctx.rationale.trim().is_empty() {
+        return false;
+    }
     let max_scroll = rationale_max_scroll(ctx.rationale.lines().count());
     if max_scroll == 0 {
         return false;
@@ -1306,13 +1313,22 @@ fn push_rationale_region(lines: &mut Vec<Line<'static>>, rationale: &str, scroll
     let total = rlines.len();
     let offset = scroll.min(rationale_max_scroll(total));
 
-    if offset > 0 {
-        lines.push(Line::from(Span::styled(
-            "  ↑ more above",
-            Style::default()
-                .fg(Color::Magenta)
-                .add_modifier(Modifier::DIM),
-        )));
+    // Keep the region a constant height while scrollable: reserve the
+    // more-above / more-below slots with blank placeholders when the
+    // corresponding indicator is inactive, so the elements below (feedback /
+    // edit boxes, action keys) don't jump as the operator scrolls.
+    let is_scrollable = total > RATIONALE_VISIBLE_LINES;
+    if is_scrollable {
+        if offset > 0 {
+            lines.push(Line::from(Span::styled(
+                "  ↑ more above",
+                Style::default()
+                    .fg(Color::Magenta)
+                    .add_modifier(Modifier::DIM),
+            )));
+        } else {
+            lines.push(Line::from(""));
+        }
     }
     for rline in rlines.iter().skip(offset).take(RATIONALE_VISIBLE_LINES) {
         lines.push(Line::from(Span::styled(
@@ -1320,13 +1336,17 @@ fn push_rationale_region(lines: &mut Vec<Line<'static>>, rationale: &str, scroll
             Style::default().fg(Color::Magenta),
         )));
     }
-    if offset + RATIONALE_VISIBLE_LINES < total {
-        lines.push(Line::from(Span::styled(
-            "  ↓ more below",
-            Style::default()
-                .fg(Color::Magenta)
-                .add_modifier(Modifier::DIM),
-        )));
+    if is_scrollable {
+        if offset + RATIONALE_VISIBLE_LINES < total {
+            lines.push(Line::from(Span::styled(
+                "  ↓ more below",
+                Style::default()
+                    .fg(Color::Magenta)
+                    .add_modifier(Modifier::DIM),
+            )));
+        } else {
+            lines.push(Line::from(""));
+        }
     }
     lines.push(Line::from(""));
 }
@@ -2984,6 +3004,47 @@ mod tests {
         };
         assert_eq!(scroll_after_home, 0);
         assert!(pending_after_home);
+    }
+
+    #[test]
+    fn whitespace_rationale_does_not_consume_scroll_keys() {
+        // A whitespace-only rationale renders "(no rationale provided)" with no
+        // scrollable lines, so scroll keys must fall through to the feed rather
+        // than being silently swallowed by the rationale scroller.
+        let d = make_dashboard();
+        let (tx, _rx) = oneshot::channel();
+        {
+            let mut s = d.state.lock().unwrap();
+            s.last_log_height = 5;
+            s.last_log_width = 10;
+            for i in 1..=8 {
+                s.log.push_back(LogLine {
+                    kind: LineKind::Info,
+                    text: format!("line{i}"),
+                });
+            }
+            // Many blank lines: trims to empty, but raw line count is non-zero.
+            s.pending = Some(PendingPrompt {
+                ctx: ConfirmContext {
+                    tool_name: "bash".into(),
+                    command: "ls".into(),
+                    step: 0,
+                    step_limit: 1,
+                    cost_usd: 0.0,
+                    cache_marker: "cache:explicit",
+                    rationale: "\n".repeat(20),
+                },
+                responder: tx,
+            });
+        }
+        handle_key(&d, KeyEvent::new(KeyCode::PageUp, KeyModifiers::NONE));
+        let (rationale_scroll, auto_follow, pending_some) = {
+            let s = d.state.lock().unwrap();
+            (s.rationale_scroll, s.auto_follow, s.pending.is_some())
+        };
+        assert_eq!(rationale_scroll, 0, "rationale must not have scrolled");
+        assert!(!auto_follow, "scroll key should have driven the feed");
+        assert!(pending_some, "modal must stay open");
     }
 
     #[test]
