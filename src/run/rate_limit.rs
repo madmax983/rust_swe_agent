@@ -501,10 +501,13 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::unwrap_used)]
     fn test_report_429_handles_large_retry_after_without_panic() {
         let gov = RateLimitGovernor::new(Some(100), None, 1).unwrap();
         // Using tokio's current thread runtime to await report_429 directly
-        let rt = tokio::runtime::Builder::new_current_thread().build().unwrap();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
         rt.block_on(gov.report_429(Some(u64::MAX)));
     }
 
