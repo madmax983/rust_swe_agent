@@ -1200,6 +1200,13 @@ pub struct HelloWorldCmd {
 
 /// `ui` — serve a read-only local sweep browser (requires the `ui-server` feature).
 #[derive(Debug, Args)]
+pub struct ExplorerCmd {
+    /// Path to a completed sweep directory containing `*.traj.json` files.
+    #[arg(long, value_name = "DIR")]
+    pub sweep: PathBuf,
+}
+
+#[derive(Debug, Args)]
 pub struct UiCmd {
     /// Path to a completed sweep directory containing `*.traj.json` files.
     /// The directory must exist and contain at least one trajectory file.
@@ -1337,6 +1344,8 @@ pub enum BenchCmd {
     /// Join historical sweeps on instance_id and report resolution history,
     /// stability class, and flip provenance.
     InstanceHistory(InstanceHistoryCmd),
+    /// Interactive TUI to explore a completed sweep.
+    Explorer(ExplorerCmd),
     /// Surface prompt-cache hit rate, savings, and spend for a completed sweep.
     CacheStats(CacheStatsCmd),
     /// Right-size step, cost, and wallclock caps from a completed sweep's distributions.

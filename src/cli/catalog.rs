@@ -59,6 +59,12 @@ pub fn entries() -> &'static [CatalogEntry] {
             cost_tier: "free",
             stage: "publish",
         },
+        CatalogEntry {
+            path: "bench explorer",
+            summary: "Interactive Ratatui TUI to explore a completed sweep",
+            cost_tier: "free",
+            stage: "inspect",
+        },
         // Agent subcommands
         CatalogEntry {
             path: "agent best-of",

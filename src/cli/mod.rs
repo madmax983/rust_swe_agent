@@ -112,6 +112,7 @@ pub async fn run() -> Result<(), Error> {
             args::BenchCmd::SkillCoverage(t) => bench_skill_coverage(t),
             args::BenchCmd::PolicyImpact(p) => bench_policy_impact(p),
             args::BenchCmd::InstanceHistory(h) => bench_instance_history(h),
+            args::BenchCmd::Explorer(e) => bench_explorer(e),
             args::BenchCmd::CacheStats(c) => bench_cache_stats(c),
             args::BenchCmd::BudgetFit(b) => bench_budget_fit(b),
             args::BenchCmd::ToolAblation(t) => Box::pin(bench_tool_ablation(t)).await,
@@ -5698,6 +5699,10 @@ enum CommandStatsFormat {
 enum GrepOutputFormat {
     Text,
     Json,
+}
+
+fn bench_explorer(e: args::ExplorerCmd) -> Result<(), Error> {
+    crate::run::explorer::run(&crate::run::explorer::ExplorerCmd { sweep: e.sweep })
 }
 
 async fn bench_tail(t: args::TailCmd) -> Result<(), Error> {
