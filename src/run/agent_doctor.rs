@@ -291,7 +291,10 @@ fn check_toolchain() -> DoctorCheck {
 }
 
 /// Find an executable by name on `PATH` by inspecting each directory. Does not
-/// execute the program. Returns the first matching file path.
+/// execute the program. Returns the first matching path. On Unix the candidate
+/// must additionally carry an executable permission bit, so a non-executable
+/// file of the same name in a higher-priority `PATH` directory is not a false
+/// positive.
 fn resolve_on_path(name: &str) -> Option<PathBuf> {
     let path_var = std::env::var_os("PATH")?;
     for dir in std::env::split_paths(&path_var) {
@@ -299,16 +302,29 @@ fn resolve_on_path(name: &str) -> Option<PathBuf> {
             continue;
         }
         let candidate = dir.join(name);
-        if candidate.is_file() {
+        if is_executable(&candidate) {
             return Some(candidate);
         }
         // Windows executables carry an extension.
         let with_exe = dir.join(format!("{name}{}", std::env::consts::EXE_SUFFIX));
-        if with_exe.is_file() {
+        if is_executable(&with_exe) {
             return Some(with_exe);
         }
     }
     None
+}
+
+/// Whether `path` is a regular file that is runnable as a command. On Unix this
+/// requires an executable permission bit; elsewhere being a file is sufficient.
+#[cfg(unix)]
+fn is_executable(path: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt as _;
+    std::fs::metadata(path).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+}
+
+#[cfg(not(unix))]
+fn is_executable(path: &Path) -> bool {
+    path.is_file()
 }
 
 /// Run `rustc --version` and return the raw version token (e.g. `1.85.0`).
@@ -477,10 +493,7 @@ mod tests {
         let report = DoctorReport {
             schema_version: DOCTOR_SCHEMA_VERSION,
             ready: true,
-            checks: vec![
-                DoctorCheck::pass("a", "ok"),
-                DoctorCheck::fail("b", "bad"),
-            ],
+            checks: vec![DoctorCheck::pass("a", "ok"), DoctorCheck::fail("b", "bad")],
         };
         // run_doctor computes `ready`; emulate that rule here.
         let ready = report.checks.iter().all(|c| c.status != CheckStatus::Fail);
@@ -489,10 +502,7 @@ mod tests {
 
     #[test]
     fn skip_does_not_block_ready() {
-        let checks = [
-            DoctorCheck::pass("a", "ok"),
-            DoctorCheck::skip("b", "n/a"),
-        ];
+        let checks = [DoctorCheck::pass("a", "ok"), DoctorCheck::skip("b", "n/a")];
         let ready = checks.iter().all(|c| c.status != CheckStatus::Fail);
         assert!(ready);
     }
@@ -536,5 +546,60 @@ mod tests {
         unsafe { std::env::remove_var(&var) };
         assert_eq!(check.status, CheckStatus::Pass);
         assert!(!check.detail.contains("TOPSECRETVALUE"));
+    }
+
+    #[test]
+    fn credential_fail_when_var_absent() {
+        // A uniquely-named provider whose env var is guaranteed unset → fail
+        // with a remediation hint naming the variable.
+        let model = "zzznoprov/model";
+        let var = expected_credential_env(model).unwrap();
+        // SAFETY: single-threaded test; ensure the var is absent.
+        unsafe { std::env::remove_var(&var) };
+        let check = check_credential(model);
+        assert_eq!(check.status, CheckStatus::Fail);
+        assert!(check.detail.contains(&var));
+        assert!(check.detail.contains("export"));
+    }
+
+    // ── output dir failure path (AC#2d) ──────────────────────────────────
+
+    #[test]
+    fn output_dir_fail_when_parent_is_a_file() {
+        // Point the dir at a child of a regular file; `create_dir_all` fails
+        // regardless of uid (robust even when tests run as root).
+        let dir = tempfile::tempdir().unwrap();
+        let blocker = dir.path().join("blocker");
+        std::fs::write(&blocker, b"not a directory").unwrap();
+        let target = blocker.join("runs");
+        let check = check_output_dir(&target);
+        assert_eq!(check.status, CheckStatus::Fail);
+        assert!(check.detail.contains("--output"));
+    }
+
+    // ── executable resolution (AC#2a) ────────────────────────────────────
+
+    #[test]
+    fn resolve_on_path_none_for_nonexistent() {
+        assert!(resolve_on_path("definitely-not-a-real-binary-xyz").is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn is_executable_requires_exec_bit_on_unix() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = tempfile::tempdir().unwrap();
+        let plain = dir.path().join("plain");
+        std::fs::write(&plain, b"#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(&plain, std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(!is_executable(&plain), "non-exec file must not resolve");
+
+        let exec = dir.path().join("exec");
+        std::fs::write(&exec, b"#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(&exec, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(is_executable(&exec), "exec file must resolve");
+
+        // A directory is not an executable file.
+        assert!(!is_executable(dir.path()));
     }
 }

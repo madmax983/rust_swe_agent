@@ -261,11 +261,7 @@ fn print_doctor_text(report: &crate::run::agent_doctor::DoctorReport) {
         // are ever placed in it (credential checks are presence-only).
         println!("  [{label}] {}: {}", c.check, c.detail);
     }
-    let verdict = if report.ready {
-        "ready"
-    } else {
-        "NOT ready"
-    };
+    let verdict = if report.ready { "ready" } else { "NOT ready" };
     println!("[agent doctor] host is {verdict}.");
 }
 

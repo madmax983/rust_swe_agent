@@ -26,14 +26,26 @@ fn doctor() -> Command {
 fn doctor_all_pass_exits_zero_json() {
     let tmp = tempfile::tempdir().unwrap();
     let out = doctor()
-        .args(["--env", "local", "--model", "claude-opus-4-7", "--format", "json"])
+        .args([
+            "--env",
+            "local",
+            "--model",
+            "claude-opus-4-7",
+            "--format",
+            "json",
+        ])
         .arg("--output")
         .arg(tmp.path())
         .env("ANTHROPIC_API_KEY", "present")
         .output()
         .unwrap();
 
-    assert_eq!(out.status.code(), Some(0), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(v["ready"], true);
     assert_eq!(v["schema_version"], 1);
@@ -42,7 +54,11 @@ fn doctor_all_pass_exits_zero_json() {
     let checks = v["checks"].as_array().unwrap();
     for c in checks {
         let s = c["status"].as_str().unwrap();
-        assert!(s == "pass" || s == "skip", "unexpected status {s} for {}", c["check"]);
+        assert!(
+            s == "pass" || s == "skip",
+            "unexpected status {s} for {}",
+            c["check"]
+        );
     }
     // docker is skipped for a local environment (AC#2c).
     let docker = checks.iter().find(|c| c["check"] == "docker").unwrap();
@@ -91,7 +107,10 @@ fn doctor_missing_credential_exits_48_with_remediation() {
 
     assert_eq!(out.status.code(), Some(48));
     let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(stderr.contains("outcome_class: host_not_ready"), "stderr: {stderr}");
+    assert!(
+        stderr.contains("outcome_class: host_not_ready"),
+        "stderr: {stderr}"
+    );
 
     let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(v["ready"], false);
@@ -104,7 +123,10 @@ fn doctor_missing_credential_exits_48_with_remediation() {
     assert_eq!(cred["status"], "fail");
     let detail = cred["detail"].as_str().unwrap();
     assert!(detail.contains("ANTHROPIC_API_KEY"), "detail: {detail}");
-    assert!(detail.contains("export"), "remediation hint missing: {detail}");
+    assert!(
+        detail.contains("export"),
+        "remediation hint missing: {detail}"
+    );
 }
 
 // ── AC#4: a secret value is never printed or logged ──────────────────────────
@@ -158,7 +180,14 @@ fn doctor_deterministic_model_skips_credential() {
 fn doctor_docker_skip_when_local() {
     let tmp = tempfile::tempdir().unwrap();
     let out = doctor()
-        .args(["--env", "local", "--model", "deterministic", "--format", "json"])
+        .args([
+            "--env",
+            "local",
+            "--model",
+            "deterministic",
+            "--format",
+            "json",
+        ])
         .arg("--output")
         .arg(tmp.path())
         .output()
@@ -261,7 +290,10 @@ fn doctor_help_mentions_zero_cost_and_no_model_call() {
     assert!(out.status.success());
     let stdout = String::from_utf8_lossy(&out.stdout).to_lowercase();
     assert!(stdout.contains("$0"), "help should state $0 cost");
-    assert!(stdout.contains("no model call"), "help should state no model call");
+    assert!(
+        stdout.contains("no model call"),
+        "help should state no model call"
+    );
 }
 
 // ── text format lists all five checks ────────────────────────────────────────
@@ -278,6 +310,9 @@ fn doctor_text_format_lists_all_checks() {
         .unwrap();
     let stdout = String::from_utf8_lossy(&out.stdout);
     for id in ["git", "credential", "docker", "output_dir", "toolchain"] {
-        assert!(stdout.contains(id), "text output missing check '{id}': {stdout}");
+        assert!(
+            stdout.contains(id),
+            "text output missing check '{id}': {stdout}"
+        );
     }
 }
