@@ -294,8 +294,21 @@ fn ui(f: &mut ratatui::Frame, app: &mut App) {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
     #[test]
-    fn test_explorer_compile_check() {
-        // dummy
+    fn test_explorer_invalid_sweep() {
+        let args = ExplorerCmd { sweep: PathBuf::from("does_not_exist") };
+        let res = run(&args);
+        assert!(res.is_err());
+        assert!(res.unwrap_err().to_string().contains("does not exist or is not a directory"));
+    }
+
+    #[test]
+    fn test_explorer_app_init() {
+        let temp = tempfile::tempdir().unwrap();
+        let app = App::new(temp.path());
+        assert!(app.instances.is_empty());
+        assert_eq!(app.error_msg, Some("No trajectories found.".to_string()));
     }
 }
