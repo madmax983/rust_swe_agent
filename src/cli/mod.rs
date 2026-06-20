@@ -162,6 +162,7 @@ pub async fn run() -> Result<(), Error> {
             args::AgentCmd::Runs(r) => agent_runs_cmd(&r),
             args::AgentCmd::FsAudit(a) => agent_fs_audit_cmd(&a),
             args::AgentCmd::ArtifactCheck(a) => agent_artifact_check_cmd(&a),
+            args::AgentCmd::Doctor(d) => agent_doctor_cmd(&d),
         },
         Command::Catalog(c) => catalog::run_catalog(c),
         Command::Ui(u) => ui_cmd(u).await,
@@ -202,6 +203,70 @@ fn agent_env_preview_cmd(p: &args::EnvPreviewCmd) -> Result<(), Error> {
         );
     }
     Ok(())
+}
+
+fn agent_doctor_cmd(d: &args::AgentDoctorCmd) -> Result<(), Error> {
+    use crate::run::agent_doctor::{DoctorOpts, run_doctor};
+
+    let cfg = match &d.config {
+        Some(path) => Config::load(path)?,
+        None => Config::defaults()?,
+    };
+    let model = d
+        .model
+        .clone()
+        .unwrap_or_else(|| cfg.root.model.name.clone());
+    let env_kind = match d.env {
+        args::EnvTypeArg::Local => crate::config::schema::EnvKind::Local,
+        args::EnvTypeArg::Docker => crate::config::schema::EnvKind::Docker,
+    };
+    let opts = DoctorOpts {
+        env_kind,
+        model,
+        output_dir: d.output.clone(),
+    };
+
+    let report = run_doctor(&opts);
+
+    if d.format == args::PreviewFormatArg::Json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&report).map_err(|e| {
+                Error::Config(crate::error::ConfigError::Invalid(e.to_string()))
+            })?
+        );
+    } else {
+        print_doctor_text(&report);
+    }
+
+    if !report.ready {
+        exit_with_outcome(
+            ExitCode::HostNotReady,
+            "host not ready: one or more readiness checks failed",
+        );
+    }
+    Ok(())
+}
+
+fn print_doctor_text(report: &crate::run::agent_doctor::DoctorReport) {
+    use crate::run::agent_doctor::CheckStatus;
+    println!("[agent doctor] host-readiness check (no model call, $0):");
+    for c in &report.checks {
+        let label = match c.status {
+            CheckStatus::Pass => "pass",
+            CheckStatus::Fail => "fail",
+            CheckStatus::Skip => "skip",
+        };
+        // `detail` carries the remediation hint on failures; no secret values
+        // are ever placed in it (credential checks are presence-only).
+        println!("  [{label}] {}: {}", c.check, c.detail);
+    }
+    let verdict = if report.ready {
+        "ready"
+    } else {
+        "NOT ready"
+    };
+    println!("[agent doctor] host is {verdict}.");
 }
 
 fn agent_config_resolve_cmd(r: &args::ConfigResolveCmd) -> Result<(), Error> {

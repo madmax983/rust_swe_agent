@@ -19,6 +19,11 @@ more machinery.
   LiteLLM-style routing, such as `ANTHROPIC_API_KEY` for `claude*` models or
   `OPENAI_API_KEY` for OpenAI-routed models.
 
+Run `max agent doctor` to verify all of the above at **$0 with no model call**
+before your first live run; add `--format json` for a machine-readable
+checklist suitable for CI gating (exit `48` = host not ready). See
+[`docs/spec-agent-doctor.md`](docs/spec-agent-doctor.md).
+
 ### 1. Run The No-Key Smoke Path
 
 This path costs $0 and performs no network model call. The `hello-world`
@@ -438,6 +443,7 @@ instead of dollars to ride out. Tiny mercy.
 | Smoke run cannot write artifacts | Output directory is unwritable | Choose a writable `--output` path, for example `runs/quickstart` inside the repo |
 | `bench doctor` reports dataset read/parse errors | The `--dataset-path` value is missing, points at a directory, or is not JSONL | Pass a readable SWE-bench JSONL file and rerun `bench doctor --skip-model-probe` |
 | `bench inspect` shows an unfamiliar `failure_category` string | Trajectory from a newer harness version, or an unclassified failure | See [`docs/failure-categories.md`](docs/failure-categories.md) for the full reference and triage runbook |
+| Not sure whether the host is set up for a live run | Prerequisites unverified before first run | Run `max agent doctor` (or `--format json` for CI; exit `48` = not ready) — it checks git, the provider credential, Docker, output-dir writability, and the toolchain at $0 with no model call. See [`docs/spec-agent-doctor.md`](docs/spec-agent-doctor.md) |
 
 ## Advanced Specs
 
