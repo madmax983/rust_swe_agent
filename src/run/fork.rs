@@ -9,7 +9,7 @@ use async_trait::async_trait;
 use sha2::Digest;
 
 use crate::agent::{Agent, DefaultAgent, default::DefaultAgentBuilder};
-use crate::cli::args::ForkCmd;
+use crate::cli_args::ForkCmd;
 use crate::config::{Config, EnvKind, McpServerCfg};
 #[cfg(feature = "docker")]
 use crate::env::DockerEnvironment;

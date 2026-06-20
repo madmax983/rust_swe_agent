@@ -9,6 +9,7 @@ pub mod agent;
 pub mod annotation;
 pub mod artifact;
 pub mod cli;
+pub mod cli_args;
 pub mod config;
 pub mod cost;
 pub mod env;

@@ -3,7 +3,8 @@
 #![allow(clippy::unwrap_used)]
 
 use clap::Parser;
-use maxwells_daemon::cli::{Cli, Command, args::UiKind};
+use maxwells_daemon::cli::{Cli, Command};
+use maxwells_daemon::cli_args::UiKind;
 
 fn parse(argv: &[&str]) -> Cli {
     Cli::try_parse_from(argv).unwrap()

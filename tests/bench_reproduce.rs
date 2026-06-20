@@ -485,7 +485,7 @@ fn render_summary_includes_patch_identical_percentage() {
 fn cli_parses_bench_reproduce_required_args() {
     use clap::Parser as _;
     use maxwells_daemon::cli::Cli;
-    use maxwells_daemon::cli::args::BenchCmd;
+    use maxwells_daemon::cli_args::BenchCmd;
 
     let cli = Cli::parse_from([
         "max",
@@ -514,7 +514,7 @@ fn cli_parses_bench_reproduce_required_args() {
 fn cli_parses_bench_reproduce_optional_overrides() {
     use clap::Parser as _;
     use maxwells_daemon::cli::Cli;
-    use maxwells_daemon::cli::args::BenchCmd;
+    use maxwells_daemon::cli_args::BenchCmd;
 
     let cli = Cli::parse_from([
         "max",

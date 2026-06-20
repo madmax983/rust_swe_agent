@@ -262,7 +262,7 @@ async fn test_skip_evaluator_short_circuit() {
     let cli = Cli::try_parse_from(args_vec).unwrap();
     match cli.command {
         Command::Bench { cmd } => match *cmd {
-            maxwells_daemon::cli::args::BenchCmd::Rehearsal(mut s) => {
+            maxwells_daemon::cli_args::BenchCmd::Rehearsal(mut s) => {
                 s.rehearse = true;
                 maxwells_daemon::cli::bench_swebench(*s).await.unwrap();
             }
@@ -312,7 +312,7 @@ async fn test_diff_surfaces_drift() {
     ];
     let cli_baseline = Cli::try_parse_from(args_baseline).unwrap();
     if let Command::Bench { cmd } = cli_baseline.command {
-        if let maxwells_daemon::cli::args::BenchCmd::Rehearsal(mut s) = *cmd {
+        if let maxwells_daemon::cli_args::BenchCmd::Rehearsal(mut s) = *cmd {
             s.rehearse = true;
             maxwells_daemon::cli::bench_swebench(*s).await.unwrap();
         }
@@ -335,7 +335,7 @@ async fn test_diff_surfaces_drift() {
     ];
     let cli_candidate_match = Cli::try_parse_from(args_candidate_match).unwrap();
     if let Command::Bench { cmd } = cli_candidate_match.command {
-        if let maxwells_daemon::cli::args::BenchCmd::Rehearsal(mut s) = *cmd {
+        if let maxwells_daemon::cli_args::BenchCmd::Rehearsal(mut s) = *cmd {
             s.rehearse = true;
             maxwells_daemon::cli::bench_swebench(*s).await.unwrap();
         }
@@ -369,7 +369,7 @@ async fn test_diff_surfaces_drift() {
     ];
     let cli_candidate_drift = Cli::try_parse_from(args_candidate_drift).unwrap();
     if let Command::Bench { cmd } = cli_candidate_drift.command {
-        if let maxwells_daemon::cli::args::BenchCmd::Rehearsal(mut s) = *cmd {
+        if let maxwells_daemon::cli_args::BenchCmd::Rehearsal(mut s) = *cmd {
             s.rehearse = true;
             maxwells_daemon::cli::bench_swebench(*s).await.unwrap();
         }
@@ -565,7 +565,7 @@ async fn test_forecast_rejects_rehearsal() {
     ];
     let cli = Cli::try_parse_from(args).unwrap();
     if let Command::Bench { cmd } = cli.command {
-        if let maxwells_daemon::cli::args::BenchCmd::Swebench(s) = *cmd {
+        if let maxwells_daemon::cli_args::BenchCmd::Swebench(s) = *cmd {
             let res = maxwells_daemon::cli::bench_swebench(*s).await;
             assert!(res.is_err());
             let err_msg = res.unwrap_err().to_string();
@@ -813,7 +813,7 @@ async fn test_rehearsal_rejects_diff_combined_with_dry_run() {
     ];
     let cli = Cli::try_parse_from(args).unwrap();
     if let Command::Bench { cmd } = cli.command {
-        if let maxwells_daemon::cli::args::BenchCmd::Swebench(s) = *cmd {
+        if let maxwells_daemon::cli_args::BenchCmd::Swebench(s) = *cmd {
             let res = maxwells_daemon::cli::bench_swebench(*s).await;
             assert!(res.is_err());
             let err_msg = res.unwrap_err().to_string();
@@ -925,7 +925,7 @@ async fn test_rehearsal_rejects_empty_terminal_path_segment() {
     ];
     let cli = Cli::try_parse_from(args).unwrap();
     if let Command::Bench { cmd } = cli.command {
-        if let maxwells_daemon::cli::args::BenchCmd::Swebench(s) = *cmd {
+        if let maxwells_daemon::cli_args::BenchCmd::Swebench(s) = *cmd {
             let res = maxwells_daemon::cli::bench_swebench(*s).await;
             assert!(res.is_err());
             let err_msg = res.unwrap_err().to_string();
