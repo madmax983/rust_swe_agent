@@ -113,12 +113,13 @@ pub struct DoctorOpts {
 /// `PROVIDER_API_KEY`; a bare `claude*` name selects `ANTHROPIC_API_KEY`;
 /// anything else routes to OpenAI (`OPENAI_API_KEY`).
 ///
-/// The model name alone is not treated as a deterministic-mode signal: a live
-/// run only uses the deterministic model when scripted responses are supplied,
-/// so a `model.name` of `deterministic` still routes to a live LiteLLM call
-/// (here → `OPENAI_API_KEY`) and is checked like any other model.
+/// Returns `None` for the in-repo `deterministic` model, which needs no
+/// provider credential (the credential check reports `skip`).
 #[must_use]
-pub fn expected_credential_env(model: &str) -> String {
+pub fn expected_credential_env(model: &str) -> Option<String> {
+    if model.eq_ignore_ascii_case("deterministic") {
+        return None;
+    }
     let provider = if let Some(idx) = model.find('/') {
         model[..idx].to_ascii_uppercase()
     } else if model.to_ascii_lowercase().starts_with("claude") {
@@ -126,7 +127,7 @@ pub fn expected_credential_env(model: &str) -> String {
     } else {
         "OPENAI".to_owned()
     };
-    format!("{provider}_API_KEY")
+    Some(format!("{provider}_API_KEY"))
 }
 
 /// Run every host-readiness check and assemble the report.
@@ -163,17 +164,24 @@ fn check_git() -> DoctorCheck {
 /// never read into a variable, printed, or logged — consistent with the
 /// redaction policy. Only `is_some` / non-empty is observed.
 fn check_credential(model: &str) -> DoctorCheck {
-    let var = expected_credential_env(model);
-    // Presence-only: read the OsString length without binding the value to a
-    // named variable or formatting it anywhere.
-    let present = std::env::var_os(&var).is_some_and(|v| !v.is_empty());
-    if present {
-        DoctorCheck::pass("credential", format!("{var} is present"))
-    } else {
-        DoctorCheck::fail(
+    match expected_credential_env(model) {
+        None => DoctorCheck::skip(
             "credential",
-            format!("{var} is not set; export {var} before a live run"),
-        )
+            format!("model '{model}' needs no provider credential"),
+        ),
+        Some(var) => {
+            // Presence-only: read the OsString length without binding the value
+            // to a named variable or formatting it anywhere.
+            let present = std::env::var_os(&var).is_some_and(|v| !v.is_empty());
+            if present {
+                DoctorCheck::pass("credential", format!("{var} is present"))
+            } else {
+                DoctorCheck::fail(
+                    "credential",
+                    format!("{var} is not set; export {var} before a live run"),
+                )
+            }
+        }
     }
 }
 
@@ -429,30 +437,34 @@ mod tests {
     #[test]
     fn expected_credential_env_claude_is_anthropic() {
         assert_eq!(
-            expected_credential_env("claude-opus-4-7"),
-            "ANTHROPIC_API_KEY"
+            expected_credential_env("claude-opus-4-7").as_deref(),
+            Some("ANTHROPIC_API_KEY")
         );
     }
 
     #[test]
     fn expected_credential_env_bare_non_claude_is_openai() {
-        assert_eq!(expected_credential_env("gpt-4o"), "OPENAI_API_KEY");
-    }
-
-    #[test]
-    fn expected_credential_env_slash_provider_uppercased() {
-        assert_eq!(expected_credential_env("openai/gpt-4o"), "OPENAI_API_KEY");
         assert_eq!(
-            expected_credential_env("vertex_ai/gemini-pro"),
-            "VERTEX_AI_API_KEY"
+            expected_credential_env("gpt-4o").as_deref(),
+            Some("OPENAI_API_KEY")
         );
     }
 
     #[test]
-    fn expected_credential_env_deterministic_routes_to_openai() {
-        // The literal model name `deterministic` is not a deterministic-mode
-        // signal — a live run would route it to LiteLLM (→ OPENAI_API_KEY).
-        assert_eq!(expected_credential_env("deterministic"), "OPENAI_API_KEY");
+    fn expected_credential_env_slash_provider_uppercased() {
+        assert_eq!(
+            expected_credential_env("openai/gpt-4o").as_deref(),
+            Some("OPENAI_API_KEY")
+        );
+        assert_eq!(
+            expected_credential_env("vertex_ai/gemini-pro").as_deref(),
+            Some("VERTEX_AI_API_KEY")
+        );
+    }
+
+    #[test]
+    fn expected_credential_env_deterministic_is_none() {
+        assert_eq!(expected_credential_env("deterministic"), None);
     }
 
     // ── run_doctor wiring ────────────────────────────────────────────────
@@ -476,10 +488,7 @@ mod tests {
     }
 
     #[test]
-    fn run_doctor_credential_never_skips() {
-        // The credential check always derives a provider env var and reports
-        // pass/fail — it never skips (the model name is not a deterministic
-        // signal). Status is pass or fail depending on the ambient env.
+    fn run_doctor_deterministic_skips_credential() {
         let dir = tempfile::tempdir().unwrap();
         let report = run_doctor(&DoctorOpts {
             env_kind: EnvKind::Local,
@@ -492,7 +501,7 @@ mod tests {
             .iter()
             .find(|c| c.check == "credential")
             .expect("credential check present");
-        assert_ne!(cred.status, CheckStatus::Skip);
+        assert_eq!(cred.status, CheckStatus::Skip);
     }
 
     #[test]
@@ -604,11 +613,17 @@ mod tests {
     // ── credential presence (AC#2b / AC#4) ───────────────────────────────
 
     #[test]
+    fn credential_skip_for_deterministic() {
+        let check = check_credential("deterministic");
+        assert_eq!(check.status, CheckStatus::Skip);
+    }
+
+    #[test]
     fn credential_detail_never_contains_value() {
         // Even when present, the detail must only name the var, never its value.
         // Use a uniquely-named var to avoid clobbering real provider keys.
         let model = "weirdprov/model";
-        let var = expected_credential_env(model);
+        let var = expected_credential_env(model).unwrap();
         // SAFETY: single-threaded test; restore immediately after.
         unsafe { std::env::set_var(&var, "TOPSECRETVALUE") };
         let check = check_credential(model);
@@ -622,7 +637,7 @@ mod tests {
         // A uniquely-named provider whose env var is guaranteed unset → fail
         // with a remediation hint naming the variable.
         let model = "zzznoprov/model";
-        let var = expected_credential_env(model);
+        let var = expected_credential_env(model).unwrap();
         // SAFETY: single-threaded test; ensure the var is absent.
         unsafe { std::env::remove_var(&var) };
         let check = check_credential(model);
