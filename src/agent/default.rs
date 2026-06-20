@@ -1347,7 +1347,10 @@ impl Agent for DefaultAgent {
         // PreToolUse hook layer already blocked the tool — the operator
         // never sees a prompt for a command that won't run anyway.
         if !tool_use_blocked {
-            if let Some(decision) = self.confirm_operator_action(&tool_name, &tool_input).await {
+            if let Some(decision) = self
+                .confirm_operator_action(&tool_name, &tool_input, &resp.content)
+                .await
+            {
                 match decision {
                     super::ConfirmDecision::Approve => {}
                     super::ConfirmDecision::AutoApprove(scope) => {
@@ -2087,6 +2090,7 @@ impl DefaultAgent {
         &self,
         tool_name: &str,
         tool_input: &str,
+        rationale: &str,
     ) -> Option<super::ConfirmDecision> {
         let cb = self.confirm_callback.as_ref()?;
         let ctx = super::ConfirmContext {
@@ -2103,6 +2107,16 @@ impl DefaultAgent {
             } else {
                 "cache:auto-or-none"
             },
+            // Display-only retention of the assistant prose that proposed this
+            // command (issue #655): redact first so secrets never surface, then
+            // bound the length so an adversarial message cannot exhaust the
+            // dashboard's memory.
+            rationale: super::confirm::cap_rationale(
+                &self
+                    .redactor
+                    .redact_text(rationale, surface::TRAJECTORY)
+                    .text,
+            ),
         };
         let scope = ctx.derive_scope();
         let has_rule = {

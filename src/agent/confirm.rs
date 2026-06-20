@@ -31,6 +31,64 @@ pub struct ConfirmContext {
     /// Cache marker mirroring `InteractiveAgent::status_line`:
     /// `"cache:explicit"` or `"cache:auto-or-none"`.
     pub cache_marker: &'static str,
+    /// The agent's stated reasoning for the pending action: the assistant
+    /// message prose that carried the command block (issue #655).
+    ///
+    /// Already passed through the redactor (`surface::TRAJECTORY`) and
+    /// length-capped via [`cap_rationale`] before it reaches the operator, so
+    /// an adversarially long assistant message cannot exhaust dashboard
+    /// memory. May be empty when the agent proposed a command with no
+    /// accompanying prose; surfaces are responsible for degrading gracefully.
+    pub rationale: String,
+}
+
+/// Maximum bytes of rationale retained for display. Content past this cap is
+/// truncated with a visible marker (see [`cap_rationale`]).
+pub const RATIONALE_MAX_BYTES: usize = 4000;
+
+/// Maximum lines of rationale retained for display. Content past this cap is
+/// truncated with a visible marker (see [`cap_rationale`]).
+pub const RATIONALE_MAX_LINES: usize = 100;
+
+/// Bound a rationale string to [`RATIONALE_MAX_BYTES`] / [`RATIONALE_MAX_LINES`]
+/// for display, appending a visible (never silent) truncation marker when the
+/// input exceeds either cap.
+///
+/// Truncation is UTF-8 boundary-safe: an input whose byte cap falls inside a
+/// multi-byte codepoint is trimmed back to the nearest char boundary rather
+/// than panicking. Strings within both caps are returned unchanged.
+#[must_use]
+pub fn cap_rationale(s: &str) -> String {
+    let line_truncated = s.lines().nth(RATIONALE_MAX_LINES).is_some();
+    let mut out: String = if line_truncated {
+        s.lines()
+            .take(RATIONALE_MAX_LINES)
+            .collect::<Vec<_>>()
+            .join("\n")
+    } else {
+        s.to_string()
+    };
+
+    let byte_truncated = out.len() > RATIONALE_MAX_BYTES;
+    if byte_truncated {
+        let mut cut = RATIONALE_MAX_BYTES;
+        while !out.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        out.truncate(cut);
+    }
+
+    if line_truncated || byte_truncated {
+        use std::fmt::Write as _;
+        if !out.ends_with('\n') {
+            out.push('\n');
+        }
+        let _ = write!(
+            out,
+            "… [rationale truncated: {RATIONALE_MAX_BYTES}-byte / {RATIONALE_MAX_LINES}-line cap]"
+        );
+    }
+    out
 }
 
 impl ConfirmContext {
@@ -147,6 +205,7 @@ mod tests {
             step_limit: 1,
             cost_usd: 0.0,
             cache_marker: "cache:auto-or-none",
+            rationale: String::new(),
         };
         assert_eq!(c.confirm(&ctx).await, ConfirmDecision::Reject(None));
         assert_eq!(c.confirm(&ctx).await, ConfirmDecision::Abort);
@@ -176,6 +235,7 @@ mod tests {
             step_limit: 1,
             cost_usd: 0.0,
             cache_marker: "cache:auto-or-none",
+            rationale: String::new(),
         };
         assert_eq!(
             c.confirm(&ctx).await,
@@ -193,6 +253,7 @@ mod tests {
             step_limit: 10,
             cost_usd: 0.0,
             cache_marker: "cache:auto-or-none",
+            rationale: String::new(),
         };
         assert_eq!(ctx_bash.derive_scope(), "cargo");
 
@@ -203,6 +264,7 @@ mod tests {
             step_limit: 10,
             cost_usd: 0.0,
             cache_marker: "cache:auto-or-none",
+            rationale: String::new(),
         };
         assert_eq!(ctx_tool.derive_scope(), "read_file");
     }
@@ -211,5 +273,40 @@ mod tests {
     fn auto_approve_decision_has_label() {
         let d = ConfirmDecision::AutoApprove("cargo".to_string());
         assert_eq!(d.label(), "auto-approve");
+    }
+
+    #[test]
+    fn cap_rationale_passes_short_text_unchanged() {
+        let s = "I will list the files first.\nThen run the tests.";
+        assert_eq!(cap_rationale(s), s);
+        assert!(!cap_rationale(s).contains("truncated"));
+    }
+
+    #[test]
+    fn cap_rationale_truncates_by_byte_cap_with_visible_marker() {
+        let s = "x".repeat(RATIONALE_MAX_BYTES + 500);
+        let out = cap_rationale(&s);
+        assert!(out.len() <= RATIONALE_MAX_BYTES + 64);
+        assert!(out.contains("truncated"), "marker must be visible: {out}");
+    }
+
+    #[test]
+    fn cap_rationale_truncates_by_line_cap_with_visible_marker() {
+        let s = (0..RATIONALE_MAX_LINES + 50)
+            .map(|i| format!("line{i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let out = cap_rationale(&s);
+        assert!(out.lines().count() <= RATIONALE_MAX_LINES + 1);
+        assert!(out.contains("truncated"), "marker must be visible: {out}");
+    }
+
+    #[test]
+    fn cap_rationale_is_utf8_boundary_safe() {
+        // Multi-byte chars right at the cap must not panic or split a codepoint.
+        let s = "🦀".repeat(RATIONALE_MAX_BYTES);
+        let out = cap_rationale(&s);
+        // Round-trips as valid UTF-8 (would have panicked on a bad boundary).
+        assert!(out.contains("truncated"));
     }
 }
