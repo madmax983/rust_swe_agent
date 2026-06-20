@@ -948,18 +948,19 @@ fn draw_frame(
         // rows) so the key handler can clamp scrolling correctly (issue #655).
         let (total_rows, visible_rows) = if let Some(pending) = &s.pending {
             let inner = modal_inner_rect(area);
-            let top_full = modal_top_lines(&pending.ctx, false, false).len();
-            let control_len = modal_control_lines(
-                &pending.ctx,
-                s.feedback_input.as_ref(),
-                s.edit_input.as_ref(),
-            )
-            .len();
-            let (_, body_h, _) = modal_body_layout(inner.height, top_full, control_len);
-            let total = count_wrapped_lines(
-                &rationale_body_string(&pending.ctx.rationale),
-                inner.width as usize,
+            let body_width = inner.width as usize;
+            let top_rows = wrapped_rows(&modal_top_lines(&pending.ctx, true, true), body_width);
+            let control_rows = wrapped_rows(
+                &modal_control_lines(
+                    &pending.ctx,
+                    s.feedback_input.as_ref(),
+                    s.edit_input.as_ref(),
+                ),
+                body_width,
             );
+            let (_, body_h, _) = modal_body_layout(inner.height, top_rows, control_rows);
+            let total =
+                count_wrapped_lines(&rationale_body_string(&pending.ctx.rationale), body_width);
             (total, body_h as usize)
         } else {
             (0, 0)
@@ -1220,12 +1221,18 @@ fn draw_modal(
     let inner = block.inner(modal);
     frame.render_widget(block, modal);
 
+    let body_width = inner.width as usize;
     let control_lines = modal_control_lines(ctx, feedback_input, edit_input);
-    let top_full = modal_top_lines(ctx, false, false).len();
-    let (top_h, body_h, control_h) = modal_body_layout(inner.height, top_full, control_lines.len());
+    // Size the top and controls by wrapped display rows, not logical lines, so a
+    // long single-line command (or edit buffer) that wraps is fully reserved and
+    // never clipped before the operator sees it. The top is sized with the
+    // worst-case reasoning label (both affordances present) so the label never
+    // under-reserves regardless of scroll state.
+    let top_rows = wrapped_rows(&modal_top_lines(ctx, true, true), body_width);
+    let control_rows = wrapped_rows(&control_lines, body_width);
+    let (top_h, body_h, control_h) = modal_body_layout(inner.height, top_rows, control_rows);
 
     // Scroll bounds in wrapped display rows for the rationale body.
-    let body_width = inner.width as usize;
     let total_rows = count_wrapped_lines(&rationale_body_string(&ctx.rationale), body_width);
     let visible = body_h as usize;
     let max_scroll = total_rows.saturating_sub(visible);
@@ -1280,12 +1287,29 @@ fn modal_inner_rect(area: Rect) -> Rect {
 
 /// Reserve modal rows bottom-up: controls first (always visible), then the
 /// fixed top, then whatever remains becomes the scrollable rationale body.
-fn modal_body_layout(inner_h: u16, top_full: usize, control_len: usize) -> (u16, u16, u16) {
-    let control_h = u16::try_from(control_len).unwrap_or(u16::MAX).min(inner_h);
+/// `top_rows` / `control_rows` are **wrapped display rows** (see [`wrapped_rows`]).
+fn modal_body_layout(inner_h: u16, top_rows: usize, control_rows: usize) -> (u16, u16, u16) {
+    let control_h = u16::try_from(control_rows).unwrap_or(u16::MAX).min(inner_h);
     let remaining = inner_h - control_h;
-    let top_h = u16::try_from(top_full).unwrap_or(u16::MAX).min(remaining);
+    let top_h = u16::try_from(top_rows).unwrap_or(u16::MAX).min(remaining);
     let body_h = remaining - top_h;
     (top_h, body_h, control_h)
+}
+
+/// Total wrapped display rows that `lines` occupy at `width`, matching how
+/// `Paragraph` with `Wrap { trim: false }` renders them. Used to size the
+/// modal's fixed regions so wrapped content is never clipped.
+fn wrapped_rows(lines: &[Line<'_>], width: usize) -> usize {
+    if width == 0 {
+        return lines.len();
+    }
+    lines
+        .iter()
+        .map(|line| {
+            let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+            count_wrapped_line(&text, width)
+        })
+        .sum()
 }
 
 /// Fixed top region: step/cost header, tool, the proposed command (capped at
@@ -3051,6 +3075,43 @@ mod tests {
         assert!(
             text.contains("truncated"),
             "truncation marker must be visible; got:\n{text}"
+        );
+    }
+
+    #[test]
+    fn draw_modal_shows_full_wrapped_command() {
+        // A long single-line command wraps to several rows; the top region must
+        // be sized by wrapped rows so the tail (UNIQUETAIL) stays visible and the
+        // operator never approves a command they can't fully see.
+        let mut command = "run".to_string();
+        for i in 0..60 {
+            command.push_str(" step");
+            command.push_str(&i.to_string());
+        }
+        command.push_str(" UNIQUETAIL");
+        let d = make_dashboard();
+        {
+            let (tx, _rx) = oneshot::channel();
+            let mut s = d.state.lock().unwrap();
+            s.pending = Some(PendingPrompt {
+                ctx: ConfirmContext {
+                    tool_name: "bash".into(),
+                    command,
+                    step: 0,
+                    step_limit: 1,
+                    cost_usd: 0.0,
+                    cache_marker: "cache:explicit",
+                    rationale: "because reasons".into(),
+                },
+                responder: tx,
+            });
+        }
+        let s = snap(&d);
+        let buf = render_to_buffer(&s, 100, 40);
+        let text = buffer_text(&buf);
+        assert!(
+            text.contains("UNIQUETAIL"),
+            "the full wrapped command must be visible; got:\n{text}"
         );
     }
 
