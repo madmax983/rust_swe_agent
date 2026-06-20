@@ -415,10 +415,15 @@ impl Model for FingerprintCheckingModel {
         messages: &[Message],
         opts: &QueryOpts,
     ) -> Result<ModelResponse, ModelError> {
-        let step = *self
-            .step
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let step = {
+            let mut guard = self
+                .step
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let current = *guard;
+            *guard = current + 1;
+            current
+        };
 
         // Mirror the recording-side fingerprinting: apply TRAJECTORY-surface
         // redaction first (so raw secrets in extra_context/skills hash the same
@@ -495,12 +500,6 @@ impl Model for FingerprintCheckingModel {
                 // ScriptedResponsesExhausted).
             }
         }
-
-        // Advance step counter only after the fingerprint check passes.
-        *self
-            .step
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = step + 1;
 
         // Translate the generic scripted-model exhaustion into the
         // replay-specific variant so that `ExitCode::from_error` maps it to
@@ -707,10 +706,10 @@ mod chaos_tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn test_chaos_race_condition() {
-        let responses = std::iter::repeat("response".to_owned()).take(1000).collect::<Vec<_>>();
+        let responses = std::iter::repeat_n("response".to_owned(), 1000).collect::<Vec<_>>();
         let inner = DeterministicModel::new(responses);
         let redactor = crate::redaction::Redactor::disabled();
-        let expected_fps = std::iter::repeat(Some("fp".to_owned())).take(1000).collect::<Vec<_>>();
+        let expected_fps = std::iter::repeat_n(Some("fp".to_owned()), 1000).collect::<Vec<_>>();
         let m = Arc::new(FingerprintCheckingModel {
             inner,
             redactor,
