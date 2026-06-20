@@ -238,7 +238,12 @@ fn doctor_env_falls_back_to_docker_config() {
 // The test binary is built without `--features docker`, so a docker environment
 // is un-runnable regardless of daemon state — the docker check must fail and
 // name the missing feature (mirrors `build_docker_env`).
+//
+// Gated to non-docker builds: with `--features docker` the binary clears the
+// feature gate and fails on the missing `docker_image` instead, so the
+// `"feature"` assertion below would not hold.
 
+#[cfg(not(feature = "docker"))]
 #[test]
 fn doctor_docker_env_without_feature_fails() {
     let tmp = tempfile::tempdir().unwrap();
@@ -363,6 +368,52 @@ fn doctor_help_mentions_zero_cost_and_no_model_call() {
     assert!(
         stdout.contains("no model call"),
         "help should state no model call"
+    );
+    // The Docker image override is accepted so doctor can preflight the same
+    // image a live `mini --env docker --docker-image …` run would use.
+    assert!(
+        stdout.contains("--docker-image"),
+        "help should advertise the --docker-image override"
+    );
+}
+
+// ── --docker-image override clears the configured-image gate ─────────────────
+// Only observable once the feature gate passes, so gated to `--features docker`
+// builds. With no configured image, supplying `--docker-image` must get the
+// docker check past the "requires docker_image" failure (it then proceeds to the
+// daemon probe), proving the CLI override is threaded through.
+
+#[cfg(feature = "docker")]
+#[test]
+fn doctor_docker_image_override_satisfies_check() {
+    let tmp = tempfile::tempdir().unwrap();
+    let out = doctor()
+        .args([
+            "--env",
+            "docker",
+            "--docker-image",
+            "ubuntu:24.04",
+            "--model",
+            "claude-opus-4-7",
+            "--format",
+            "json",
+        ])
+        .arg("--output")
+        .arg(tmp.path())
+        .env("ANTHROPIC_API_KEY", "present")
+        .output()
+        .unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let docker = v["checks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["check"] == "docker")
+        .unwrap();
+    let detail = docker["detail"].as_str().unwrap();
+    assert!(
+        !detail.contains("docker_image"),
+        "override should clear the missing-image failure: {detail}"
     );
 }
 

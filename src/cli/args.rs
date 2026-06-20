@@ -764,6 +764,11 @@ pub struct AgentDoctorCmd {
     /// Runs/output directory whose write access is checked.
     #[arg(long, default_value = "./runs")]
     pub output: PathBuf,
+
+    /// Override the Docker image to preflight (requires `--env docker`).
+    /// When omitted the configured `environment.docker_image` is used.
+    #[arg(long)]
+    pub docker_image: Option<String>,
 }
 
 /// `agent runs` — list and summarize single-task trajectory files (issue #509).

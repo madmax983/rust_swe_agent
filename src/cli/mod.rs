@@ -228,7 +228,10 @@ fn agent_doctor_cmd(d: &args::AgentDoctorCmd) -> Result<(), Error> {
         env_kind,
         model,
         output_dir: d.output.clone(),
-        docker_image: cfg.root.environment.docker_image,
+        // A `--docker-image` override wins; otherwise fall back to the configured
+        // image, so `agent doctor` preflights the same image the live run would
+        // use (mirrors `max mini --env docker --docker-image …`).
+        docker_image: d.docker_image.clone().or(cfg.root.environment.docker_image),
     };
 
     let report = run_doctor(&opts);

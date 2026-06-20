@@ -23,7 +23,8 @@ max agent doctor \
     [--model <name>] \
     [--config <path-to-config.toml>] \
     [--format <text|json>] \
-    [--output <dir>]
+    [--output <dir>] \
+    [--docker-image <ref>]
 ```
 
 ### Flags
@@ -35,6 +36,7 @@ max agent doctor \
 | `--config` | — | Path to a TOML config file (overlays defaults). Used to resolve the model and environment. |
 | `--format` | `text` | `text` (human checklist) or `json` (machine-readable). |
 | `--output` | `./runs` | Runs/output directory whose write access is checked. |
+| `--docker-image` | `environment.docker_image` | Override the Docker image to preflight (requires `--env docker`). Mirrors `max mini --docker-image …` so doctor validates the same image the live run would use. |
 
 ---
 
@@ -47,7 +49,7 @@ Each check produces one checklist row with a stable `check` id and a
 |---------|------------------|-------------|------------------------|
 | `git` | `git` is resolvable on `PATH` (by directory inspection — the program is **not** executed). | never | "install git and ensure it is on your PATH" |
 | `credential` | The provider credential env var expected for the resolved model is **present** (presence only). `claude*` → `ANTHROPIC_API_KEY`; a `provider/model` prefix → `PROVIDER_API_KEY`; anything else → `OPENAI_API_KEY`. | model is `deterministic` (no credential needed) | "export `<VAR>` before a live run" |
-| `docker` | The host can actually run a docker environment — mirroring the run path's `build_docker_env` preflight: (1) the binary was built with the `docker` feature, (2) `environment.docker_image` is configured, and (3) the daemon is reachable (a `docker version` subprocess — a local probe, not a provider call — bounded by a 5s timeout so a wedged daemon cannot hang the gate). | environment is `local` | "rebuild with --features docker, or use --env local"; "environment.kind=docker requires environment.docker_image…"; "start or install Docker"; or "docker probe timed out after 5s…" |
+| `docker` | The host can actually run a docker environment — mirroring the run path's `build_docker_env` preflight: (1) the binary was built with the `docker` feature, (2) a docker image is resolved (the `--docker-image` CLI override wins, else `environment.docker_image`), and (3) the daemon is reachable (a `docker version` subprocess — a local probe, not a provider call — bounded by a 5s timeout so a wedged daemon cannot hang the gate). | environment is `local` | "rebuild with --features docker, or use --env local"; "environment.kind=docker requires environment.docker_image…"; "start or install Docker"; or "docker probe timed out after 5s…" |
 | `output_dir` | The runs/output directory is writable (creates it if needed, then writes and removes a probe file). | never | "check permissions or pass --output `<dir>`" |
 | `toolchain` | The active `rustc` meets the crate `rust-version` (currently 1.85). | `rustc` is not found or its version cannot be parsed (unknowable) | "run rustup update" |
 
