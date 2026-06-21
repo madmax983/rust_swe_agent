@@ -145,6 +145,12 @@ fn unit_summary_counts_per_type_and_per_instance() {
     assert_eq!(a.get("format_error"), Some(&1));
     let b = report.summary.by_instance.get("instance-b").unwrap();
     assert!(b.get("format_error").is_none());
+    // Summary mode must not retain raw event payloads (memory-bounded scan).
+    assert!(
+        report.events.is_empty(),
+        "summary mode should aggregate counts without retaining raw events"
+    );
+    assert_eq!(report.summary.total, 8);
 }
 
 #[test]

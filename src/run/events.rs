@@ -144,6 +144,12 @@ pub fn run(args: &EventsArgs) -> Result<EventsReport, Error> {
 
     let redactor = Redactor::default_enabled();
     let mut events: Vec<EventRow> = Vec::new();
+    // In `--summary` mode we never retain raw events (a shared event log can be
+    // multi-GB); aggregate counts during the scan instead so memory stays bounded
+    // by the distinct (instance, type) cardinality.
+    let mut by_type: BTreeMap<String, usize> = BTreeMap::new();
+    let mut by_instance: BTreeMap<String, BTreeMap<String, usize>> = BTreeMap::new();
+    let mut matched: usize = 0;
     let mut files_scanned = 0usize;
     let mut lines_skipped = 0usize;
 
@@ -230,30 +236,50 @@ pub fn run(args: &EventsArgs) -> Result<EventsReport, Error> {
                 .and_then(Value::as_str)
                 .unwrap_or("")
                 .to_owned();
-            events.push(EventRow {
-                instance_id,
-                ts,
-                event_type,
-                parsed_ts,
-                raw: value,
-            });
+            matched += 1;
+            if args.summary {
+                // Count and drop the value — `--summary` only needs the
+                // (redacted) instance id and the event type, not the payload.
+                *by_type.entry(event_type.clone()).or_insert(0) += 1;
+                *by_instance
+                    .entry(instance_id)
+                    .or_default()
+                    .entry(event_type)
+                    .or_insert(0) += 1;
+            } else {
+                events.push(EventRow {
+                    instance_id,
+                    ts,
+                    event_type,
+                    parsed_ts,
+                    raw: value,
+                });
+            }
         }
     }
 
-    events.sort_by(|a, b| {
-        a.parsed_ts
-            .cmp(&b.parsed_ts)
-            .then_with(|| a.ts.cmp(&b.ts))
-            .then_with(|| a.instance_id.cmp(&b.instance_id))
-            .then_with(|| a.event_type.cmp(&b.event_type))
-    });
-
-    let summary = build_summary(&events);
+    let summary = if args.summary {
+        EventsSummary {
+            instances: by_instance.len(),
+            total: matched,
+            by_type,
+            by_instance,
+        }
+    } else {
+        events.sort_by(|a, b| {
+            a.parsed_ts
+                .cmp(&b.parsed_ts)
+                .then_with(|| a.ts.cmp(&b.ts))
+                .then_with(|| a.instance_id.cmp(&b.instance_id))
+                .then_with(|| a.event_type.cmp(&b.event_type))
+        });
+        build_summary(&events)
+    };
 
     Ok(EventsReport {
         schema: QUERY_SCHEMA.to_owned(),
         path: args.path.display().to_string(),
-        events: if args.summary { Vec::new() } else { events },
+        events,
         summary,
         files_scanned,
         lines_skipped,
