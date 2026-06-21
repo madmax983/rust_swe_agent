@@ -4992,6 +4992,7 @@ async fn run_one(inst: SweBenchInstance, run_index: u32, params: RunOneParams) -
             verification_timeout_secs: 60,
             resume_from: attempt_resume,
             interactive_mode: crate::run::mini::InteractiveMode::Off,
+            no_bell: false,
             trace_id: trace_id.clone(),
             webhook_url: None,
             webhook_headers: vec![],

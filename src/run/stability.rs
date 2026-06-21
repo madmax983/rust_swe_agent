@@ -363,6 +363,7 @@ pub async fn run(args: StabilityArgs) -> Result<ExitCode, Error> {
             verification_timeout_secs: args.verify_timeout_secs,
             resume_from: None,
             interactive_mode: crate::run::mini::InteractiveMode::Off,
+            no_bell: false,
             trace_id: None,
             webhook_url: None,
             webhook_headers: vec![],

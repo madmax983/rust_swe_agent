@@ -1203,6 +1203,14 @@ pub struct MiniCmd {
     #[arg(long, value_enum, default_value_t = UiKind::Stderr)]
     pub ui: UiKind,
 
+    /// Issue #648 — suppress the terminal bell (BEL) that the
+    /// `--interactive --ui ratatui` dashboard rings to get the operator's
+    /// attention when a confirm modal is raised or the run ends. Bells are
+    /// also suppressed automatically when `NO_BELL` is set (to any non-empty
+    /// value) or stdout is not a TTY.
+    #[arg(long, default_value_t = false)]
+    pub no_bell: bool,
+
     /// Disable per-step atomic trajectory checkpoints (issue #326 opt-out).
     /// By default, `mini` writes the trajectory after every completed agent
     /// step so a crash never destroys the full run budget. Pass this flag to

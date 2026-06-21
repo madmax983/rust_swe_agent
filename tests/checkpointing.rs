@@ -570,6 +570,7 @@ async fn mini_run_writes_partial_checkpoint_after_each_step() {
         verification_checks: vec![],
         verification_timeout_secs: 60,
         interactive_mode: maxwells_daemon::run::mini::InteractiveMode::Off,
+        no_bell: false,
         resume_from: None,
         trace_id: None,
         webhook_url: None,
