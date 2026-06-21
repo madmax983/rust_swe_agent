@@ -192,6 +192,54 @@ fn unit_accepts_a_single_event_log_file() {
     assert!(report.events.iter().all(|e| e.instance_id == "instance-a"));
 }
 
+#[test]
+fn unit_sorts_by_instant_not_lexical_string() {
+    // Two events for one instance whose lexical `ts` order is the REVERSE of
+    // their chronological order: "…00.500Z" < "…00Z" as strings ('.' < 'Z'),
+    // but 00.5s is later than 00s. The parsed-instant sort must order them right.
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path().join("e.jsonl");
+    std::fs::write(
+        &path,
+        "{\"schema\":\"event-log-v1\",\"ts\":\"2026-01-01T00:00:00.500Z\",\"event_type\":\"bash_result\",\"instance_id\":\"x\"}\n\
+         {\"schema\":\"event-log-v1\",\"ts\":\"2026-01-01T00:00:00Z\",\"event_type\":\"run_started\",\"instance_id\":\"x\"}\n",
+    )
+    .unwrap();
+
+    let report = events_run(&base_args(path)).unwrap();
+    assert_eq!(report.events.len(), 2);
+    assert_eq!(
+        report.events[0].event_type, "run_started",
+        "the 00Z event is earlier and must sort first"
+    );
+    assert_eq!(report.events[1].event_type, "bash_result");
+}
+
+#[test]
+fn unit_redacts_secret_shaped_instance_id_in_display_and_summary() {
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path().join("e.jsonl");
+    // A fake GitHub token shape the default redactor masks, used AS the instance id.
+    let fake_token = "ghp_0123456789ABCDEF0123456789ABCDEF0123";
+    std::fs::write(
+        &path,
+        format!(
+            "{{\"schema\":\"event-log-v1\",\"ts\":\"2026-01-01T00:00:00Z\",\"event_type\":\"run_started\",\"instance_id\":\"{fake_token}\"}}\n"
+        ),
+    )
+    .unwrap();
+
+    let mut args = base_args(path);
+    args.summary = true;
+    let report = events_run(&args).unwrap();
+    for key in report.summary.by_instance.keys() {
+        assert!(
+            !key.contains(fake_token),
+            "per-instance summary key must not leak the raw secret-shaped id: {key}"
+        );
+    }
+}
+
 // ── CLI integration tests ─────────────────────────────────────────────────────
 
 fn run_cli(args: &[&str]) -> std::process::Output {

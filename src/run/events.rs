@@ -14,6 +14,7 @@
 
 use std::collections::{BTreeMap, HashSet};
 use std::fmt::Write as _;
+use std::io::BufRead as _;
 use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Utc};
@@ -58,7 +59,9 @@ pub struct EventsArgs {
 /// One matched event. Serializes as the full original line object (`raw`, after
 /// redaction) so machine-readable output is lossless and free of duplicate keys;
 /// the typed `instance_id`/`ts`/`event_type` are decoded copies kept only for
-/// in-process filtering, sorting, and aggregation.
+/// in-process filtering, sorting, and aggregation. `instance_id`/`raw` hold the
+/// redacted view used for display; `parsed_ts` is the decoded instant used for
+/// correct chronological ordering regardless of RFC3339 subsecond precision.
 #[derive(Debug, Clone, Serialize)]
 pub struct EventRow {
     #[serde(skip)]
@@ -67,6 +70,8 @@ pub struct EventRow {
     pub ts: String,
     #[serde(skip)]
     pub event_type: String,
+    #[serde(skip)]
+    pub parsed_ts: Option<DateTime<Utc>>,
     #[serde(flatten)]
     pub raw: Value,
 }
@@ -143,13 +148,16 @@ pub fn run(args: &EventsArgs) -> Result<EventsReport, Error> {
     let mut lines_skipped = 0usize;
 
     for file in &files {
-        let text = std::fs::read_to_string(file)?;
+        // Stream line-by-line: a completed sweep can share one `--event-log`,
+        // so the file may be very large — never load it whole into memory.
+        let reader = std::io::BufReader::new(std::fs::File::open(file)?);
         files_scanned += 1;
-        for line in text.lines() {
+        for line in reader.lines() {
+            let line = line?;
             if line.trim().is_empty() {
                 continue;
             }
-            let Ok(mut value) = serde_json::from_str::<Value>(line) else {
+            let Ok(mut value) = serde_json::from_str::<Value>(&line) else {
                 lines_skipped += 1;
                 continue;
             };
@@ -170,7 +178,11 @@ pub fn run(args: &EventsArgs) -> Result<EventsReport, Error> {
                 }
             }
 
-            let instance_id = value
+            // Raw (un-redacted) id is used only for filtering against the
+            // operator-supplied `--instance` values; the displayed/aggregated id
+            // is taken from the redacted object below so a secret-shaped instance
+            // id can't leak through the table or the per-instance summary.
+            let raw_instance_id = value
                 .get("instance_id")
                 .and_then(Value::as_str)
                 .unwrap_or("")
@@ -180,6 +192,10 @@ pub fn run(args: &EventsArgs) -> Result<EventsReport, Error> {
                 .and_then(Value::as_str)
                 .unwrap_or("")
                 .to_owned();
+            // Parse the timestamp once and keep it for both window-filtering and
+            // chronological sorting; lexical RFC3339 comparison mis-orders events
+            // whose subsecond precision or offset formatting differs.
+            let parsed_ts = parse_ts(&ts);
 
             if let Some(ref keep) = type_set {
                 if !keep.contains(event_type.as_str()) {
@@ -187,12 +203,12 @@ pub fn run(args: &EventsArgs) -> Result<EventsReport, Error> {
                 }
             }
             if let Some(ref keep) = instance_set {
-                if !keep.contains(instance_id.as_str()) {
+                if !keep.contains(raw_instance_id.as_str()) {
                     continue;
                 }
             }
             if since.is_some() || until.is_some() {
-                let Some(parsed) = parse_ts(&ts) else {
+                let Some(parsed) = parsed_ts else {
                     // Cannot place the event in the window — exclude it.
                     continue;
                 };
@@ -209,17 +225,25 @@ pub fn run(args: &EventsArgs) -> Result<EventsReport, Error> {
             }
 
             redactor.redact_json_value(&mut value, surface::INSPECT);
+            let instance_id = value
+                .get("instance_id")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_owned();
             events.push(EventRow {
                 instance_id,
                 ts,
                 event_type,
+                parsed_ts,
                 raw: value,
             });
         }
     }
 
     events.sort_by(|a, b| {
-        a.ts.cmp(&b.ts)
+        a.parsed_ts
+            .cmp(&b.parsed_ts)
+            .then_with(|| a.ts.cmp(&b.ts))
             .then_with(|| a.instance_id.cmp(&b.instance_id))
             .then_with(|| a.event_type.cmp(&b.event_type))
     });
@@ -273,7 +297,9 @@ fn collect_jsonl(dir: &Path, out: &mut Vec<PathBuf>) -> Result<(), Error> {
     for entry in std::fs::read_dir(dir)? {
         let entry = entry?;
         let p = entry.path();
-        if p.is_dir() {
+        // Use the directory entry's own file type (does not follow symlinks) so a
+        // circular symlink can't drive infinite recursion / stack overflow.
+        if entry.file_type()?.is_dir() {
             collect_jsonl(&p, out)?;
         } else if p
             .extension()
@@ -374,6 +400,7 @@ mod tests {
             instance_id: instance.to_owned(),
             ts: ts.to_owned(),
             event_type: ty.to_owned(),
+            parsed_ts: parse_ts(ts),
             raw: serde_json::json!({"event_type": ty, "instance_id": instance, "ts": ts}),
         }
     }
