@@ -706,6 +706,8 @@ pub enum AgentCmd {
     SkillsPreview(SkillsPreviewCmd),
     /// Measure single-task run-to-run variance and produce stability-results.json.
     Stability(Box<StabilityCmd>),
+    /// Interactive TUI viewer to browse a trajectory.
+    Tui(TuiCmd),
     /// Run an operator-defined personal eval task pack and produce suite-results.json.
     Suite(Box<SuiteCmd>),
     /// Check a command corpus against the policy config (zero-cost, no model call).
@@ -747,6 +749,13 @@ pub struct AgentRunsCmd {
     /// Sort column: `task` (default), `cost`, `steps`, or `duration`.
     #[arg(long, default_value = "task")]
     pub sort: String,
+}
+
+#[derive(Debug, Args, Clone)]
+pub struct TuiCmd {
+    /// Path to the trajectory file (e.g., `.traj.json`).
+    #[arg(long, value_name = "PATH")]
+    pub trajectory: std::path::PathBuf,
 }
 
 /// `agent profile` — profile a single trajectory file (issue #503).

@@ -139,6 +139,12 @@ pub fn entries() -> &'static [CatalogEntry] {
             stage: "preflight",
         },
         CatalogEntry {
+            path: "agent tui",
+            summary: "Interactive TUI to browse a trajectory",
+            cost_tier: "free",
+            stage: "inspect",
+        },
+        CatalogEntry {
             path: "agent stability",
             summary: "Measure single-task run-to-run variance by running N times and reporting pass@k",
             cost_tier: "paid",

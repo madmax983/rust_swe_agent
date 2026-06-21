@@ -80,6 +80,7 @@ pub mod tool_coverage;
 pub mod trajectory_diff;
 pub mod triage;
 pub mod triage_diff;
+pub mod tui_viewer;
 pub mod ui;
 pub mod utilization;
 pub mod variance;

@@ -162,6 +162,7 @@ pub async fn run() -> Result<(), Error> {
             args::AgentCmd::Runs(r) => agent_runs_cmd(&r),
             args::AgentCmd::FsAudit(a) => agent_fs_audit_cmd(&a),
             args::AgentCmd::ArtifactCheck(a) => agent_artifact_check_cmd(&a),
+            args::AgentCmd::Tui(t) => crate::run::tui_viewer::bench_tui(&t),
         },
         Command::Catalog(c) => catalog::run_catalog(c),
         Command::Ui(u) => ui_cmd(u).await,
