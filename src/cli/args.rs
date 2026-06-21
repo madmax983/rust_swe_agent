@@ -1357,6 +1357,8 @@ pub enum BenchCmd {
     CommandStats(CommandStatsCmd),
     /// Search every trajectory in a sweep for a regex pattern (zero-cost: reads only on-disk artifacts).
     Grep(GrepCmd),
+    /// Query the structured per-run event log by type, instance, and time window (zero-cost: reads only on-disk artifacts).
+    Events(EventsCmd),
     /// Pareto frontier across multiple sweep runs: ASCII chart + JSON dataset.
     Frontier(FrontierCmd),
     /// Replay a saved sweep from its manifest and report reproducibility.
@@ -3434,6 +3436,49 @@ pub struct GrepCmd {
     /// Output format: `text` (default, tab-separated `instance_id\tturn_index\trole\tsnippet`)
     /// or `json` (one JSON object per match, newline-delimited).
     #[arg(long, default_value = "text")]
+    pub format: String,
+}
+
+/// `bench events` — query the structured per-run event log after a run/sweep.
+///
+/// Read-only and zero-cost: reads only the on-disk JSONL event log(s) defined by
+/// `docs/spec-event-log.md`, never calls a model provider, and never mutates run
+/// artifacts. Filters structured events by type/instance/time; for free-text
+/// search over trajectory prose use `bench grep`, and for live views use
+/// `bench tail` / `bench watch`.
+///
+/// Exit codes: 0 = success; 1 = missing/unreadable event log; 2 = usage error
+/// (unknown `--type`, bad `--format`, invalid `--since`/`--until`).
+#[derive(Debug, Args)]
+pub struct EventsCmd {
+    /// A single-run directory, a sweep directory, or an event-log `.jsonl` file.
+    pub path: PathBuf,
+
+    /// Keep only these event types (repeatable; default: all).
+    /// Example: `--type format_error --type run_ended`
+    #[arg(long = "type", value_name = "TYPE")]
+    pub types: Vec<String>,
+
+    /// Keep only these instance ids (repeatable; default: all).
+    #[arg(long = "instance", value_name = "INSTANCE_ID")]
+    pub instances: Vec<String>,
+
+    /// Inclusive RFC3339 lower bound on event timestamp.
+    #[arg(long, value_name = "RFC3339")]
+    pub since: Option<String>,
+
+    /// Inclusive RFC3339 upper bound on event timestamp.
+    #[arg(long, value_name = "RFC3339")]
+    pub until: Option<String>,
+
+    /// Print per-event-type counts (and per-instance counts over a sweep) instead
+    /// of individual event rows.
+    #[arg(long, default_value_t = false)]
+    pub summary: bool,
+
+    /// Output format: `table` (default, human), `json` (single schema-versioned
+    /// object), or `jsonl` (one event per line, machine-readable).
+    #[arg(long, default_value = "table")]
     pub format: String,
 }
 

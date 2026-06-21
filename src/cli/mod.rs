@@ -100,6 +100,7 @@ pub async fn run() -> Result<(), Error> {
             args::BenchCmd::TriageDiff(t) => bench_triage_diff(t),
             args::BenchCmd::CommandStats(c) => bench_command_stats(c),
             args::BenchCmd::Grep(g) => bench_grep(g),
+            args::BenchCmd::Events(e) => bench_events(e),
             args::BenchCmd::Frontier(f) => bench_frontier(f),
             args::BenchCmd::Reproduce(r) => Box::pin(bench_reproduce(r)).await,
             args::BenchCmd::Bundle(b) => bench_bundle(b),
@@ -5139,6 +5140,47 @@ fn bench_grep(g: args::GrepCmd) -> Result<(), Error> {
     Ok(())
 }
 
+fn bench_events(e: args::EventsCmd) -> Result<(), Error> {
+    use crate::run::events;
+    let format = match e.format.as_str() {
+        "table" => EventsOutputFormat::Table,
+        "json" => EventsOutputFormat::Json,
+        "jsonl" => EventsOutputFormat::Jsonl,
+        other => {
+            return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+                "unknown --format `{other}` (expected `table`, `json`, or `jsonl`)"
+            ))));
+        }
+    };
+    let report = events::run(&events::EventsArgs {
+        path: e.path,
+        types: e.types,
+        instances: e.instances,
+        since: e.since,
+        until: e.until,
+        summary: e.summary,
+    })?;
+    match format {
+        EventsOutputFormat::Table => {
+            if e.summary {
+                print!("{}", events::render_summary_table(&report));
+            } else {
+                print!("{}", events::render_table(&report));
+            }
+        }
+        EventsOutputFormat::Json => {
+            println!("{}", events::render_json(&report)?);
+        }
+        EventsOutputFormat::Jsonl => {
+            let lines = events::render_jsonl(&report)?;
+            if !lines.is_empty() {
+                println!("{lines}");
+            }
+        }
+    }
+    Ok(())
+}
+
 fn bench_triage(t: args::TriageCmd) -> Result<(), Error> {
     let format = match t.format.as_str() {
         "text" => TriageFormat::Text,
@@ -5767,6 +5809,13 @@ enum CommandStatsFormat {
 enum GrepOutputFormat {
     Text,
     Json,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EventsOutputFormat {
+    Table,
+    Json,
+    Jsonl,
 }
 
 async fn bench_tail(t: args::TailCmd) -> Result<(), Error> {

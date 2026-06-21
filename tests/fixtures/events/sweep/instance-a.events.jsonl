@@ -1,0 +1,5 @@
+{"schema":"event-log-v1","ts":"2026-01-01T00:00:00Z","event_type":"run_started","instance_id":"instance-a","task":"fix bug","model":"fixture-model","started_at":"2026-01-01T00:00:00Z"}
+{"schema":"event-log-v1","ts":"2026-01-01T00:00:01Z","event_type":"bash_start","instance_id":"instance-a","step":1,"command":"pytest -x","timestamp":"2026-01-01T00:00:01Z"}
+{"schema":"event-log-v1","ts":"2026-01-01T00:00:02Z","event_type":"bash_result","instance_id":"instance-a","step":1,"exit_code":1,"stdout":"","stderr":"ImportError: no module named foo","timed_out":false,"timestamp":"2026-01-01T00:00:02Z"}
+{"schema":"event-log-v1","ts":"2026-01-01T00:00:03Z","event_type":"format_error","instance_id":"instance-a","step":2,"content":"malformed model output","timestamp":"2026-01-01T00:00:03Z"}
+{"schema":"event-log-v1","ts":"2026-01-01T00:00:04Z","event_type":"run_ended","instance_id":"instance-a","exit_reason":"submitted","final_output":"done","steps":2,"total_cost_usd":0.01,"ended_at":"2026-01-01T00:00:04Z"}

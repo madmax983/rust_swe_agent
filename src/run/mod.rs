@@ -32,6 +32,7 @@ pub mod eval_flake;
 pub mod eval_parity;
 pub mod evaluate;
 pub mod evaluator_selftest;
+pub mod events;
 pub mod export_ci;
 pub mod export_otlp;
 pub mod failure_digest;

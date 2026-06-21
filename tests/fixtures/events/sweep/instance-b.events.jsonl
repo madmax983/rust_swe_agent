@@ -1,0 +1,5 @@
+{"schema":"event-log-v1","ts":"2026-01-01T01:00:00Z","event_type":"run_started","instance_id":"instance-b","task":"fix other bug","model":"fixture-model","started_at":"2026-01-01T01:00:00Z"}
+{"schema":"event-log-v1","ts":"2026-01-01T01:00:01Z","event_type":"bash_result","instance_id":"instance-b","step":1,"exit_code":0,"stdout":"1 passed","stderr":"","timed_out":false,"timestamp":"2026-01-01T01:00:01Z"}
+{"schema":"event-log-v1","ts":"2026-01-01T01:00:02Z","event_type":"run_ended","instance_id":"instance-b","exit_reason":"submitted","final_output":"done","steps":1,"total_cost_usd":0.02,"ended_at":"2026-01-01T01:00:02Z"}
+this line is not json at all and must be skipped
+{"some_other":"json","but_no":"event_type"}

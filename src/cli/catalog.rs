@@ -302,6 +302,12 @@ pub fn entries() -> &'static [CatalogEntry] {
             stage: "preflight",
         },
         CatalogEntry {
+            path: "bench events",
+            summary: "Query the structured per-run event log by type, instance, and time window",
+            cost_tier: "free",
+            stage: "inspect",
+        },
+        CatalogEntry {
             path: "bench export-ci",
             summary: "Export a completed sweep as JUnit XML and/or GitHub Actions annotations",
             cost_tier: "free",
