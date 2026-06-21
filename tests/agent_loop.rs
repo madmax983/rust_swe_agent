@@ -10,6 +10,7 @@ use async_trait::async_trait;
 use maxwells_daemon::agent::default::{DefaultAgentBuilder, retag_cache_hints};
 use maxwells_daemon::env::CancellationToken;
 use maxwells_daemon::error::EnvError;
+use maxwells_daemon::stream::{BroadcastSink, StreamEvent, StreamSink};
 use maxwells_daemon::{
     Agent, CacheHint, Config, DeterministicModel, Environment, Error, ExitReason, LocalEnvironment,
     McpServerCfg, McpStdioServer, Message, Model, ModelResponse, ModelUsage, QueryOpts, Role,
@@ -595,6 +596,7 @@ timeout_secs = 3
 }
 
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn command_tool_adapter_executes_from_matching_fenced_block() {
     let cfg = Config::from_toml_str(
         r#"
@@ -616,6 +618,8 @@ timeout_secs = 3
     ]));
     let env = PluginToolEnv::default();
     let calls = Arc::clone(&env.calls);
+    let bcast = Arc::new(BroadcastSink::default());
+    let mut rx = bcast.subscribe();
     let mut agent = DefaultAgentBuilder {
         config: cfg,
         model,
@@ -623,7 +627,7 @@ timeout_secs = 3
         task: "round trip".into(),
         extra_context: None,
         renderer: None,
-        stream: None,
+        stream: Some(bcast.clone() as Arc<dyn StreamSink>),
         resume_from: None,
         read_only: false,
     }
@@ -632,6 +636,28 @@ timeout_secs = 3
 
     let exit = agent.run().await.unwrap();
     assert!(matches!(exit, ExitReason::Submitted { .. }));
+
+    // A command tool runs a real shell via `env.run`; it must surface bash
+    // lifecycle events so activity-inferring consumers (the ratatui dashboard,
+    // issue #649) see the in-flight command rather than a static idle footer.
+    let mut events = Vec::new();
+    while let Ok(e) = rx.try_recv() {
+        events.push(e);
+    }
+    assert!(
+        events.iter().any(
+            |e| matches!(e, StreamEvent::BashStart { command, .. } if command == "diagnose-helper")
+        ),
+        "command tool should emit BashStart with the rendered command: {events:#?}"
+    );
+    assert!(
+        events.iter().any(|e| matches!(
+            e,
+            StreamEvent::BashResult { exit_code: 0, stdout, .. }
+                if stdout.contains("diagnose saw check flaky test")
+        )),
+        "command tool should emit BashResult with its output: {events:#?}"
+    );
 
     let calls = calls.lock().unwrap().clone();
     assert_eq!(calls.len(), 1);

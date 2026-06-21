@@ -2414,14 +2414,35 @@ impl DefaultAgent {
         let timeout_secs = tool
             .timeout_secs
             .unwrap_or(self.config.root.environment.timeout_secs);
-        let mut req = RunRequest::new(rendered_command)
+        let mut req = RunRequest::new(rendered_command.clone())
             .with_timeout(Duration::from_secs(timeout_secs))
             .with_stdin(tool_input.to_owned());
         if let Some(cancellation) = self.cancellation.clone() {
             req = req.with_cancellation(cancellation);
         }
         req.env = tool_process_env(&context)?;
-        Ok(self.env.run(req).await?)
+        // A configured command tool runs a real shell via `env.run` but, unlike
+        // the Bash tool, emits no bash lifecycle events. Surface them here so a
+        // dashboard that infers activity from BashStart/BashResult (issue #649)
+        // shows the in-flight command — and the stall indicator for a slow one —
+        // instead of the static idle footer. `self.stream` is the RedactingSink,
+        // so the raw command/output are redacted on the stream surface, matching
+        // the Bash path.
+        self.stream.emit(StreamEvent::BashStart {
+            step: self.steps,
+            command: rendered_command,
+            timestamp: chrono::Utc::now().to_rfc3339(),
+        });
+        let result = self.env.run(req).await?;
+        self.stream.emit(StreamEvent::BashResult {
+            step: self.steps,
+            exit_code: result.exit_code,
+            stdout: result.stdout.clone(),
+            stderr: result.stderr.clone(),
+            timed_out: result.timed_out,
+            timestamp: chrono::Utc::now().to_rfc3339(),
+        });
+        Ok(result)
     }
 
     async fn run_non_bash_tool(

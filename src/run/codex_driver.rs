@@ -434,8 +434,19 @@ fn handle_local_shell_call(
         .record_with_extra(&Message::assistant(String::new()), extra);
     agent.stream.emit(StreamEvent::AssistantMessage {
         step: parsed.steps,
-        content: action_label,
+        content: action_label.clone(),
         cost_usd: None,
+        timestamp: ts.clone(),
+    });
+    // Surface the shell call as a bash lifecycle event. The driver otherwise
+    // emits only AssistantMessage/Observation, so a dashboard that infers
+    // activity from BashStart/BashResult (issue #649) would render a long
+    // external command as a static idle footer; the matching BashResult is
+    // emitted from the call-output handler. Reuse the already-redacted
+    // `action_label` since the driver stream is not wrapped in RedactingSink.
+    agent.stream.emit(StreamEvent::BashStart {
+        step: parsed.steps,
+        command: action_label,
         timestamp: ts,
     });
 }
@@ -494,7 +505,7 @@ fn handle_local_shell_call_output(agent: &mut DefaultAgent, parsed: &mut Parsed,
         extra.other.insert("tool_error".into(), Value::Bool(true));
     }
     let run_result = crate::env::RunResult {
-        stdout: redacted_raw,
+        stdout: redacted_raw.clone(),
         stderr: String::new(),
         exit_code,
         timed_out: false,
@@ -506,6 +517,18 @@ fn handle_local_shell_call_output(agent: &mut DefaultAgent, parsed: &mut Parsed,
     agent
         .trajectory
         .record_with_extra(&Message::user(redacted.clone()), extra);
+    // Close the bash lifecycle opened in `handle_local_shell_call` so the
+    // dashboard's activity inference (issue #649) leaves the running state
+    // before the observation reopens the thinking window. The driver stream is
+    // not wrapped in RedactingSink, so emit the already-redacted output.
+    agent.stream.emit(StreamEvent::BashResult {
+        step: parsed.steps,
+        exit_code,
+        stdout: redacted_raw,
+        stderr: String::new(),
+        timed_out: false,
+        timestamp: ts.clone(),
+    });
     agent.stream.emit(StreamEvent::Observation {
         step: parsed.steps,
         content: redacted,

@@ -860,6 +860,9 @@ fn handle_assistant(
         timestamp: Some(ts.clone()),
         ..Default::default()
     };
+    // Representative label for the bash lifecycle event emitted after the
+    // assistant message (set only when the turn issued tools).
+    let mut bash_label: Option<String> = None;
     if !actions.is_empty() {
         // Redact action labels (bash commands, file paths) on the trajectory
         // surface, matching the built-in loop — a tool call can carry a
@@ -867,6 +870,7 @@ fn handle_assistant(
         for action in &mut actions {
             *action = agent.redactor.redact_text(action, surface::TRAJECTORY).text;
         }
+        bash_label = tool_bash_label(&actions);
         extra.actions = Some(actions);
     }
     if !thinking_parts.is_empty() {
@@ -888,8 +892,36 @@ fn handle_assistant(
         step: parsed.steps,
         content: redacted,
         cost_usd: None,
-        timestamp: ts,
+        timestamp: ts.clone(),
     });
+    emit_tool_bash_start(agent, parsed.steps, bash_label, ts);
+}
+
+/// Representative footer label for a turn's tool calls, used by the BashStart
+/// lifecycle event so an activity-inferring dashboard (issue #649) shows the
+/// in-flight tool. `None` when the turn issued no tools — a text/thinking-only
+/// turn is genuinely idle. Expects already-redacted action labels.
+fn tool_bash_label(actions: &[String]) -> Option<String> {
+    match actions {
+        [] => None,
+        [only] => Some(only.clone()),
+        [first, rest @ ..] => Some(format!("{first} (+{} more)", rest.len())),
+    }
+}
+
+/// Emit the BashStart half of the tool lifecycle for a Claude-driver turn so
+/// activity-inferring dashboards (issue #649) render the in-flight tool instead
+/// of a static idle footer. The matching BashResult is emitted from
+/// `handle_user`. The driver stream is not wrapped in RedactingSink, so `label`
+/// must already be redacted.
+fn emit_tool_bash_start(agent: &DefaultAgent, step: u32, label: Option<String>, ts: String) {
+    if let Some(command) = label {
+        agent.stream.emit(StreamEvent::BashStart {
+            step,
+            command,
+            timestamp: ts,
+        });
+    }
 }
 
 /// Build a one-line action label for a `tool_use` block, mirroring the
@@ -990,7 +1022,7 @@ fn handle_user(agent: &mut DefaultAgent, parsed: &mut Parsed, msg: &Value) {
     // output-byte telemetry) treat driver observations the same. The exit code
     // is derived from the tool_result's `is_error`; output is the redacted text.
     let run_result = crate::env::RunResult {
-        stdout: redacted_raw,
+        stdout: redacted_raw.clone(),
         stderr: String::new(),
         exit_code: i32::from(has_error),
         timed_out: false,
@@ -1002,6 +1034,19 @@ fn handle_user(agent: &mut DefaultAgent, parsed: &mut Parsed, msg: &Value) {
     agent
         .trajectory
         .record_with_extra(&Message::user(redacted.clone()), extra);
+    // Close the bash lifecycle opened in `handle_assistant` so the dashboard's
+    // activity inference (issue #649) leaves the running state before the
+    // observation reopens the thinking window. Claude Code's tool_result carries
+    // `is_error`, not an exit code, so map it to 0/1. The driver stream is not
+    // wrapped in RedactingSink, so emit the already-redacted output.
+    agent.stream.emit(StreamEvent::BashResult {
+        step: parsed.steps,
+        exit_code: i32::from(has_error),
+        stdout: redacted_raw,
+        stderr: String::new(),
+        timed_out: false,
+        timestamp: ts.clone(),
+    });
     // Emit the per-step observation event for live consumers, mirroring the
     // built-in loop's post-bash Observation event.
     agent.stream.emit(StreamEvent::Observation {

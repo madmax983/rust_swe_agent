@@ -217,6 +217,62 @@ async fn codex_driver_produces_valid_trajectory() {
     assert_eq!(contents, "line one\nline two\n");
 }
 
+/// The codex driver surfaces shell calls as BashStart/BashResult lifecycle
+/// events so activity-inferring consumers (the ratatui dashboard, issue #649)
+/// see the in-flight command instead of a static idle footer; the driver
+/// otherwise emits only AssistantMessage/Observation.
+#[tokio::test]
+#[cfg(unix)]
+async fn codex_driver_emits_bash_lifecycle_events() {
+    let repo = tempfile::tempdir().unwrap();
+    let out = tempfile::tempdir().unwrap();
+    init_repo(repo.path());
+    ensure_fake_codex();
+
+    let log = out.path().join("events.jsonl");
+    let mut args = base_args(repo.path(), out.path(), "cx-events");
+    args.event_log = Some(log.clone());
+    args.event_log_instance_id = Some("cx".into());
+
+    run(args).await.expect("codex driver run should succeed");
+
+    let events: Vec<serde_json::Value> = std::fs::read_to_string(&log)
+        .unwrap()
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    let types: Vec<&str> = events
+        .iter()
+        .map(|e| e["event_type"].as_str().unwrap())
+        .collect();
+
+    // Two local_shell_call blocks in the fixture → a BashStart/BashResult pair
+    // for each.
+    assert_eq!(
+        types.iter().filter(|t| **t == "bash_start").count(),
+        2,
+        "expected a bash_start per shell call: {types:?}"
+    );
+    assert_eq!(
+        types.iter().filter(|t| **t == "bash_result").count(),
+        2,
+        "expected a bash_result per shell call: {types:?}"
+    );
+
+    // The running command rides on BashStart so the dashboard can label the
+    // footer, and each BashStart precedes its BashResult.
+    let start = events
+        .iter()
+        .position(|e| e["event_type"] == "bash_start" && e["command"] == "echo 'line two' >> a.txt")
+        .expect("bash_start for the echo command");
+    let result = events
+        .iter()
+        .skip(start)
+        .position(|e| e["event_type"] == "bash_result")
+        .expect("a bash_result after the echo bash_start");
+    assert!(result > 0, "bash_result should follow its bash_start");
+}
+
 /// `--driver codex` is rejected with `--env docker`.
 #[tokio::test]
 async fn codex_driver_rejects_docker_env() {
