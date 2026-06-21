@@ -366,15 +366,22 @@ where
     R: tokio::io::AsyncRead + Unpin,
 {
     let mut chunk = [0u8; 8192];
+    let max_size = 16 * 1024 * 1024;
     loop {
         let n = pipe.read(&mut chunk).await.map_err(EnvError::Io)?;
         if n == 0 {
             return Ok(());
         }
-        buffer
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .extend_from_slice(&chunk[..n]);
+        let mut lock = buffer.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if lock.len() + n > max_size {
+            let remain = max_size.saturating_sub(lock.len());
+            if remain > 0 {
+                lock.extend_from_slice(&chunk[..remain]);
+            }
+            lock.extend_from_slice(b"\n[Output truncated due to 16MB size limit]");
+            return Ok(());
+        }
+        lock.extend_from_slice(&chunk[..n]);
     }
 }
 
