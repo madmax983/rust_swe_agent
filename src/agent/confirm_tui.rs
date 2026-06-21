@@ -665,6 +665,20 @@ async fn renderer_loop(
     let mut tick = tokio::time::interval(Duration::from_millis(100));
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
+        // Register interest in the next state change *before* reading state and
+        // drawing. `Notify::notify_waiters()` only wakes waiters already
+        // registered at the time it is called (it stores no permit), so an
+        // emitter that flips idle→active in the window between this draw and
+        // the `select!` await would otherwise be lost — and without the old
+        // unconditional tick to mask it, an idle dashboard could stay frozen on
+        // the stale footer until a keystroke (issue #649). Enabling the
+        // `Notified` future up front closes that race: a notification that
+        // arrives after `enable()` marks it ready, so the `select!` returns
+        // immediately and the loop redraws with fresh state.
+        let notified = dash.notify.notified();
+        tokio::pin!(notified);
+        notified.as_mut().enable();
+
         let (exit, active) = {
             let s = dash
                 .state
@@ -681,7 +695,7 @@ async fn renderer_loop(
         }
         tokio::select! {
             _ = &mut shutdown => break,
-            () = dash.notify.notified() => {}
+            () = &mut notified => {}
             _ = tick.tick(), if active => {}
             ev = events.next() => {
                 match ev {
