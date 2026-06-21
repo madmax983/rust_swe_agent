@@ -39,6 +39,7 @@ fn chaos_args(cfg: Config, output: std::path::PathBuf, name: &str) -> MiniArgs {
         verification_checks: vec![],
         verification_timeout_secs: 60,
         interactive_mode: InteractiveMode::Off,
+        no_bell: false,
         resume_from: None,
         trace_id: None,
         webhook_url: None,

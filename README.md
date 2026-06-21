@@ -335,6 +335,13 @@ otherwise covers. See [`docs/spec-interactive-mode.md`](docs/spec-interactive-mo
 for the full contract; use `--interactive --ui ratatui` for a full-screen
 dashboard, or `--yolo` to run unattended with a per-step status line.
 
+When you run `--interactive --ui ratatui` and tab away, the dashboard rings the
+terminal bell (BEL) once when a confirm modal is raised and once when the run
+ends, so you get an out-of-band nudge instead of a silent block (issue #648).
+Pass `--no-bell` (or set the `NO_BELL` environment variable to any non-empty
+value) to mute it; bells are also suppressed automatically when stdout is not a
+TTY, so piped/CI runs stay byte-clean.
+
 PowerShell:
 
 ```powershell

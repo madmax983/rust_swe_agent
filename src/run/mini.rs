@@ -205,6 +205,10 @@ pub struct MiniArgs {
     pub continue_from: Option<ContinueState>,
     /// Issue #312 — operator interaction mode for this run.
     pub interactive_mode: InteractiveMode,
+    /// Issue #648 — when `true`, suppress the attention bell the ratatui
+    /// dashboard rings on confirm-modal raise and run completion. Bells are
+    /// also suppressed when `NO_BELL` is set or stdout is not a TTY.
+    pub no_bell: bool,
     /// OpenTelemetry trace ID assigned by the sweep runner when OTLP export
     /// is active. Written into `trajectory.info.trace_id` before the first
     /// save so the trajectory and its span share the same correlation key.
@@ -970,7 +974,8 @@ pub async fn run(args: MiniArgs) -> Result<(), Error> {
     } else {
         None
     };
-    let (confirm_callback, dashboard) = build_interactive_pieces(args.interactive_mode, cancel_tx)?;
+    let (confirm_callback, dashboard) =
+        build_interactive_pieces(args.interactive_mode, cancel_tx, args.no_bell)?;
 
     // Redact the webhook sink so secrets are stripped before each POST.
     let webhook_sink_redacted: Option<Arc<dyn StreamSink>> = webhook_sink_opt.map(|ws| {
@@ -1452,6 +1457,7 @@ type InteractivePieces = (
 fn build_interactive_pieces(
     mode: InteractiveMode,
     cancel_tx: Option<tokio::sync::watch::Sender<bool>>,
+    no_bell: bool,
 ) -> Result<InteractivePieces, Error> {
     match mode {
         InteractiveMode::Off | InteractiveMode::YoloStatusOnly => Ok((None, None)),
@@ -1473,9 +1479,18 @@ fn build_interactive_pieces(
                         .into(),
                 )));
             }
-            let handle = crate::agent::RatatuiDashboard::start(false, cancel_tx).map_err(|e| {
-                Error::Trajectory(format!("failed to start ratatui dashboard: {e}"))
-            })?;
+            // Attention bell (issue #648): suppress on --no-bell, NO_BELL, or
+            // no TTY. The TTY check above already guarantees a terminal here,
+            // but the gate is robust to that being relaxed.
+            let bell_on = crate::agent::bell_enabled(
+                no_bell,
+                std::env::var_os("NO_BELL"),
+                std::io::IsTerminal::is_terminal(&std::io::stdout()),
+            );
+            let handle =
+                crate::agent::RatatuiDashboard::start(false, cancel_tx, bell_on).map_err(|e| {
+                    Error::Trajectory(format!("failed to start ratatui dashboard: {e}"))
+                })?;
             let cb = handle.confirm_callback();
             Ok((Some(cb), Some(handle)))
         }
@@ -1489,9 +1504,12 @@ fn build_interactive_pieces(
                         .into(),
                 )));
             }
-            let handle = crate::agent::RatatuiDashboard::start(true, cancel_tx).map_err(|e| {
-                Error::Trajectory(format!("failed to start ratatui dashboard: {e}"))
-            })?;
+            // The read-only --yolo monitor never blocks on a confirm modal, so
+            // attention bells are out of scope here (issue #648); always muted.
+            let handle =
+                crate::agent::RatatuiDashboard::start(true, cancel_tx, false).map_err(|e| {
+                    Error::Trajectory(format!("failed to start ratatui dashboard: {e}"))
+                })?;
             Ok((None, Some(handle)))
         }
     }
@@ -2204,14 +2222,15 @@ mod tests {
 
     #[test]
     fn build_interactive_pieces_off_yields_no_callback() {
-        let (cb, dash) = build_interactive_pieces(InteractiveMode::Off, None).unwrap();
+        let (cb, dash) = build_interactive_pieces(InteractiveMode::Off, None, false).unwrap();
         assert!(cb.is_none());
         assert!(dash.is_none());
     }
 
     #[test]
     fn build_interactive_pieces_yolo_status_only_yields_no_callback() {
-        let (cb, dash) = build_interactive_pieces(InteractiveMode::YoloStatusOnly, None).unwrap();
+        let (cb, dash) =
+            build_interactive_pieces(InteractiveMode::YoloStatusOnly, None, false).unwrap();
         assert!(cb.is_none());
         assert!(dash.is_none());
     }
@@ -2901,6 +2920,7 @@ index 8a1218a..24c5735 100644\n\
             verification_timeout_secs: 60,
             resume_from: Some(partial),
             interactive_mode: InteractiveMode::Off,
+            no_bell: false,
             trace_id: None,
             webhook_url: None,
             webhook_headers: vec![],
@@ -3075,6 +3095,7 @@ index 8a1218a..24c5735 100644\n\
             resume_from: None,
             continue_from: None,
             interactive_mode: InteractiveMode::Off,
+            no_bell: false,
             trace_id: None,
             webhook_url: None,
             webhook_headers: vec![],
@@ -3136,6 +3157,7 @@ index 8a1218a..24c5735 100644\n\
             resume_from: None,
             continue_from: Some(continue_state),
             interactive_mode: InteractiveMode::Off,
+            no_bell: false,
             trace_id: None,
             webhook_url: None,
             webhook_headers: vec![],
@@ -3256,6 +3278,7 @@ index 8a1218a..24c5735 100644\n\
             verification_timeout_secs: 60,
             resume_from: None,
             interactive_mode: InteractiveMode::Off,
+            no_bell: false,
             trace_id: None,
             webhook_url: None,
             webhook_headers: vec![],
@@ -3358,6 +3381,7 @@ index 8a1218a..24c5735 100644\n\
             verification_timeout_secs: 60,
             resume_from: None,
             interactive_mode: InteractiveMode::Off,
+            no_bell: false,
             trace_id: None,
             webhook_url: None,
             webhook_headers: vec![],
@@ -3451,6 +3475,7 @@ index 8a1218a..24c5735 100644\n\
             verification_timeout_secs: 60,
             resume_from: None,
             interactive_mode: InteractiveMode::Off,
+            no_bell: false,
             trace_id: None,
             webhook_url: None,
             webhook_headers: vec![],
@@ -3523,6 +3548,7 @@ index 8a1218a..24c5735 100644\n\
             verification_timeout_secs: 60,
             resume_from: None,
             interactive_mode: InteractiveMode::Off,
+            no_bell: false,
             trace_id: None,
             webhook_url: None,
             webhook_headers: vec![],
@@ -3597,6 +3623,7 @@ index 8a1218a..24c5735 100644\n\
             verification_timeout_secs: 60,
             resume_from: None,
             interactive_mode: InteractiveMode::Off,
+            no_bell: false,
             trace_id: None,
             webhook_url: None,
             webhook_headers: vec![],
@@ -3717,6 +3744,7 @@ index 8a1218a..24c5735 100644\n\
             verification_timeout_secs: 60,
             resume_from: None,
             interactive_mode: InteractiveMode::Off,
+            no_bell: false,
             trace_id: None,
             webhook_url: None,
             webhook_headers: vec![],

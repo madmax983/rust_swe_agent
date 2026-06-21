@@ -1153,6 +1153,7 @@ async fn mini_cmd(m: args::MiniCmd) -> Result<(), Error> {
         verification_timeout_secs: m.verify_timeout_secs,
         resume_from: None,
         interactive_mode,
+        no_bell: m.no_bell,
         trace_id: None,
         webhook_url: m.webhook_url,
         webhook_headers: m.webhook_headers,
@@ -1606,6 +1607,7 @@ async fn mini_resume_cmd(
         verification_timeout_secs: m.verify_timeout_secs,
         resume_from: Some(traj),
         interactive_mode,
+        no_bell: m.no_bell,
         trace_id: None,
         webhook_url: m.webhook_url,
         webhook_headers: m.webhook_headers,
@@ -1898,6 +1900,7 @@ async fn mini_continue_cmd(
         resume_from: None,
         continue_from: Some(continue_state),
         interactive_mode,
+        no_bell: m.no_bell,
         trace_id: None,
         webhook_url: m.webhook_url,
         webhook_headers: m.webhook_headers,
@@ -7454,6 +7457,23 @@ mod tests {
         assert_eq!(cmd.mcp_servers, vec!["diagnostic-mcp"]);
     }
 
+    #[test]
+    fn mini_cli_no_bell_flag_defaults_false_and_parses() {
+        // Default: flag absent.
+        let cli = Cli::parse_from(["max", "mini", "--task", "t"]);
+        let crate::cli::Command::Mini(cmd) = cli.command else {
+            panic!("expected mini command");
+        };
+        assert!(!cmd.no_bell, "no_bell defaults to false");
+
+        // Present: --no-bell sets it true.
+        let cli = Cli::parse_from(["max", "mini", "--task", "t", "--no-bell"]);
+        let crate::cli::Command::Mini(cmd) = cli.command else {
+            panic!("expected mini command");
+        };
+        assert!(cmd.no_bell, "--no-bell parses to true");
+    }
+
     #[tokio::test]
     async fn mini_github_pr_publish_helper_respects_submission_state() {
         let work = tempfile::tempdir().unwrap();
@@ -7610,6 +7630,7 @@ mod tests {
             interactive: false,
             yolo: false,
             ui: args::UiKind::Stderr,
+            no_bell: false,
             webhook_url: None,
             webhook_headers: vec![],
             no_step_persist: false,

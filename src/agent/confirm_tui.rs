@@ -31,6 +31,81 @@ use crate::stream::{StreamEvent, StreamSink};
 
 const MAX_LOG_LINES: usize = 400;
 
+/// Terminal bell (BEL, `0x07`) byte.
+const BEL: u8 = 0x07;
+
+/// Out-of-band operator attention signal (issue #648).
+///
+/// Writes a single BEL byte to a configurable sink to ring the controlling
+/// terminal when the confirm modal is raised or the run ends. `enabled` is
+/// resolved once at dashboard start (see [`bell_enabled`]) from the
+/// `--no-bell` flag, the `NO_BELL` env var, and a TTY check; when `false`,
+/// `ring()` is a no-op and writes zero bytes — keeping piped/CI runs
+/// byte-clean.
+pub(crate) struct Bell {
+    enabled: bool,
+    sink: Mutex<Box<dyn std::io::Write + Send>>,
+}
+
+impl Bell {
+    /// Bell that writes to stdout when `enabled`.
+    fn to_stdout(enabled: bool) -> Self {
+        Self {
+            enabled,
+            sink: Mutex::new(Box::new(std::io::stdout())),
+        }
+    }
+
+    /// A permanently-muted bell. Used as the construction default in tests
+    /// that drive the dashboard without a terminal; production code resolves
+    /// enablement via [`bell_enabled`] and [`Bell::to_stdout`].
+    #[cfg(test)]
+    fn silent() -> Self {
+        Self {
+            enabled: false,
+            sink: Mutex::new(Box::new(std::io::sink())),
+        }
+    }
+
+    /// Bell with an arbitrary sink — used by tests to capture BEL bytes.
+    #[cfg(test)]
+    fn to_writer(enabled: bool, w: Box<dyn std::io::Write + Send>) -> Self {
+        Self {
+            enabled,
+            sink: Mutex::new(w),
+        }
+    }
+
+    /// Emit exactly one BEL byte if enabled. Errors are swallowed: a failed
+    /// attention signal must never disrupt the agent loop.
+    fn ring(&self) {
+        if !self.enabled {
+            return;
+        }
+        let mut w = self
+            .sink
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _ = w.write_all(&[BEL]);
+        let _ = w.flush();
+    }
+}
+
+/// Resolve whether attention bells should fire, from the `--no-bell` flag,
+/// the `NO_BELL` env var, and whether stdout is a TTY. Pure so the policy is
+/// unit-tested without touching real globals.
+///
+/// `NO_BELL` suppresses bells when set to any **non-empty** value (covers the
+/// conventional `NO_BELL=1`); an empty value is treated as unset.
+pub fn bell_enabled(
+    no_bell_flag: bool,
+    no_bell_env: Option<std::ffi::OsString>,
+    stdout_is_tty: bool,
+) -> bool {
+    let env_suppresses = no_bell_env.is_some_and(|v| !v.is_empty());
+    !no_bell_flag && !env_suppresses && stdout_is_tty
+}
+
 struct DashboardState {
     task: Option<String>,
     model: Option<String>,
@@ -190,6 +265,10 @@ pub struct RatatuiDashboard {
     state: Mutex<DashboardState>,
     notify: Notify,
     cancel_tx: Option<watch::Sender<bool>>,
+    /// Out-of-band attention signal (issue #648). Rings on modal raise and
+    /// run completion; muted when `--no-bell`/`NO_BELL` is set or there is no
+    /// TTY.
+    bell: Bell,
 }
 
 impl RatatuiDashboard {
@@ -203,6 +282,7 @@ impl RatatuiDashboard {
     pub fn start(
         is_monitor: bool,
         cancel_tx: Option<watch::Sender<bool>>,
+        bell_enabled: bool,
     ) -> std::io::Result<RatatuiDashboardHandle> {
         enable_raw_mode()?;
         let mut stdout = std::io::stdout();
@@ -225,6 +305,7 @@ impl RatatuiDashboard {
             }),
             notify: Notify::new(),
             cancel_tx,
+            bell: Bell::to_stdout(bell_enabled),
         });
         let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
         let renderer_task = tokio::spawn(renderer_loop(dash.clone(), terminal, shutdown_rx));
@@ -344,14 +425,21 @@ impl StreamSink for RatatuiDashboard {
                 total_cost_usd,
                 ..
             } => {
-                {
+                let first_finish = {
                     let mut s = self
                         .state
                         .lock()
                         .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    let was_running = s.finished.is_none();
                     s.cost_usd = total_cost_usd;
                     s.step = steps;
                     s.finished = Some(exit_reason.clone());
+                    was_running
+                };
+                // Signal the operator on the rising edge of the terminal
+                // state — exactly one bell per run (issue #648).
+                if first_finish {
+                    self.bell.ring();
                 }
                 self.append(
                     LineKind::Info,
@@ -380,6 +468,11 @@ impl StreamSink for RatatuiDashboard {
 #[async_trait]
 impl ConfirmCallback for RatatuiDashboard {
     async fn confirm(&self, ctx: &ConfirmContext) -> ConfirmDecision {
+        // The modal transitions absent -> present here, and `confirm` is
+        // called exactly once per distinct prompt (redraws never call it), so
+        // ringing here gives exactly one bell per raise, debounced by
+        // construction (issue #648).
+        self.bell.ring();
         let (tx, rx) = oneshot::channel();
         {
             let mut s = self
@@ -2047,7 +2140,184 @@ mod tests {
             state: Mutex::new(DashboardState::default()),
             notify: Notify::new(),
             cancel_tx: None,
+            bell: Bell::silent(),
         })
+    }
+
+    /// Shared, inspectable byte sink for asserting exact BEL output.
+    #[derive(Clone, Default)]
+    struct ByteSink(Arc<Mutex<Vec<u8>>>);
+
+    impl ByteSink {
+        fn bytes(&self) -> Vec<u8> {
+            self.0
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone()
+        }
+        #[allow(clippy::naive_bytecount)]
+        fn bel_count(&self) -> usize {
+            self.bytes().iter().filter(|&&b| b == BEL).count()
+        }
+    }
+
+    impl std::io::Write for ByteSink {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// Dashboard whose bell writes to an inspectable buffer instead of stdout.
+    fn make_dashboard_with_bell(enabled: bool) -> (Arc<RatatuiDashboard>, ByteSink) {
+        let sink = ByteSink::default();
+        let dash = Arc::new(RatatuiDashboard {
+            state: Mutex::new(DashboardState::default()),
+            notify: Notify::new(),
+            cancel_tx: None,
+            bell: Bell::to_writer(enabled, Box::new(sink.clone())),
+        });
+        (dash, sink)
+    }
+
+    fn confirm_ctx() -> ConfirmContext {
+        ConfirmContext {
+            tool_name: "bash".into(),
+            command: "ls".into(),
+            step: 0,
+            step_limit: 5,
+            cost_usd: 0.0,
+            cache_marker: "cache:auto-or-none",
+            rationale: String::new(),
+        }
+    }
+
+    /// Drive one `confirm()` to completion: spawn it, wait for the modal to be
+    /// raised, then answer it via the pending oneshot responder.
+    async fn drive_one_confirm(dash: &Arc<RatatuiDashboard>, decision: ConfirmDecision) {
+        let d = dash.clone();
+        let task = tokio::spawn(async move {
+            let ctx = confirm_ctx();
+            d.confirm(&ctx).await
+        });
+        // Wait until the modal is present, then answer it.
+        loop {
+            let responder = {
+                let mut s = dash
+                    .state
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                s.pending.take().map(|p| p.responder)
+            };
+            if let Some(tx) = responder {
+                let _ = tx.send(decision);
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+        let _ = task.await;
+    }
+
+    fn run_ended_event() -> StreamEvent {
+        StreamEvent::RunEnded {
+            exit_reason: "resolved".into(),
+            failure_category: None,
+            final_output: None,
+            steps: 3,
+            total_cost_usd: 0.05,
+            ended_at: "2026-06-21T00:00:00Z".into(),
+        }
+    }
+
+    #[tokio::test]
+    async fn confirm_rings_exactly_one_bel_per_prompt() {
+        let (dash, sink) = make_dashboard_with_bell(true);
+        drive_one_confirm(&dash, ConfirmDecision::Approve).await;
+        assert_eq!(sink.bel_count(), 1, "one BEL per modal raise");
+        assert_eq!(
+            sink.bytes(),
+            vec![0x07],
+            "exactly one BEL byte, nothing else"
+        );
+    }
+
+    #[tokio::test]
+    async fn two_prompts_ring_two_bels() {
+        let (dash, sink) = make_dashboard_with_bell(true);
+        drive_one_confirm(&dash, ConfirmDecision::Approve).await;
+        drive_one_confirm(&dash, ConfirmDecision::Approve).await;
+        assert_eq!(sink.bel_count(), 2, "one BEL per distinct prompt");
+    }
+
+    #[test]
+    fn run_ended_rings_one_bel() {
+        let (dash, sink) = make_dashboard_with_bell(true);
+        dash.emit(run_ended_event());
+        assert_eq!(sink.bel_count(), 1, "one BEL on terminal state");
+    }
+
+    #[test]
+    fn run_ended_twice_rings_only_once() {
+        let (dash, sink) = make_dashboard_with_bell(true);
+        dash.emit(run_ended_event());
+        dash.emit(run_ended_event());
+        assert_eq!(
+            sink.bel_count(),
+            1,
+            "completion bell is rising-edge debounced"
+        );
+    }
+
+    #[tokio::test]
+    async fn no_bell_writes_zero_bytes() {
+        let (dash, sink) = make_dashboard_with_bell(false);
+        drive_one_confirm(&dash, ConfirmDecision::Approve).await;
+        dash.emit(run_ended_event());
+        assert_eq!(sink.bytes().len(), 0, "suppressed: zero bytes written");
+    }
+
+    #[test]
+    fn non_terminal_events_do_not_ring() {
+        let (dash, sink) = make_dashboard_with_bell(true);
+        dash.emit(StreamEvent::RunStarted {
+            task: "t".into(),
+            model: "m".into(),
+            started_at: "s".into(),
+        });
+        dash.emit(StreamEvent::AssistantMessage {
+            step: 1,
+            content: "x".into(),
+            cost_usd: None,
+            timestamp: "t".into(),
+        });
+        dash.emit(StreamEvent::BashStart {
+            step: 1,
+            command: "ls".into(),
+            timestamp: "t".into(),
+        });
+        assert_eq!(sink.bel_count(), 0, "only modal-raise and run-end ring");
+    }
+
+    #[test]
+    fn bell_enabled_truth_table() {
+        use std::ffi::OsString;
+        // All clear: flag off, env unset, TTY present.
+        assert!(bell_enabled(false, None, true));
+        // Flag suppresses.
+        assert!(!bell_enabled(true, None, true));
+        // NO_BELL with any non-empty value suppresses.
+        assert!(!bell_enabled(false, Some(OsString::from("1")), true));
+        assert!(!bell_enabled(false, Some(OsString::from("anything")), true));
+        // Empty NO_BELL does not suppress.
+        assert!(bell_enabled(false, Some(OsString::from("")), true));
+        // No TTY suppresses.
+        assert!(!bell_enabled(false, None, false));
     }
 
     fn snap(dash: &Arc<RatatuiDashboard>) -> DashboardSnapshot {
@@ -2868,6 +3138,7 @@ mod tests {
             state: Mutex::new(DashboardState::default()),
             notify: Notify::new(),
             cancel_tx: Some(tx),
+            bell: Bell::silent(),
         });
 
         // 1. Initially not cancelled
