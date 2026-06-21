@@ -356,11 +356,11 @@ pub async fn run(args: MatrixArgs) -> Result<MatrixSummary, Error> {
         // When a budget cap is active, only launch one new arm per cycle so
         // that `cumulative_cost` is updated between launches and the ceiling
         // is not overrun by more than one arm's cost.
-        let fill_limit = if args.sweep_cost_limit_usd.is_some() {
-            join_set.len().saturating_add(1)
-        } else {
-            args.matrix_parallelism
-        };
+        let fill_limit = calculate_fill_limit(
+            args.sweep_cost_limit_usd,
+            join_set.len(),
+            args.matrix_parallelism,
+        );
         while !cancelled && join_set.len() < fill_limit {
             // Advance past arms already in a terminal state (resume or prior iteration).
             while next_to_launch < manifest.arms.len()
@@ -663,4 +663,16 @@ fn atomic_write(path: &Path, data: &[u8]) -> Result<(), Error> {
     std::fs::write(&tmp, data)?;
     std::fs::rename(&tmp, path)?;
     Ok(())
+}
+
+fn calculate_fill_limit(
+    sweep_cost_limit_usd: Option<f64>,
+    join_set_len: usize,
+    matrix_parallelism: usize,
+) -> usize {
+    if sweep_cost_limit_usd.is_some() {
+        join_set_len.saturating_add(1)
+    } else {
+        matrix_parallelism
+    }
 }
