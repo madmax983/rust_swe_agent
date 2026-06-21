@@ -316,6 +316,7 @@ fn load_original_verdicts(sweep_dir: &Path) -> HashMap<String, Verdict> {
 ///
 /// `stub.verdicts[instance_id][replay_index]` gives the verdict for that replay.
 /// Used exclusively in integration tests.
+/// Optimization: Pre-allocate `results` to avoid reallocations when analyzing evaluated instances.
 pub fn run_with_stub(
     args: &EvalFlakeArgs,
     stub: &EvalFlakeStubConfig,
@@ -342,7 +343,7 @@ pub fn run_with_stub(
         })
         .collect();
 
-    let mut results: Vec<InstanceFlakeResult> = Vec::new();
+    let mut results: Vec<InstanceFlakeResult> = Vec::with_capacity(instance_ids.len());
     for id in &instance_ids {
         let stub_verdicts = stub.verdicts.get(id.as_str());
         let verdicts: Vec<Verdict> = (0..args.replays)
