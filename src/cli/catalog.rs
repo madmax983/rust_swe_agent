@@ -85,6 +85,12 @@ pub fn entries() -> &'static [CatalogEntry] {
             stage: "preflight",
         },
         CatalogEntry {
+            path: "agent doctor",
+            summary: "Preflight host readiness before a live run (no model call, $0)",
+            cost_tier: "free",
+            stage: "preflight",
+        },
+        CatalogEntry {
             path: "agent fs-audit",
             summary: "Audit sweep trajectories for out-of-workdir filesystem access",
             cost_tier: "free",

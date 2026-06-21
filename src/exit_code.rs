@@ -209,6 +209,15 @@ pub enum ExitCode {
     /// `internal_error` (1) so CI can route "artifact does not conform to
     /// contract" separately from an unexpected infrastructure failure.
     ArtifactCheckFailure = 47,
+    /// 48 — `agent doctor` found at least one failing host-readiness check
+    /// (git missing, provider credential absent, Docker daemon unreachable when
+    /// a docker environment is selected, runs/output dir not writable, or the
+    /// active toolchain below the crate `rust-version`). Zero model calls and no
+    /// provider network probe were made; the check is a pure host preflight.
+    /// Skipped checks never trigger this. Distinct from `preflight_failure` (3)
+    /// so CI can route "host not ready before any run" separately from
+    /// sweep-time dependency failures. See `docs/spec-agent-doctor.md`.
+    HostNotReady = 48,
     /// 130 — user interruption (graceful SIGINT / Ctrl-C; 128 + SIGINT(2)).
     Interrupted = 130,
     /// 137 — forced kill (SIGKILL escalation after graceful-cancel deadline; 128 + SIGKILL(9)).
@@ -277,6 +286,7 @@ impl ExitCode {
             Self::FsAuditFindings => "fs_audit_findings",
             Self::FsAuditScanError => "fs_audit_scan_error",
             Self::ArtifactCheckFailure => "artifact_check_failure",
+            Self::HostNotReady => "host_not_ready",
             Self::Interrupted => "interrupted",
             Self::Killed => "killed",
         }
@@ -580,5 +590,13 @@ mod tests {
             ExitCode::UtilizationGateFailure.outcome_class(),
             "utilization_gate_failure"
         );
+    }
+
+    // ── RED-phase: agent doctor host-readiness exit code (issue #526) ─────────
+
+    #[test]
+    fn host_not_ready_exit_code_is_48() {
+        assert_eq!(ExitCode::HostNotReady.as_i32(), 48);
+        assert_eq!(ExitCode::HostNotReady.outcome_class(), "host_not_ready");
     }
 }

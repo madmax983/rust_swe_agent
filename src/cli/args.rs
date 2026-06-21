@@ -722,6 +722,53 @@ pub enum AgentCmd {
     FsAudit(FsAuditCmd),
     /// Validate artifact files against the Artifact Contract (zero-cost, no model call).
     ArtifactCheck(ArtifactCheckCmd),
+    /// Preflight host readiness before a live run (zero-cost, no model call, $0).
+    Doctor(AgentDoctorCmd),
+}
+
+/// `agent doctor` — zero-cost host-readiness preflight (issue #526).
+///
+/// Answers the simplest go/no-go question before your first live run: can this
+/// machine run a task right now, and if not, what do I fix? It makes **no model
+/// call and no provider network probe — it costs $0** — and checks: git on
+/// PATH, the provider credential env var expected for the resolved model is
+/// present (presence only; the value is never read or printed), the Docker
+/// daemon when a docker environment is selected (otherwise `skip`), the
+/// runs/output directory is writable, and the active toolchain meets the crate
+/// `rust-version` (or `skip` when unknowable).
+///
+/// Exits 0 when every check passes, or 48 (`host_not_ready`) when any check
+/// fails. Skipped checks never fail the command. Use `--format json` for a
+/// machine-readable `{ check, status, detail }` checklist suitable for CI gating.
+#[derive(Debug, Args)]
+pub struct AgentDoctorCmd {
+    /// Environment type to validate: `local` or `docker`. When omitted, the
+    /// environment kind from the resolved config is used (default `local`).
+    /// Docker daemon reachability is only checked when `docker` is in effect.
+    #[arg(long)]
+    pub env: Option<EnvTypeArg>,
+
+    /// Override the model name used to pick the expected credential env var.
+    /// When omitted the resolved config model is used.
+    #[arg(long)]
+    pub model: Option<String>,
+
+    /// Optional path to a TOML config file (overlays defaults).
+    #[arg(long)]
+    pub config: Option<PathBuf>,
+
+    /// Output format: `text` (default) or `json` (machine-readable checklist).
+    #[arg(long, default_value = "text")]
+    pub format: PreviewFormatArg,
+
+    /// Runs/output directory whose write access is checked.
+    #[arg(long, default_value = "./runs")]
+    pub output: PathBuf,
+
+    /// Override the Docker image to preflight (requires `--env docker`).
+    /// When omitted the configured `environment.docker_image` is used.
+    #[arg(long)]
+    pub docker_image: Option<String>,
 }
 
 /// `agent runs` — list and summarize single-task trajectory files (issue #509).

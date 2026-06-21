@@ -53,6 +53,7 @@ parsing human-oriented output.
 | 45   | `fs_audit_findings`      | `agent fs-audit` found at least one bash command that accessed a path outside the configured workdir (absolute path, `..` traversal, `$HOME`/`~/` reference, or known system directory). The audit completed and the report was printed; use as a publish gate. Distinct from `internal_error` (1) so CI can route "filesystem boundary violated" separately from a crash. See `docs/spec-fs-audit.md`. |
 | 46   | `fs_audit_scan_error`    | `agent fs-audit` could not read or parse one or more trajectory files (missing path, unreadable file, invalid JSON, missing sweep directory). The scan is incomplete, so a "clean" verdict cannot be trusted. Findings take precedence: exit 45 is returned when both findings and scan errors are present. |
 | 47   | `artifact_check_failure` | `agent artifact-check` found at least one artifact that is `invalid` or `unsupported_major`. With `--strict`, also triggers on `legacy_unversioned` and `valid_with_warnings`. Zero model calls are made; the check is purely a structural conformance gate. Distinct from `internal_error` (1) so CI can route "artifact does not conform to contract" separately from an unexpected infrastructure failure. See `docs/spec-artifact-check.md`. |
+| 48   | `host_not_ready`         | `agent doctor` found at least one failing host-readiness check: `git` missing from PATH, the provider credential env var absent, the Docker daemon unreachable when `--env docker` is selected, the runs/output dir not writable, or the active toolchain below the crate `rust-version`. Zero model calls and no provider network probe are made; the check is a pure host preflight. Skipped checks never trigger this. Distinct from `preflight_failure` (3) so CI can route "host not ready before any run" separately from sweep-time dependency failures. See `docs/spec-agent-doctor.md`. |
 | 130  | `interrupted`            | Graceful SIGINT / Ctrl-C cancellation (POSIX convention: 128 + SIGINT(2)). |
 | 137  | `killed`                 | SIGKILL escalation after the graceful-cancel deadline expired (128 + SIGKILL(9)). |
 
@@ -110,13 +111,14 @@ and the recommended triage action.
 | `bench assert`                  | `success`, `usage_error`, `slo_rule_failure`, `internal_error` |
 | `agent apply`                   | `success`, `usage_error`, `apply_check_failed`, `apply_redacted_refused`, `apply_dirty_tree_refused`, `internal_error` |
 | `agent artifact-check`          | `success`, `usage_error`, `artifact_check_failure`, `internal_error` |
+| `agent doctor`                  | `success`, `host_not_ready`, `usage_error`, `internal_error` |
 | `bench export-otlp`             | `success`, `usage_error`, `preflight_failure`, `internal_error` (see `docs/spec-export-otlp.md`) |
 
 > **Note:** `hello-world` does not produce distinct outcome classes beyond
 > `success` / `internal_error`; it is an interactive debugging surface.
 >
-> **Future surfaces:** `doctor` (standalone) and verification surfaces must
-> extend this table before merging.
+> **Future surfaces:** verification surfaces must extend this table before
+> merging.
 
 ## Shell Examples
 
