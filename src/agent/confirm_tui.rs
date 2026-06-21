@@ -656,11 +656,14 @@ async fn renderer_loop(
     mut shutdown: oneshot::Receiver<()>,
 ) {
     let mut events = EventStream::new();
-    // Spinner cadence while an operation is in flight (issue #649). The tick is
-    // only awaited when `activity.is_active()`, so an idle/finished dashboard
-    // redraws solely on `Notify`/keystrokes — zero animation frames, no CPU
-    // spin while nothing is happening (AC3).
+    // Spinner cadence while an operation is in flight (issue #649). The tick
+    // branch is guarded by `if active`, so an idle/finished dashboard redraws
+    // solely on `Notify`/keystrokes — zero animation frames, no CPU spin while
+    // nothing is happening (AC3). `Skip` prevents the default `Burst` behaviour
+    // from firing a flurry of catch-up ticks when an operation resumes after an
+    // idle gap during which the interval was never awaited.
     let mut tick = tokio::time::interval(Duration::from_millis(100));
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
         let (exit, active) = {
             let s = dash
@@ -676,33 +679,17 @@ async fn renderer_loop(
         if let Err(err) = draw_frame(&dash, &mut terminal) {
             tracing::warn!(?err, "ratatui draw failed");
         }
-        if active {
-            tokio::select! {
-                _ = &mut shutdown => break,
-                () = dash.notify.notified() => {}
-                _ = tick.tick() => {}
-                ev = events.next() => {
-                    match ev {
-                        Some(Ok(Event::Key(key))) => handle_key(&dash, key),
-                        Some(Err(err)) => {
-                            tracing::warn!(?err, "ratatui event stream error");
-                        }
-                        _ => {}
+        tokio::select! {
+            _ = &mut shutdown => break,
+            () = dash.notify.notified() => {}
+            _ = tick.tick(), if active => {}
+            ev = events.next() => {
+                match ev {
+                    Some(Ok(Event::Key(key))) => handle_key(&dash, key),
+                    Some(Err(err)) => {
+                        tracing::warn!(?err, "ratatui event stream error");
                     }
-                }
-            }
-        } else {
-            tokio::select! {
-                _ = &mut shutdown => break,
-                () = dash.notify.notified() => {}
-                ev = events.next() => {
-                    match ev {
-                        Some(Ok(Event::Key(key))) => handle_key(&dash, key),
-                        Some(Err(err)) => {
-                            tracing::warn!(?err, "ratatui event stream error");
-                        }
-                        _ => {}
-                    }
+                    _ => {}
                 }
             }
         }
