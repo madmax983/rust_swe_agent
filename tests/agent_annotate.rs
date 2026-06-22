@@ -8,6 +8,8 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use sha2::{Digest, Sha256};
+
 mod support;
 use support::binary_path;
 
@@ -144,10 +146,13 @@ fn ac3_schema_version_artifact_kind_instance_id_fingerprint_present() {
     assert_eq!(fp.len(), 64, "sha256 should be 64 hex chars, got {fp}");
 
     // Verify fingerprint matches actual file.
-    use sha2::{Digest, Sha256};
     let traj_bytes = std::fs::read(&traj).unwrap();
     let digest = Sha256::digest(&traj_bytes);
-    let expected_hex: String = digest.iter().map(|b| format!("{b:02x}")).collect();
+    let mut expected_hex = String::with_capacity(64);
+    for b in &digest {
+        use std::fmt::Write as _;
+        let _ = write!(expected_hex, "{b:02x}");
+    }
     assert_eq!(fp, expected_hex, "trajectory_sha256 does not match file digest");
 }
 
@@ -329,5 +334,25 @@ fn ac7_note_with_secret_is_redacted_in_sidecar() {
     assert!(
         raw.contains("REDACTED") || raw.contains("note"),
         "redacted note field should be present"
+    );
+}
+
+#[test]
+fn ac7_failure_category_with_secret_is_redacted() {
+    let (_dir, traj) = isolated_traj();
+
+    let secret_cat = "leaked-ghp_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+
+    let out = run_annotate(
+        &traj,
+        &["--verdict", "incorrect", "--failure-category", secret_cat],
+    );
+    assert_success(&out);
+
+    let ann_path = annotation_path_for(&traj);
+    let raw = std::fs::read_to_string(&ann_path).unwrap();
+    assert!(
+        !raw.contains("ghp_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"),
+        "raw secret should not appear in failure_category: {raw}"
     );
 }

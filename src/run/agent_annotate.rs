@@ -174,20 +174,46 @@ pub fn sidecar_path(traj_path: &Path) -> PathBuf {
 /// `<dir>/<id>.traj.json` → `<id>`
 /// `<dir>/<id>/run-k.traj.json` → `<id>`
 /// `<dir>/<id>/trajectory.json` → `<id>`
+///
+/// Conventional sweep layouts name the per-run file `run-k.traj.json` or
+/// `trajectory.json` inside a `<id>/` directory; for those the parent directory
+/// name is the instance id. Any other `<id>.traj.json` filename is a flat
+/// standalone trajectory and its stem is the instance id.
 pub fn instance_id_from_path(traj_path: &Path) -> String {
     let stem = traj_path
         .file_name()
         .and_then(|n| n.to_str())
         .unwrap_or("unknown");
 
+    // Nested sweep layout: the per-run filename carries no instance identity,
+    // so the parent directory name is the instance id. The conventional names
+    // are `trajectory.json` and `run-<number>.traj.json` (see
+    // `load_all_trajectories_for_instance`); a flat file like
+    // `run-my-instance.traj.json` does NOT match and stays flat.
+    let is_nested_run_file = stem == "trajectory.json" || is_run_k_traj(stem);
+    if is_nested_run_file {
+        if let Some(parent) = traj_path.parent() {
+            if let Some(dir_name) = parent.file_name().and_then(|n| n.to_str()) {
+                if !dir_name.is_empty() && dir_name != "." {
+                    return dir_name.to_owned();
+                }
+            }
+        }
+    }
+
+    // Flat layout: `<id>.traj.json` (or any other `.json`) → stem is the id.
     if let Some(id) = stem.strip_suffix(".traj.json") {
-        // root layout: <id>.traj.json
-        if id != "trajectory" && !id.starts_with("run-") {
+        if !id.is_empty() {
+            return id.to_owned();
+        }
+    }
+    if let Some(id) = stem.strip_suffix(".json") {
+        if !id.is_empty() {
             return id.to_owned();
         }
     }
 
-    // nested layout: <dir>/<id>/run-k.traj.json or <id>/trajectory.json
+    // Last resort: parent directory name, else the raw stem.
     if let Some(parent) = traj_path.parent() {
         if let Some(dir_name) = parent.file_name().and_then(|n| n.to_str()) {
             if !dir_name.is_empty() && dir_name != "." {
@@ -199,6 +225,13 @@ pub fn instance_id_from_path(traj_path: &Path) -> String {
     stem.to_owned()
 }
 
+/// True for the conventional nested per-run filename `run-<number>.traj.json`.
+fn is_run_k_traj(stem: &str) -> bool {
+    stem.strip_prefix("run-")
+        .and_then(|rest| rest.strip_suffix(".traj.json"))
+        .is_some_and(|num| !num.is_empty() && num.bytes().all(|b| b.is_ascii_digit()))
+}
+
 fn sha256_hex(bytes: &[u8]) -> String {
     let digest = Sha256::digest(bytes);
     let mut hex = String::with_capacity(64);
@@ -208,56 +241,10 @@ fn sha256_hex(bytes: &[u8]) -> String {
     hex
 }
 
+/// Current UTC timestamp as a seconds-precision RFC 3339 / ISO 8601 string,
+/// matching the convention used across the harness (e.g. `src/annotation.rs`).
 fn now_utc() -> String {
-    // Use file mtime or fallback to a fixed-format timestamp.
-    // We don't depend on chrono; use std::time.
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let secs = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
-    // Format as ISO 8601 UTC: YYYY-MM-DDTHH:MM:SSZ
-    let s = secs;
-    let sec = s % 60;
-    let min = (s / 60) % 60;
-    let hour = (s / 3600) % 24;
-    let days = s / 86400;
-    // Days since epoch → date (Gregorian calendar)
-    let (y, m, d) = days_to_ymd(days);
-    format!("{y:04}-{m:02}-{d:02}T{hour:02}:{min:02}:{sec:02}Z")
-}
-
-fn days_to_ymd(mut days: u64) -> (u64, u64, u64) {
-    // Simple Gregorian algorithm (valid for years >= 1970)
-    let mut year = 1970u64;
-    loop {
-        let leap = is_leap(year);
-        let days_in_year = if leap { 366 } else { 365 };
-        if days < days_in_year {
-            break;
-        }
-        days -= days_in_year;
-        year += 1;
-    }
-    let leap = is_leap(year);
-    let month_days: [u64; 12] = [
-        31,
-        if leap { 29 } else { 28 },
-        31, 30, 31, 30, 31, 31, 30, 31, 30, 31,
-    ];
-    let mut month = 1u64;
-    for &md in &month_days {
-        if days < md {
-            break;
-        }
-        days -= md;
-        month += 1;
-    }
-    (year, month, days + 1)
-}
-
-fn is_leap(y: u64) -> bool {
-    (y % 4 == 0 && y % 100 != 0) || (y % 400 == 0)
+    chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
 }
 
 // ── write path ────────────────────────────────────────────────────────────────
@@ -303,6 +290,10 @@ pub fn run_annotate(opts: &AnnotateOpts) -> Result<(), Error> {
 
     // 4. Apply redaction to free-text fields.
     let redactor = Redactor::default_enabled();
+    let failure_category = opts
+        .failure_category
+        .as_deref()
+        .map(|c| redactor.redact_text(c, surface::EXPORT).text);
     let note = opts
         .note
         .as_deref()
@@ -326,7 +317,7 @@ pub fn run_annotate(opts: &AnnotateOpts) -> Result<(), Error> {
         trajectory_path_str,
         trajectory_sha256,
         opts.verdict,
-        opts.failure_category.clone(),
+        failure_category,
         note,
         step_notes,
     );
@@ -364,6 +355,9 @@ pub fn run_show(opts: &ShowOpts) -> Result<TrajectoryAnnotation, Error> {
 
     // Apply redaction to free-text on read/emit.
     let redactor = Redactor::default_enabled();
+    if let Some(c) = ann.failure_category.take() {
+        ann.failure_category = Some(redactor.redact_text(&c, surface::EXPORT).text);
+    }
     if let Some(n) = ann.note.take() {
         ann.note = Some(redactor.redact_text(&n, surface::EXPORT).text);
     }
@@ -410,7 +404,7 @@ pub fn render_show_text(ann: &TrajectoryAnnotation) -> String {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::unwrap_err_used)]
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
 
     #[test]
@@ -447,6 +441,23 @@ mod tests {
     fn instance_id_from_nested_trajectory_json() {
         let p = Path::new("/runs/my-instance/trajectory.json");
         assert_eq!(instance_id_from_path(p), "my-instance");
+    }
+
+    #[test]
+    fn instance_id_flat_file_named_run_prefix_uses_stem() {
+        // A flat standalone trajectory whose stem starts with "run-" but is not
+        // the conventional `run-<number>` form must use its own stem, not the
+        // parent directory.
+        let p = Path::new("/runs/run-my-instance.traj.json");
+        assert_eq!(instance_id_from_path(p), "run-my-instance");
+    }
+
+    #[test]
+    fn instance_id_nested_run_number_uses_parent_dir() {
+        // The conventional `run-<number>.traj.json` per-run file resolves to the
+        // parent directory name.
+        let p = Path::new("/runs/django__django-1/run-12.traj.json");
+        assert_eq!(instance_id_from_path(p), "django__django-1");
     }
 
     #[test]
@@ -488,7 +499,7 @@ mod tests {
         let result = run_annotate(&opts);
         assert!(result.is_err());
         let msg = result.unwrap_err().to_string();
-        assert!(msg.contains("5") || msg.contains("range"), "msg: {msg}");
+        assert!(msg.contains('5') || msg.contains("range"), "msg: {msg}");
     }
 
     #[test]
@@ -506,7 +517,7 @@ mod tests {
         std::fs::write(&traj_path, serde_json::to_string(&traj_json).unwrap()).unwrap();
 
         let opts = AnnotateOpts {
-            trajectory_path: traj_path.clone(),
+            trajectory_path: traj_path,
             verdict: Verdict::Correct,
             failure_category: None,
             note: None,

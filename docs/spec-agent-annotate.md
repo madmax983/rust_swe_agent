@@ -133,10 +133,10 @@ behavior is deterministic: the winner is the last write that completes.
 
 ## Secret Redaction
 
-`Redactor::default_enabled()` is applied on `surface::EXPORT` to `--note` and
-every `--step-note` text **before writing**. Redaction also runs on `--show`
-emit, consistent with other export/read surfaces. Secrets never reach the sidecar
-on disk.
+`Redactor::default_enabled()` is applied on `surface::EXPORT` to every free-text
+field — `--failure-category`, `--note`, and each `--step-note` text — **before
+writing**. Redaction also runs on `--show` emit, consistent with other
+export/read surfaces. Secrets never reach the sidecar on disk.
 
 ## Instance ID Derivation
 
@@ -145,6 +145,12 @@ on disk.
 | `<dir>/<id>.traj.json` (flat / root) | file stem minus `.traj.json`: `<id>` |
 | `<dir>/<id>/run-k.traj.json` (nested) | parent directory name: `<id>` |
 | `<dir>/<id>/trajectory.json` (nested single) | parent directory name: `<id>` |
+
+Only the conventional nested per-run filenames — `trajectory.json` and
+`run-<number>.traj.json` (matching `load_all_trajectories_for_instance`) —
+resolve to the parent directory. Any other flat `<id>.traj.json` filename uses
+its own stem, so a standalone trajectory named e.g. `run-my-instance.traj.json`
+yields `run-my-instance`, not its parent directory.
 
 ## Exit Codes
 
