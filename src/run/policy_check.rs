@@ -4,6 +4,7 @@
 //! config and reports the per-command verdict (allow / ask / deny) plus the
 //! matching rule label. No model call is made and no environment is launched.
 
+use comfy_table::{Table, modifiers::UTF8_ROUND_CORNERS, presets::UTF8_FULL};
 use std::io::Read as _;
 use std::path::PathBuf;
 
@@ -260,53 +261,17 @@ pub fn format_text(output: &PolicyCheckOutput) -> String {
         return out;
     }
 
-    let cmd_width = output
-        .verdicts
-        .iter()
-        .map(|v| v.command.len())
-        .max()
-        .unwrap_or(7)
-        .max(7); // min width: "command"
-    let rule_width = output
-        .verdicts
-        .iter()
-        .map(|v| v.matching_rule.len())
-        .max()
-        .unwrap_or(12)
-        .max(12); // min width: "matching_rule"
-
-    let mut out = String::new();
-    let _ = writeln!(
-        out,
-        "{:<width$}  {:<8}  {:<rule_w$}  profile",
-        "command",
-        "verdict",
-        "matching_rule",
-        width = cmd_width,
-        rule_w = rule_width,
-    );
-    let _ = writeln!(
-        out,
-        "{:-<width$}  {:-<8}  {:-<rule_w$}  -------",
-        "",
-        "",
-        "",
-        width = cmd_width,
-        rule_w = rule_width,
-    );
+    let mut table = Table::new();
+    table
+        .load_preset(UTF8_FULL)
+        .apply_modifier(UTF8_ROUND_CORNERS)
+        .set_header(["Command", "Verdict", "Matching Rule", "Profile"]);
 
     for v in &output.verdicts {
-        let _ = writeln!(
-            out,
-            "{:<width$}  {:<8}  {:<rule_w$}  {}",
-            v.command,
-            v.verdict.as_str(),
-            v.matching_rule,
-            v.profile,
-            width = cmd_width,
-            rule_w = rule_width,
-        );
+        table.add_row([v.command.as_str(), v.verdict.as_str(), v.matching_rule.as_str(), v.profile.as_str()]);
     }
+
+    let mut out = format!("{table}\n");
 
     if !output.mismatches.is_empty() {
         out.push('\n');
