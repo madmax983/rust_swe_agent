@@ -2492,10 +2492,28 @@ impl DefaultAgent {
             step: self.steps,
             total_cost_usd: self.total_cost_usd,
         };
-        Ok(provider
+        // A runtime/MCP provider tool does real work — an MCP server runs a
+        // command via `env.run` — but, unlike a command tool, exposes no
+        // rendered command. Wrap the call in the same generic tool-activity span
+        // so a slow provider call escalates to the stall indicator (issue #649)
+        // instead of rendering as a static idle footer; the tool name is the
+        // best available label. `self.stream` is the RedactingSink, so the label
+        // is redacted on the stream surface.
+        self.stream.emit(StreamEvent::ToolStart {
+            step: self.steps,
+            label: format!("tool: {tool_name}"),
+            timestamp: chrono::Utc::now().to_rfc3339(),
+        });
+        let result = provider
             .call(self.env.as_ref(), invocation, self.cancellation.clone())
-            .await?
-            .into())
+            .await;
+        // Close the span even if the call errored, so the dashboard never sticks
+        // on a stale running footer.
+        self.stream.emit(StreamEvent::ToolEnd {
+            step: self.steps,
+            timestamp: chrono::Utc::now().to_rfc3339(),
+        });
+        Ok(result?.into())
     }
 
     fn command_tool_context(&self, tool: &CommandTool, tool_input: &str) -> serde_json::Value {

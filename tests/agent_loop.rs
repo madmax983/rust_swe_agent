@@ -805,6 +805,8 @@ async fn runtime_tool_provider_executes_without_command_tool_config() {
     ]));
     let provider = Arc::new(InMemoryToolProvider::new("diagnose"));
     let calls = Arc::clone(&provider.calls);
+    let bcast = Arc::new(BroadcastSink::default());
+    let mut rx = bcast.subscribe();
     let mut agent = DefaultAgentBuilder {
         config: cfg,
         model,
@@ -812,7 +814,7 @@ async fn runtime_tool_provider_executes_without_command_tool_config() {
         task: "round trip".into(),
         extra_context: None,
         renderer: None,
-        stream: None,
+        stream: Some(bcast.clone() as Arc<dyn StreamSink>),
         resume_from: None,
         read_only: false,
     }
@@ -821,6 +823,34 @@ async fn runtime_tool_provider_executes_without_command_tool_config() {
 
     let exit = agent.run().await.unwrap();
     assert!(matches!(exit, ExitReason::Submitted { .. }));
+
+    // A runtime/MCP provider tool runs real work (an MCP server runs a command
+    // via `env.run`); like a command tool it must surface a generic activity
+    // span so a slow call reaches the stall indicator (issue #649) instead of a
+    // static idle footer, without polluting bash-command telemetry.
+    let mut events = Vec::new();
+    while let Ok(e) = rx.try_recv() {
+        events.push(e);
+    }
+    assert!(
+        events.iter().any(
+            |e| matches!(e, StreamEvent::ToolStart { label, .. } if label == "tool: diagnose")
+        ),
+        "provider tool should emit ToolStart labeled with the tool name: {events:#?}"
+    );
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, StreamEvent::ToolEnd { .. })),
+        "provider tool should emit ToolEnd to close the activity span: {events:#?}"
+    );
+    assert!(
+        !events.iter().any(|e| matches!(
+            e,
+            StreamEvent::BashStart { .. } | StreamEvent::BashResult { .. }
+        )),
+        "provider tool must not emit bash-command telemetry: {events:#?}"
+    );
 
     let calls = calls.lock().unwrap().clone();
     assert_eq!(calls.len(), 1);
