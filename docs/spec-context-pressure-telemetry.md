@@ -63,7 +63,7 @@ Every trajectory file (`trajectory.json`) and sweep-level result row (`results.j
       "elision_trigger_count": 2,
       "observations_elided": 3,
       "bytes_elided": 1500,
-      "peak_projected_tokens: 12000,
+      "peak_projected_tokens": 12000,
       "token_ceiling": 8000,
       "compaction_failed": false
     }

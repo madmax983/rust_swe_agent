@@ -886,7 +886,14 @@ impl Agent for DefaultAgent {
                 .history_keep_last_observations
                 .is_some();
         if has_budget {
-            let initial_total: usize = self.history.iter().map(|m| m.content.len()).sum();
+            let mut initial_total: usize = self.history.iter().map(|m| m.content.len()).sum();
+            for &(hist_idx, orig_bytes) in &elision.elided {
+                if let Some(msg) = self.history.iter().nth(hist_idx) {
+                    initial_total = initial_total
+                        .saturating_add(orig_bytes)
+                        .saturating_sub(msg.content.len());
+                }
+            }
             let projected_tokens = (initial_total as u64).div_ceil(BYTES_PER_TOKEN as u64);
 
             let pressure = &mut self.trajectory.info.context_pressure;

@@ -155,3 +155,24 @@ fn cli_json_emits_valid_report_and_writes_file() {
     let written_json: serde_json::Value = serde_json::from_str(&written_content).unwrap();
     assert_eq!(written_json["artifact_kind"], "context_pressure_report");
 }
+
+#[test]
+fn cli_succeeds_even_if_write_fails() {
+    let sweep = create_synthetic_sweep();
+
+    // Create a directory named context-pressure.json to block file writing
+    let blocked_path = sweep.path().join("context-pressure.json");
+    std::fs::create_dir(&blocked_path).unwrap();
+
+    let output = run_context_pressure(sweep.path(), &[]);
+
+    assert!(
+        output.status.success(),
+        "command should succeed even if writing context-pressure.json fails: \nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    // Cleanup the blocked directory so tempdir can clean up
+    std::fs::remove_dir(&blocked_path).unwrap();
+}

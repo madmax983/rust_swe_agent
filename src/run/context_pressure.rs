@@ -139,13 +139,20 @@ pub fn run(args: &ContextPressureArgs) -> Result<ContextPressureReport, Error> {
 
     // Write context-pressure.json to the sweep directory
     let report_path = args.sweep_dir.join("context-pressure.json");
-    let file = std::fs::File::create(&report_path)?;
-    crate::artifact::to_writer_pretty(
-        file,
-        crate::artifact::ArtifactKind::ContextPressureReport,
-        &report,
-    )
-    .map_err(|e| Error::Trajectory(e.to_string()))?;
+    match std::fs::File::create(&report_path) {
+        Ok(file) => {
+            if let Err(e) = crate::artifact::to_writer_pretty(
+                file,
+                crate::artifact::ArtifactKind::ContextPressureReport,
+                &report,
+            ) {
+                eprintln!("Warning: failed to write context-pressure.json: {e}");
+            }
+        }
+        Err(e) => {
+            eprintln!("Warning: failed to create context-pressure.json: {e}");
+        }
+    }
 
     Ok(report)
 }
