@@ -87,6 +87,14 @@ pub fn registry() -> Vec<ExportFormat> {
         render: HtmlExporter::export,
     });
 
+    #[cfg(feature = "json-export")]
+    formats.push(ExportFormat {
+        name: "json",
+        tier: StabilityTier::Stable,
+        consumer: "machine-readable format, jq pipelines",
+        render: JsonExporter::export,
+    });
+
     #[cfg(feature = "mermaid-export")]
     formats.push(ExportFormat {
         name: "mermaid",
@@ -106,6 +114,7 @@ pub fn registry() -> Vec<ExportFormat> {
 /// live in [`registry`]; a format gated *out* of this build is absent from `registry()`
 /// but present here so the CLI can still route it and explain how to enable it.
 pub const FEATURE_GATED_FORMATS: &[(&str, &str)] = &[
+    ("json", "json-export"),
     ("csv", "csv-export"),
     ("html", "html-export"),
     ("mermaid", "mermaid-export"),
@@ -159,6 +168,9 @@ pub struct MarkdownExporter;
 /// Note: This exporter properly handles and escapes embedded quotes and newlines in message content.
 #[cfg(feature = "csv-export")]
 pub struct CsvExporter;
+
+#[cfg(feature = "json-export")]
+pub struct JsonExporter;
 
 #[cfg(feature = "mermaid-export")]
 pub struct MermaidExporter;
@@ -452,5 +464,43 @@ mod tests {
         assert!(html.contains("submitted"));
         assert!(html.contains("Hello agent"));
         assert!(html.contains("Hello user"));
+    }
+}
+
+#[cfg(feature = "json-export")]
+impl TrajectoryExporter for JsonExporter {
+    #[allow(clippy::unwrap_used, clippy::expect_used)]
+    fn export(trajectory: &Trajectory) -> String {
+        let raw_json = serde_json::to_string_pretty(trajectory).unwrap();
+        let redactor = Redactor::default_enabled();
+        redactor.redact_text(&raw_json, surface::EXPORT).text
+    }
+}
+
+#[cfg(test)]
+#[cfg(feature = "json-export")]
+mod json_export_tests {
+    use super::*;
+
+    #[test]
+    #[allow(clippy::unwrap_used, clippy::expect_used)]
+    fn test_json_export_format() {
+        let mut t = crate::trajectory::Trajectory::new();
+        t.info.task = Some("Add a feature".to_string());
+        t.info.outcome = Some("submitted".to_string());
+
+        t.record_message(&crate::model::Message::system("System prompt"));
+        t.record_message(&crate::model::Message::user("Hello agent"));
+        t.record_message(&crate::model::Message::assistant("Hello user"));
+
+        let json = JsonExporter::export(&t);
+
+        assert!(json.contains("Add a feature"));
+        assert!(json.contains("submitted"));
+        assert!(json.contains("System prompt"));
+        assert!(json.contains("Hello agent"));
+        assert!(json.contains("Hello user"));
+
+        let _parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
     }
 }
