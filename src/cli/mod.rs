@@ -17,6 +17,7 @@ use crate::exit_code::ExitCode;
 
 pub mod args;
 pub mod catalog;
+pub mod explain;
 
 #[derive(Debug, Parser)]
 #[command(
@@ -56,6 +57,8 @@ pub enum Command {
     Ui(args::UiCmd),
     /// Self-describing command catalog for operator discoverability.
     Catalog(args::CatalogCmd),
+    /// Explain an exit code, outcome class, or failure category offline.
+    Explain(args::ExplainCmd),
     /// Reap leftover Maxwell's Daemon containers, including legacy labels.
     Cleanup,
 }
@@ -167,6 +170,7 @@ pub async fn run() -> Result<(), Error> {
             args::AgentCmd::Annotate(a) => agent_annotate_cmd(&a),
         },
         Command::Catalog(c) => catalog::run_catalog(c),
+        Command::Explain(c) => explain::run_explain(&c),
         Command::Ui(u) => ui_cmd(u).await,
         #[cfg(feature = "docker")]
         Command::Cleanup => cleanup_cmd().await,
