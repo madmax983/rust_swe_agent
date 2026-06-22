@@ -1496,6 +1496,8 @@ pub enum BenchCmd {
     Variance(BenchVarianceCmd),
     /// Combine two or more completed sharded sweep directories into one canonical aggregate (offline; zero model cost).
     Merge(MergeCmd),
+    /// Report context-window pressure telemetry per sweep (zero-cost: reads only on-disk artifacts).
+    ContextPressure(ContextPressureCmd),
 }
 
 /// `bench merge` — combine completed sharded sweep directories into one canonical aggregate.
@@ -2143,6 +2145,18 @@ pub struct CacheStatsCmd {
     /// Baseline sweep directory. When supplied, prints Δ hit_rate and Δ realized_spend_usd.
     #[arg(long, value_name = "DIR")]
     pub baseline: Option<std::path::PathBuf>,
+}
+
+/// `bench context-pressure` — report context-window pressure telemetry per sweep (zero-cost: reads only on-disk artifacts).
+#[derive(Debug, Args)]
+pub struct ContextPressureCmd {
+    /// Completed sweep directory produced by `bench swebench`.
+    #[arg(long)]
+    pub sweep: std::path::PathBuf,
+
+    /// Output format: `text` (default) or `json`.
+    #[arg(long, default_value = "text", value_name = "FMT")]
+    pub format: String,
 }
 
 /// `bench budget-fit` — right-size step, cost, and wallclock caps (zero-cost: reads only on-disk artifacts).

@@ -65,6 +65,7 @@ fn resolved_instance(id: &str, steps: u32, cost_usd: f64, duration_secs: f64) ->
         retry_id: None,
         previous_failure_category: None,
         trace_id: None,
+        context_pressure: Default::default(),
     }
 }
 
@@ -103,6 +104,7 @@ fn cap_bound_instance(
         retry_id: None,
         previous_failure_category: None,
         trace_id: None,
+        context_pressure: Default::default(),
     }
 }
 
@@ -135,6 +137,7 @@ fn unresolved_other_instance(id: &str, steps: u32, cost_usd: f64) -> InstanceRes
         retry_id: None,
         previous_failure_category: None,
         trace_id: None,
+        context_pressure: Default::default(),
     }
 }
 

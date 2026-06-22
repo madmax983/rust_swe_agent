@@ -24,6 +24,7 @@ pub mod command_stats;
 pub mod compare;
 pub mod config_resolve;
 pub mod contamination_check;
+pub mod context_pressure;
 pub mod dataset;
 pub mod dataset_stats;
 pub mod dataset_verify;

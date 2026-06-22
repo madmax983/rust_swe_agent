@@ -236,6 +236,12 @@ pub fn entries() -> &'static [CatalogEntry] {
             stage: "analyze",
         },
         CatalogEntry {
+            path: "bench context-pressure",
+            summary: "Report context-window pressure telemetry per sweep",
+            cost_tier: "free",
+            stage: "analyze",
+        },
+        CatalogEntry {
             path: "bench calibrate",
             summary: "Compare a forecast artifact against completed sweep results",
             cost_tier: "free",

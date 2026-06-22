@@ -58,6 +58,7 @@ fn instance(id: &str, duration_secs: Option<f64>, attempts: u32, runs: u32) -> I
         retry_id: None,
         previous_failure_category: None,
         trace_id: None,
+        context_pressure: Default::default(),
     }
 }
 

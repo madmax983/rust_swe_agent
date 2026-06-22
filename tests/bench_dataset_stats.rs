@@ -295,6 +295,7 @@ fn test_historical_resolved_rates_legacy_and_hash_handling() {
             retry_id: None,
             previous_failure_category: None,
             trace_id: None,
+            context_pressure: Default::default(),
         }],
         rate_limit_events: None,
         total_fallbacks: 0,
