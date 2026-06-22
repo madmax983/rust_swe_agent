@@ -1239,6 +1239,16 @@ fn handle_key(dash: &Arc<RatatuiDashboard>, key: KeyEvent) {
     }
 }
 
+/// Normalize pasted text line endings to `\n` (issue #745 review). Windows
+/// clipboards deliver `\r\n` and some sources lone `\r`; the modal renderer
+/// strips trailing `\r` only for *display*, so without this an edit-command
+/// paste could keep hidden carriage returns and submit them to bash via
+/// `ConfirmDecision::Edit` (e.g. `true\r` becomes a bogus command). Collapsing
+/// CRLF and lone CR to LF keeps the submitted value identical to what is shown.
+fn normalize_pasted(text: &str) -> String {
+    text.replace("\r\n", "\n").replace('\r', "\n")
+}
+
 /// Insert bracketed-paste content (issue #745) into whichever modal input
 /// field is active. crossterm delivers the whole clipboard payload as one
 /// `Event::Paste(String)` — including embedded newlines — so the entire value
@@ -1247,18 +1257,29 @@ fn handle_key(dash: &Arc<RatatuiDashboard>, key: KeyEvent) {
 ///
 /// The paste is appended at the buffer's insertion point (this slice keeps a
 /// single end-of-buffer insertion point; see the issue's Out of Scope), so
-/// existing typed content is preserved. When no input field is active — normal
-/// feed navigation or the modal's choice screen — the paste is ignored so it
-/// can never corrupt feed state or trigger a hotkey (AC5).
+/// existing typed content is preserved. Routing precedence:
+/// - a reject-feedback / edit-command input field (when a modal is pending);
+/// - otherwise, while a modal is pending but on its choice screen, the paste is
+///   dropped — it must NOT fall through to an open `/` search hidden behind the
+///   modal, which dismissing the modal would then reveal as corrupted;
+/// - otherwise (no modal), an actively-edited `/` search query;
+/// - otherwise (normal feed navigation), ignored so it can never corrupt feed
+///   state or trigger a hotkey (AC5).
 fn handle_paste(dash: &Arc<RatatuiDashboard>, text: &str) {
+    let text = normalize_pasted(text);
     let mut s = dash
         .state
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     if let Some(buffer) = s.feedback_input.as_mut() {
-        buffer.push_str(text);
+        buffer.push_str(&text);
     } else if let Some(buffer) = s.edit_input.as_mut() {
-        buffer.push_str(text);
+        buffer.push_str(&text);
+    } else if s.pending.is_some() {
+        // Modal pending on its choice screen (no input field active): the paste
+        // is not directed anywhere. Drop it before the search branch so an open
+        // search behind the modal is never silently appended to.
+        return;
     } else if let Some(mut search) = s.search.take() {
         // While the `/`-search query is being edited, paste appends to the
         // query — preserving the pre-bracketed-paste behaviour where pasted
@@ -1270,7 +1291,7 @@ fn handle_paste(dash: &Arc<RatatuiDashboard>, text: &str) {
             s.search = Some(search);
             return;
         }
-        search.query.push_str(text);
+        search.query.push_str(&text);
         search_recompute_after_edit(&mut s, &mut search);
         s.search = Some(search);
     } else {
@@ -3816,6 +3837,57 @@ mod tests {
         // Paste in committed (n/N navigation) mode is dropped, not appended.
         handle_paste(&d, "garbage");
         assert_eq!(search_state(&d).unwrap().query, "line");
+    }
+
+    #[test]
+    fn paste_does_not_corrupt_open_search_when_modal_pending() {
+        let d = make_dashboard();
+        let _rx = make_pending(&d);
+        // The operator had a `/` search open when the confirm modal was raised;
+        // confirm() sets `pending` without clearing `search`.
+        {
+            let mut s = d.state.lock().unwrap();
+            s.search = Some(SearchState {
+                query: "abc".into(),
+                current: 0,
+                editing: true,
+            });
+        }
+        // Pasting on the modal's choice screen must NOT append to the hidden
+        // search query.
+        handle_paste(&d, "XYZ");
+        assert_eq!(search_state(&d).unwrap().query, "abc");
+        // And nothing leaked into the modal input fields.
+        assert!(snap(&d).feedback_input.is_none());
+        assert!(snap(&d).edit_input.is_none());
+    }
+
+    #[test]
+    fn paste_into_edit_normalizes_crlf_to_lf() {
+        let d = make_dashboard();
+        let mut rx = make_pending(&d);
+        // Enter edit mode (pre-filled with the pending command "x").
+        handle_key(&d, KeyEvent::new(KeyCode::Char('e'), KeyModifiers::NONE));
+        // Windows-style clipboard payload with CRLF and a lone CR.
+        handle_paste(&d, "a\r\nb\rc");
+        // Stored value carries no carriage returns: what is submitted matches
+        // what the renderer shows.
+        assert_eq!(snap(&d).edit_input.as_deref(), Some("xa\nb\nc"));
+
+        handle_key(&d, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(
+            rx.try_recv().unwrap(),
+            ConfirmDecision::Edit("xa\nb\nc".to_owned())
+        );
+    }
+
+    #[test]
+    fn paste_into_feedback_normalizes_crlf_to_lf() {
+        let d = make_dashboard();
+        let _rx = make_pending(&d);
+        handle_key(&d, KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE));
+        handle_paste(&d, "line1\r\nline2");
+        assert_eq!(snap(&d).feedback_input.as_deref(), Some("line1\nline2"));
     }
 
     #[test]
