@@ -449,7 +449,10 @@ fn build_union_instances(
     loaded: &[(String, PathBuf, SweepResults)],
     policy: MergeCollisionPolicy,
 ) -> UnionResult {
-    let mut seen: HashMap<String, usize> = HashMap::new(); // id → shard index
+    // ⚡ Pre-allocate collections based on total instances across all shards to prevent
+    // repeated heap allocations during the initial detection and ordered union passes.
+    let total_instances = loaded.iter().map(|(_, _, r)| r.instances.len()).sum();
+    let mut seen: HashMap<String, usize> = HashMap::with_capacity(total_instances); // id → shard index
     let mut collisions: Vec<(String, usize, usize)> = Vec::new(); // (id, first_shard, second_shard)
     let mut duplicates = 0;
 
@@ -501,8 +504,8 @@ fn build_union_instances(
     }
 
     // Build ordered union (shard order, then instance order within shard)
-    let mut included: HashSet<String> = HashSet::new();
-    let mut union: Vec<crate::run::swebench::InstanceResult> = Vec::new();
+    let mut included: HashSet<String> = HashSet::with_capacity(seen.len());
+    let mut union: Vec<crate::run::swebench::InstanceResult> = Vec::with_capacity(seen.len());
 
     for (shard_idx, (_, _, results)) in loaded.iter().enumerate() {
         for inst in &results.instances {
@@ -675,7 +678,7 @@ fn merge_evaluation_json(
         return Ok(None);
     }
 
-    let mut eval_entries: Vec<Value> = Vec::new();
+    let mut eval_entries: Vec<Value> = Vec::with_capacity(owner_shard.len());
     let mut merged_provenance: Option<(String, Value)> = None; // (shard label, provenance)
     let mut shards_with_provenance = 0usize;
 
