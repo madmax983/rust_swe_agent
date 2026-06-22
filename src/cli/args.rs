@@ -3484,10 +3484,11 @@ pub struct EventsCmd {
     /// Optional config file. The event log's payload fields are redacted at write
     /// time, but the writer injects `instance_id` afterward with the run's raw
     /// value, so a configured `[redaction].secret_literals`/`custom_patterns` is
-    /// re-applied here to mask a secret-shaped id. A sweep's recorded policy is
-    /// recovered automatically from its `manifest.json`/`results.json`; pass
-    /// `--config` to add rules (e.g. for a standalone `bench mini` run, whose
-    /// literals are recorded already-redacted and cannot be auto-recovered).
+    /// re-applied here to mask a secret-shaped id. Configured `secret_literals`
+    /// are recorded *already-redacted* (sweep manifests and mini trajectories
+    /// alike), so `--config` is the reliable way to mask a literal-shaped id; a
+    /// sweep's recorded `custom_patterns`/`enabled` are recovered best-effort from
+    /// its `manifest.json`/`results.json` without `--config`.
     #[arg(long)]
     pub config: Option<PathBuf>,
 }

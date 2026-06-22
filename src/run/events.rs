@@ -66,9 +66,11 @@ pub struct EventsArgs {
     /// — notably `instance_id` (see `crate::stream::event_log::EventLogSink`) —
     /// carry the run's raw values, so a configured `secret_literals` /
     /// `custom_patterns` must be applied here to keep a secret-shaped id from
-    /// leaking into rows and summaries. The CLI seeds this from `--config`
-    /// unioned with the run/sweep's recorded resolved policy; `default()`
-    /// reproduces the prior default/env-only behavior.
+    /// leaking into rows and summaries. The CLI seeds this from `--config` (the
+    /// reliable lever — recorded `secret_literals` are stored already-redacted
+    /// and so cannot be recovered from artifacts) unioned with the run/sweep's
+    /// best-effort recorded policy (recovers `custom_patterns`/`enabled`);
+    /// `default()` reproduces the prior default/env-only behavior.
     pub redaction: RedactionCfg,
 }
 

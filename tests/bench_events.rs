@@ -654,16 +654,11 @@ fn cli_does_not_mutate_the_event_log_dir() {
     assert_eq!(after_files, before.len(), "no files added or removed");
 }
 
-#[test]
-fn cli_auto_recovers_sweep_redaction_policy() {
-    // A sweep launched with a configured literal records it (plaintext) in its
-    // manifest. `bench events` must recover that policy and mask a matching
-    // instance id WITHOUT the operator re-supplying `--config`.
-    let secret = "sw33tcustomliteral";
-    let tmp = tempfile::tempdir().unwrap();
-    let dir = tmp.path().join("sweep");
+/// Write a sweep dir whose `manifest.json` records `resolved` (a `[redaction]`
+/// TOML block) and an event log with one event for `instance_id`. Returns the dir.
+fn write_sweep(tmp: &Path, resolved: &str, instance_id: &str) -> PathBuf {
+    let dir = tmp.join("sweep");
     std::fs::create_dir_all(&dir).unwrap();
-    let resolved = format!("[redaction]\nenabled = true\nsecret_literals = [\"{secret}\"]\n");
     std::fs::write(
         dir.join("manifest.json"),
         serde_json::json!({ "config": { "resolved": resolved } }).to_string(),
@@ -672,10 +667,68 @@ fn cli_auto_recovers_sweep_redaction_policy() {
     std::fs::write(
         dir.join("run.events.jsonl"),
         format!(
-            "{{\"schema\":\"event-log-v1\",\"ts\":\"2026-01-01T00:00:00Z\",\"event_type\":\"run_started\",\"instance_id\":\"{secret}\"}}\n"
+            "{{\"schema\":\"event-log-v1\",\"ts\":\"2026-01-01T00:00:00Z\",\"event_type\":\"run_started\",\"instance_id\":\"{instance_id}\"}}\n"
         ),
     )
     .unwrap();
+    dir
+}
+
+#[test]
+fn cli_sweep_redacted_literal_needs_config() {
+    // Production sweeps redact secret_literals in their manifest (build_manifest,
+    // src/run/swebench.rs), storing `[REDACTED:…]`. `merge_recorded_sweep_redaction`
+    // skips those, so auto-recovery CANNOT mask a literal-shaped id — `--config` is
+    // the reliable lever. This characterizes that limitation honestly.
+    let secret = "sw33tcustomliteral";
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = write_sweep(
+        tmp.path(),
+        "[redaction]\nenabled = true\nsecret_literals = [\"[REDACTED:configured_literal]\"]\n",
+        secret,
+    );
+
+    // Without --config the redacted manifest yields nothing recoverable: the raw id
+    // is still rendered (json so the per-instance map is always serialized).
+    let bare = run_cli(&[dir.to_str().unwrap(), "--summary", "--format", "json"]);
+    assert!(
+        String::from_utf8(bare.stdout).unwrap().contains(secret),
+        "a redacted-in-manifest literal cannot be auto-recovered; id remains until --config"
+    );
+
+    // --config supplying the real literal masks it.
+    let cfg = tmp.path().join("cfg.toml");
+    std::fs::write(
+        &cfg,
+        format!("[redaction]\nsecret_literals = [\"{secret}\"]\n"),
+    )
+    .unwrap();
+    let out = run_cli(&[
+        dir.to_str().unwrap(),
+        "--summary",
+        "--format",
+        "json",
+        "--config",
+        cfg.to_str().unwrap(),
+    ]);
+    assert_eq!(out.status.code(), Some(0));
+    assert!(
+        !String::from_utf8(out.stdout).unwrap().contains(secret),
+        "--config must mask the literal-shaped instance id"
+    );
+}
+
+#[test]
+fn cli_auto_recovers_sweep_custom_pattern() {
+    // Unlike literals, a `custom_patterns` regex *source* is stored plaintext in the
+    // manifest (it does not match its own regex), so it IS auto-recovered and masks
+    // a matching instance id with no `--config`.
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = write_sweep(
+        tmp.path(),
+        "[redaction]\nenabled = true\ncustom_patterns = [\"inst-[0-9]+\"]\n",
+        "inst-12345",
+    );
 
     let out = run_cli(&[dir.to_str().unwrap(), "--summary", "--format", "json"]);
     assert_eq!(out.status.code(), Some(0));
@@ -685,8 +738,8 @@ fn cli_auto_recovers_sweep_redaction_policy() {
         "the recorded event should still be counted: {stdout}"
     );
     assert!(
-        !stdout.contains(secret),
-        "the sweep's recorded literal must mask the matching instance id: {stdout}"
+        !stdout.contains("inst-12345"),
+        "the sweep's recorded custom_pattern must mask the matching id: {stdout}"
     );
 }
 

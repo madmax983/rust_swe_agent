@@ -5157,9 +5157,10 @@ fn bench_events(e: args::EventsCmd) -> Result<(), Error> {
     let include_payloads = matches!(format, EventsOutputFormat::Json | EventsOutputFormat::Jsonl);
     // Build the redaction policy applied to event-only fields the writer injects
     // after the runtime `RedactingSink` — notably the raw `instance_id`. Base it
-    // on `--config` (or defaults), then union the run/sweep's recorded resolved
-    // policy so a sweep run with configured literals masks a secret-shaped id
-    // without the operator re-supplying `--config`.
+    // on `--config` (or defaults), then union the run/sweep's recorded policy
+    // best-effort. Recorded `secret_literals` are stored already-redacted, so
+    // `--config` is the reliable lever for a literal-shaped id; the merge still
+    // recovers a sweep's `custom_patterns`/`enabled` for the no-`--config` case.
     let mut redaction = match &e.config {
         Some(p) => Config::load(p)?,
         None => Config::defaults()?,

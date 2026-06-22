@@ -57,15 +57,19 @@ already redacted at write time, but the writer injects the `instance_id`
 records the run's **raw** instance id. To keep a secret-shaped id (a SWE-bench
 `instance_id` that matches a configured `secret_literals` / `custom_patterns`)
 from leaking into rows and summaries, `bench events` re-applies the run's
-configured redaction policy:
+redaction policy:
 
-- A completed **sweep** records its resolved `[redaction]` policy in
-  `manifest.json` / `results.json`; this is recovered automatically (unioned with
-  the default rules) when you pass the sweep directory or its
-  `{dir}.events.jsonl` sibling — no `--config` needed.
-- A standalone **`bench mini`** run records its literals *already redacted* in the
-  trajectory, so they cannot be auto-recovered; pass `--config <the run's config>`
-  to mask a configured-secret instance id for a bare event-log file.
+- **`--config <PATH>` is the reliable lever.** A run records its configured
+  `secret_literals` *already redacted* — sweeps redact the resolved config in
+  `manifest.json` / `results.json` (`build_manifest`), and a standalone
+  `bench mini` run redacts them in its trajectory — so a literal value cannot be
+  recovered from artifacts. Pass `--config` with the run's config to mask a
+  literal-shaped instance id (for both sweeps and mini).
+- **Best-effort auto-recovery (no `--config` needed).** When you pass a sweep
+  directory or its `{dir}.events.jsonl` sibling, the recorded `[redaction]` policy
+  is unioned with the defaults, recovering the `enabled` flag and any
+  `custom_patterns` (whose regex *source* is stored plaintext). This is a bonus,
+  not a substitute for `--config` when the secret is a configured literal.
 
 ### Valid `--type` values
 
