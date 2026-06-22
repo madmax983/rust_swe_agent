@@ -12,7 +12,10 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
-use crossterm::event::{Event, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use crossterm::event::{
+    DisableBracketedPaste, EnableBracketedPaste, Event, EventStream, KeyCode, KeyEvent,
+    KeyEventKind, KeyModifiers,
+};
 use crossterm::execute;
 use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
@@ -388,7 +391,12 @@ impl RatatuiDashboard {
     ) -> std::io::Result<RatatuiDashboardHandle> {
         enable_raw_mode()?;
         let mut stdout = std::io::stdout();
-        if let Err(e) = execute!(stdout, EnterAlternateScreen) {
+        // Enable alt-screen and bracketed paste together so pasted clipboard
+        // content arrives as a single `Event::Paste` rather than a burst of key
+        // events whose first newline would submit an input field (issue #745).
+        // On failure, unwind both so the terminal is never left half-configured.
+        if let Err(e) = execute!(stdout, EnterAlternateScreen, EnableBracketedPaste) {
+            let _ = execute!(stdout, DisableBracketedPaste);
             let _ = disable_raw_mode();
             return Err(e);
         }
@@ -438,7 +446,11 @@ impl RatatuiDashboard {
 
 fn restore_terminal() -> std::io::Result<()> {
     let mut stdout: Stdout = std::io::stdout();
-    let _ = execute!(stdout, LeaveAlternateScreen);
+    // Disable bracketed paste before leaving the alt-screen so the mode is not
+    // leaked into the operator's shell on teardown — including the panic /
+    // early-exit path, since this runs from `RatatuiDashboardHandle::drop`
+    // (issue #745).
+    let _ = execute!(stdout, DisableBracketedPaste, LeaveAlternateScreen);
     let _ = stdout.flush();
     disable_raw_mode()
 }
@@ -730,6 +742,7 @@ async fn renderer_loop(
             ev = events.next() => {
                 match ev {
                     Some(Ok(Event::Key(key))) => handle_key(&dash, key),
+                    Some(Ok(Event::Paste(text))) => handle_paste(&dash, &text),
                     Some(Err(err)) => {
                         tracing::warn!(?err, "ratatui event stream error");
                     }
@@ -1217,6 +1230,34 @@ fn handle_key(dash: &Arc<RatatuiDashboard>, key: KeyEvent) {
             dash.notify.notify_waiters();
         }
     }
+}
+
+/// Insert bracketed-paste content (issue #745) into whichever modal input
+/// field is active. crossterm delivers the whole clipboard payload as one
+/// `Event::Paste(String)` — including embedded newlines — so the entire value
+/// lands in the buffer without any character being interpreted as `Enter`
+/// (which would otherwise submit the field at the first newline).
+///
+/// The paste is appended at the buffer's insertion point (this slice keeps a
+/// single end-of-buffer insertion point; see the issue's Out of Scope), so
+/// existing typed content is preserved. When no input field is active — normal
+/// feed navigation or the modal's choice screen — the paste is ignored so it
+/// can never corrupt feed state or trigger a hotkey (AC5).
+fn handle_paste(dash: &Arc<RatatuiDashboard>, text: &str) {
+    let mut s = dash
+        .state
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(buffer) = s.feedback_input.as_mut() {
+        buffer.push_str(text);
+    } else if let Some(buffer) = s.edit_input.as_mut() {
+        buffer.push_str(text);
+    } else {
+        // No active input field: ignore the paste entirely.
+        return;
+    }
+    drop(s);
+    dash.notify.notify_waiters();
 }
 
 fn draw_frame(
@@ -1732,6 +1773,35 @@ fn rationale_body_string(rationale: &str) -> String {
     }
 }
 
+/// Render a (possibly multi-line) input `buffer` as styled display lines for
+/// the modal controls region (issue #745). Each logical line becomes its own
+/// `Line` — a `> ` prompt prefix on the first, indentation thereafter — so a
+/// pasted multi-line value is shown in full instead of being collapsed into a
+/// single span with embedded newlines (which renders incorrectly). The green
+/// caret block rides the last line, marking the end-of-buffer insertion point.
+fn input_buffer_lines(buffer: &str) -> Vec<Line<'static>> {
+    let buf_lines: Vec<&str> = buffer
+        .split('\n')
+        .map(|line| line.strip_suffix('\r').unwrap_or(line))
+        .collect();
+    let last = buf_lines.len() - 1;
+    buf_lines
+        .iter()
+        .enumerate()
+        .map(|(i, line)| {
+            let prefix = if i == 0 { " > " } else { "   " };
+            let mut spans = vec![
+                Span::styled(prefix, Style::default().fg(Color::Green)),
+                Span::styled((*line).to_string(), Style::default().fg(Color::White)),
+            ];
+            if i == last {
+                spans.push(Span::styled("█", Style::default().fg(Color::Green)));
+            }
+            Line::from(spans)
+        })
+        .collect()
+}
+
 /// Controls region: the reject-feedback prompt, the edit buffer, or the default
 /// decision keys. Always reserved space by [`modal_body_layout`] so it stays on
 /// screen.
@@ -1748,11 +1818,10 @@ fn modal_control_lines(
                 .fg(Color::LightYellow)
                 .add_modifier(Modifier::BOLD),
         )));
-        lines.push(Line::from(vec![
-            Span::styled(" > ", Style::default().fg(Color::Green)),
-            Span::styled(buffer.clone(), Style::default().fg(Color::White)),
-            Span::styled("█", Style::default().fg(Color::Green)),
-        ]));
+        // Render one display line per logical line so a pasted multi-line value
+        // (issue #745) is shown in full rather than collapsed into a single span
+        // with embedded newlines. The caret rides the last line.
+        lines.extend(input_buffer_lines(buffer));
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(
             "[Enter] submit   [Esc] back to choices",
@@ -1765,25 +1834,7 @@ fn modal_control_lines(
                 .fg(Color::LightYellow)
                 .add_modifier(Modifier::BOLD),
         )));
-        let edit_lines: Vec<&str> = buffer
-            .split('\n')
-            .map(|line| line.strip_suffix('\r').unwrap_or(line))
-            .collect();
-        for (i, line) in edit_lines.iter().enumerate() {
-            let prefix = if i == 0 { " > " } else { "   " };
-            if i == edit_lines.len() - 1 {
-                lines.push(Line::from(vec![
-                    Span::styled(prefix, Style::default().fg(Color::Green)),
-                    Span::styled((*line).to_string(), Style::default().fg(Color::White)),
-                    Span::styled("█", Style::default().fg(Color::Green)),
-                ]));
-            } else {
-                lines.push(Line::from(vec![
-                    Span::styled(prefix, Style::default().fg(Color::Green)),
-                    Span::styled((*line).to_string(), Style::default().fg(Color::White)),
-                ]));
-            }
-        }
+        lines.extend(input_buffer_lines(buffer));
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(
             "[Enter] execute edit   [Esc] cancel",
@@ -3613,6 +3664,117 @@ mod tests {
         handle_key(&d, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
         assert!(snap(&d).edit_input.is_none());
         assert!(snap(&d).pending.is_some());
+    }
+
+    // ---- bracketed paste into input fields (#745) ----
+
+    #[test]
+    fn paste_multiline_into_feedback_retains_full_content_and_does_not_submit() {
+        let d = make_dashboard();
+        let mut rx = make_pending(&d);
+
+        // Enter reject-feedback mode.
+        handle_key(&d, KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE));
+        assert_eq!(snap(&d).feedback_input.as_deref(), Some(""));
+
+        // Paste a ≥3-line clipboard payload with embedded newlines.
+        let pasted = "line one\nline two\nline three";
+        handle_paste(&d, pasted);
+
+        // Full content retained; embedded newlines did NOT submit the field.
+        assert_eq!(snap(&d).feedback_input.as_deref(), Some(pasted));
+        assert!(rx.try_recv().is_err(), "paste must not submit the field");
+        assert!(snap(&d).pending.is_some());
+
+        // An explicit Enter submits the full multi-line value.
+        handle_key(&d, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(
+            rx.try_recv().unwrap(),
+            ConfirmDecision::Reject(Some(pasted.to_owned()))
+        );
+    }
+
+    #[test]
+    fn paste_multiline_into_edit_retains_full_content_and_does_not_submit() {
+        let d = make_dashboard();
+        let mut rx = make_pending(&d);
+
+        // Enter edit mode (pre-filled with the pending command "x").
+        handle_key(&d, KeyEvent::new(KeyCode::Char('e'), KeyModifiers::NONE));
+        assert_eq!(snap(&d).edit_input.as_deref(), Some("x"));
+
+        // Paste a multi-line command at the insertion point (end of buffer);
+        // existing typed content ("x") is preserved.
+        let pasted = "cmd1\ncmd2\ncmd3";
+        handle_paste(&d, pasted);
+
+        assert_eq!(snap(&d).edit_input.as_deref(), Some("xcmd1\ncmd2\ncmd3"));
+        assert!(rx.try_recv().is_err(), "paste must not submit the field");
+        assert!(snap(&d).pending.is_some());
+
+        handle_key(&d, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(
+            rx.try_recv().unwrap(),
+            ConfirmDecision::Edit("xcmd1\ncmd2\ncmd3".to_owned())
+        );
+    }
+
+    #[test]
+    fn paste_preserves_typed_content_and_inserts_at_insertion_point() {
+        let d = make_dashboard();
+        let _rx = make_pending(&d);
+
+        handle_key(&d, KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE));
+        // Type some content first.
+        for c in ['a', 'b'] {
+            handle_key(&d, KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+        }
+        handle_paste(&d, "PASTED");
+        // Continue typing after the paste.
+        handle_key(&d, KeyEvent::new(KeyCode::Char('z'), KeyModifiers::NONE));
+
+        assert_eq!(snap(&d).feedback_input.as_deref(), Some("abPASTEDz"));
+    }
+
+    #[test]
+    fn paste_in_normal_feed_mode_is_ignored() {
+        let d = make_dashboard();
+        // No pending modal, no active input field.
+        handle_paste(&d, "garbage\nthat\nshould\nbe\nignored");
+        let s = snap(&d);
+        assert!(s.feedback_input.is_none());
+        assert!(s.edit_input.is_none());
+        assert!(s.pending.is_none());
+        // Feed state untouched.
+        assert!(s.log.is_empty());
+        assert_eq!(s.scroll_offset, 0);
+    }
+
+    #[test]
+    fn paste_on_choice_screen_is_ignored() {
+        let d = make_dashboard();
+        let mut rx = make_pending(&d);
+        // Modal open but no input field active (choice screen).
+        handle_paste(&d, "no\nfield\nhere");
+        assert!(snap(&d).feedback_input.is_none());
+        assert!(snap(&d).edit_input.is_none());
+        assert!(rx.try_recv().is_err());
+        assert!(snap(&d).pending.is_some());
+    }
+
+    #[test]
+    fn multiline_feedback_value_renders_without_panic() {
+        let d = make_dashboard();
+        let _rx = make_pending(&d);
+        handle_key(&d, KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE));
+        // A wide, multi-line paste that wraps inside the modal.
+        handle_paste(
+            &d,
+            "a very long pasted feedback line that should wrap across the modal width\nsecond line\nthird line",
+        );
+
+        // Rendering the multi-line value must not panic on wide/wrapped input.
+        let _ = render_to_buffer(&snap(&d), 100, 40);
     }
 
     #[test]
