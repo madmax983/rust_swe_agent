@@ -5155,6 +5155,20 @@ fn bench_events(e: args::EventsCmd) -> Result<(), Error> {
     // Only json/jsonl serialize the raw payload; table prints just the typed
     // columns, so we skip retaining payloads there to keep memory bounded.
     let include_payloads = matches!(format, EventsOutputFormat::Json | EventsOutputFormat::Jsonl);
+    // Build the redaction policy applied to event-only fields the writer injects
+    // after the runtime `RedactingSink` — notably the raw `instance_id`. Base it
+    // on `--config` (or defaults), then union the run/sweep's recorded resolved
+    // policy so a sweep run with configured literals masks a secret-shaped id
+    // without the operator re-supplying `--config`.
+    let mut redaction = match &e.config {
+        Some(p) => Config::load(p)?,
+        None => Config::defaults()?,
+    }
+    .root
+    .redaction;
+    for dir in events_recorded_config_dirs(&e.path) {
+        crate::run::redact_audit::merge_recorded_sweep_redaction(&dir, &mut redaction);
+    }
     let report = events::run(&events::EventsArgs {
         path: e.path,
         types: e.types,
@@ -5163,6 +5177,7 @@ fn bench_events(e: args::EventsCmd) -> Result<(), Error> {
         until: e.until,
         summary: e.summary,
         include_payloads,
+        redaction,
     })?;
     match format {
         EventsOutputFormat::Table => {
@@ -5183,6 +5198,39 @@ fn bench_events(e: args::EventsCmd) -> Result<(), Error> {
         }
     }
     Ok(())
+}
+
+/// Directories whose recorded resolved redaction policy (in `manifest.json` /
+/// `results.json`) applies to the event log at `path`, for
+/// [`merge_recorded_sweep_redaction`](crate::run::redact_audit::merge_recorded_sweep_redaction).
+///
+/// A sweep records its policy at the sweep-dir root, while the event log is
+/// conventionally either inside that dir (`runs/sweep/…`) or its
+/// `{dir}.events.jsonl` sibling (the documented `--output runs/sweep --event-log
+/// runs/sweep.events.jsonl` layout). So probe the path itself when it is a
+/// directory, and for a `*.events.jsonl` file the dir formed by stripping that
+/// suffix plus the file's parent. Non-existent or manifest-less dirs are harmless:
+/// the merge is best-effort and leaves the config unchanged.
+fn events_recorded_config_dirs(path: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let mut dirs = Vec::new();
+    if path.is_dir() {
+        dirs.push(path.to_path_buf());
+        return dirs;
+    }
+    if let (Some(parent), Some(stem)) = (
+        path.parent(),
+        path.file_name()
+            .and_then(|n| n.to_str())
+            .and_then(|n| n.strip_suffix(".events.jsonl")),
+    ) {
+        dirs.push(parent.join(stem));
+    }
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() {
+            dirs.push(parent.to_path_buf());
+        }
+    }
+    dirs
 }
 
 fn bench_triage(t: args::TriageCmd) -> Result<(), Error> {

@@ -21,6 +21,7 @@ use chrono::{DateTime, Utc};
 use serde::Serialize;
 use serde_json::Value;
 
+use crate::config::RedactionCfg;
 use crate::error::{ConfigError, Error};
 use crate::redaction::{Redactor, surface};
 
@@ -59,6 +60,16 @@ pub struct EventsArgs {
     /// `ts`/`instance_id`/`event_type`, so the CLI sets this `false` there to
     /// avoid allocating large assistant content / bash output for every event.
     pub include_payloads: bool,
+    /// Redaction policy applied when rendering/aggregating events. The on-disk
+    /// log's payload fields were already redacted at write time, but
+    /// event-only fields the writer injects *after* the runtime `RedactingSink`
+    /// — notably `instance_id` (see `crate::stream::event_log::EventLogSink`) —
+    /// carry the run's raw values, so a configured `secret_literals` /
+    /// `custom_patterns` must be applied here to keep a secret-shaped id from
+    /// leaking into rows and summaries. The CLI seeds this from `--config`
+    /// unioned with the run/sweep's recorded resolved policy; `default()`
+    /// reproduces the prior default/env-only behavior.
+    pub redaction: RedactionCfg,
 }
 
 /// One matched event. Serializes as the full original line object (`raw`, after
@@ -147,7 +158,7 @@ pub fn run(args: &EventsArgs) -> Result<EventsReport, Error> {
         Some(args.instances.iter().map(String::as_str).collect())
     };
 
-    let redactor = Redactor::default_enabled();
+    let redactor = Redactor::from_config_lossy(&args.redaction);
     let mut events: Vec<EventRow> = Vec::new();
     // In `--summary` mode we never retain raw events (a shared event log can be
     // multi-GB); aggregate counts during the scan instead so memory stays bounded

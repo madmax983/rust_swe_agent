@@ -44,10 +44,28 @@ event log. Lines that are not valid JSON, or that lack an `event_type`, or whose
 | `--until <RFC3339>` | no | Keep events with `ts <=` this instant (inclusive). |
 | `--summary` | no | Print per-type (and per-instance, over a sweep) counts only. |
 | `--format <FMT>` | no | `table` (default), `json`, or `jsonl`. |
+| `--config <PATH>` | no | Config whose `[redaction]` rules are applied when rendering (see Redaction). |
 
 Events are emitted sorted by `(ts, instance_id, event_type)` for stable output.
-Event content is passed through the default redactor (the `inspect` surface)
-before printing, so secrets captured in event payloads are masked.
+
+### Redaction
+
+Event content is passed through a redactor (the `inspect` surface) before
+printing, so secrets captured in event payloads are masked. Payload fields are
+already redacted at write time, but the writer injects the `instance_id`
+*after* the runtime redactor (see `src/stream/event_log.rs`), so an event log
+records the run's **raw** instance id. To keep a secret-shaped id (a SWE-bench
+`instance_id` that matches a configured `secret_literals` / `custom_patterns`)
+from leaking into rows and summaries, `bench events` re-applies the run's
+configured redaction policy:
+
+- A completed **sweep** records its resolved `[redaction]` policy in
+  `manifest.json` / `results.json`; this is recovered automatically (unioned with
+  the default rules) when you pass the sweep directory or its
+  `{dir}.events.jsonl` sibling — no `--config` needed.
+- A standalone **`bench mini`** run records its literals *already redacted* in the
+  trajectory, so they cannot be auto-recovered; pass `--config <the run's config>`
+  to mask a configured-secret instance id for a bare event-log file.
 
 ### Valid `--type` values
 

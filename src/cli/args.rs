@@ -3480,6 +3480,16 @@ pub struct EventsCmd {
     /// object), or `jsonl` (one event per line, machine-readable).
     #[arg(long, default_value = "table")]
     pub format: String,
+
+    /// Optional config file. The event log's payload fields are redacted at write
+    /// time, but the writer injects `instance_id` afterward with the run's raw
+    /// value, so a configured `[redaction].secret_literals`/`custom_patterns` is
+    /// re-applied here to mask a secret-shaped id. A sweep's recorded policy is
+    /// recovered automatically from its `manifest.json`/`results.json`; pass
+    /// `--config` to add rules (e.g. for a standalone `bench mini` run, whose
+    /// literals are recorded already-redacted and cannot be auto-recovered).
+    #[arg(long)]
+    pub config: Option<PathBuf>,
 }
 
 #[derive(Debug, Args)]

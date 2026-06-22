@@ -13,6 +13,7 @@ use std::process::Command;
 mod support;
 use support::binary_path;
 
+use maxwells_daemon::config::RedactionCfg;
 use maxwells_daemon::run::events::{
     ALL_EVENT_TYPES, EventsArgs, run as events_run, validate_types,
 };
@@ -34,6 +35,9 @@ fn base_args(path: PathBuf) -> EventsArgs {
         // Full-fidelity by default for direct API callers/tests; the CLI sets
         // this per output format.
         include_payloads: true,
+        // Default policy (enabled, no configured literals) reproduces the prior
+        // default/env-only redaction; individual tests override as needed.
+        redaction: RedactionCfg::default(),
     }
 }
 
@@ -245,6 +249,47 @@ fn unit_redacts_secret_shaped_instance_id_in_display_and_summary() {
         assert!(
             !key.contains(fake_token),
             "per-instance summary key must not leak the raw secret-shaped id: {key}"
+        );
+    }
+}
+
+#[test]
+fn unit_applies_configured_literal_to_instance_id() {
+    // A plain word the *default* rules never touch but a configured
+    // `secret_literals` does. The writer injects `instance_id` after the runtime
+    // RedactingSink, so the on-disk id is raw and only the query-time redactor can
+    // mask it — proving `bench events` must honor the run's configured policy.
+    let secret = "sw33tcustomliteral";
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path().join("e.jsonl");
+    std::fs::write(
+        &path,
+        format!(
+            "{{\"schema\":\"event-log-v1\",\"ts\":\"2026-01-01T00:00:00Z\",\"event_type\":\"run_started\",\"instance_id\":\"{secret}\"}}\n"
+        ),
+    )
+    .unwrap();
+
+    // Default policy: nothing matches, so the id passes through verbatim.
+    let mut args = base_args(path);
+    args.summary = true;
+    let report = events_run(&args).unwrap();
+    assert!(
+        report.summary.by_instance.contains_key(secret),
+        "default rules should leave a non-secret-shaped id unchanged"
+    );
+
+    // Configured literal: the id must be masked in the per-instance summary.
+    args.redaction = RedactionCfg {
+        enabled: true,
+        secret_literals: vec![secret.to_owned()],
+        ..RedactionCfg::default()
+    };
+    let report = events_run(&args).unwrap();
+    for key in report.summary.by_instance.keys() {
+        assert!(
+            !key.contains(secret),
+            "configured literal must not survive in the per-instance summary: {key}"
         );
     }
 }
@@ -607,6 +652,89 @@ fn cli_does_not_mutate_the_event_log_dir() {
         assert_eq!(&bytes, orig, "file contents must be unchanged");
     }
     assert_eq!(after_files, before.len(), "no files added or removed");
+}
+
+#[test]
+fn cli_auto_recovers_sweep_redaction_policy() {
+    // A sweep launched with a configured literal records it (plaintext) in its
+    // manifest. `bench events` must recover that policy and mask a matching
+    // instance id WITHOUT the operator re-supplying `--config`.
+    let secret = "sw33tcustomliteral";
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().join("sweep");
+    std::fs::create_dir_all(&dir).unwrap();
+    let resolved = format!("[redaction]\nenabled = true\nsecret_literals = [\"{secret}\"]\n");
+    std::fs::write(
+        dir.join("manifest.json"),
+        serde_json::json!({ "config": { "resolved": resolved } }).to_string(),
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("run.events.jsonl"),
+        format!(
+            "{{\"schema\":\"event-log-v1\",\"ts\":\"2026-01-01T00:00:00Z\",\"event_type\":\"run_started\",\"instance_id\":\"{secret}\"}}\n"
+        ),
+    )
+    .unwrap();
+
+    let out = run_cli(&[dir.to_str().unwrap(), "--summary", "--format", "json"]);
+    assert_eq!(out.status.code(), Some(0));
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    assert!(
+        stdout.contains("\"total\": 1") || stdout.contains("\"total\":1"),
+        "the recorded event should still be counted: {stdout}"
+    );
+    assert!(
+        !stdout.contains(secret),
+        "the sweep's recorded literal must mask the matching instance id: {stdout}"
+    );
+}
+
+#[test]
+fn cli_config_flag_masks_instance_id_for_bare_log() {
+    // A bare event-log file outside any sweep dir: no manifest to recover from, so
+    // `--config` is the operator's lever to apply the run's redaction policy.
+    let secret = "sw33tcustomliteral";
+    let tmp = tempfile::tempdir().unwrap();
+    let log = tmp.path().join("e.jsonl");
+    std::fs::write(
+        &log,
+        format!(
+            "{{\"schema\":\"event-log-v1\",\"ts\":\"2026-01-01T00:00:00Z\",\"event_type\":\"run_started\",\"instance_id\":\"{secret}\"}}\n"
+        ),
+    )
+    .unwrap();
+    let cfg = tmp.path().join("cfg.toml");
+    std::fs::write(
+        &cfg,
+        format!("[redaction]\nsecret_literals = [\"{secret}\"]\n"),
+    )
+    .unwrap();
+
+    // Without --config (and no manifest), the id passes through verbatim. Use
+    // json so the per-instance map is always serialized (a single-instance
+    // summary table omits the per-instance breakdown).
+    let bare = run_cli(&[log.to_str().unwrap(), "--summary", "--format", "json"]);
+    assert!(
+        String::from_utf8(bare.stdout).unwrap().contains(secret),
+        "control: default policy leaves the id unchanged"
+    );
+
+    // With --config, the configured literal masks it.
+    let out = run_cli(&[
+        log.to_str().unwrap(),
+        "--summary",
+        "--format",
+        "json",
+        "--config",
+        cfg.to_str().unwrap(),
+    ]);
+    assert_eq!(out.status.code(), Some(0));
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    assert!(
+        !stdout.contains(secret),
+        "--config literal must mask the matching instance id: {stdout}"
+    );
 }
 
 // ── performance smoke ─────────────────────────────────────────────────────────
