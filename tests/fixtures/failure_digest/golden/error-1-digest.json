@@ -1,15 +1,23 @@
 {
-  "failure_category": "model_parse",
+  "schema_version": "1.1",
   "instance_id": "error-1",
+  "outcome": "error",
+  "failure_category": "model_parse",
+  "total_cost_usd": 2.5,
+  "step_count": 5,
+  "task_duration_secs": 42.0,
   "last_assistant_message": "I tried to parse the model response but failed due to an unexpected format.",
   "last_tool_stderr": "model parse error: unexpected token at position 42",
   "last_tool_stdout": "some output here",
-  "outcome": "error",
   "patch_status": "not_attempted",
+  "triage_cluster_label": null,
   "redacted": false,
-  "schema_version": "1.0",
-  "step_count": 5,
-  "task_duration_secs": 42.0,
-  "total_cost_usd": 2.5,
-  "triage_cluster_label": null
+  "failure_signature": {
+    "signature_id": "36c90d5bc0621642",
+    "failure_category": "model_parse",
+    "assistant_tail": "i tried to parse the model response but failed due to an unexpected format.",
+    "bash_exit_code": 1,
+    "stderr_line": "model parse error: unexpected token at position <num>",
+    "summary": "assistant=\"i tried to parse the model response but failed due to an unexpected format.\" exit=1 stderr=\"model parse error: unexpected token at position <num>\""
+  }
 }

@@ -92,6 +92,12 @@ stderr_line=<normalized stderr line>
 
 Two failures collide only when all four normalized fields match.
 
+The same `FailureSignature` primitive is surfaced per-instance by
+`bench failure-digest` as a stable `signature_id`; see
+[`docs/spec-failure-signature.md`](spec-failure-signature.md) for the
+single-instance digest surface and its redaction/record-replay stability
+guarantees.
+
 ## Output Schema
 
 `bench triage` writes `<sweep>/triage.json`:

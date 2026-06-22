@@ -124,6 +124,21 @@ impl FailureSignature {
     pub fn failure_category(&self) -> &str {
         &self.failure_category
     }
+
+    #[must_use]
+    pub fn assistant_tail(&self) -> &str {
+        &self.assistant_tail
+    }
+
+    #[must_use]
+    pub fn bash_exit_code(&self) -> Option<i32> {
+        self.bash_exit_code
+    }
+
+    #[must_use]
+    pub fn stderr_line(&self) -> &str {
+        &self.stderr_line
+    }
 }
 
 pub fn extract_instance_signature(
@@ -195,6 +210,14 @@ pub struct TerminalSignals {
     pub assistant_message: String,
     pub bash_exit_code: Option<i32>,
     pub stderr_line: String,
+}
+
+/// Return the last non-empty line of `s`, or `""` if every line is blank.
+pub(crate) fn last_non_empty_line(s: &str) -> &str {
+    s.lines()
+        .rev()
+        .find(|l| !l.trim().is_empty())
+        .unwrap_or_default()
 }
 
 /// Normalize one textual signature component.
@@ -638,12 +661,7 @@ pub fn terminal_signals(trajectory: &Trajectory) -> TerminalSignals {
     let (bash_exit_code, stderr_line) = last_run.map_or((None, String::new()), |run| {
         (
             Some(run.exit_code),
-            run.stderr
-                .lines()
-                .rev()
-                .find(|line| !line.trim().is_empty())
-                .unwrap_or_default()
-                .to_owned(),
+            last_non_empty_line(&run.stderr).to_owned(),
         )
     });
     TerminalSignals {
@@ -733,5 +751,29 @@ mod tests {
     fn message_tail_limits_by_chars() {
         assert_eq!(message_tail("abcdef", 3), "def");
         assert_eq!(message_tail("abc", 3), "abc");
+    }
+
+    #[test]
+    fn accessors_expose_normalized_fields() {
+        let sig = FailureSignature::from_parts(
+            "model_parse",
+            "Parser failed in /tmp/swe/task-101/src/main.py line 33",
+            Some(2),
+            "SyntaxError: unexpected token 404",
+        );
+
+        // Accessors expose the normalized constituent fields used in the hash.
+        assert_eq!(sig.failure_category(), "model_parse");
+        assert_eq!(sig.bash_exit_code(), Some(2));
+        assert!(
+            sig.assistant_tail().contains("<path>") && sig.assistant_tail().contains("<num>"),
+            "assistant_tail should be normalized: {}",
+            sig.assistant_tail()
+        );
+        assert!(
+            sig.stderr_line().contains("<num>"),
+            "stderr_line should be normalized: {}",
+            sig.stderr_line()
+        );
     }
 }
