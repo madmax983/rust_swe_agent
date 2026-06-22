@@ -12,7 +12,6 @@ use sha2::{Digest, Sha256};
 use crate::artifact::{ArtifactKind, ArtifactSchemaVersion};
 use crate::error::{ConfigError, Error};
 use crate::redaction::{Redactor, surface};
-use crate::trajectory::Trajectory;
 
 // ── public opts ───────────────────────────────────────────────────────────────
 
@@ -249,6 +248,15 @@ fn now_utc() -> String {
 
 // ── write path ────────────────────────────────────────────────────────────────
 
+/// Minimal trajectory shape — only the fields needed to validate the file and
+/// count messages. Avoids allocating all message content for large trajectories
+/// (can be tens of MB).
+#[derive(Deserialize)]
+struct TrajectoryMin {
+    artifact_kind: ArtifactKind,
+    messages: Vec<serde::de::IgnoredAny>,
+}
+
 pub fn run_annotate(opts: &AnnotateOpts) -> Result<(), Error> {
     // 1. Read and parse the trajectory (validates it is a parseable trajectory).
     let traj_bytes = std::fs::read(&opts.trajectory_path).map_err(|e| {
@@ -257,12 +265,19 @@ pub fn run_annotate(opts: &AnnotateOpts) -> Result<(), Error> {
             opts.trajectory_path.display()
         )))
     })?;
-    let traj: Trajectory = serde_json::from_slice(&traj_bytes).map_err(|e| {
+
+    let traj: TrajectoryMin = serde_json::from_slice(&traj_bytes).map_err(|e| {
         Error::Config(ConfigError::Invalid(format!(
             "agent annotate: `{}` is not a parseable trajectory: {e}",
             opts.trajectory_path.display()
         )))
     })?;
+    if traj.artifact_kind != ArtifactKind::Trajectory {
+        return Err(Error::Config(ConfigError::Invalid(format!(
+            "agent annotate: `{}` is not a trajectory artifact",
+            opts.trajectory_path.display()
+        ))));
+    }
 
     // 2. Validate step-note indices.
     let step_count = traj.messages.len();
@@ -323,7 +338,9 @@ pub fn run_annotate(opts: &AnnotateOpts) -> Result<(), Error> {
     );
 
     let json = serde_json::to_string_pretty(&annotation)?;
-    std::fs::write(&sidecar, json)?;
+    let temp_sidecar = sidecar.with_extension("tmp");
+    std::fs::write(&temp_sidecar, json)?;
+    std::fs::rename(&temp_sidecar, &sidecar)?;
 
     Ok(())
 }
@@ -346,7 +363,21 @@ pub fn run_show(opts: &ShowOpts) -> Result<TrajectoryAnnotation, Error> {
         )))
     })?;
 
-    let mut ann: TrajectoryAnnotation = serde_json::from_str(&raw).map_err(|e| {
+    // Validate artifact_kind and schema_version before deserializing the payload.
+    let val: serde_json::Value = serde_json::from_str(&raw).map_err(|e| {
+        Error::Config(ConfigError::Invalid(format!(
+            "agent annotate: annotation at `{}` is malformed JSON: {e}",
+            sidecar.display()
+        )))
+    })?;
+    crate::artifact::classify_json_value(
+        &val,
+        ArtifactKind::TrajectoryAnnotation,
+        sidecar.display().to_string(),
+    )
+    .map_err(|e| Error::Config(ConfigError::Invalid(e.to_string())))?;
+
+    let mut ann: TrajectoryAnnotation = serde_json::from_value(val).map_err(|e| {
         Error::Config(ConfigError::Invalid(format!(
             "agent annotate: annotation at `{}` is malformed: {e}",
             sidecar.display()
@@ -355,11 +386,13 @@ pub fn run_show(opts: &ShowOpts) -> Result<TrajectoryAnnotation, Error> {
 
     // Apply redaction to free-text on read/emit.
     let redactor = Redactor::default_enabled();
-    if let Some(c) = ann.failure_category.take() {
-        ann.failure_category = Some(redactor.redact_text(&c, surface::EXPORT).text);
+    if let Some(ref mut c) = ann.failure_category {
+        let redacted = redactor.redact_text(c, surface::EXPORT).text;
+        *c = redacted;
     }
-    if let Some(n) = ann.note.take() {
-        ann.note = Some(redactor.redact_text(&n, surface::EXPORT).text);
+    if let Some(ref mut n) = ann.note {
+        let redacted = redactor.redact_text(n, surface::EXPORT).text;
+        *n = redacted;
     }
     for sn in &mut ann.step_notes {
         sn.note = redactor.redact_text(&sn.note, surface::EXPORT).text;
@@ -493,7 +526,10 @@ mod tests {
             verdict: Verdict::Correct,
             failure_category: None,
             note: None,
-            step_notes: vec![StepNoteInput { step: 5, note: "oob".into() }],
+            step_notes: vec![StepNoteInput {
+                step: 5,
+                note: "oob".into(),
+            }],
             force: false,
         };
         let result = run_annotate(&opts);
@@ -526,7 +562,10 @@ mod tests {
         };
         run_annotate(&opts).expect("first write");
 
-        let opts2 = AnnotateOpts { force: false, ..opts };
+        let opts2 = AnnotateOpts {
+            force: false,
+            ..opts
+        };
         let result = run_annotate(&opts2);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("force"));

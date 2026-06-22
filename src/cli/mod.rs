@@ -7237,7 +7237,10 @@ fn agent_annotate_cmd(a: &args::AgentAnnotateCmd) -> Result<(), Error> {
                 "instance_id": instance_id_from_path(&a.trajectory),
                 "sidecar": sidecar.display().to_string(),
             });
-            println!("{}", serde_json::to_string_pretty(&msg).map_err(Error::Json)?);
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&msg).map_err(Error::Json)?
+            );
         }
         AnnotateFormat::Text => {
             print!("{}", render_write_text(&a.trajectory, verdict, &sidecar));

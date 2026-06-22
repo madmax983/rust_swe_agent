@@ -153,7 +153,10 @@ fn ac3_schema_version_artifact_kind_instance_id_fingerprint_present() {
         use std::fmt::Write as _;
         let _ = write!(expected_hex, "{b:02x}");
     }
-    assert_eq!(fp, expected_hex, "trajectory_sha256 does not match file digest");
+    assert_eq!(
+        fp, expected_hex,
+        "trajectory_sha256 does not match file digest"
+    );
 }
 
 // ── AC4: validation exits non-zero with clear messages ───────────────────────
@@ -198,9 +201,7 @@ fn ac4_non_trajectory_file_exits_nonzero() {
     );
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
-        stderr.contains("parse")
-            || stderr.contains("trajectory")
-            || stderr.contains("Cargo.toml"),
+        stderr.contains("parse") || stderr.contains("trajectory") || stderr.contains("Cargo.toml"),
         "error message unclear: {stderr}"
     );
 }
