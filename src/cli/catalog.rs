@@ -61,6 +61,12 @@ pub fn entries() -> &'static [CatalogEntry] {
         },
         // Agent subcommands
         CatalogEntry {
+            path: "agent annotate",
+            summary: "Attach a schema-versioned human verdict and notes to a trajectory sidecar",
+            cost_tier: "free",
+            stage: "inspect",
+        },
+        CatalogEntry {
             path: "agent best-of",
             summary: "Sample N runs and emit the best patch by --verify oracle",
             cost_tier: "paid",
