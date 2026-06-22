@@ -391,15 +391,22 @@ impl RatatuiDashboard {
     ) -> std::io::Result<RatatuiDashboardHandle> {
         enable_raw_mode()?;
         let mut stdout = std::io::stdout();
-        // Enable alt-screen and bracketed paste together so pasted clipboard
-        // content arrives as a single `Event::Paste` rather than a burst of key
-        // events whose first newline would submit an input field (issue #745).
-        // On failure, unwind both so the terminal is never left half-configured.
-        if let Err(e) = execute!(stdout, EnterAlternateScreen, EnableBracketedPaste) {
-            let _ = execute!(stdout, DisableBracketedPaste);
+        // The alt-screen is required; if it fails, unwind raw mode and bail
+        // before anything is drawn so the terminal is never left half-configured.
+        if let Err(e) = execute!(stdout, EnterAlternateScreen) {
             let _ = disable_raw_mode();
             return Err(e);
         }
+        // Bracketed paste is a best-effort enhancement (issue #745): it lets
+        // pasted clipboard content arrive as a single `Event::Paste` instead of
+        // a burst of key events whose first newline would submit an input
+        // field. On terminals that don't support it — e.g. Windows legacy
+        // WinAPI consoles, where `EnableBracketedPaste` returns `Unsupported` —
+        // we degrade to the dashboard without multi-line paste handling rather
+        // than failing to start the TUI entirely. The error is swallowed
+        // deliberately; teardown's unconditional `DisableBracketedPaste` is
+        // likewise harmless on terminals that never enabled it.
+        let _ = execute!(stdout, EnableBracketedPaste);
         let backend = CrosstermBackend::new(stdout);
         let terminal = match Terminal::new(backend) {
             Ok(t) => t,
@@ -1252,6 +1259,20 @@ fn handle_paste(dash: &Arc<RatatuiDashboard>, text: &str) {
         buffer.push_str(text);
     } else if let Some(buffer) = s.edit_input.as_mut() {
         buffer.push_str(text);
+    } else if let Some(mut search) = s.search.take() {
+        // While the `/`-search query is being edited, paste appends to the
+        // query — preserving the pre-bracketed-paste behaviour where pasted
+        // text arrived as `Char` events and built up the query (issue #745
+        // review). Re-run the incremental find so highlights/jump update, just
+        // as typing a character does. A committed search (n/N navigation) is
+        // not a text input, so its paste is dropped.
+        if !search.editing {
+            s.search = Some(search);
+            return;
+        }
+        search.query.push_str(text);
+        search_recompute_after_edit(&mut s, &mut search);
+        s.search = Some(search);
     } else {
         // No active input field: ignore the paste entirely.
         return;
@@ -3760,6 +3781,41 @@ mod tests {
         assert!(snap(&d).edit_input.is_none());
         assert!(rx.try_recv().is_err());
         assert!(snap(&d).pending.is_some());
+    }
+
+    #[test]
+    fn paste_into_search_query_appends_while_editing() {
+        let d = make_dashboard();
+        push_lines(&d, 3); // line1, line2, line3
+
+        // Enter the `/`-search sub-mode (editing).
+        press(&d, KeyCode::Char('/'));
+        assert!(search_state(&d).is_some_and(|s| s.editing));
+
+        // Type part of the query, then paste the rest.
+        type_str(&d, "li");
+        handle_paste(&d, "ne2");
+
+        let search = search_state(&d).unwrap();
+        assert_eq!(search.query, "line2");
+        // Still editing — paste must not commit the search.
+        assert!(search.editing);
+    }
+
+    #[test]
+    fn paste_into_committed_search_is_ignored() {
+        let d = make_dashboard();
+        push_lines(&d, 3);
+
+        press(&d, KeyCode::Char('/'));
+        type_str(&d, "line");
+        // Commit the search (leaves editing mode).
+        press(&d, KeyCode::Enter);
+        assert!(search_state(&d).is_some_and(|s| !s.editing));
+
+        // Paste in committed (n/N navigation) mode is dropped, not appended.
+        handle_paste(&d, "garbage");
+        assert_eq!(search_state(&d).unwrap().query, "line");
     }
 
     #[test]
