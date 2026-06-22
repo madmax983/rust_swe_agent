@@ -744,6 +744,83 @@ fn cli_auto_recovers_sweep_custom_pattern() {
 }
 
 #[test]
+fn cli_config_enabled_false_overrides_recorded_policy() {
+    // A `--config` with `enabled = false` is authoritative: auto-recovery must not
+    // silently re-enable redaction (so an operator can inspect raw instance ids),
+    // even though the sweep manifest records `enabled = true` + a matching pattern.
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = write_sweep(
+        tmp.path(),
+        "[redaction]\nenabled = true\ncustom_patterns = [\"inst-[0-9]+\"]\n",
+        "inst-12345",
+    );
+
+    // Sanity: with no --config the recorded pattern masks the id.
+    let masked = run_cli(&[dir.to_str().unwrap(), "--summary", "--format", "json"]);
+    assert!(
+        !String::from_utf8(masked.stdout)
+            .unwrap()
+            .contains("inst-12345"),
+        "auto-recovery should mask the id without --config"
+    );
+
+    // With `--config enabled = false`, redaction is off and the id is shown raw.
+    let cfg = tmp.path().join("off.toml");
+    std::fs::write(&cfg, "[redaction]\nenabled = false\n").unwrap();
+    let out = run_cli(&[
+        dir.to_str().unwrap(),
+        "--summary",
+        "--format",
+        "json",
+        "--config",
+        cfg.to_str().unwrap(),
+    ]);
+    assert_eq!(out.status.code(), Some(0));
+    assert!(
+        String::from_utf8(out.stdout)
+            .unwrap()
+            .contains("inst-12345"),
+        "--config enabled=false must not be overridden by the recorded policy"
+    );
+}
+
+#[test]
+fn cli_recovers_nested_sweep_policy_under_parent() {
+    // A parent dir holds a sibling-style log `foo.events.jsonl` whose governing
+    // manifest lives in the sibling subdir `foo/`. Passing the parent must still
+    // recover that policy (config-dir discovery follows the discovered logs, not
+    // just the path argument) and mask the matching instance id.
+    let tmp = tempfile::tempdir().unwrap();
+    let parent = tmp.path().join("runs");
+    std::fs::create_dir_all(parent.join("foo")).unwrap();
+    std::fs::write(
+        parent.join("foo/manifest.json"),
+        serde_json::json!({
+            "config": { "resolved": "[redaction]\nenabled = true\ncustom_patterns = [\"inst-[0-9]+\"]\n" }
+        })
+        .to_string(),
+    )
+    .unwrap();
+    std::fs::write(
+        parent.join("foo.events.jsonl"),
+        "{\"schema\":\"event-log-v1\",\"ts\":\"2026-01-01T00:00:00Z\",\"event_type\":\"run_started\",\"instance_id\":\"inst-12345\"}\n",
+    )
+    .unwrap();
+
+    let out = run_cli(&[parent.to_str().unwrap(), "--summary", "--format", "json"]);
+    assert_eq!(out.status.code(), Some(0));
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    assert!(
+        stdout.contains("\"total\": 1") || stdout.contains("\"total\":1"),
+        "the nested sweep's log should be discovered and counted: {stdout}"
+    );
+    assert!(
+        !stdout.contains("inst-12345"),
+        "the nested sweep's recorded policy must mask the matching id: {stdout}"
+    );
+}
+
+#[test]
 fn cli_config_flag_masks_instance_id_for_bare_log() {
     // A bare event-log file outside any sweep dir: no manifest to recover from, so
     // `--config` is the operator's lever to apply the run's redaction policy.

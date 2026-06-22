@@ -5167,8 +5167,29 @@ fn bench_events(e: args::EventsCmd) -> Result<(), Error> {
     }
     .root
     .redaction;
-    for dir in events_recorded_config_dirs(&e.path) {
-        crate::run::redact_audit::merge_recorded_sweep_redaction(&dir, &mut redaction);
+    // An explicit `--config` is authoritative for the `enabled` flag. The recorded
+    // sweep policy may add literals/patterns and would otherwise force redaction
+    // back on (that force-enable is intended for `redact-audit`), but here it must
+    // not silently override an operator who set `enabled = false` to inspect raw
+    // ids; capture the requested state and restore it after the merge.
+    let config_enabled = redaction.enabled;
+    // Recover the recorded policy from every governing sweep dir: the path itself
+    // plus the governing dir of each discovered event log. Deriving from the
+    // discovered files (not just `path`) means a parent dir holding several sweeps
+    // — each with its own `manifest.json` in a sibling subdir — still has each
+    // child policy applied. Discovery errors are non-fatal here (`run` reports
+    // them); the merge is best-effort and a manifest-less dir is a no-op.
+    let mut config_dirs = events_recorded_config_dirs(&e.path);
+    for file in events::discover_event_files(&e.path).unwrap_or_default() {
+        config_dirs.extend(events_recorded_config_dirs(&file));
+    }
+    config_dirs.sort();
+    config_dirs.dedup();
+    for dir in &config_dirs {
+        crate::run::redact_audit::merge_recorded_sweep_redaction(dir, &mut redaction);
+    }
+    if e.config.is_some() {
+        redaction.enabled = config_enabled;
     }
     let report = events::run(&events::EventsArgs {
         path: e.path,

@@ -368,7 +368,7 @@ fn build_summary(events: &[EventRow]) -> EventsSummary {
 /// *next to* the output dir (`--output runs/sweep --event-log
 /// runs/sweep.events.jsonl`) rather than inside it. Results are deduplicated and
 /// sorted for deterministic output.
-fn discover_event_files(path: &Path) -> Result<Vec<PathBuf>, Error> {
+pub(crate) fn discover_event_files(path: &Path) -> Result<Vec<PathBuf>, Error> {
     if path.is_file() {
         return Ok(vec![path.to_path_buf()]);
     }

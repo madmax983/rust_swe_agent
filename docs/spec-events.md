@@ -66,10 +66,15 @@ redaction policy:
   recovered from artifacts. Pass `--config` with the run's config to mask a
   literal-shaped instance id (for both sweeps and mini).
 - **Best-effort auto-recovery (no `--config` needed).** When you pass a sweep
-  directory or its `{dir}.events.jsonl` sibling, the recorded `[redaction]` policy
-  is unioned with the defaults, recovering the `enabled` flag and any
-  `custom_patterns` (whose regex *source* is stored plaintext). This is a bonus,
-  not a substitute for `--config` when the secret is a configured literal.
+  directory, its `{dir}.events.jsonl` sibling, or a parent holding several sweeps,
+  each governing `manifest.json` / `results.json` `[redaction]` policy is unioned
+  with the defaults, recovering the `enabled` flag and any `custom_patterns`
+  (whose regex *source* is stored plaintext). This is a bonus, not a substitute
+  for `--config` when the secret is a configured literal.
+
+When `--config` is given, its `enabled` flag is authoritative — auto-recovery
+adds rules but never re-enables redaction over an explicit `enabled = false`
+(e.g. to inspect raw instance ids). Without `--config`, redaction defaults on.
 
 ### Valid `--type` values
 
