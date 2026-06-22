@@ -4024,6 +4024,20 @@ pub struct CatalogCmd {
     pub format: String,
 }
 
+/// `explain` — offline lookup of an exit code, outcome class, or failure
+/// category to its documented meaning and remediation (issue #535).
+#[derive(Debug, Args, Clone)]
+pub struct ExplainCmd {
+    /// Selector to explain: an exit code (`7`), an outcome class
+    /// (`verification_failure`), or a failure category (`step_limit` /
+    /// `StepLimit`). Omit to list every addressable code/class/category.
+    pub selector: Option<String>,
+
+    /// Output format: `text` or `json`.
+    #[arg(long, default_value = "text", value_parser = ["text", "json"])]
+    pub format: String,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

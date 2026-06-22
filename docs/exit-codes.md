@@ -26,6 +26,9 @@ parsing human-oriented output.
 | 15   | `resume_already_terminal` | `mini --resume` target trajectory already has a terminal outcome (`submitted`, `error`, `step_limit_reached`, `budget_exhausted`, `cancelled`, `wallclock_timeout`). Cannot continue a run that already completed. |
 | 16   | `resume_manifest_missing` | `mini --resume` target trajectory is missing required fields (`task` and/or `model_name`). The file may pre-date the run-manifest schema; create a fresh run instead. |
 | 17   | `resume_invalid_prefix` | `mini --resume` target trajectory is structurally invalid for resume: message sequence is empty, too short (fewer than 2 messages), or ends in a partial assistant turn. |
+| 18   | `bisect_budget_exhausted` | `bench bisect` exhausted its budget before identifying the regressing commit. |
+| 19   | `bisect_schema_break` | `bench bisect` found only trajectory-schema breaks in the remaining search space. |
+| 20   | `audit_failure` | `bench audit` detected a divergence exceeding tolerance or a bijection/evaluator contradiction. |
 | 21   | `eval_gaming_gate_failure` | `bench compare --max-test-only-resolved-rate` threshold was exceeded by the candidate sweep. |
 | 22   | `artifact_integrity_violation` | `bench export-ci` detected that JUnit XML aggregate attributes do not match `results.json` counts. The export wrote whatever it had; the mismatch signals a corrupt or incomplete sweep artifact. |
 | 23   | `scriptability_check_failure` | `bench scriptability-check` found at least one misconfigured MCP server or hook. Zero model calls were made; this is a wiring preflight. Distinct from `preflight_failure` (3) so CI can route scriptability misconfig separately from infrastructure failures. |

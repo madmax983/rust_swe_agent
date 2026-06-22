@@ -30,6 +30,12 @@ pub fn entries() -> &'static [CatalogEntry] {
             stage: "preflight",
         },
         CatalogEntry {
+            path: "explain",
+            summary: "Explain an exit code, outcome class, or failure category offline",
+            cost_tier: "free",
+            stage: "inspect",
+        },
+        CatalogEntry {
             path: "cleanup",
             summary: "Reap leftover Maxwell's Daemon containers, including legacy labels",
             cost_tier: "free",
