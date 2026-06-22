@@ -386,10 +386,7 @@ fn discover_event_files(path: &Path) -> Result<Vec<PathBuf>, Error> {
         // `symlink_metadata` does not follow symlinks, so a symlinked sibling
         // (which could escape the artifact tree or point at a blocking FIFO) is
         // not picked up — consistent with the symlink-safe `collect_jsonl` walk.
-        if std::fs::symlink_metadata(&sibling)
-            .map(|m| m.file_type().is_file())
-            .unwrap_or(false)
-        {
+        if std::fs::symlink_metadata(&sibling).is_ok_and(|m| m.file_type().is_file()) {
             out.push(sibling);
         }
     }
