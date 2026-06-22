@@ -279,7 +279,9 @@ async fn claude_driver_emits_tool_activity_events() {
     );
     // Tool calls are never mislabeled as bash-command telemetry.
     assert!(
-        !types.iter().any(|t| *t == "bash_start" || *t == "bash_result"),
+        !types
+            .iter()
+            .any(|t| *t == "bash_start" || *t == "bash_result"),
         "driver must not emit bash telemetry: {types:?}"
     );
 

@@ -653,7 +653,9 @@ timeout_secs = 3
         "command tool should emit ToolStart with the rendered command: {events:#?}"
     );
     assert!(
-        events.iter().any(|e| matches!(e, StreamEvent::ToolEnd { .. })),
+        events
+            .iter()
+            .any(|e| matches!(e, StreamEvent::ToolEnd { .. })),
         "command tool should emit ToolEnd to close the activity span: {events:#?}"
     );
     assert!(

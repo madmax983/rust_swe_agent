@@ -261,7 +261,9 @@ async fn codex_driver_emits_tool_activity_events() {
     );
     // The shell call is never mislabeled as bash-command telemetry.
     assert!(
-        !types.iter().any(|t| *t == "bash_start" || *t == "bash_result"),
+        !types
+            .iter()
+            .any(|t| *t == "bash_start" || *t == "bash_result"),
         "driver must not emit bash telemetry: {types:?}"
     );
 
