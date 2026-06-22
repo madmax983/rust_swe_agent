@@ -888,7 +888,7 @@ impl Agent for DefaultAgent {
         if has_budget {
             let mut initial_total: usize = self.history.iter().map(|m| m.content.len()).sum();
             for &(hist_idx, orig_bytes) in &elision.elided {
-                if let Some(msg) = self.history.iter().nth(hist_idx) {
+                if let Some(msg) = self.history.get(hist_idx) {
                     initial_total = initial_total
                         .saturating_add(orig_bytes)
                         .saturating_sub(msg.content.len());
