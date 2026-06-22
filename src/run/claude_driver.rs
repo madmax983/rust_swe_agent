@@ -860,6 +860,9 @@ fn handle_assistant(
         timestamp: Some(ts.clone()),
         ..Default::default()
     };
+    // Representative label for the tool-activity event emitted after the
+    // assistant message (set only when the turn issued tools).
+    let mut tool_label: Option<String> = None;
     if !actions.is_empty() {
         // Redact action labels (bash commands, file paths) on the trajectory
         // surface, matching the built-in loop — a tool call can carry a
@@ -867,6 +870,7 @@ fn handle_assistant(
         for action in &mut actions {
             *action = agent.redactor.redact_text(action, surface::TRAJECTORY).text;
         }
+        tool_label = tool_activity_label(&actions);
         extra.actions = Some(actions);
     }
     if !thinking_parts.is_empty() {
@@ -888,8 +892,38 @@ fn handle_assistant(
         step: parsed.steps,
         content: redacted,
         cost_usd: None,
-        timestamp: ts,
+        timestamp: ts.clone(),
     });
+    emit_tool_start(agent, parsed.steps, tool_label, ts);
+}
+
+/// Representative footer label for a turn's tool calls, used by the ToolStart
+/// activity event so an activity-inferring dashboard (issue #649) shows the
+/// in-flight tool. `None` when the turn issued no tools — a text/thinking-only
+/// turn is genuinely idle. A turn's parallel tool calls are summarized into one
+/// label; ToolStart is liveness, not command telemetry, so summarizing does not
+/// drop any audited shell-command record. Expects already-redacted labels.
+fn tool_activity_label(actions: &[String]) -> Option<String> {
+    match actions {
+        [] => None,
+        [only] => Some(only.clone()),
+        [first, rest @ ..] => Some(format!("{first} (+{} more)", rest.len())),
+    }
+}
+
+/// Emit the ToolStart half of the tool-activity span for a Claude-driver turn
+/// so activity-inferring dashboards (issue #649) render the in-flight tool
+/// instead of a static idle footer. The matching ToolEnd is emitted from
+/// `handle_user`. The driver stream is not wrapped in RedactingSink, so `label`
+/// must already be redacted.
+fn emit_tool_start(agent: &DefaultAgent, step: u32, label: Option<String>, ts: String) {
+    if let Some(label) = label {
+        agent.stream.emit(StreamEvent::ToolStart {
+            step,
+            label,
+            timestamp: ts,
+        });
+    }
 }
 
 /// Build a one-line action label for a `tool_use` block, mirroring the
@@ -1002,6 +1036,13 @@ fn handle_user(agent: &mut DefaultAgent, parsed: &mut Parsed, msg: &Value) {
     agent
         .trajectory
         .record_with_extra(&Message::user(redacted.clone()), extra);
+    // Close the tool-activity span opened in `handle_assistant` so the dashboard
+    // (issue #649) leaves the running state before the observation reopens the
+    // thinking window.
+    agent.stream.emit(StreamEvent::ToolEnd {
+        step: parsed.steps,
+        timestamp: ts.clone(),
+    });
     // Emit the per-step observation event for live consumers, mirroring the
     // built-in loop's post-bash Observation event.
     agent.stream.emit(StreamEvent::Observation {

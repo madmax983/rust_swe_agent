@@ -9,7 +9,7 @@
 use std::collections::{HashSet, VecDeque};
 use std::io::{Stdout, Write as _};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use crossterm::event::{Event, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
@@ -135,6 +135,12 @@ struct DashboardState {
     /// (a long no-newline rationale wraps to many rows).
     last_rationale_total_rows: usize,
     last_rationale_visible_rows: usize,
+    /// What the agent is doing right now, for the in-flight activity indicator
+    /// (issue #649). Driven by `StreamEvent` transitions in `emit()`.
+    activity: Activity,
+    /// Elapsed-time threshold past which the activity indicator escalates to
+    /// flag a likely stall (issue #649). Default 60s; configurable.
+    stall_threshold: Duration,
 }
 
 impl Default for DashboardState {
@@ -162,6 +168,8 @@ impl Default for DashboardState {
             rationale_scroll: 0,
             last_rationale_total_rows: 0,
             last_rationale_visible_rows: 0,
+            activity: Activity::Idle,
+            stall_threshold: Duration::from_secs(DEFAULT_STALL_THRESHOLD_SECS),
         }
     }
 }
@@ -209,6 +217,100 @@ enum LineKind {
 struct PendingPrompt {
     ctx: ConfirmContext,
     responder: oneshot::Sender<ConfirmDecision>,
+}
+
+/// Default stall threshold (issue #649): once the current operation exceeds
+/// this, the activity indicator escalates (yellow) to flag a likely hang.
+/// Overridable via the `MAXWELL_STALL_THRESHOLD_SECS` env var at `start()`.
+const DEFAULT_STALL_THRESHOLD_SECS: u64 = 60;
+
+/// Resolve the stall threshold from `MAXWELL_STALL_THRESHOLD_SECS`, falling
+/// back to [`DEFAULT_STALL_THRESHOLD_SECS`] when unset or unparsable (AC6:
+/// "configurable").
+fn stall_threshold_from_env() -> Duration {
+    let secs = std::env::var("MAXWELL_STALL_THRESHOLD_SECS")
+        .ok()
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .unwrap_or(DEFAULT_STALL_THRESHOLD_SECS);
+    Duration::from_secs(secs)
+}
+
+/// Braille spinner frames for the in-flight activity indicator (issue #649).
+const SPINNER_FRAMES: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+
+/// Milliseconds per spinner frame. At 100ms the frame advances 10×/sec, so it
+/// is always visibly changing within any one-second window (AC4): a frozen
+/// render is distinguishable from a live one.
+const SPINNER_FRAME_MS: u128 = 100;
+
+/// What the agent is doing *right now*, inferred from the `StreamEvent` gap
+/// (issue #649). There is no `model-call-started` event — the model-thinking
+/// window is the span between a step boundary (`RunStarted` / `Observation` /
+/// `FormatError`) and the next `AssistantMessage`. `since` anchors the
+/// per-operation elapsed counter, which resets at every transition.
+enum Activity {
+    /// No operation in flight: awaiting a confirm decision, or run finished.
+    /// Rendered as the static hint with no animation (AC3).
+    Idle,
+    /// A model call is in flight (step boundary → next `AssistantMessage`).
+    Thinking { since: Instant },
+    /// A bash command is executing (`BashStart` → `BashResult`).
+    Running { since: Instant, command: String },
+}
+
+impl Activity {
+    /// True while an operation is in flight, i.e. the renderer should keep
+    /// ticking so the spinner advances. `Idle` returns `false` so the loop
+    /// rests and adds zero animation frames (AC3).
+    fn is_active(&self) -> bool {
+        !matches!(self, Self::Idle)
+    }
+}
+
+/// Per-frame snapshot of [`Activity`] with elapsed time already resolved, so
+/// the pure render path (and `TestBackend` tests) is a deterministic function
+/// of `elapsed` rather than reading the wall clock itself.
+#[derive(Clone)]
+enum ActivitySnapshot {
+    Idle,
+    Thinking { elapsed: Duration },
+    Running { elapsed: Duration, command: String },
+}
+
+impl ActivitySnapshot {
+    /// Resolve a live [`Activity`] into a snapshot, capturing wall-clock
+    /// elapsed for the active operation.
+    fn from_activity(activity: &Activity) -> Self {
+        match activity {
+            Activity::Idle => Self::Idle,
+            Activity::Thinking { since } => Self::Thinking {
+                elapsed: since.elapsed(),
+            },
+            Activity::Running { since, command } => Self::Running {
+                elapsed: since.elapsed(),
+                command: command.clone(),
+            },
+        }
+    }
+}
+
+/// Spinner glyph for `elapsed`, advancing one frame per [`SPINNER_FRAME_MS`].
+fn spinner_frame(elapsed: Duration) -> &'static str {
+    // Reduce modulo the frame count in u128 first so the cast is always a
+    // small in-range index (no truncation).
+    let idx = ((elapsed.as_millis() / SPINNER_FRAME_MS) % SPINNER_FRAMES.len() as u128) as usize;
+    SPINNER_FRAMES[idx]
+}
+
+/// Style for an active-operation footer: bold, escalating to yellow once the
+/// operation outlives the stall threshold (issue #649, AC6).
+fn activity_style(elapsed: Duration, stall_threshold: Duration) -> Style {
+    let base = Style::default().add_modifier(Modifier::BOLD);
+    if elapsed >= stall_threshold {
+        base.fg(Color::Yellow)
+    } else {
+        base
+    }
 }
 
 pub struct RatatuiDashboardHandle {
@@ -301,6 +403,7 @@ impl RatatuiDashboard {
         let dash = Arc::new(Self {
             state: Mutex::new(DashboardState {
                 is_monitor,
+                stall_threshold: stall_threshold_from_env(),
                 ..DashboardState::default()
             }),
             notify: Notify::new(),
@@ -357,6 +460,12 @@ impl StreamSink for RatatuiDashboard {
                     s.task = Some(task.clone());
                     s.model = Some(model.clone());
                     s.started_at = Some(started_at);
+                    // The step-1 model call begins now (issue #649): there is
+                    // no `model-call-started` event, so the first model-thinking
+                    // window opens at run start and closes at `AssistantMessage`.
+                    s.activity = Activity::Thinking {
+                        since: Instant::now(),
+                    };
                 }
                 self.append(LineKind::Info, format!("run started: {model} :: {task}"));
             }
@@ -375,6 +484,10 @@ impl StreamSink for RatatuiDashboard {
                         s.cost_usd = cost;
                     }
                     s.step = step;
+                    // The model has returned: the thinking window closes. The
+                    // brief span before the next bash/confirm is genuinely idle
+                    // (issue #649, AC3).
+                    s.activity = Activity::Idle;
                 }
                 let preview = first_lines(&content, 6);
                 self.append(
@@ -383,6 +496,16 @@ impl StreamSink for RatatuiDashboard {
                 );
             }
             StreamEvent::BashStart { step, command, .. } => {
+                {
+                    let mut s = self
+                        .state
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    s.activity = Activity::Running {
+                        since: Instant::now(),
+                        command: command.clone(),
+                    };
+                }
                 self.append(LineKind::BashRun, format!("step {step} bash: {command}"));
             }
             StreamEvent::BashResult {
@@ -393,6 +516,15 @@ impl StreamSink for RatatuiDashboard {
                 timed_out,
                 ..
             } => {
+                {
+                    let mut s = self
+                        .state
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    // Bash finished: the next `Observation` will reopen the
+                    // thinking window; the gap until then is idle (issue #649).
+                    s.activity = Activity::Idle;
+                }
                 let kind = if exit_code == 0 && !timed_out {
                     LineKind::BashOk
                 } else {
@@ -405,7 +537,49 @@ impl StreamSink for RatatuiDashboard {
                 );
                 self.append(kind, summary);
             }
+            StreamEvent::ToolStart { step, label, .. } => {
+                {
+                    let mut s = self
+                        .state
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    // A non-bash tool/hook/driver operation is in flight: render
+                    // it like a bash run so a slow one escalates to the stall
+                    // indicator instead of the static idle footer (issue #649).
+                    s.activity = Activity::Running {
+                        since: Instant::now(),
+                        command: label.clone(),
+                    };
+                }
+                self.append(LineKind::BashRun, format!("step {step} tool: {label}"));
+            }
+            StreamEvent::ToolEnd { .. } => {
+                {
+                    let mut s = self
+                        .state
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    // The tool finished; like `BashResult`, the gap until the
+                    // next observation/assistant message is idle (issue #649).
+                    s.activity = Activity::Idle;
+                }
+                // No log line — the following observation/result carries the
+                // detail — but wake the renderer so the footer clears promptly.
+                self.notify.notify_waiters();
+            }
             StreamEvent::Observation { step, content, .. } => {
+                {
+                    let mut s = self
+                        .state
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    // The observation is the last event before the loop calls
+                    // the model again, so the next thinking window opens here
+                    // (issue #649): this is the inferred model-call-started.
+                    s.activity = Activity::Thinking {
+                        since: Instant::now(),
+                    };
+                }
                 let preview = first_lines(&content, 4);
                 self.append(
                     LineKind::Observation,
@@ -413,6 +587,17 @@ impl StreamSink for RatatuiDashboard {
                 );
             }
             StreamEvent::FormatError { step, content, .. } => {
+                {
+                    let mut s = self
+                        .state
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    // A malformed response triggers a re-query, so a fresh
+                    // model-thinking window opens here (issue #649).
+                    s.activity = Activity::Thinking {
+                        since: Instant::now(),
+                    };
+                }
                 let preview = first_lines(&content, 4);
                 self.append(
                     LineKind::Warn,
@@ -434,6 +619,8 @@ impl StreamSink for RatatuiDashboard {
                     s.cost_usd = total_cost_usd;
                     s.step = steps;
                     s.finished = Some(exit_reason.clone());
+                    // Run is over: no operation in flight (issue #649).
+                    s.activity = Activity::Idle;
                     was_running
                 };
                 // Signal the operator on the rising edge of the terminal
@@ -499,14 +686,35 @@ async fn renderer_loop(
     mut shutdown: oneshot::Receiver<()>,
 ) {
     let mut events = EventStream::new();
-    let mut tick = tokio::time::interval(Duration::from_millis(150));
+    // Spinner cadence while an operation is in flight (issue #649). The tick
+    // branch is guarded by `if active`, so an idle/finished dashboard redraws
+    // solely on `Notify`/keystrokes — zero animation frames, no CPU spin while
+    // nothing is happening (AC3). `Skip` prevents the default `Burst` behaviour
+    // from firing a flurry of catch-up ticks when an operation resumes after an
+    // idle gap during which the interval was never awaited.
+    let mut tick = tokio::time::interval(Duration::from_millis(100));
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
-        let exit = {
+        // Register interest in the next state change *before* reading state and
+        // drawing. `Notify::notify_waiters()` only wakes waiters already
+        // registered at the time it is called (it stores no permit), so an
+        // emitter that flips idle→active in the window between this draw and
+        // the `select!` await would otherwise be lost — and without the old
+        // unconditional tick to mask it, an idle dashboard could stay frozen on
+        // the stale footer until a keystroke (issue #649). Enabling the
+        // `Notified` future up front closes that race: a notification that
+        // arrives after `enable()` marks it ready, so the `select!` returns
+        // immediately and the loop redraws with fresh state.
+        let notified = dash.notify.notified();
+        tokio::pin!(notified);
+        notified.as_mut().enable();
+
+        let (exit, active) = {
             let s = dash
                 .state
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            s.should_exit
+            (s.should_exit, s.activity.is_active())
         };
         if exit {
             break;
@@ -517,8 +725,8 @@ async fn renderer_loop(
         }
         tokio::select! {
             _ = &mut shutdown => break,
-            () = dash.notify.notified() => {}
-            _ = tick.tick() => {}
+            () = &mut notified => {}
+            _ = tick.tick(), if active => {}
             ev = events.next() => {
                 match ev {
                     Some(Ok(Event::Key(key))) => handle_key(&dash, key),
@@ -1080,6 +1288,8 @@ fn draw_frame(
             is_monitor: s.is_monitor,
             search: s.search.clone(),
             rationale_scroll: s.rationale_scroll,
+            activity: ActivitySnapshot::from_activity(&s.activity),
+            stall_threshold: s.stall_threshold,
         }
     };
     terminal.draw(|frame| draw(frame, &snapshot))?;
@@ -1105,6 +1315,8 @@ struct DashboardSnapshot {
     is_monitor: bool,
     search: Option<SearchState>,
     rationale_scroll: usize,
+    activity: ActivitySnapshot,
+    stall_threshold: Duration,
 }
 
 fn draw(frame: &mut ratatui::Frame, snap: &DashboardSnapshot) {
@@ -1251,7 +1463,11 @@ fn log_paragraph(snap: &DashboardSnapshot) -> Paragraph<'_> {
 }
 
 fn footer_paragraph(snap: &DashboardSnapshot) -> Paragraph<'_> {
-    let hint = if let Some(search) = &snap.search {
+    let bold = Style::default().add_modifier(Modifier::BOLD);
+    // Search / finished / edit / pending all take precedence over the activity
+    // cell — a raised confirm modal must show its decision keys, not a spinner
+    // (issue #649, AC3: awaiting a confirm decision is "genuinely idle").
+    let span = if let Some(search) = &snap.search {
         let max_lines = snap.log.len().min(MAX_LOG_LINES);
         let take_from = snap.log.len().saturating_sub(max_lines);
         let window: Vec<&LogLine> = snap.log[take_from..].iter().collect();
@@ -1261,7 +1477,7 @@ fn footer_paragraph(snap: &DashboardSnapshot) -> Paragraph<'_> {
         } else {
             search.current.min(total_matches - 1) + 1
         };
-        if search.editing {
+        let hint = if search.editing {
             format!(
                 "search: {}█   [Enter] find   [Esc] cancel   ({pos}/{total_matches})",
                 search.query
@@ -1271,23 +1487,48 @@ fn footer_paragraph(snap: &DashboardSnapshot) -> Paragraph<'_> {
                 "search: {}   [n] next   [N] prev   [/] new   [Esc] exit   ({pos}/{total_matches})",
                 search.query
             )
-        }
+        };
+        Span::styled(hint, bold)
     } else if snap.finished.is_some() {
-        "run complete — press 'q', Esc, or Ctrl-C to close  [scroll: ↑/↓/PgUp/PgDn/Home/End]  [/ search]"
-            .to_string()
+        Span::styled(
+            "run complete — press 'q', Esc, or Ctrl-C to close  [scroll: ↑/↓/PgUp/PgDn/Home/End]  [/ search]",
+            bold,
+        )
     } else if snap.edit_input.is_some() {
-        "[Enter] execute edit   [Esc] cancel".to_string()
+        Span::styled("[Enter] execute edit   [Esc] cancel", bold)
     } else if let Some(pending) = &snap.pending {
         let scope = pending.derive_scope();
-        format!("(y) approve   (n) reject   (e) edit   (a) abort   (A) auto-approve {scope}")
+        Span::styled(
+            format!("(y) approve   (n) reject   (e) edit   (a) abort   (A) auto-approve {scope}"),
+            bold,
+        )
     } else {
-        "waiting for next agent step…  [scroll: ↑/↓/PgUp/PgDn/Home/End]  [/ search]".to_string()
+        // No modal, no search, not finished: surface the in-flight activity so
+        // the operator can tell working from hung (issue #649).
+        match &snap.activity {
+            ActivitySnapshot::Thinking { elapsed } => Span::styled(
+                format!(
+                    "{} thinking… (model · {}s)",
+                    spinner_frame(*elapsed),
+                    elapsed.as_secs()
+                ),
+                activity_style(*elapsed, snap.stall_threshold),
+            ),
+            ActivitySnapshot::Running { elapsed, command } => Span::styled(
+                format!(
+                    "{} running: {command} ({}s)",
+                    spinner_frame(*elapsed),
+                    elapsed.as_secs()
+                ),
+                activity_style(*elapsed, snap.stall_threshold),
+            ),
+            ActivitySnapshot::Idle => Span::styled(
+                "waiting for next agent step…  [scroll: ↑/↓/PgUp/PgDn/Home/End]  [/ search]",
+                bold,
+            ),
+        }
     };
-    Paragraph::new(Line::from(Span::styled(
-        hint,
-        Style::default().add_modifier(Modifier::BOLD),
-    )))
-    .block(Block::default().borders(Borders::ALL))
+    Paragraph::new(Line::from(span)).block(Block::default().borders(Borders::ALL))
 }
 
 /// Render the confirm modal (issue #655).
@@ -2344,6 +2585,8 @@ mod tests {
             is_monitor: s.is_monitor,
             search: s.search.clone(),
             rationale_scroll: s.rationale_scroll,
+            activity: ActivitySnapshot::from_activity(&s.activity),
+            stall_threshold: s.stall_threshold,
         }
     }
 
@@ -2455,6 +2698,277 @@ mod tests {
         assert!(matches!(s.log[1].kind, LineKind::BashOk));
         assert!(matches!(s.log[2].kind, LineKind::BashErr));
         assert!(s.log[3].text.contains("timed_out"));
+    }
+
+    // ---- in-flight activity indicator (#649) ----
+
+    /// True if any cell in the bottom 3 rows (the footer) carries `color` as
+    /// its foreground — used to assert the stall escalation (yellow).
+    fn footer_has_fg(buf: &Buffer, color: Color) -> bool {
+        let h = buf.area.height;
+        let footer_top = h.saturating_sub(3);
+        for y in footer_top..h {
+            for x in 0..buf.area.width {
+                if buf[(x, y)].style().fg == Some(color) {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    /// True if any spinner glyph is present anywhere in the buffer.
+    fn has_spinner(buf: &Buffer) -> bool {
+        let text = buffer_text(buf);
+        SPINNER_FRAMES.iter().any(|f| text.contains(f))
+    }
+
+    /// Force the dashboard's activity, simulating an operation that started
+    /// `elapsed` ago by anchoring `since` in the past.
+    fn set_activity(d: &Arc<RatatuiDashboard>, activity: Activity) {
+        let mut s = d.state.lock().unwrap();
+        s.activity = activity;
+        drop(s);
+    }
+
+    /// An `Instant` `secs` in the past, for simulating a long-running op. Test
+    /// values are always smaller than the process uptime, so the subtraction
+    /// is safe.
+    #[allow(clippy::unchecked_time_subtraction)]
+    fn ago(secs: u64) -> Instant {
+        Instant::now() - Duration::from_secs(secs)
+    }
+
+    /// Discriminant of the current activity as a stable label, read without
+    /// holding the state lock across assertions.
+    fn activity_label(d: &Arc<RatatuiDashboard>) -> &'static str {
+        let s = d.state.lock().unwrap();
+        let label = match s.activity {
+            Activity::Idle => "idle",
+            Activity::Thinking { .. } => "thinking",
+            Activity::Running { .. } => "running",
+        };
+        drop(s);
+        label
+    }
+
+    #[test]
+    fn thinking_state_renders_spinner_kind_and_elapsed() {
+        let d = make_dashboard();
+        set_activity(&d, Activity::Thinking { since: ago(12) });
+        let buf = render_to_buffer(&snap(&d), 80, 12);
+        let text = buffer_text(&buf);
+        assert!(text.contains("thinking"), "kind label present: {text}");
+        assert!(text.contains("model"), "operation source present: {text}");
+        assert!(text.contains("12s"), "elapsed seconds present: {text}");
+        assert!(has_spinner(&buf), "spinner glyph present: {text}");
+    }
+
+    #[test]
+    fn running_state_renders_command_and_elapsed() {
+        let d = make_dashboard();
+        set_activity(
+            &d,
+            Activity::Running {
+                since: ago(8),
+                command: "pytest -q".into(),
+            },
+        );
+        let buf = render_to_buffer(&snap(&d), 80, 12);
+        let text = buffer_text(&buf);
+        assert!(text.contains("running: pytest -q"), "running cmd: {text}");
+        assert!(text.contains("8s"), "elapsed seconds present: {text}");
+        assert!(has_spinner(&buf), "spinner glyph present: {text}");
+    }
+
+    #[test]
+    fn idle_state_renders_static_hint_no_spinner() {
+        let d = make_dashboard();
+        // Default activity is Idle.
+        let buf = render_to_buffer(&snap(&d), 80, 12);
+        let text = buffer_text(&buf);
+        assert!(
+            text.contains("waiting for next agent step"),
+            "static hint: {text}"
+        );
+        assert!(!has_spinner(&buf), "no spinner while idle: {text}");
+    }
+
+    #[test]
+    fn finished_state_has_no_spinner() {
+        let d = make_dashboard();
+        d.emit(run_ended_event());
+        let buf = render_to_buffer(&snap(&d), 80, 12);
+        assert!(!has_spinner(&buf), "no spinner once finished");
+    }
+
+    #[test]
+    fn run_started_enters_thinking() {
+        let d = make_dashboard();
+        d.emit(StreamEvent::RunStarted {
+            task: "t".into(),
+            model: "m".into(),
+            started_at: "s".into(),
+        });
+        assert_eq!(activity_label(&d), "thinking");
+    }
+
+    #[test]
+    fn observation_enters_thinking_for_next_model_call() {
+        let d = make_dashboard();
+        d.emit(StreamEvent::Observation {
+            step: 1,
+            content: "ok".into(),
+            timestamp: "t".into(),
+        });
+        assert_eq!(activity_label(&d), "thinking");
+    }
+
+    #[test]
+    fn assistant_message_returns_to_idle() {
+        let d = make_dashboard();
+        set_activity(
+            &d,
+            Activity::Thinking {
+                since: Instant::now(),
+            },
+        );
+        d.emit(StreamEvent::AssistantMessage {
+            step: 1,
+            content: "x".into(),
+            cost_usd: None,
+            timestamp: "t".into(),
+        });
+        assert_eq!(activity_label(&d), "idle");
+    }
+
+    #[test]
+    fn bash_start_enters_running_then_result_returns_to_idle() {
+        let d = make_dashboard();
+        d.emit(StreamEvent::BashStart {
+            step: 1,
+            command: "ls".into(),
+            timestamp: "t".into(),
+        });
+        assert_eq!(activity_label(&d), "running");
+        // The running command is carried through for the footer label.
+        let cmd = {
+            let s = d.state.lock().unwrap();
+            let command = match &s.activity {
+                Activity::Running { command, .. } => command.clone(),
+                Activity::Idle | Activity::Thinking { .. } => {
+                    panic!("expected Running after BashStart")
+                }
+            };
+            drop(s);
+            command
+        };
+        assert_eq!(cmd, "ls");
+        d.emit(StreamEvent::BashResult {
+            step: 1,
+            exit_code: 0,
+            stdout: String::new(),
+            stderr: String::new(),
+            timed_out: false,
+            timestamp: "t".into(),
+        });
+        assert_eq!(activity_label(&d), "idle");
+    }
+
+    #[test]
+    fn run_ended_returns_to_idle() {
+        let d = make_dashboard();
+        set_activity(
+            &d,
+            Activity::Thinking {
+                since: Instant::now(),
+            },
+        );
+        d.emit(run_ended_event());
+        assert_eq!(activity_label(&d), "idle");
+    }
+
+    #[test]
+    fn stalled_operation_escalates_to_yellow() {
+        let d = make_dashboard();
+        // Below threshold: no escalation.
+        set_activity(&d, Activity::Thinking { since: ago(5) });
+        let buf = render_to_buffer(&snap(&d), 80, 12);
+        assert!(
+            !footer_has_fg(&buf, Color::Yellow),
+            "no yellow before threshold"
+        );
+
+        // Past the 60s default threshold: escalate.
+        set_activity(&d, Activity::Thinking { since: ago(65) });
+        let buf = render_to_buffer(&snap(&d), 80, 12);
+        assert!(
+            footer_has_fg(&buf, Color::Yellow),
+            "yellow escalation past threshold"
+        );
+    }
+
+    #[test]
+    fn stall_threshold_is_configurable() {
+        let d = make_dashboard();
+        {
+            let mut s = d.state.lock().unwrap();
+            s.stall_threshold = Duration::from_secs(5);
+            s.activity = Activity::Running {
+                since: ago(6),
+                command: "slow".into(),
+            };
+        }
+        let buf = render_to_buffer(&snap(&d), 80, 12);
+        assert!(
+            footer_has_fg(&buf, Color::Yellow),
+            "escalates at the configured 5s threshold"
+        );
+    }
+
+    #[test]
+    fn spinner_advances_within_one_second() {
+        // Two renders within the same wall-clock second must differ, so a
+        // frozen render is visually distinguishable from a live one (AC4).
+        let a = spinner_frame(Duration::from_millis(0));
+        let b = spinner_frame(Duration::from_millis(500));
+        assert_ne!(a, b, "spinner advances at least once per second");
+    }
+
+    #[test]
+    fn elapsed_counter_resets_per_operation() {
+        let d = make_dashboard();
+        // A long thinking phase...
+        set_activity(&d, Activity::Thinking { since: ago(90) });
+        // ...then a fresh bash op starts: its counter is independent.
+        d.emit(StreamEvent::BashStart {
+            step: 1,
+            command: "ls".into(),
+            timestamp: "t".into(),
+        });
+        let buf = render_to_buffer(&snap(&d), 80, 12);
+        let text = buffer_text(&buf);
+        assert!(text.contains("running: ls"), "running cmd: {text}");
+        assert!(text.contains("0s"), "elapsed reset to 0 for new op: {text}");
+        assert!(!text.contains("90s"), "no carryover from prior op: {text}");
+    }
+
+    #[test]
+    fn idle_activity_is_not_active() {
+        assert!(!Activity::Idle.is_active());
+        assert!(
+            Activity::Thinking {
+                since: Instant::now()
+            }
+            .is_active()
+        );
+        assert!(
+            Activity::Running {
+                since: Instant::now(),
+                command: "x".into()
+            }
+            .is_active()
+        );
     }
 
     #[test]
@@ -3180,9 +3694,11 @@ mod tests {
             text.contains("echo hi"),
             "bash line should appear in log; got:\n{text}"
         );
+        // A bash command is in flight, so the footer surfaces the live activity
+        // cell rather than the static idle hint (issue #649).
         assert!(
-            text.contains("waiting for next agent step"),
-            "footer hint should appear; got:\n{text}"
+            text.contains("running: echo hi"),
+            "footer should show the in-flight activity; got:\n{text}"
         );
     }
 

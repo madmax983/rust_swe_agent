@@ -70,6 +70,20 @@ pub enum StreamEvent {
         timed_out: bool,
         timestamp: String,
     },
+    /// A non-bash tool or external operation began (driver tool call, command
+    /// tool, or tool hook). A generic liveness signal for activity-inferring
+    /// dashboards (issue #649); unlike `BashStart`/`BashResult` it is *not*
+    /// shell-command telemetry, so `--event-log`/SSE/webhook consumers that
+    /// count or audit bash commands ignore it. `label` is a human-readable
+    /// description of the in-flight operation (a command, `Tool(target)`, or
+    /// hook name).
+    ToolStart {
+        step: u32,
+        label: String,
+        timestamp: String,
+    },
+    /// The operation announced by the matching `ToolStart` finished.
+    ToolEnd { step: u32, timestamp: String },
     /// Observation message recorded into the trajectory after a bash run.
     Observation {
         step: u32,
@@ -105,6 +119,8 @@ impl StreamEvent {
             Self::AssistantMessage { .. } => "assistant_message",
             Self::BashStart { .. } => "bash_start",
             Self::BashResult { .. } => "bash_result",
+            Self::ToolStart { .. } => "tool_start",
+            Self::ToolEnd { .. } => "tool_end",
             Self::Observation { .. } => "observation",
             Self::FormatError { .. } => "format_error",
             Self::RunEnded { .. } => "run_ended",
@@ -208,6 +224,26 @@ mod tests {
         assert_eq!(json["type"], "bash_start");
         assert_eq!(json["step"], 3);
         assert_eq!(json["command"], "echo hi");
+    }
+
+    #[test]
+    fn tool_events_carry_generic_wire_names() {
+        let start = StreamEvent::ToolStart {
+            step: 2,
+            label: "diagnose-helper".into(),
+            timestamp: "t".into(),
+        };
+        assert_eq!(start.event_name(), "tool_start");
+        let json = serde_json::to_value(&start).unwrap();
+        assert_eq!(json["type"], "tool_start");
+        assert_eq!(json["label"], "diagnose-helper");
+
+        let end = StreamEvent::ToolEnd {
+            step: 2,
+            timestamp: "t".into(),
+        };
+        assert_eq!(end.event_name(), "tool_end");
+        assert_eq!(serde_json::to_value(&end).unwrap()["type"], "tool_end");
     }
 
     #[test]

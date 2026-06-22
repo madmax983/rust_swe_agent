@@ -2295,13 +2295,40 @@ impl DefaultAgent {
         tool_input: &str,
         result: Option<&RunResult>,
     ) -> Result<Vec<ToolHookResult>, Error> {
-        let mut reports = Vec::new();
-        for hook in hooks {
-            reports.push(
-                self.run_tool_hook(phase, hook, tool_name, tool_input, result)
-                    .await?,
-            );
+        if hooks.is_empty() {
+            return Ok(Vec::new());
         }
+        // Configured hooks run real commands via `env.run`. Surface the phase as
+        // a generic tool-activity span so a long-running hook shows the in-flight
+        // (and stall) indicator on the dashboard (issue #649) instead of a static
+        // idle footer. `self.stream` is the RedactingSink, so the label is
+        // redacted on the stream surface.
+        self.stream.emit(StreamEvent::ToolStart {
+            step: self.steps,
+            label: format!("{} hooks: {tool_name}", phase.as_str()),
+            timestamp: chrono::Utc::now().to_rfc3339(),
+        });
+        let mut reports = Vec::new();
+        let mut outcome = Ok(());
+        for hook in hooks {
+            match self
+                .run_tool_hook(phase, hook, tool_name, tool_input, result)
+                .await
+            {
+                Ok(report) => reports.push(report),
+                Err(err) => {
+                    outcome = Err(err);
+                    break;
+                }
+            }
+        }
+        // Close the span even on a hook error, so the dashboard never sticks on
+        // a stale running footer.
+        self.stream.emit(StreamEvent::ToolEnd {
+            step: self.steps,
+            timestamp: chrono::Utc::now().to_rfc3339(),
+        });
+        outcome?;
         Ok(reports)
     }
 
@@ -2414,14 +2441,34 @@ impl DefaultAgent {
         let timeout_secs = tool
             .timeout_secs
             .unwrap_or(self.config.root.environment.timeout_secs);
-        let mut req = RunRequest::new(rendered_command)
+        let mut req = RunRequest::new(rendered_command.clone())
             .with_timeout(Duration::from_secs(timeout_secs))
             .with_stdin(tool_input.to_owned());
         if let Some(cancellation) = self.cancellation.clone() {
             req = req.with_cancellation(cancellation);
         }
         req.env = tool_process_env(&context)?;
-        Ok(self.env.run(req).await?)
+        // A configured command tool runs a real shell via `env.run` but is a
+        // distinct tool type from the Bash tool, so surface it as a generic
+        // tool-activity span rather than bash telemetry: a dashboard that infers
+        // liveness (issue #649) shows the in-flight command — and the stall
+        // indicator for a slow one — while `--event-log`/SSE/webhook consumers
+        // that audit bash commands are unaffected. `self.stream` is the
+        // RedactingSink, so the raw command label is redacted on the stream
+        // surface.
+        self.stream.emit(StreamEvent::ToolStart {
+            step: self.steps,
+            label: rendered_command,
+            timestamp: chrono::Utc::now().to_rfc3339(),
+        });
+        let result = self.env.run(req).await;
+        // Close the span even if the run errored, so the dashboard never sticks
+        // on a stale running footer.
+        self.stream.emit(StreamEvent::ToolEnd {
+            step: self.steps,
+            timestamp: chrono::Utc::now().to_rfc3339(),
+        });
+        result.map_err(Into::into)
     }
 
     async fn run_non_bash_tool(
@@ -2445,10 +2492,28 @@ impl DefaultAgent {
             step: self.steps,
             total_cost_usd: self.total_cost_usd,
         };
-        Ok(provider
+        // A runtime/MCP provider tool does real work — an MCP server runs a
+        // command via `env.run` — but, unlike a command tool, exposes no
+        // rendered command. Wrap the call in the same generic tool-activity span
+        // so a slow provider call escalates to the stall indicator (issue #649)
+        // instead of rendering as a static idle footer; the tool name is the
+        // best available label. `self.stream` is the RedactingSink, so the label
+        // is redacted on the stream surface.
+        self.stream.emit(StreamEvent::ToolStart {
+            step: self.steps,
+            label: format!("tool: {tool_name}"),
+            timestamp: chrono::Utc::now().to_rfc3339(),
+        });
+        let result = provider
             .call(self.env.as_ref(), invocation, self.cancellation.clone())
-            .await?
-            .into())
+            .await;
+        // Close the span even if the call errored, so the dashboard never sticks
+        // on a stale running footer.
+        self.stream.emit(StreamEvent::ToolEnd {
+            step: self.steps,
+            timestamp: chrono::Utc::now().to_rfc3339(),
+        });
+        Ok(result?.into())
     }
 
     fn command_tool_context(&self, tool: &CommandTool, tool_input: &str) -> serde_json::Value {
