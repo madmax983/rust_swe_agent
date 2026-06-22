@@ -451,6 +451,10 @@ fn digest_json_format_is_schema_versioned_and_stable() {
             json["patch_status"], golden["patch_status"],
             "patch_status must be stable"
         );
+        assert_eq!(
+            json["failure_signature"]["signature_id"], golden["failure_signature"]["signature_id"],
+            "signature_id must be stable — if it changed update the golden file and investigate"
+        );
     } else {
         // First run: write golden file
         std::fs::create_dir_all(golden_path.parent().unwrap()).unwrap();
@@ -492,6 +496,19 @@ fn digest_max_chars_truncation_preserves_headline_and_triage_footer() {
     assert!(
         stdout.contains("aabbccdd") || stdout.contains("Triage") || stdout.contains("triage"),
         "triage section should survive truncation: {stdout}"
+    );
+}
+
+#[test]
+fn digest_signature_line_survives_aggressive_max_chars_truncation() {
+    let sweep = fixture_path("sweep-single-errored");
+    // 100 chars: smaller than the headline+sig_line+marker+footer budget
+    let out = run_failure_digest(&["--sweep", sweep.to_str().unwrap(), "--max-chars", "100"]);
+    assert!(out.status.success());
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    assert!(
+        stdout.contains("failure_signature: "),
+        "failure_signature: greppable line must survive --max-chars=100 truncation:\n{stdout}"
     );
 }
 

@@ -111,6 +111,26 @@ terminal failure, the number of **distinct** `signature_id` values equals **1**
 (false-new rate < 1%). This lets a downstream consumer dedup N duplicate issues
 into one recurrence-counted issue.
 
+## Cross-tool Divergence
+
+`bench triage` (multi-instance sweep) computes cluster IDs over **raw** trajectory text —
+it does not pass fields through a `Redactor`. `bench failure-digest` computes
+`signature_id` over **already-redacted, marker-normalized** text.
+
+For instances where no secrets appear in the terminal fields the two IDs are identical.
+When a secret (e.g. an API key) appears in stderr or the last assistant message, the IDs
+diverge because:
+- `bench triage` hashes the raw string (contains the literal secret).
+- `bench failure-digest` hashes the redacted-then-marker-normalized string
+  (e.g. `[REDACTED:api_key:32]`).
+
+**Practical guidance:**
+- Use `bench failure-digest` `signature_id` for cross-run recurrence matching and as the
+  stable greppable identity in CI; it is the only surface that is record/replay-stable
+  when secrets are present.
+- `bench triage` cluster IDs are suitable for same-run cross-instance dedup. Do **not**
+  cross-reference them against `failure-digest` signature IDs when runs involve secrets.
+
 ## Out of Scope
 
 - The nightly workflow's issue-filing/dedup logic that *consumes* this signature.

@@ -12,7 +12,8 @@ use crate::redaction::{Redactor, surface};
 use crate::run::compare::load_sweep;
 use crate::run::swebench::InstanceResult;
 use crate::run::triage::{
-    FailureSignature, TriageReport, failure_label, load_trajectory, resolve_trajectory_path,
+    FailureSignature, TriageReport, failure_label, last_non_empty_line, load_trajectory,
+    resolve_trajectory_path,
 };
 use crate::trajectory::FailureCategory;
 
@@ -102,16 +103,40 @@ pub struct FailureSignatureView {
     pub summary: String,
 }
 
+/// Outcome of a baseline recurrence check.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RecurrenceVerdict {
+    Recurring,
+    New,
+}
+
+impl std::fmt::Display for RecurrenceVerdict {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Recurring => f.write_str("recurring"),
+            Self::New => f.write_str("new"),
+        }
+    }
+}
+
 /// Recurrence verdict: does the current failure match a known baseline signature?
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RecurrenceView {
     pub baseline_signature_id: String,
-    /// `"recurring"` when the current `signature_id` matches the baseline,
-    /// otherwise `"new"`.
-    pub verdict: String,
+    pub verdict: RecurrenceVerdict,
 }
 
 pub fn run(args: &FailureDigestArgs) -> Result<FailureDigest, Error> {
+    if let Some(ref baseline) = args.baseline_signature {
+        if !is_valid_signature_id(baseline) {
+            return Err(Error::Trajectory(format!(
+                "--baseline-signature {baseline:?} is not a valid signature id \
+                 (expected 16 hex chars)"
+            )));
+        }
+    }
+
     let results_path = args.sweep_dir.join("results.json");
     if !results_path.exists() {
         return Err(Error::Trajectory(format!(
@@ -192,14 +217,14 @@ pub fn run(args: &FailureDigestArgs) -> Result<FailureDigest, Error> {
     );
 
     let recurrence = args.baseline_signature.as_ref().map(|baseline| {
-        let verdict = if *baseline == failure_signature.signature_id {
-            "recurring"
+        let verdict = if baseline.to_lowercase() == failure_signature.signature_id {
+            RecurrenceVerdict::Recurring
         } else {
-            "new"
+            RecurrenceVerdict::New
         };
         RecurrenceView {
             baseline_signature_id: baseline.clone(),
-            verdict: verdict.to_owned(),
+            verdict,
         }
     });
 
@@ -235,16 +260,12 @@ fn build_failure_signature(
     let category = failure_category.unwrap_or("none");
     let assistant = crate::fingerprint::normalize_redaction_markers(redacted_assistant);
     let stderr_norm = crate::fingerprint::normalize_redaction_markers(redacted_stderr);
-    let stderr_line = stderr_norm
-        .lines()
-        .rev()
-        .find(|line| !line.trim().is_empty())
-        .unwrap_or_default();
+    let stderr_line = last_non_empty_line(&stderr_norm);
 
     let signature = FailureSignature::from_parts(category, &assistant, bash_exit_code, stderr_line);
 
     FailureSignatureView {
-        signature_id: signature.signature_id(),
+        signature_id: signature.cluster_id(),
         failure_category: signature.failure_category().to_owned(),
         assistant_tail: signature.assistant_tail().to_owned(),
         bash_exit_code: signature.bash_exit_code(),
@@ -278,7 +299,8 @@ pub fn render_markdown(digest: &FailureDigest, max_chars: usize) -> String {
         let _ = writeln!(out, "### Triage cluster");
         let _ = writeln!(out);
         out.push_str(triage_label);
-        return truncate_preserving_ends(&out, max_chars, &headline, triage_label);
+        let protected = format!("{headline}\n{signature_lines}");
+        return truncate_preserving_ends(&out, max_chars, &protected, triage_label);
     }
 
     let ast_excerpt = excerpt_head_tail(&digest.last_assistant_message, EXCERPT_MAX_CHARS);
@@ -322,7 +344,8 @@ pub fn render_markdown(digest: &FailureDigest, max_chars: usize) -> String {
     let _ = writeln!(out);
     out.push_str(triage_label);
 
-    truncate_preserving_ends(&out, max_chars, &headline, triage_label)
+    let protected = format!("{headline}\n{signature_lines}");
+    truncate_preserving_ends(&out, max_chars, &protected, triage_label)
 }
 
 fn build_headline(digest: &FailureDigest) -> String {
@@ -500,12 +523,16 @@ fn load_triage_cluster_label(sweep_dir: &Path, instance_id: &str) -> Option<Stri
     })
 }
 
-/// Truncate markdown to `max_chars` while preserving the first line (headline)
-/// and the triage cluster footer.
+fn is_valid_signature_id(s: &str) -> bool {
+    s.len() == 16 && s.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
+/// Truncate markdown to `max_chars` while preserving `protected_header` (headline +
+/// greppable signature lines) and the triage cluster footer.
 fn truncate_preserving_ends(
     text: &str,
     max_chars: usize,
-    headline: &str,
+    protected_header: &str,
     triage_label: &str,
 ) -> String {
     if text.chars().count() <= max_chars {
@@ -513,7 +540,8 @@ fn truncate_preserving_ends(
     }
 
     let footer_section = format!("\n\n### Triage cluster\n\n{triage_label}");
-    let header = format!("{headline}\n");
+    // `protected_header` already ends with '\n' (signature_lines trailing newline).
+    let header = protected_header.to_owned();
     let marker = "\n\n... [digest truncated for length] ...\n";
 
     let fixed_len =
@@ -525,9 +553,10 @@ fn truncate_preserving_ends(
     }
 
     let middle_budget = max_chars - fixed_len;
+    // Skip the protected header bytes (all ASCII) then trim any leading blank lines.
     let rest = text
-        .split_once('\n')
-        .map_or("", |x| x.1)
+        .get(header.len()..)
+        .unwrap_or("")
         .trim_start_matches('\n');
     let middle: String = rest.chars().take(middle_budget).collect();
 

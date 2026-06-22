@@ -125,14 +125,6 @@ impl FailureSignature {
         &self.failure_category
     }
 
-    /// Stable hex identity for this signature. Alias of [`Self::cluster_id`],
-    /// named for the single-instance `failure-digest` surface where it is
-    /// presented as a per-failure `signature_id` rather than a cluster id.
-    #[must_use]
-    pub fn signature_id(&self) -> String {
-        self.cluster_id()
-    }
-
     #[must_use]
     pub fn assistant_tail(&self) -> &str {
         &self.assistant_tail
@@ -218,6 +210,14 @@ pub struct TerminalSignals {
     pub assistant_message: String,
     pub bash_exit_code: Option<i32>,
     pub stderr_line: String,
+}
+
+/// Return the last non-empty line of `s`, or `""` if every line is blank.
+pub(crate) fn last_non_empty_line(s: &str) -> &str {
+    s.lines()
+        .rev()
+        .find(|l| !l.trim().is_empty())
+        .unwrap_or_default()
 }
 
 /// Normalize one textual signature component.
@@ -661,12 +661,7 @@ pub fn terminal_signals(trajectory: &Trajectory) -> TerminalSignals {
     let (bash_exit_code, stderr_line) = last_run.map_or((None, String::new()), |run| {
         (
             Some(run.exit_code),
-            run.stderr
-                .lines()
-                .rev()
-                .find(|line| !line.trim().is_empty())
-                .unwrap_or_default()
-                .to_owned(),
+            last_non_empty_line(&run.stderr).to_owned(),
         )
     });
     TerminalSignals {
@@ -759,16 +754,13 @@ mod tests {
     }
 
     #[test]
-    fn signature_id_aliases_cluster_id_and_accessors_expose_normalized_fields() {
+    fn accessors_expose_normalized_fields() {
         let sig = FailureSignature::from_parts(
             "model_parse",
             "Parser failed in /tmp/swe/task-101/src/main.py line 33",
             Some(2),
             "SyntaxError: unexpected token 404",
         );
-
-        // signature_id is exactly the cluster_id hash, just a single-instance name.
-        assert_eq!(sig.signature_id(), sig.cluster_id());
 
         // Accessors expose the normalized constituent fields used in the hash.
         assert_eq!(sig.failure_category(), "model_parse");
