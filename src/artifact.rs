@@ -78,6 +78,7 @@ pub enum ArtifactKind {
     MiniResult,
     BenchVarianceReport,
     ValidationReport,
+    TrajectoryAnnotation,
 }
 
 impl ArtifactKind {
@@ -113,6 +114,7 @@ impl ArtifactKind {
             Self::MiniResult => "mini_result",
             Self::BenchVarianceReport => "bench_variance_report",
             Self::ValidationReport => "validation_report",
+            Self::TrajectoryAnnotation => "trajectory_annotation",
         }
     }
 }
