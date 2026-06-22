@@ -89,7 +89,7 @@ pub fn registry() -> Vec<ExportFormat> {
 
     #[cfg(feature = "json-export")]
     formats.push(ExportFormat {
-        name: "json",
+        name: "traj-json",
         tier: StabilityTier::Stable,
         consumer: "machine-readable format, jq pipelines",
         render: JsonExporter::export,
@@ -114,7 +114,7 @@ pub fn registry() -> Vec<ExportFormat> {
 /// live in [`registry`]; a format gated *out* of this build is absent from `registry()`
 /// but present here so the CLI can still route it and explain how to enable it.
 pub const FEATURE_GATED_FORMATS: &[(&str, &str)] = &[
-    ("json", "json-export"),
+    ("traj-json", "json-export"),
     ("csv", "csv-export"),
     ("html", "html-export"),
     ("mermaid", "mermaid-export"),

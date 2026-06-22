@@ -31,6 +31,7 @@ max bench inspect --list-formats
 | Format | Stability tier | Cargo feature | Intended downstream consumer |
 |--------|---------------|---------------|------------------------------|
 | `markdown` | stable | always compiled | docs, PR review, human readers |
+| `traj-json` | stable | `json-export` | machine-readable format, jq pipelines |
 | `csv` | stable | `csv-export` | spreadsheets, jq pipelines, tabular tools |
 | `html` | stable | `html-export` | self-contained browser view, shared notebooks |
 | `mermaid` | experimental | `mermaid-export` | Mermaid sequence-diagram renderers (GitLab, GitHub markdown, mermaid.live) |
