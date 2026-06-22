@@ -34,6 +34,13 @@ use crate::stream::{StreamEvent, StreamSink};
 
 const MAX_LOG_LINES: usize = 400;
 
+/// Max logical input lines rendered in the modal controls region (issue #745
+/// review). A large multi-line paste must not push the command/rationale/submit
+/// hint off-screen; the buffer still retains the full value, only the display is
+/// capped. Mirrors the read-only command preview cap (12 lines) — but shows the
+/// TAIL, since the caret rides the last line of an actively-edited field.
+const MODAL_INPUT_MAX_LINES: usize = 12;
+
 /// Terminal bell (BEL, `0x07`) byte.
 const BEL: u8 = 0x07;
 
@@ -1249,54 +1256,75 @@ fn normalize_pasted(text: &str) -> String {
     text.replace("\r\n", "\n").replace('\r', "\n")
 }
 
-/// Insert bracketed-paste content (issue #745) into whichever modal input
-/// field is active. crossterm delivers the whole clipboard payload as one
-/// `Event::Paste(String)` — including embedded newlines — so the entire value
-/// lands in the buffer without any character being interpreted as `Enter`
-/// (which would otherwise submit the field at the first newline).
+/// Which text field a paste (or any inserted text) is directed at, in precedence
+/// order. Centralizes the routing so the paste path delegates to one definition
+/// instead of re-deriving it (issue #745 review).
 ///
-/// The paste is appended at the buffer's insertion point (this slice keeps a
-/// single end-of-buffer insertion point; see the issue's Out of Scope), so
-/// existing typed content is preserved. Routing precedence:
-/// - a reject-feedback / edit-command input field (when a modal is pending);
-/// - otherwise, while a modal is pending but on its choice screen, the paste is
-///   dropped — it must NOT fall through to an open `/` search hidden behind the
-///   modal, which dismissing the modal would then reveal as corrupted;
-/// - otherwise (no modal), an actively-edited `/` search query;
-/// - otherwise (normal feed navigation), ignored so it can never corrupt feed
-///   state or trigger a hotkey (AC5).
+/// `handle_key` encodes this same precedence structurally — feedback/edit only
+/// exist while a modal is pending, a pending modal on its choice screen accepts
+/// no text, and an actively-edited `/` search owns input only when no modal is
+/// up — and must stay in sync with it.
+enum InputTarget {
+    Feedback,
+    Edit,
+    Search,
+    None,
+}
+
+fn active_input_target(s: &DashboardState) -> InputTarget {
+    if s.feedback_input.is_some() {
+        InputTarget::Feedback
+    } else if s.edit_input.is_some() {
+        InputTarget::Edit
+    } else if s.pending.is_some() {
+        // Modal on its choice screen: no text input is active. Critically this
+        // shadows the search branch, so an open `/` search hidden behind the
+        // modal is never appended to (it would surface corrupted on dismissal).
+        InputTarget::None
+    } else if s.search.as_ref().is_some_and(|se| se.editing) {
+        InputTarget::Search
+    } else {
+        InputTarget::None
+    }
+}
+
+/// Insert bracketed-paste content (issue #745) into whichever input field is
+/// active per [`active_input_target`]. crossterm delivers the whole clipboard
+/// payload as one `Event::Paste(String)` — including embedded newlines — so the
+/// entire value lands in the buffer without any character being interpreted as
+/// `Enter` (which would otherwise submit the field at the first newline).
+///
+/// The paste is appended at the buffer's end-of-buffer insertion point (see the
+/// issue's Out of Scope), so existing typed content is preserved. Line endings
+/// are normalized only inside the consuming arms, so a paste with no active
+/// field allocates nothing and can never corrupt feed state (AC5).
 fn handle_paste(dash: &Arc<RatatuiDashboard>, text: &str) {
-    let text = normalize_pasted(text);
     let mut s = dash
         .state
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    if let Some(buffer) = s.feedback_input.as_mut() {
-        buffer.push_str(&text);
-    } else if let Some(buffer) = s.edit_input.as_mut() {
-        buffer.push_str(&text);
-    } else if s.pending.is_some() {
-        // Modal pending on its choice screen (no input field active): the paste
-        // is not directed anywhere. Drop it before the search branch so an open
-        // search behind the modal is never silently appended to.
-        return;
-    } else if let Some(mut search) = s.search.take() {
-        // While the `/`-search query is being edited, paste appends to the
-        // query — preserving the pre-bracketed-paste behaviour where pasted
-        // text arrived as `Char` events and built up the query (issue #745
-        // review). Re-run the incremental find so highlights/jump update, just
-        // as typing a character does. A committed search (n/N navigation) is
-        // not a text input, so its paste is dropped.
-        if !search.editing {
-            s.search = Some(search);
-            return;
+    match active_input_target(&s) {
+        InputTarget::Feedback => {
+            if let Some(buffer) = s.feedback_input.as_mut() {
+                buffer.push_str(&normalize_pasted(text));
+            }
         }
-        search.query.push_str(&text);
-        search_recompute_after_edit(&mut s, &mut search);
-        s.search = Some(search);
-    } else {
-        // No active input field: ignore the paste entirely.
-        return;
+        InputTarget::Edit => {
+            if let Some(buffer) = s.edit_input.as_mut() {
+                buffer.push_str(&normalize_pasted(text));
+            }
+        }
+        InputTarget::Search => {
+            // Paste appends to the live query, preserving the pre-bracketed-paste
+            // behaviour where pasted text arrived as `Char` events. Re-run the
+            // incremental find so highlights/jump update, as typing does.
+            if let Some(mut search) = s.search.take() {
+                search.query.push_str(&normalize_pasted(text));
+                search_recompute_after_edit(&mut s, &mut search);
+                s.search = Some(search);
+            }
+        }
+        InputTarget::None => return,
     }
     drop(s);
     dash.notify.notify_waiters();
@@ -1826,22 +1854,34 @@ fn input_buffer_lines(buffer: &str) -> Vec<Line<'static>> {
         .split('\n')
         .map(|line| line.strip_suffix('\r').unwrap_or(line))
         .collect();
-    let last = buf_lines.len() - 1;
-    buf_lines
-        .iter()
-        .enumerate()
-        .map(|(i, line)| {
-            let prefix = if i == 0 { " > " } else { "   " };
-            let mut spans = vec![
-                Span::styled(prefix, Style::default().fg(Color::Green)),
-                Span::styled((*line).to_string(), Style::default().fg(Color::White)),
-            ];
-            if i == last {
-                spans.push(Span::styled("█", Style::default().fg(Color::Green)));
-            }
-            Line::from(spans)
-        })
-        .collect()
+    let total = buf_lines.len();
+    let last = total - 1;
+    // Render only the tail (last MODAL_INPUT_MAX_LINES logical lines) so a large
+    // multi-line paste can't push the command/rationale/submit hint off-screen
+    // (issue #745 review). The caret rides the last line, so the tail is what the
+    // operator is editing; the full value is still stored and submitted.
+    let start = total.saturating_sub(MODAL_INPUT_MAX_LINES);
+    let mut lines = Vec::with_capacity(total - start + usize::from(start > 0));
+    if start > 0 {
+        lines.push(Line::from(Span::styled(
+            format!("  … {start} earlier line(s) hidden"),
+            Style::default().add_modifier(Modifier::DIM),
+        )));
+    }
+    for (i, line) in buf_lines.iter().enumerate().skip(start) {
+        // The `>` prompt marks the buffer start; once the head is truncated the
+        // leading indicator stands in for it, so shown lines use plain indent.
+        let prefix = if i == 0 { " > " } else { "   " };
+        let mut spans = vec![
+            Span::styled(prefix, Style::default().fg(Color::Green)),
+            Span::styled((*line).to_string(), Style::default().fg(Color::White)),
+        ];
+        if i == last {
+            spans.push(Span::styled("█", Style::default().fg(Color::Green)));
+        }
+        lines.push(Line::from(spans));
+    }
+    lines
 }
 
 /// Controls region: the reject-feedback prompt, the edit buffer, or the default
@@ -3903,6 +3943,61 @@ mod tests {
 
         // Rendering the multi-line value must not panic on wide/wrapped input.
         let _ = render_to_buffer(&snap(&d), 100, 40);
+    }
+
+    #[test]
+    fn paste_large_multiline_caps_display_but_keeps_submit_hint_and_full_buffer() {
+        let d = make_dashboard();
+        let _rx = make_pending(&d);
+        handle_key(&d, KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE));
+
+        // Paste far more lines than the modal can show — the feature's own use
+        // case (e.g. a 20-line stack trace fed back as guidance).
+        let pasted: String = (1..=20).map(|i| format!("trace line {i}\n")).collect();
+        handle_paste(&d, &pasted);
+
+        // Full content is retained in the buffer — only the display is capped.
+        let buf = snap(&d).feedback_input.unwrap();
+        assert!(buf.contains("trace line 1\n"));
+        assert!(buf.contains("trace line 20"));
+
+        // The rendered modal still shows the submit hint (not clipped by a
+        // collapsed layout) and signals the truncation. At 80x40 the modal's
+        // inner height (~18) clips a full 20-line paste's controls pre-cap but
+        // fits the capped controls — so this asserts the fix, not the terminal.
+        let rendered = buffer_text(&render_to_buffer(&snap(&d), 80, 40));
+        assert!(
+            rendered.contains("[Enter] submit"),
+            "submit hint must stay visible: {rendered}"
+        );
+        assert!(
+            rendered.contains("earlier line(s) hidden"),
+            "truncation indicator must be shown: {rendered}"
+        );
+        // The tail (where the caret is) is visible; the head is hidden.
+        assert!(rendered.contains("trace line 20"));
+        assert!(!rendered.contains("trace line 1 "));
+    }
+
+    #[test]
+    fn paste_large_multiline_into_edit_caps_display() {
+        let d = make_dashboard();
+        let _rx = make_pending(&d);
+        handle_key(&d, KeyEvent::new(KeyCode::Char('e'), KeyModifiers::NONE));
+
+        let pasted: String = (1..=20).map(|i| format!("cmd line {i}\n")).collect();
+        handle_paste(&d, &pasted);
+
+        // Full content retained (edit buffer was pre-filled with "x").
+        assert!(snap(&d).edit_input.unwrap().contains("cmd line 20"));
+
+        let rendered = buffer_text(&render_to_buffer(&snap(&d), 80, 40));
+        assert!(
+            rendered.contains("[Enter] execute edit"),
+            "edit submit hint must stay visible: {rendered}"
+        );
+        assert!(rendered.contains("earlier line(s) hidden"));
+        assert!(rendered.contains("cmd line 20"));
     }
 
     #[test]
