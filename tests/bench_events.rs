@@ -342,6 +342,105 @@ fn unit_skips_symlinked_jsonl_during_discovery() {
     );
 }
 
+#[test]
+fn unit_non_string_schema_is_skipped() {
+    // A present-but-non-string `schema` (e.g. `{}`) means the line is not one of
+    // our events; it must be skipped, not waved through because `as_str()` is None.
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path().join("e.jsonl");
+    std::fs::write(
+        &path,
+        "{\"schema\":{},\"event_type\":\"run_started\",\"instance_id\":\"x\",\"ts\":\"2026-01-01T00:00:00Z\"}\n\
+         {\"schema\":\"event-log-v1\",\"event_type\":\"run_ended\",\"instance_id\":\"x\",\"ts\":\"2026-01-01T00:00:01Z\"}\n",
+    )
+    .unwrap();
+
+    let report = events_run(&base_args(path)).unwrap();
+    assert_eq!(
+        report.events.len(),
+        1,
+        "only the valid event-log-v1 line should be kept"
+    );
+    assert_eq!(report.events[0].event_type, "run_ended");
+    assert!(
+        report.lines_skipped >= 1,
+        "the non-string-schema line must be counted as skipped"
+    );
+}
+
+#[test]
+fn unit_invalid_utf8_line_is_skipped_not_fatal() {
+    // A non-UTF-8 byte line must not abort the query over an otherwise valid log.
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path().join("e.jsonl");
+    let mut bytes: Vec<u8> = Vec::new();
+    bytes.extend_from_slice(
+        b"{\"schema\":\"event-log-v1\",\"event_type\":\"run_started\",\"instance_id\":\"x\",\"ts\":\"2026-01-01T00:00:00Z\"}\n",
+    );
+    bytes.extend_from_slice(&[0xff, 0xfe, 0x00, b'\n']); // invalid UTF-8 line
+    bytes.extend_from_slice(
+        b"{\"schema\":\"event-log-v1\",\"event_type\":\"run_ended\",\"instance_id\":\"x\",\"ts\":\"2026-01-01T00:00:01Z\"}\n",
+    );
+    std::fs::write(&path, bytes).unwrap();
+
+    let report = events_run(&base_args(path)).unwrap();
+    assert_eq!(
+        report.events.len(),
+        2,
+        "both valid events survive an interleaved non-UTF-8 line"
+    );
+    assert!(
+        report.lines_skipped >= 1,
+        "the invalid-UTF-8 line must be counted as skipped"
+    );
+}
+
+#[test]
+fn unit_discovers_sibling_with_trailing_separator() {
+    // A dir passed with a trailing separator (shell tab-completion) must still
+    // resolve its sibling `{dir}.events.jsonl`, not `{dir}/.events.jsonl`.
+    let tmp = tempfile::tempdir().unwrap();
+    let sweep = tmp.path().join("sweep");
+    std::fs::create_dir(&sweep).unwrap();
+    std::fs::write(
+        tmp.path().join("sweep.events.jsonl"),
+        "{\"schema\":\"event-log-v1\",\"ts\":\"2026-01-01T00:00:00Z\",\"event_type\":\"run_started\",\"instance_id\":\"x\"}\n",
+    )
+    .unwrap();
+
+    // Append a separator so the path ends in `/`.
+    let with_sep = PathBuf::from(format!("{}/", sweep.display()));
+    let report = events_run(&base_args(with_sep)).unwrap();
+    assert_eq!(
+        report.events.len(),
+        1,
+        "sibling must be found even with a trailing separator"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn unit_skips_symlinked_sibling_event_log() {
+    // A symlinked `{dir}.events.jsonl` sibling must not be followed (it could
+    // escape the artifact tree or point at a blocking FIFO).
+    let tmp = tempfile::tempdir().unwrap();
+    let sweep = tmp.path().join("sweep");
+    std::fs::create_dir(&sweep).unwrap();
+    let real = tmp.path().join("outside.jsonl");
+    std::fs::write(
+        &real,
+        "{\"schema\":\"event-log-v1\",\"ts\":\"2026-01-01T00:00:00Z\",\"event_type\":\"run_started\",\"instance_id\":\"leak\"}\n",
+    )
+    .unwrap();
+    std::os::unix::fs::symlink(&real, tmp.path().join("sweep.events.jsonl")).unwrap();
+
+    let report = events_run(&base_args(sweep)).unwrap();
+    assert!(
+        report.events.is_empty(),
+        "symlinked sibling event log must not be followed"
+    );
+}
+
 // ── CLI integration tests ─────────────────────────────────────────────────────
 
 fn run_cli(args: &[&str]) -> std::process::Output {

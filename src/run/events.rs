@@ -161,14 +161,28 @@ pub fn run(args: &EventsArgs) -> Result<EventsReport, Error> {
     for file in &files {
         // Stream line-by-line: a completed sweep can share one `--event-log`,
         // so the file may be very large — never load it whole into memory.
-        let reader = std::io::BufReader::new(std::fs::File::open(file)?);
+        let mut reader = std::io::BufReader::new(std::fs::File::open(file)?);
         files_scanned += 1;
-        for line in reader.lines() {
-            let line = line?;
+        let mut buf: Vec<u8> = Vec::new();
+        loop {
+            buf.clear();
+            // Read one raw line as bytes: a non-UTF-8 byte sequence must not
+            // abort the whole query (the writer is best-effort and a shared log
+            // can contain arbitrary captured output), so decode leniently and
+            // skip undecodable lines, counting them as skipped.
+            let n = reader.read_until(b'\n', &mut buf)?;
+            if n == 0 {
+                break;
+            }
+            let Ok(line) = std::str::from_utf8(&buf) else {
+                lines_skipped += 1;
+                continue;
+            };
+            let line = line.trim_end_matches(['\n', '\r']);
             if line.trim().is_empty() {
                 continue;
             }
-            let Ok(mut value) = serde_json::from_str::<Value>(&line) else {
+            let Ok(mut value) = serde_json::from_str::<Value>(line) else {
                 lines_skipped += 1;
                 continue;
             };
@@ -182,8 +196,16 @@ pub fn run(args: &EventsArgs) -> Result<EventsReport, Error> {
                 lines_skipped += 1;
                 continue;
             };
-            if let Some(schema) = value.get("schema").and_then(Value::as_str) {
-                if !schema.starts_with("event-log-v") {
+            // When a `schema` key is present it must be an event-log schema
+            // *string*; a present-but-non-string schema (e.g. `{}`) — or a
+            // string naming a different schema — means the line is not one of
+            // our events, so skip it rather than letting `as_str()` returning
+            // `None` silently wave it through. Absent `schema` stays permissive.
+            if let Some(schema) = value.get("schema") {
+                let is_event_log = schema
+                    .as_str()
+                    .is_some_and(|s| s.starts_with("event-log-v"));
+                if !is_event_log {
                     lines_skipped += 1;
                     continue;
                 }
@@ -339,12 +361,26 @@ fn discover_event_files(path: &Path) -> Result<Vec<PathBuf>, Error> {
     }
     let mut out = Vec::new();
     collect_jsonl(path, &mut out)?;
-    // Probe the conventional sibling log `{dir}.events.jsonl`.
-    let mut sibling = path.as_os_str().to_owned();
-    sibling.push(".events.jsonl");
-    let sibling = PathBuf::from(sibling);
-    if sibling.is_file() {
-        out.push(sibling);
+    // Probe the conventional sibling log `{dir}.events.jsonl`. Build it from the
+    // dir's own file name (not the raw path string) so a trailing separator —
+    // `runs/sweep/`, as shell tab-completion commonly produces — yields
+    // `runs/sweep.events.jsonl` rather than `runs/sweep/.events.jsonl`.
+    if let Some(name) = path.file_name() {
+        let mut sibling_name = name.to_owned();
+        sibling_name.push(".events.jsonl");
+        let sibling = path
+            .parent()
+            .unwrap_or_else(|| Path::new(""))
+            .join(sibling_name);
+        // `symlink_metadata` does not follow symlinks, so a symlinked sibling
+        // (which could escape the artifact tree or point at a blocking FIFO) is
+        // not picked up — consistent with the symlink-safe `collect_jsonl` walk.
+        if std::fs::symlink_metadata(&sibling)
+            .map(|m| m.file_type().is_file())
+            .unwrap_or(false)
+        {
+            out.push(sibling);
+        }
     }
     out.sort();
     out.dedup();
