@@ -3953,7 +3953,11 @@ mod tests {
 
         // Paste far more lines than the modal can show — the feature's own use
         // case (e.g. a 20-line stack trace fed back as guidance).
-        let pasted: String = (1..=20).map(|i| format!("trace line {i}\n")).collect();
+        let mut pasted = String::new();
+        for i in 1..=20 {
+            use std::fmt::Write as _;
+            let _ = writeln!(pasted, "trace line {i}");
+        }
         handle_paste(&d, &pasted);
 
         // Full content is retained in the buffer — only the display is capped.
@@ -3985,7 +3989,11 @@ mod tests {
         let _rx = make_pending(&d);
         handle_key(&d, KeyEvent::new(KeyCode::Char('e'), KeyModifiers::NONE));
 
-        let pasted: String = (1..=20).map(|i| format!("cmd line {i}\n")).collect();
+        let mut pasted = String::new();
+        for i in 1..=20 {
+            use std::fmt::Write as _;
+            let _ = writeln!(pasted, "cmd line {i}");
+        }
         handle_paste(&d, &pasted);
 
         // Full content retained (edit buffer was pre-filled with "x").
