@@ -1102,7 +1102,42 @@ mod tests {
     use crate::model::Message;
     use crate::trajectory::{TokenUsage, Trajectory, outcome};
 
-    use super::{TrajectoryDiffArgs, diff_paths, render_text};
+    use super::{
+        TrajectoryDiffArgs, diff_paths, render_text, render_token_summary, usize_from_u32,
+    };
+
+    #[test]
+    fn should_convert_u32_to_usize_within_bounds() {
+        let val: u32 = 42;
+        assert_eq!(usize_from_u32(val), 42);
+    }
+
+    #[test]
+    fn should_handle_max_u32() {
+        let val: u32 = u32::MAX;
+        assert_eq!(usize_from_u32(val), u32::MAX as usize);
+    }
+
+    #[test]
+    fn should_render_token_summary_without_cache_when_zero() {
+        let result = render_token_summary(Some(100), None, None, None, Some(50));
+        assert_eq!(result, "prompt=100 completion=50");
+    }
+
+    #[test]
+    fn should_render_token_summary_with_cache() {
+        let result = render_token_summary(Some(100), Some(90), Some(5), Some(5), Some(50));
+        assert_eq!(
+            result,
+            "prompt=100 (input=90 cache_read=5 cache_creation=5) completion=50"
+        );
+    }
+
+    #[test]
+    fn should_render_token_summary_with_unknowns() {
+        let result = render_token_summary(None, None, None, None, None);
+        assert_eq!(result, "prompt=? completion=?");
+    }
 
     #[test]
     fn diffing_and_rendering_eighty_step_trajectories_stays_under_500ms() {
