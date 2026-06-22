@@ -458,7 +458,7 @@ struct ResolvedRedactionConfig {
 /// entries are *added* to the CLI config (union, not replace), so an explicit
 /// `--config` is never weakened. Redaction markers and uncompilable patterns are
 /// skipped. Best-effort: missing or malformed provenance leaves `cfg` unchanged.
-fn merge_recorded_sweep_redaction(dir: &Path, cfg: &mut RedactionCfg) {
+pub(crate) fn merge_recorded_sweep_redaction(dir: &Path, cfg: &mut RedactionCfg) {
     let mut existing_literals: BTreeSet<String> = cfg.secret_literals.iter().cloned().collect();
     let mut existing_patterns: BTreeSet<String> = cfg.custom_patterns.iter().cloned().collect();
 

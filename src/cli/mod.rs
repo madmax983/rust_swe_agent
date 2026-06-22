@@ -100,6 +100,7 @@ pub async fn run() -> Result<(), Error> {
             args::BenchCmd::TriageDiff(t) => bench_triage_diff(t),
             args::BenchCmd::CommandStats(c) => bench_command_stats(c),
             args::BenchCmd::Grep(g) => bench_grep(g),
+            args::BenchCmd::Events(e) => bench_events(e),
             args::BenchCmd::Frontier(f) => bench_frontier(f),
             args::BenchCmd::Reproduce(r) => Box::pin(bench_reproduce(r)).await,
             args::BenchCmd::Bundle(b) => bench_bundle(b),
@@ -5142,6 +5143,121 @@ fn bench_grep(g: args::GrepCmd) -> Result<(), Error> {
     Ok(())
 }
 
+fn bench_events(e: args::EventsCmd) -> Result<(), Error> {
+    use crate::run::events;
+    let format = match e.format.as_str() {
+        "table" => EventsOutputFormat::Table,
+        "json" => EventsOutputFormat::Json,
+        "jsonl" => EventsOutputFormat::Jsonl,
+        other => {
+            return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+                "unknown --format `{other}` (expected `table`, `json`, or `jsonl`)"
+            ))));
+        }
+    };
+    // Only json/jsonl serialize the raw payload; table prints just the typed
+    // columns, so we skip retaining payloads there to keep memory bounded.
+    let include_payloads = matches!(format, EventsOutputFormat::Json | EventsOutputFormat::Jsonl);
+    // Build the redaction policy applied to event-only fields the writer injects
+    // after the runtime `RedactingSink` — notably the raw `instance_id`. Base it
+    // on `--config` (or defaults), then union the run/sweep's recorded policy
+    // best-effort. Recorded `secret_literals` are stored already-redacted, so
+    // `--config` is the reliable lever for a literal-shaped id; the merge still
+    // recovers a sweep's `custom_patterns`/`enabled` for the no-`--config` case.
+    let mut redaction = match &e.config {
+        Some(p) => Config::load(p)?,
+        None => Config::defaults()?,
+    }
+    .root
+    .redaction;
+    // An explicit `--config` is authoritative for the `enabled` flag. The recorded
+    // sweep policy may add literals/patterns and would otherwise force redaction
+    // back on (that force-enable is intended for `redact-audit`), but here it must
+    // not silently override an operator who set `enabled = false` to inspect raw
+    // ids; capture the requested state and restore it after the merge.
+    let config_enabled = redaction.enabled;
+    // Recover the recorded policy from every governing sweep dir: the path itself
+    // plus the governing dir of each discovered event log. Deriving from the
+    // discovered files (not just `path`) means a parent dir holding several sweeps
+    // — each with its own `manifest.json` in a sibling subdir — still has each
+    // child policy applied. Discovery errors are non-fatal here (`run` reports
+    // them); the merge is best-effort and a manifest-less dir is a no-op.
+    let mut config_dirs = events_recorded_config_dirs(&e.path);
+    for file in events::discover_event_files(&e.path).unwrap_or_default() {
+        config_dirs.extend(events_recorded_config_dirs(&file));
+    }
+    config_dirs.sort();
+    config_dirs.dedup();
+    for dir in &config_dirs {
+        crate::run::redact_audit::merge_recorded_sweep_redaction(dir, &mut redaction);
+    }
+    if e.config.is_some() {
+        redaction.enabled = config_enabled;
+    }
+    let report = events::run(&events::EventsArgs {
+        path: e.path,
+        types: e.types,
+        instances: e.instances,
+        since: e.since,
+        until: e.until,
+        summary: e.summary,
+        include_payloads,
+        redaction,
+    })?;
+    match format {
+        EventsOutputFormat::Table => {
+            if e.summary {
+                print!("{}", events::render_summary_table(&report));
+            } else {
+                print!("{}", events::render_table(&report));
+            }
+        }
+        EventsOutputFormat::Json => {
+            println!("{}", events::render_json(&report)?);
+        }
+        EventsOutputFormat::Jsonl => {
+            let lines = events::render_jsonl(&report)?;
+            if !lines.is_empty() {
+                println!("{lines}");
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Directories whose recorded resolved redaction policy (in `manifest.json` /
+/// `results.json`) applies to the event log at `path`, for
+/// [`merge_recorded_sweep_redaction`](crate::run::redact_audit::merge_recorded_sweep_redaction).
+///
+/// A sweep records its policy at the sweep-dir root, while the event log is
+/// conventionally either inside that dir (`runs/sweep/…`) or its
+/// `{dir}.events.jsonl` sibling (the documented `--output runs/sweep --event-log
+/// runs/sweep.events.jsonl` layout). So probe the path itself when it is a
+/// directory, and for a `*.events.jsonl` file the dir formed by stripping that
+/// suffix plus the file's parent. Non-existent or manifest-less dirs are harmless:
+/// the merge is best-effort and leaves the config unchanged.
+fn events_recorded_config_dirs(path: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let mut dirs = Vec::new();
+    if path.is_dir() {
+        dirs.push(path.to_path_buf());
+        return dirs;
+    }
+    if let (Some(parent), Some(stem)) = (
+        path.parent(),
+        path.file_name()
+            .and_then(|n| n.to_str())
+            .and_then(|n| n.strip_suffix(".events.jsonl")),
+    ) {
+        dirs.push(parent.join(stem));
+    }
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() {
+            dirs.push(parent.to_path_buf());
+        }
+    }
+    dirs
+}
+
 fn bench_triage(t: args::TriageCmd) -> Result<(), Error> {
     let format = match t.format.as_str() {
         "text" => TriageFormat::Text,
@@ -5770,6 +5886,13 @@ enum CommandStatsFormat {
 enum GrepOutputFormat {
     Text,
     Json,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EventsOutputFormat {
+    Table,
+    Json,
+    Jsonl,
 }
 
 async fn bench_tail(t: args::TailCmd) -> Result<(), Error> {
