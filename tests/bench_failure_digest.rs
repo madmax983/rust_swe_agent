@@ -397,7 +397,7 @@ fn digest_json_format_is_schema_versioned_and_stable() {
 
     let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
 
-    assert_eq!(json["schema_version"], "1.0", "schema_version must be 1.0");
+    assert_eq!(json["schema_version"], "1.1", "schema_version must be 1.1");
     assert_eq!(json["instance_id"], "error-1");
     assert_eq!(json["outcome"], "error");
     assert_eq!(json["failure_category"], "model_parse");
@@ -492,6 +492,305 @@ fn digest_max_chars_truncation_preserves_headline_and_triage_footer() {
     assert!(
         stdout.contains("aabbccdd") || stdout.contains("Triage") || stdout.contains("triage"),
         "triage section should survive truncation: {stdout}"
+    );
+}
+
+// ── (i) failure signature: JSON shape ─────────────────────────────────────────
+
+#[test]
+fn digest_json_includes_failure_signature_object_with_constituent_fields() {
+    let sweep = fixture_path("sweep-single-errored");
+    let out = run_failure_digest(&["--sweep", sweep.to_str().unwrap(), "--format", "json"]);
+    assert!(out.status.success());
+
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let sig = &json["failure_signature"];
+    assert!(
+        sig.is_object(),
+        "failure_signature must be an object: {json}"
+    );
+
+    let signature_id = sig["signature_id"].as_str().unwrap_or("");
+    assert!(
+        !signature_id.is_empty() && signature_id.chars().all(|c| c.is_ascii_hexdigit()),
+        "signature_id must be a non-empty hex string: {signature_id:?}"
+    );
+    assert_eq!(
+        sig["failure_category"], "model_parse",
+        "signature must carry failure_category"
+    );
+    assert!(
+        sig.get("assistant_tail").is_some(),
+        "signature must carry assistant_tail: {sig}"
+    );
+    assert!(
+        sig.get("bash_exit_code").is_some(),
+        "signature must carry bash_exit_code: {sig}"
+    );
+    assert!(
+        sig.get("stderr_line").is_some(),
+        "signature must carry stderr_line: {sig}"
+    );
+    assert!(
+        sig["summary"].as_str().map_or(0, str::len) > 0,
+        "signature must carry a non-empty summary: {sig}"
+    );
+}
+
+// ── (j) determinism: identical inputs → identical signature_id ────────────────
+
+#[test]
+fn digest_signature_id_is_deterministic_across_runs() {
+    let sweep = fixture_path("sweep-single-errored");
+    let run_once = || {
+        let out = run_failure_digest(&["--sweep", sweep.to_str().unwrap(), "--format", "json"]);
+        assert!(out.status.success());
+        let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+        json["failure_signature"]["signature_id"]
+            .as_str()
+            .unwrap()
+            .to_owned()
+    };
+    assert_eq!(
+        run_once(),
+        run_once(),
+        "signature_id must be identical across independent runs"
+    );
+}
+
+// ── (k) discrimination: differing terminal failures → different signature_id ──
+
+#[test]
+fn digest_signature_id_discriminates_distinct_failures() {
+    let signature_of = |fixture: &str| {
+        let sweep = fixture_path(fixture);
+        let out = run_failure_digest(&["--sweep", sweep.to_str().unwrap(), "--format", "json"]);
+        assert!(out.status.success(), "{fixture} should succeed");
+        let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+        json["failure_signature"]["signature_id"]
+            .as_str()
+            .unwrap()
+            .to_owned()
+    };
+
+    let errored = signature_of("sweep-single-errored");
+    let step_limit = signature_of("sweep-step-limit");
+    assert_ne!(
+        errored, step_limit,
+        "distinct terminal failures must produce distinct signature_id"
+    );
+}
+
+// ── (l) markdown greppable failure_signature line ─────────────────────────────
+
+#[test]
+fn digest_markdown_renders_greppable_failure_signature_line() {
+    let sweep = fixture_path("sweep-single-errored");
+    let md_out = run_failure_digest(&["--sweep", sweep.to_str().unwrap()]);
+    assert!(md_out.status.success());
+    let md = String::from_utf8(md_out.stdout).unwrap();
+    assert!(
+        md.contains("failure_signature: "),
+        "markdown must contain a greppable `failure_signature: ` line: {md}"
+    );
+
+    // The id in markdown must match the id in JSON.
+    let json_out = run_failure_digest(&["--sweep", sweep.to_str().unwrap(), "--format", "json"]);
+    let json: serde_json::Value = serde_json::from_slice(&json_out.stdout).unwrap();
+    let id = json["failure_signature"]["signature_id"].as_str().unwrap();
+    assert!(
+        md.contains(id),
+        "markdown failure_signature id must match JSON id `{id}`: {md}"
+    );
+}
+
+// ── (m) baseline recurrence verdict ───────────────────────────────────────────
+
+#[test]
+fn digest_baseline_matching_signature_is_classified_recurring() {
+    let sweep = fixture_path("sweep-single-errored");
+    // First, learn the current signature_id.
+    let first = run_failure_digest(&["--sweep", sweep.to_str().unwrap(), "--format", "json"]);
+    let json: serde_json::Value = serde_json::from_slice(&first.stdout).unwrap();
+    let id = json["failure_signature"]["signature_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+
+    // Now classify against that baseline → recurring.
+    let out = run_failure_digest(&[
+        "--sweep",
+        sweep.to_str().unwrap(),
+        "--baseline-signature",
+        &id,
+        "--format",
+        "json",
+    ]);
+    assert!(
+        out.status.success(),
+        "recurrence verdict must not change exit code"
+    );
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(
+        json["recurrence"]["verdict"], "recurring",
+        "matching baseline must classify as recurring: {json}"
+    );
+    assert_eq!(json["recurrence"]["baseline_signature_id"], id);
+
+    // Markdown surface too.
+    let md_out = run_failure_digest(&[
+        "--sweep",
+        sweep.to_str().unwrap(),
+        "--baseline-signature",
+        &id,
+    ]);
+    assert!(md_out.status.success());
+    let md = String::from_utf8(md_out.stdout).unwrap();
+    assert!(
+        md.contains("recurrence: recurring"),
+        "markdown must surface recurrence verdict: {md}"
+    );
+}
+
+#[test]
+fn digest_baseline_nonmatching_signature_is_classified_new_and_exit_zero() {
+    let sweep = fixture_path("sweep-single-errored");
+    let out = run_failure_digest(&[
+        "--sweep",
+        sweep.to_str().unwrap(),
+        "--baseline-signature",
+        "deadbeefdeadbeef",
+        "--format",
+        "json",
+    ]);
+    assert!(
+        out.status.success(),
+        "recurrence verdict must not change exit code (got {:?})",
+        out.status.code()
+    );
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(
+        json["recurrence"]["verdict"], "new",
+        "non-matching baseline must classify as new: {json}"
+    );
+}
+
+#[test]
+fn digest_without_baseline_omits_recurrence() {
+    let sweep = fixture_path("sweep-single-errored");
+    let out = run_failure_digest(&["--sweep", sweep.to_str().unwrap(), "--format", "json"]);
+    assert!(out.status.success());
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert!(
+        json.get("recurrence").is_none(),
+        "recurrence must be absent when no baseline is supplied: {json}"
+    );
+}
+
+// ── (n) signature is redaction-safe ───────────────────────────────────────────
+
+#[test]
+fn digest_signature_never_leaks_raw_secret() {
+    let sweep = tempfile::tempdir().unwrap();
+    let secret_value = "super-secret-key-value-9999";
+
+    std::fs::write(
+        sweep.path().join("results.json"),
+        serde_json::to_string_pretty(&serde_json::json!({
+            "artifact_kind": "sweep_results",
+            "schema_version": {"major": 1, "minor": 4},
+            "total": 1,
+            "submitted": 0,
+            "skipped": 0,
+            "errored": 1,
+            "total_cost_usd": 1.0,
+            "instances": [{
+                "instance_id": "secret-test",
+                "exit_reason": "error",
+                "outcome": "error",
+                "failure_category": "model_api",
+                "cost_usd": 1.0,
+                "steps": 1,
+                "patch_present": false,
+                "non_empty_patch": false,
+                "attempts": 1,
+                "runs": 1,
+                "resolved_count": 0,
+                "pass_at_1": false,
+                "tests_run_before_submit": false
+            }]
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+
+    std::fs::write(
+        sweep.path().join("secret-test.traj.json"),
+        serde_json::to_string_pretty(&serde_json::json!({
+            "trajectory_format": "mini-swe-agent-1.1",
+            "artifact_kind": "trajectory",
+            "schema_version": {"major": 1, "minor": 4},
+            "info": {
+                "task": "secret-test",
+                "model_name": "fixture-model",
+                "outcome": "error",
+                "failure_category": "model_api",
+                "total_cost_usd": 1.0,
+                "steps": 1,
+                "test_invocations": [],
+                "tests_run_before_submit": false
+            },
+            "messages": [
+                {"role": "assistant", "content": format!("Calling the API with key={secret_value}")},
+                {
+                    "role": "user",
+                    "content": "observation",
+                    "extra": {
+                        "run_result": {
+                            "stdout": "",
+                            "stderr": format!("API call failed with key={secret_value}"),
+                            "exit_code": 1,
+                            "timed_out": false
+                        }
+                    }
+                }
+            ]
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+
+    let out = run_failure_digest_with_env(
+        &[
+            "--sweep",
+            sweep.path().to_str().unwrap(),
+            "--format",
+            "json",
+        ],
+        &[("OPENROUTER_API_KEY", secret_value)],
+    );
+    assert!(out.status.success());
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let sig = &json["failure_signature"];
+    let signature_id = sig["signature_id"].as_str().unwrap_or("");
+    let summary = sig["summary"].as_str().unwrap_or("");
+    let assistant_tail = sig["assistant_tail"].as_str().unwrap_or("");
+    let stderr_line = sig["stderr_line"].as_str().unwrap_or("");
+    assert!(
+        !signature_id.contains(secret_value),
+        "signature_id must not contain raw secret"
+    );
+    assert!(
+        !summary.contains(secret_value),
+        "summary must not contain raw secret: {summary}"
+    );
+    assert!(
+        !assistant_tail.contains(secret_value),
+        "assistant_tail must not contain raw secret: {assistant_tail}"
+    );
+    assert!(
+        !stderr_line.contains(secret_value),
+        "stderr_line must not contain raw secret: {stderr_line}"
     );
 }
 

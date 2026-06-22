@@ -124,6 +124,29 @@ impl FailureSignature {
     pub fn failure_category(&self) -> &str {
         &self.failure_category
     }
+
+    /// Stable hex identity for this signature. Alias of [`Self::cluster_id`],
+    /// named for the single-instance `failure-digest` surface where it is
+    /// presented as a per-failure `signature_id` rather than a cluster id.
+    #[must_use]
+    pub fn signature_id(&self) -> String {
+        self.cluster_id()
+    }
+
+    #[must_use]
+    pub fn assistant_tail(&self) -> &str {
+        &self.assistant_tail
+    }
+
+    #[must_use]
+    pub fn bash_exit_code(&self) -> Option<i32> {
+        self.bash_exit_code
+    }
+
+    #[must_use]
+    pub fn stderr_line(&self) -> &str {
+        &self.stderr_line
+    }
 }
 
 pub fn extract_instance_signature(
@@ -733,5 +756,32 @@ mod tests {
     fn message_tail_limits_by_chars() {
         assert_eq!(message_tail("abcdef", 3), "def");
         assert_eq!(message_tail("abc", 3), "abc");
+    }
+
+    #[test]
+    fn signature_id_aliases_cluster_id_and_accessors_expose_normalized_fields() {
+        let sig = FailureSignature::from_parts(
+            "model_parse",
+            "Parser failed in /tmp/swe/task-101/src/main.py line 33",
+            Some(2),
+            "SyntaxError: unexpected token 404",
+        );
+
+        // signature_id is exactly the cluster_id hash, just a single-instance name.
+        assert_eq!(sig.signature_id(), sig.cluster_id());
+
+        // Accessors expose the normalized constituent fields used in the hash.
+        assert_eq!(sig.failure_category(), "model_parse");
+        assert_eq!(sig.bash_exit_code(), Some(2));
+        assert!(
+            sig.assistant_tail().contains("<path>") && sig.assistant_tail().contains("<num>"),
+            "assistant_tail should be normalized: {}",
+            sig.assistant_tail()
+        );
+        assert!(
+            sig.stderr_line().contains("<num>"),
+            "stderr_line should be normalized: {}",
+            sig.stderr_line()
+        );
     }
 }

@@ -6388,6 +6388,7 @@ fn bench_failure_digest(f: args::FailureDigestCmd) -> Result<(), Error> {
         instance: f.instance,
         format,
         max_chars,
+        baseline_signature: f.baseline_signature,
     })?;
     match format {
         crate::run::failure_digest::DigestFormat::Markdown => {

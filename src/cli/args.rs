@@ -1665,6 +1665,13 @@ pub struct FailureDigestCmd {
     /// Truncation preserves the headline and triage cluster footer.
     #[arg(long, default_value_t = 8000)]
     pub max_chars: usize,
+
+    /// Optional baseline `signature_id` to compare this failure against. When
+    /// supplied, the digest classifies the failure as `recurring` (the computed
+    /// signature matches the baseline) or `new`. The verdict is informational
+    /// and never changes the process exit code.
+    #[arg(long, value_name = "SIGNATURE_ID")]
+    pub baseline_signature: Option<String>,
 }
 
 /// `bench eval-flake` — quantify evaluator-side verdict noise on a completed sweep.
