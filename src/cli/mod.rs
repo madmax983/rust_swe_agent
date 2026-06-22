@@ -5152,6 +5152,9 @@ fn bench_events(e: args::EventsCmd) -> Result<(), Error> {
             ))));
         }
     };
+    // Only json/jsonl serialize the raw payload; table prints just the typed
+    // columns, so we skip retaining payloads there to keep memory bounded.
+    let include_payloads = matches!(format, EventsOutputFormat::Json | EventsOutputFormat::Jsonl);
     let report = events::run(&events::EventsArgs {
         path: e.path,
         types: e.types,
@@ -5159,6 +5162,7 @@ fn bench_events(e: args::EventsCmd) -> Result<(), Error> {
         since: e.since,
         until: e.until,
         summary: e.summary,
+        include_payloads,
     })?;
     match format {
         EventsOutputFormat::Table => {

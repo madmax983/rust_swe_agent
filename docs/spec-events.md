@@ -21,8 +21,11 @@ bench events <PATH> [--type T]... [--instance ID]... \
 
 `<PATH>` may be:
 - an event-log `.jsonl` file, or
-- a single-run or sweep directory, which is walked **recursively** for `*.jsonl`
-  files.
+- a single-run or sweep directory, which is walked **recursively** for regular
+  `*.jsonl` files. The sibling log `<dir>.events.jsonl` is also picked up, since
+  the documented sweep pattern writes the log next to the output directory
+  (`--output runs/sweep --event-log runs/sweep.events.jsonl`) rather than inside
+  it. Symlinks, FIFOs, and other non-regular entries are skipped.
 
 Because every event line self-describes its `instance_id`, discovery does not
 depend on a file-naming convention: any `.jsonl` file whose lines carry a string

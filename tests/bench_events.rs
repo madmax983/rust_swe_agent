@@ -31,6 +31,9 @@ fn base_args(path: PathBuf) -> EventsArgs {
         since: None,
         until: None,
         summary: false,
+        // Full-fidelity by default for direct API callers/tests; the CLI sets
+        // this per output format.
+        include_payloads: true,
     }
 }
 
@@ -244,6 +247,99 @@ fn unit_redacts_secret_shaped_instance_id_in_display_and_summary() {
             "per-instance summary key must not leak the raw secret-shaped id: {key}"
         );
     }
+}
+
+#[test]
+fn unit_discovers_sibling_sweep_event_log() {
+    // Documented sweep pattern: `--output runs/sweep --event-log runs/sweep.events.jsonl`,
+    // i.e. the log is a sibling of the sweep dir. Passing the dir must still find it.
+    let tmp = tempfile::tempdir().unwrap();
+    let sweep = tmp.path().join("sweep");
+    std::fs::create_dir(&sweep).unwrap();
+    std::fs::write(
+        tmp.path().join("sweep.events.jsonl"),
+        "{\"schema\":\"event-log-v1\",\"ts\":\"2026-01-01T00:00:00Z\",\"event_type\":\"run_started\",\"instance_id\":\"x\"}\n",
+    )
+    .unwrap();
+
+    let report = events_run(&base_args(sweep)).unwrap();
+    assert_eq!(
+        report.events.len(),
+        1,
+        "the sibling sweep.events.jsonl must be discovered"
+    );
+    assert_eq!(report.events[0].instance_id, "x");
+}
+
+#[test]
+fn unit_table_mode_does_not_retain_payloads() {
+    let mut args = base_args(fixture_sweep());
+    args.include_payloads = false; // table/summary CLI path
+    let report = events_run(&args).unwrap();
+    assert!(!report.events.is_empty());
+    // Typed columns are kept (table renders these); raw payload is dropped.
+    for ev in &report.events {
+        assert!(!ev.event_type.is_empty());
+        assert!(
+            ev.raw.is_null(),
+            "table-mode rows must not retain the payload"
+        );
+    }
+}
+
+#[test]
+fn unit_json_mode_retains_payloads() {
+    let mut args = base_args(fixture_sweep());
+    args.include_payloads = true; // json/jsonl CLI path
+    let report = events_run(&args).unwrap();
+    assert!(
+        report.events.iter().any(|e| !e.raw.is_null()),
+        "json/jsonl mode must retain the raw payload"
+    );
+}
+
+#[test]
+fn unit_reported_path_is_redacted() {
+    // A secret-shaped segment in the path must not leak into the shareable report.
+    let fake_token = "ghp_0123456789ABCDEF0123456789ABCDEF0123";
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().join(format!("run-{fake_token}"));
+    std::fs::create_dir(&dir).unwrap();
+    std::fs::write(
+        dir.join("e.jsonl"),
+        "{\"schema\":\"event-log-v1\",\"ts\":\"2026-01-01T00:00:00Z\",\"event_type\":\"run_started\",\"instance_id\":\"x\"}\n",
+    )
+    .unwrap();
+
+    let report = events_run(&base_args(dir)).unwrap();
+    assert!(
+        !report.path.contains(fake_token),
+        "reported query path must be redacted, got: {}",
+        report.path
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn unit_skips_symlinked_jsonl_during_discovery() {
+    // A symlinked *.jsonl entry inside the dir must be skipped (is_file() is false
+    // for symlinks), so discovery can't follow links outside the artifact tree.
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().join("sweep");
+    std::fs::create_dir(&dir).unwrap();
+    let real = tmp.path().join("outside.jsonl");
+    std::fs::write(
+        &real,
+        "{\"schema\":\"event-log-v1\",\"ts\":\"2026-01-01T00:00:00Z\",\"event_type\":\"run_started\",\"instance_id\":\"leak\"}\n",
+    )
+    .unwrap();
+    std::os::unix::fs::symlink(&real, dir.join("link.jsonl")).unwrap();
+
+    let report = events_run(&base_args(dir)).unwrap();
+    assert!(
+        report.events.is_empty(),
+        "symlinked jsonl must not be followed during discovery"
+    );
 }
 
 // ── CLI integration tests ─────────────────────────────────────────────────────

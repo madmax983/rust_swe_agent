@@ -54,6 +54,11 @@ pub struct EventsArgs {
     pub until: Option<String>,
     /// Emit per-type/per-instance counts instead of individual rows.
     pub summary: bool,
+    /// Retain each event's full (redacted) raw payload on the returned rows.
+    /// Only `--format json`/`jsonl` serialize the payload; `table` prints just
+    /// `ts`/`instance_id`/`event_type`, so the CLI sets this `false` there to
+    /// avoid allocating large assistant content / bash output for every event.
+    pub include_payloads: bool,
 }
 
 /// One matched event. Serializes as the full original line object (`raw`, after
@@ -247,12 +252,20 @@ pub fn run(args: &EventsArgs) -> Result<EventsReport, Error> {
                     .entry(event_type)
                     .or_insert(0) += 1;
             } else {
+                // Only json/jsonl serialize the payload; for table output the
+                // renderer needs just the typed fields, so drop the raw value to
+                // keep memory bounded on large logs.
+                let raw = if args.include_payloads {
+                    value
+                } else {
+                    Value::Null
+                };
                 events.push(EventRow {
                     instance_id,
                     ts,
                     event_type,
                     parsed_ts,
-                    raw: value,
+                    raw,
                 });
             }
         }
@@ -276,9 +289,16 @@ pub fn run(args: &EventsArgs) -> Result<EventsReport, Error> {
         build_summary(&events)
     };
 
+    // Redact the reported path: an operator-chosen event-log path or temp dir
+    // name can itself be secret-shaped, and this string is copied into the
+    // shareable JSON report alongside the (already redacted) payloads.
+    let path = redactor
+        .redact_text(&args.path.display().to_string(), surface::INSPECT)
+        .text;
+
     Ok(EventsReport {
         schema: QUERY_SCHEMA.to_owned(),
-        path: args.path.display().to_string(),
+        path,
         events,
         summary,
         files_scanned,
@@ -307,15 +327,27 @@ fn build_summary(events: &[EventRow]) -> EventsSummary {
 
 /// Discover candidate event-log files under `path`.
 ///
-/// If `path` is a file it is used directly; if it is a directory it is walked
-/// recursively for `*.jsonl` files. Results are sorted for deterministic output.
+/// If `path` is a file it is used directly. If it is a directory it is walked
+/// recursively for `*.jsonl` files; additionally, the sibling `{dir}.events.jsonl`
+/// is included when present, because the documented sweep pattern writes the log
+/// *next to* the output dir (`--output runs/sweep --event-log
+/// runs/sweep.events.jsonl`) rather than inside it. Results are deduplicated and
+/// sorted for deterministic output.
 fn discover_event_files(path: &Path) -> Result<Vec<PathBuf>, Error> {
     if path.is_file() {
         return Ok(vec![path.to_path_buf()]);
     }
     let mut out = Vec::new();
     collect_jsonl(path, &mut out)?;
+    // Probe the conventional sibling log `{dir}.events.jsonl`.
+    let mut sibling = path.as_os_str().to_owned();
+    sibling.push(".events.jsonl");
+    let sibling = PathBuf::from(sibling);
+    if sibling.is_file() {
+        out.push(sibling);
+    }
     out.sort();
+    out.dedup();
     Ok(out)
 }
 
@@ -324,13 +356,16 @@ fn collect_jsonl(dir: &Path, out: &mut Vec<PathBuf>) -> Result<(), Error> {
         let entry = entry?;
         let p = entry.path();
         // Use the directory entry's own file type (does not follow symlinks) so a
-        // circular symlink can't drive infinite recursion / stack overflow.
-        if entry.file_type()?.is_dir() {
+        // circular symlink can't drive infinite recursion / stack overflow, and
+        // non-regular entries (symlinks, FIFOs, devices) are skipped — a FIFO
+        // would block `File::open` and a symlink could escape the artifact tree.
+        let file_type = entry.file_type()?;
+        if file_type.is_dir() {
             collect_jsonl(&p, out)?;
-        } else if p
-            .extension()
-            .and_then(std::ffi::OsStr::to_str)
-            .is_some_and(|ext| ext.eq_ignore_ascii_case("jsonl"))
+        } else if file_type.is_file()
+            && p.extension()
+                .and_then(std::ffi::OsStr::to_str)
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("jsonl"))
         {
             out.push(p);
         }
