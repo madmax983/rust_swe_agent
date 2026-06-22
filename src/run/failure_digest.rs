@@ -216,17 +216,10 @@ pub fn run(args: &FailureDigestArgs) -> Result<FailureDigest, Error> {
         &last_tool_stderr,
     );
 
-    let recurrence = args.baseline_signature.as_ref().map(|baseline| {
-        let verdict = if baseline.to_lowercase() == failure_signature.signature_id {
-            RecurrenceVerdict::Recurring
-        } else {
-            RecurrenceVerdict::New
-        };
-        RecurrenceView {
-            baseline_signature_id: baseline.clone(),
-            verdict,
-        }
-    });
+    let recurrence = compute_recurrence(
+        args.baseline_signature.as_deref(),
+        &failure_signature.signature_id,
+    );
 
     Ok(FailureDigest {
         schema_version: "1.1".into(),
@@ -272,6 +265,22 @@ fn build_failure_signature(
         stderr_line: signature.stderr_line().to_owned(),
         summary: signature.summary(),
     }
+}
+
+/// Classify the current `signature_id` against an optional baseline. The baseline
+/// is normalized to lowercase once (matching the lowercase-hex `signature_id`
+/// format) and reused as the reported `baseline_signature_id`.
+fn compute_recurrence(baseline: Option<&str>, signature_id: &str) -> Option<RecurrenceView> {
+    let baseline_signature_id = baseline?.to_lowercase();
+    let verdict = if baseline_signature_id == signature_id {
+        RecurrenceVerdict::Recurring
+    } else {
+        RecurrenceVerdict::New
+    };
+    Some(RecurrenceView {
+        baseline_signature_id,
+        verdict,
+    })
 }
 
 /// Render the digest as markdown, truncating to `max_chars` while preserving
@@ -553,9 +562,9 @@ fn truncate_preserving_ends(
     }
 
     let middle_budget = max_chars - fixed_len;
-    // Skip the protected header bytes (all ASCII) then trim any leading blank lines.
+    // Skip the protected header then trim any leading blank lines.
     let rest = text
-        .get(header.len()..)
+        .strip_prefix(&header)
         .unwrap_or("")
         .trim_start_matches('\n');
     let middle: String = rest.chars().take(middle_budget).collect();

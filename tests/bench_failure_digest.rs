@@ -704,6 +704,27 @@ fn digest_without_baseline_omits_recurrence() {
     );
 }
 
+#[test]
+fn digest_rejects_malformed_baseline_signature() {
+    let sweep = fixture_path("sweep-single-errored");
+    // 15 chars (too short) — must error rather than silently classify as `new`.
+    let out = run_failure_digest(&[
+        "--sweep",
+        sweep.to_str().unwrap(),
+        "--baseline-signature",
+        "deadbeefdeadbee",
+    ]);
+    assert!(
+        !out.status.success(),
+        "a malformed baseline signature must exit non-zero"
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("baseline-signature"),
+        "error must mention the offending flag: {stderr}"
+    );
+}
+
 // ── (n) signature is redaction-safe ───────────────────────────────────────────
 
 #[test]
