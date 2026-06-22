@@ -637,26 +637,39 @@ timeout_secs = 3
     let exit = agent.run().await.unwrap();
     assert!(matches!(exit, ExitReason::Submitted { .. }));
 
-    // A command tool runs a real shell via `env.run`; it must surface bash
-    // lifecycle events so activity-inferring consumers (the ratatui dashboard,
+    // A command tool runs a real shell via `env.run`; it must surface a generic
+    // tool-activity span so activity-inferring consumers (the ratatui dashboard,
     // issue #649) see the in-flight command rather than a static idle footer.
+    // BashStart/BashResult stay reserved for the Bash tool, so bash-command
+    // telemetry is not polluted by other tool types.
     let mut events = Vec::new();
     while let Ok(e) = rx.try_recv() {
         events.push(e);
     }
     assert!(
         events.iter().any(
-            |e| matches!(e, StreamEvent::BashStart { command, .. } if command == "diagnose-helper")
+            |e| matches!(e, StreamEvent::ToolStart { label, .. } if label == "diagnose-helper")
         ),
-        "command tool should emit BashStart with the rendered command: {events:#?}"
+        "command tool should emit ToolStart with the rendered command: {events:#?}"
+    );
+    assert!(
+        events.iter().any(|e| matches!(e, StreamEvent::ToolEnd { .. })),
+        "command tool should emit ToolEnd to close the activity span: {events:#?}"
+    );
+    assert!(
+        !events.iter().any(|e| matches!(
+            e,
+            StreamEvent::BashStart { .. } | StreamEvent::BashResult { .. }
+        )),
+        "command tool must not emit bash-command telemetry: {events:#?}"
     );
     assert!(
         events.iter().any(|e| matches!(
             e,
-            StreamEvent::BashResult { exit_code: 0, stdout, .. }
-                if stdout.contains("diagnose saw check flaky test")
+            StreamEvent::Observation { content, .. }
+                if content.contains("diagnose saw check flaky test")
         )),
-        "command tool should emit BashResult with its output: {events:#?}"
+        "command tool output should surface in an Observation: {events:#?}"
     );
 
     let calls = calls.lock().unwrap().clone();

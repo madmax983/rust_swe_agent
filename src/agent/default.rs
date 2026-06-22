@@ -2295,13 +2295,40 @@ impl DefaultAgent {
         tool_input: &str,
         result: Option<&RunResult>,
     ) -> Result<Vec<ToolHookResult>, Error> {
-        let mut reports = Vec::new();
-        for hook in hooks {
-            reports.push(
-                self.run_tool_hook(phase, hook, tool_name, tool_input, result)
-                    .await?,
-            );
+        if hooks.is_empty() {
+            return Ok(Vec::new());
         }
+        // Configured hooks run real commands via `env.run`. Surface the phase as
+        // a generic tool-activity span so a long-running hook shows the in-flight
+        // (and stall) indicator on the dashboard (issue #649) instead of a static
+        // idle footer. `self.stream` is the RedactingSink, so the label is
+        // redacted on the stream surface.
+        self.stream.emit(StreamEvent::ToolStart {
+            step: self.steps,
+            label: format!("{} hooks: {tool_name}", phase.as_str()),
+            timestamp: chrono::Utc::now().to_rfc3339(),
+        });
+        let mut reports = Vec::new();
+        let mut outcome = Ok(());
+        for hook in hooks {
+            match self
+                .run_tool_hook(phase, hook, tool_name, tool_input, result)
+                .await
+            {
+                Ok(report) => reports.push(report),
+                Err(err) => {
+                    outcome = Err(err);
+                    break;
+                }
+            }
+        }
+        // Close the span even on a hook error, so the dashboard never sticks on
+        // a stale running footer.
+        self.stream.emit(StreamEvent::ToolEnd {
+            step: self.steps,
+            timestamp: chrono::Utc::now().to_rfc3339(),
+        });
+        outcome?;
         Ok(reports)
     }
 
@@ -2421,28 +2448,27 @@ impl DefaultAgent {
             req = req.with_cancellation(cancellation);
         }
         req.env = tool_process_env(&context)?;
-        // A configured command tool runs a real shell via `env.run` but, unlike
-        // the Bash tool, emits no bash lifecycle events. Surface them here so a
-        // dashboard that infers activity from BashStart/BashResult (issue #649)
-        // shows the in-flight command — and the stall indicator for a slow one —
-        // instead of the static idle footer. `self.stream` is the RedactingSink,
-        // so the raw command/output are redacted on the stream surface, matching
-        // the Bash path.
-        self.stream.emit(StreamEvent::BashStart {
+        // A configured command tool runs a real shell via `env.run` but is a
+        // distinct tool type from the Bash tool, so surface it as a generic
+        // tool-activity span rather than bash telemetry: a dashboard that infers
+        // liveness (issue #649) shows the in-flight command — and the stall
+        // indicator for a slow one — while `--event-log`/SSE/webhook consumers
+        // that audit bash commands are unaffected. `self.stream` is the
+        // RedactingSink, so the raw command label is redacted on the stream
+        // surface.
+        self.stream.emit(StreamEvent::ToolStart {
             step: self.steps,
-            command: rendered_command,
+            label: rendered_command,
             timestamp: chrono::Utc::now().to_rfc3339(),
         });
-        let result = self.env.run(req).await?;
-        self.stream.emit(StreamEvent::BashResult {
+        let result = self.env.run(req).await;
+        // Close the span even if the run errored, so the dashboard never sticks
+        // on a stale running footer.
+        self.stream.emit(StreamEvent::ToolEnd {
             step: self.steps,
-            exit_code: result.exit_code,
-            stdout: result.stdout.clone(),
-            stderr: result.stderr.clone(),
-            timed_out: result.timed_out,
             timestamp: chrono::Utc::now().to_rfc3339(),
         });
-        Ok(result)
+        result.map_err(Into::into)
     }
 
     async fn run_non_bash_tool(

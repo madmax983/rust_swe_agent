@@ -679,6 +679,19 @@ pub fn redact_stream_event(event: &StreamEvent, redactor: &Redactor) -> StreamEv
             timed_out: *timed_out,
             timestamp: timestamp.clone(),
         },
+        StreamEvent::ToolStart {
+            step,
+            label,
+            timestamp,
+        } => StreamEvent::ToolStart {
+            step: *step,
+            label: redactor.redact_text(label, surface::STREAM).text,
+            timestamp: timestamp.clone(),
+        },
+        StreamEvent::ToolEnd { step, timestamp } => StreamEvent::ToolEnd {
+            step: *step,
+            timestamp: timestamp.clone(),
+        },
         StreamEvent::Observation {
             step,
             content,

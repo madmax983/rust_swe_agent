@@ -537,6 +537,36 @@ impl StreamSink for RatatuiDashboard {
                 );
                 self.append(kind, summary);
             }
+            StreamEvent::ToolStart { step, label, .. } => {
+                {
+                    let mut s = self
+                        .state
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    // A non-bash tool/hook/driver operation is in flight: render
+                    // it like a bash run so a slow one escalates to the stall
+                    // indicator instead of the static idle footer (issue #649).
+                    s.activity = Activity::Running {
+                        since: Instant::now(),
+                        command: label.clone(),
+                    };
+                }
+                self.append(LineKind::BashRun, format!("step {step} tool: {label}"));
+            }
+            StreamEvent::ToolEnd { .. } => {
+                {
+                    let mut s = self
+                        .state
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    // The tool finished; like `BashResult`, the gap until the
+                    // next observation/assistant message is idle (issue #649).
+                    s.activity = Activity::Idle;
+                }
+                // No log line — the following observation/result carries the
+                // detail — but wake the renderer so the footer clears promptly.
+                self.notify.notify_waiters();
+            }
             StreamEvent::Observation { step, content, .. } => {
                 {
                     let mut s = self

@@ -217,13 +217,14 @@ async fn codex_driver_produces_valid_trajectory() {
     assert_eq!(contents, "line one\nline two\n");
 }
 
-/// The codex driver surfaces shell calls as BashStart/BashResult lifecycle
-/// events so activity-inferring consumers (the ratatui dashboard, issue #649)
-/// see the in-flight command instead of a static idle footer; the driver
-/// otherwise emits only AssistantMessage/Observation.
+/// The codex driver surfaces shell calls as ToolStart/ToolEnd activity events
+/// so activity-inferring consumers (the ratatui dashboard, issue #649) see the
+/// in-flight command instead of a static idle footer; the driver otherwise
+/// emits only AssistantMessage/Observation. These are generic liveness events,
+/// not bash-command telemetry.
 #[tokio::test]
 #[cfg(unix)]
-async fn codex_driver_emits_bash_lifecycle_events() {
+async fn codex_driver_emits_tool_activity_events() {
     let repo = tempfile::tempdir().unwrap();
     let out = tempfile::tempdir().unwrap();
     init_repo(repo.path());
@@ -246,31 +247,36 @@ async fn codex_driver_emits_bash_lifecycle_events() {
         .map(|e| e["event_type"].as_str().unwrap())
         .collect();
 
-    // Two local_shell_call blocks in the fixture → a BashStart/BashResult pair
+    // Two local_shell_call blocks in the fixture → a ToolStart/ToolEnd pair
     // for each.
     assert_eq!(
-        types.iter().filter(|t| **t == "bash_start").count(),
+        types.iter().filter(|t| **t == "tool_start").count(),
         2,
-        "expected a bash_start per shell call: {types:?}"
+        "expected a tool_start per shell call: {types:?}"
     );
     assert_eq!(
-        types.iter().filter(|t| **t == "bash_result").count(),
+        types.iter().filter(|t| **t == "tool_end").count(),
         2,
-        "expected a bash_result per shell call: {types:?}"
+        "expected a tool_end per shell call: {types:?}"
+    );
+    // The shell call is never mislabeled as bash-command telemetry.
+    assert!(
+        !types.iter().any(|t| *t == "bash_start" || *t == "bash_result"),
+        "driver must not emit bash telemetry: {types:?}"
     );
 
-    // The running command rides on BashStart so the dashboard can label the
-    // footer, and each BashStart precedes its BashResult.
+    // The running command rides on ToolStart so the dashboard can label the
+    // footer, and each ToolStart precedes its ToolEnd.
     let start = events
         .iter()
-        .position(|e| e["event_type"] == "bash_start" && e["command"] == "echo 'line two' >> a.txt")
-        .expect("bash_start for the echo command");
-    let result = events
+        .position(|e| e["event_type"] == "tool_start" && e["label"] == "echo 'line two' >> a.txt")
+        .expect("tool_start for the echo command");
+    let end = events
         .iter()
         .skip(start)
-        .position(|e| e["event_type"] == "bash_result")
-        .expect("a bash_result after the echo bash_start");
-    assert!(result > 0, "bash_result should follow its bash_start");
+        .position(|e| e["event_type"] == "tool_end")
+        .expect("a tool_end after the echo tool_start");
+    assert!(end > 0, "tool_end should follow its tool_start");
 }
 
 /// `--driver codex` is rejected with `--env docker`.
