@@ -15,6 +15,7 @@ use serde::Serialize;
 
 pub mod broadcast;
 pub mod event_log;
+pub mod redact;
 pub mod sse;
 #[cfg(feature = "webhook")]
 pub mod sweep_webhook;
@@ -369,3 +370,5 @@ mod tests {
         });
     }
 }
+
+pub use redact::{RedactingSink, redact_stream_event};

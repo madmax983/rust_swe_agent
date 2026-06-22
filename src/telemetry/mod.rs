@@ -851,7 +851,7 @@ pub fn resolve_metrics_headers() -> Vec<(String, String)> {
 pub use build::instance_span_data_from_result;
 pub use build::instance_span_data_from_trajectory;
 
-pub(crate) mod build {
+pub mod build {
     use super::{InstanceSpanData, ModelCallSpanData, ToolCallSpanData, now_unix_nanos};
     use crate::trajectory::Trajectory;
 

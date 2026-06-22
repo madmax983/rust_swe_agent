@@ -9,6 +9,7 @@
 //!   6. observation template → push as user message, record in trajectory
 //!   7. bump steps, Continue
 
+use crate::stream::RedactingSink;
 use async_trait::async_trait;
 use serde::Serialize;
 use std::collections::BTreeMap;
@@ -28,7 +29,7 @@ use crate::model::{
 };
 use crate::policy::{PolicyDecision, PolicyEngine, PolicyProfile};
 use crate::prompt_guard::{PromptGuard, UntrustedKind};
-use crate::redaction::{RedactingSink, Redactor, surface};
+use crate::redaction::{Redactor, surface};
 use crate::stagnation::StagnationDetector;
 use crate::stream::{NullSink, StreamEvent, StreamSink};
 use crate::template::Renderer;
