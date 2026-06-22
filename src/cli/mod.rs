@@ -164,6 +164,7 @@ pub async fn run() -> Result<(), Error> {
             args::AgentCmd::FsAudit(a) => agent_fs_audit_cmd(&a),
             args::AgentCmd::ArtifactCheck(a) => agent_artifact_check_cmd(&a),
             args::AgentCmd::Doctor(d) => agent_doctor_cmd(&d),
+            args::AgentCmd::Annotate(a) => agent_annotate_cmd(&a),
         },
         Command::Catalog(c) => catalog::run_catalog(c),
         Command::Ui(u) => ui_cmd(u).await,
@@ -7139,6 +7140,110 @@ fn agent_profile_cmd(p: &args::AgentProfileCmd) -> Result<(), Error> {
         }
         ProfileFormat::Text => {
             print!("{}", format_text(&report));
+        }
+    }
+
+    Ok(())
+}
+
+fn agent_annotate_cmd(a: &args::AgentAnnotateCmd) -> Result<(), Error> {
+    use crate::run::agent_annotate::{
+        AnnotateFormat, AnnotateOpts, ShowOpts, StepNoteInput, Verdict, instance_id_from_path,
+        render_show_text, render_write_text, run_annotate, run_show, sidecar_path,
+    };
+
+    let format = match a.format.as_str() {
+        "json" => AnnotateFormat::Json,
+        "text" | "" => AnnotateFormat::Text,
+        other => {
+            return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+                "--format '{other}' is not valid; use 'text' or 'json'"
+            ))));
+        }
+    };
+
+    if a.show {
+        let opts = ShowOpts {
+            trajectory_path: a.trajectory.clone(),
+            format,
+        };
+        let ann = run_show(&opts)?;
+        match format {
+            AnnotateFormat::Json => {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&ann).map_err(Error::Json)?
+                );
+            }
+            AnnotateFormat::Text => {
+                print!("{}", render_show_text(&ann));
+            }
+        }
+        return Ok(());
+    }
+
+    // Write mode: --verdict is required.
+    let verdict_str = a.verdict.as_deref().ok_or_else(|| {
+        Error::Config(crate::error::ConfigError::Invalid(
+            "agent annotate: --verdict is required in write mode \
+             (use: correct, incorrect, partial, unsure)"
+                .into(),
+        ))
+    })?;
+
+    let verdict = Verdict::parse(verdict_str).ok_or_else(|| {
+        Error::Config(crate::error::ConfigError::Invalid(format!(
+            "agent annotate: unknown --verdict `{verdict_str}`; \
+             expected one of: correct, incorrect, partial, unsure"
+        )))
+    })?;
+
+    // Parse --step-note <INDEX>=<TEXT> entries.
+    let mut step_notes = Vec::new();
+    for raw in &a.step_notes {
+        let (idx_str, note_text) = raw.split_once('=').ok_or_else(|| {
+            Error::Config(crate::error::ConfigError::Invalid(format!(
+                "agent annotate: --step-note must be in the form INDEX=TEXT, got `{raw}`"
+            )))
+        })?;
+        let step: usize = idx_str.trim().parse().map_err(|_| {
+            Error::Config(crate::error::ConfigError::Invalid(format!(
+                "agent annotate: --step-note index `{idx_str}` is not a valid integer"
+            )))
+        })?;
+        step_notes.push(StepNoteInput {
+            step,
+            note: note_text.to_owned(),
+        });
+    }
+
+    let opts = AnnotateOpts {
+        trajectory_path: a.trajectory.clone(),
+        verdict,
+        failure_category: a.failure_category.clone(),
+        note: a.note.clone(),
+        step_notes,
+        force: a.force,
+    };
+
+    run_annotate(&opts)?;
+
+    let sidecar = sidecar_path(&a.trajectory);
+    match format {
+        AnnotateFormat::Json => {
+            let msg = serde_json::json!({
+                "status": "written",
+                "verdict": verdict.as_str(),
+                "instance_id": instance_id_from_path(&a.trajectory),
+                "sidecar": sidecar.display().to_string(),
+            });
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&msg).map_err(Error::Json)?
+            );
+        }
+        AnnotateFormat::Text => {
+            print!("{}", render_write_text(&a.trajectory, verdict, &sidecar));
         }
     }
 

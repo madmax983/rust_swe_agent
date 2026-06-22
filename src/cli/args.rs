@@ -724,6 +724,8 @@ pub enum AgentCmd {
     ArtifactCheck(ArtifactCheckCmd),
     /// Preflight host readiness before a live run (zero-cost, no model call, $0).
     Doctor(AgentDoctorCmd),
+    /// Attach a human verdict and notes to a trajectory as a sidecar file (issue #539).
+    Annotate(AgentAnnotateCmd),
 }
 
 /// `agent doctor` — zero-cost host-readiness preflight (issue #526).
@@ -803,6 +805,50 @@ pub struct AgentProfileCmd {
     pub trajectory: std::path::PathBuf,
 
     /// Output format: `text` (default) or `json`.
+    #[arg(long, default_value = "text")]
+    pub format: String,
+}
+
+/// `agent annotate` — attach a human verdict and notes to a trajectory sidecar (issue #539).
+///
+/// Writes `<id>.annotation.json` next to the trajectory without mutating the trajectory.
+/// Use `--show` to read an existing annotation back.
+#[derive(Debug, Args)]
+pub struct AgentAnnotateCmd {
+    /// Path to the `.traj.json` file to annotate.
+    pub trajectory: std::path::PathBuf,
+
+    /// Human verdict label (controlled vocabulary): `correct`, `incorrect`, `partial`, `unsure`.
+    /// Required in write mode; ignored with `--show`.
+    #[arg(long, value_name = "VERDICT")]
+    pub verdict: Option<String>,
+
+    /// Optional failure-category tag (free string; values from the `failure_category` taxonomy
+    /// are recommended but not enforced). Ignored with `--show`.
+    #[arg(long, value_name = "CATEGORY")]
+    pub failure_category: Option<String>,
+
+    /// Optional free-text note attached to the annotation. Redacted before writing.
+    #[arg(long, value_name = "TEXT")]
+    pub note: Option<String>,
+
+    /// Step-level note: `--step-note <INDEX>=<TEXT>`, repeatable. INDEX is the zero-based
+    /// message index in the trajectory. Exits non-zero if the index is out of range.
+    #[arg(long = "step-note", value_name = "INDEX=TEXT")]
+    pub step_notes: Vec<String>,
+
+    /// Overwrite an existing annotation if present. Without this flag, re-running on an
+    /// already-annotated trajectory exits non-zero.
+    #[arg(long, default_value_t = false)]
+    pub force: bool,
+
+    /// Read mode: print the existing annotation instead of writing one. Exits non-zero if
+    /// no annotation exists.
+    #[arg(long, default_value_t = false)]
+    pub show: bool,
+
+    /// Output format: `text` (default) or `json`. Applies to `--show` and to the write
+    /// confirmation message.
     #[arg(long, default_value = "text")]
     pub format: String,
 }
