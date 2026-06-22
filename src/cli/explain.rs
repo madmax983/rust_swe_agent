@@ -104,10 +104,10 @@ fn print_index_text() {
             .code
             .map_or_else(|| "-".to_string(), |c| c.to_string());
         table.add_row([
-            code,
-            entry.outcome_class.to_string(),
-            families_label(entry),
-            entry.meaning.to_string(),
+            comfy_table::Cell::from(code),
+            comfy_table::Cell::from(entry.outcome_class),
+            comfy_table::Cell::from(families_label(entry)),
+            comfy_table::Cell::from(entry.meaning),
         ]);
     }
     println!("{table}");
