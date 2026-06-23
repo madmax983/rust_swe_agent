@@ -4052,6 +4052,14 @@ pub struct ExplainCmd {
     pub format: String,
 }
 
+/// `completions` — generate shell completion scripts (issue #541).
+#[derive(Debug, Args, Clone)]
+pub struct CompletionsCmd {
+    /// Target shell for completion script.
+    #[arg(value_name = "SHELL")]
+    pub shell: clap_complete::Shell,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

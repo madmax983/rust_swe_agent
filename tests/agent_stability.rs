@@ -5,7 +5,7 @@
 //! GREEN phase: implement src/run/stability.rs and wire the CLI.
 //! REFACTOR phase: clean up.
 
-#![allow(clippy::unwrap_used)]
+#![allow(clippy::unwrap_used, clippy::large_futures)]
 
 use maxwells_daemon::artifact::{ArtifactKind, ArtifactSchemaVersion};
 use maxwells_daemon::exit_code::ExitCode;

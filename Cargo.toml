@@ -38,6 +38,7 @@ minijinja = { version = "2", features = ["loader"] }
 
 # CLI
 clap = { version = "4", features = ["derive", "env"] }
+clap_complete = "4"
 dialoguer = "0.11"
 indicatif = "0.18.4"
 # `mini --interactive` confirmation prompt: single-key reads on a TTY plus
