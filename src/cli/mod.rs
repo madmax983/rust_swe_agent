@@ -81,11 +81,11 @@ pub async fn run() -> Result<(), Error> {
     init_logging(&log);
 
     match cli.command {
-        Command::Mini(m) => mini_cmd(*m).await,
+        Command::Mini(m) => Box::pin(mini_cmd(*m)).await,
         Command::HelloWorld(h) => {
-            crate::run::hello_world::main(h.output, h.config.as_deref()).await
+            Box::pin(crate::run::hello_world::main(h.output, h.config.as_deref())).await
         }
-        Command::Replay(r) => replay_cmd(*r).await,
+        Command::Replay(r) => Box::pin(replay_cmd(*r)).await,
         Command::Bench { cmd } => match *cmd {
             args::BenchCmd::Swebench(s) => Box::pin(bench_swebench(*s)).await,
             args::BenchCmd::Rehearsal(mut s) => {
@@ -183,9 +183,9 @@ pub async fn run() -> Result<(), Error> {
             clap_complete::generate(c.shell, &mut cmd, bin_name, &mut writer);
             Ok(())
         }
-        Command::Ui(u) => ui_cmd(u).await,
+        Command::Ui(u) => Box::pin(ui_cmd(u)).await,
         #[cfg(feature = "docker")]
-        Command::Cleanup => cleanup_cmd().await,
+        Command::Cleanup => Box::pin(cleanup_cmd()).await,
         #[cfg(not(feature = "docker"))]
         Command::Cleanup => cleanup_cmd(),
     }
