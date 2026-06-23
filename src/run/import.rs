@@ -395,6 +395,7 @@ pub fn run(args: &ImportArgs) -> Result<ImportSummary, Error> {
             retry_id: None,
             previous_failure_category: None,
             trace_id: None,
+            context_pressure: Default::default(),
         });
     }
 

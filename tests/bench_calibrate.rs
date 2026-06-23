@@ -928,6 +928,7 @@ fn instance(id: &str, submitted: bool, cost_usd: f64, duration_secs: f64) -> Ins
         retry_id: None,
         previous_failure_category: None,
         trace_id: None,
+        context_pressure: Default::default(),
     }
 }
 

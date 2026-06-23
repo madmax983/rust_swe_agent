@@ -18,6 +18,14 @@
       "completion_tokens": 2
     },
     "duration_secs": 1.0,
+    "context_pressure": {
+      "elision_trigger_count": 0,
+      "observations_elided": 0,
+      "bytes_elided": 0,
+      "peak_projected_tokens": 0,
+      "token_ceiling": 0,
+      "compaction_failed": false
+    },
     "redaction": {
       "enabled": false,
       "redacted": false

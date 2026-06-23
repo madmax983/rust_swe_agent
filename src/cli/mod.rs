@@ -117,6 +117,7 @@ pub async fn run() -> Result<(), Error> {
             args::BenchCmd::PolicyImpact(p) => bench_policy_impact(p),
             args::BenchCmd::InstanceHistory(h) => bench_instance_history(h),
             args::BenchCmd::CacheStats(c) => bench_cache_stats(c),
+            args::BenchCmd::ContextPressure(c) => bench_context_pressure(c),
             args::BenchCmd::BudgetFit(b) => bench_budget_fit(b),
             args::BenchCmd::ToolAblation(t) => Box::pin(bench_tool_ablation(t)).await,
             args::BenchCmd::Ladder(l) => bench_ladder(l),
@@ -4341,6 +4342,32 @@ fn bench_cache_stats(c: args::CacheStatsCmd) -> Result<(), Error> {
         println!("{json}");
     } else {
         print!("{}", crate::run::cache_stats::render_text(&report, c.top));
+    }
+    Ok(())
+}
+
+fn bench_context_pressure(c: args::ContextPressureCmd) -> Result<(), Error> {
+    let is_json = match c.format.as_str() {
+        "text" => false,
+        "json" => true,
+        other => {
+            return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+                "context-pressure: unknown --format `{other}` (expected `text` or `json`)"
+            ))));
+        }
+    };
+    let report =
+        crate::run::context_pressure::run(&crate::run::context_pressure::ContextPressureArgs {
+            sweep_dir: c.sweep,
+        })?;
+    if is_json {
+        let json = crate::artifact::to_string_pretty(
+            crate::artifact::ArtifactKind::ContextPressureReport,
+            &report,
+        )?;
+        println!("{json}");
+    } else {
+        print!("{}", crate::run::context_pressure::render_text(&report));
     }
     Ok(())
 }

@@ -189,6 +189,7 @@ fn instance_result_has_trace_id() {
         retry_id: None,
         previous_failure_category: None,
         trace_id: Some("deadbeef00000000deadbeef00000000".into()),
+        context_pressure: Default::default(),
     };
     assert_eq!(
         ir.trace_id.as_deref(),
@@ -204,6 +205,7 @@ fn instance_result_has_trace_id() {
 fn trajectory_info_has_trace_id() {
     let info = TrajectoryInfo {
         trace_id: Some("aabbccdd00000000aabbccdd00000000".into()),
+        context_pressure: Default::default(),
         ..Default::default()
     };
     assert_eq!(

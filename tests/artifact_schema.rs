@@ -856,6 +856,7 @@ fn instance(id: &str, input_tokens: u64, output_tokens: u64, cost_usd: f64) -> I
         retry_id: None,
         previous_failure_category: None,
         trace_id: None,
+        context_pressure: Default::default(),
     }
 }
 

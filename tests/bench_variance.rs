@@ -77,6 +77,7 @@ fn rerun_instance(id: &str, runs: u32, resolved_count: u32) -> InstanceResult {
         retry_id: None,
         previous_failure_category: None,
         trace_id: None,
+        context_pressure: Default::default(),
     }
 }
 

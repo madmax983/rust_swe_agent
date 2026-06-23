@@ -603,6 +603,7 @@ fn instance_result_stub(id: &str) -> InstanceResult {
         retry_id: None,
         previous_failure_category: None,
         trace_id: None,
+        context_pressure: Default::default(),
     }
 }
 

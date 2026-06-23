@@ -79,6 +79,7 @@ pub enum ArtifactKind {
     BenchVarianceReport,
     ValidationReport,
     TrajectoryAnnotation,
+    ContextPressureReport,
 }
 
 impl ArtifactKind {
@@ -115,6 +116,7 @@ impl ArtifactKind {
             Self::BenchVarianceReport => "bench_variance_report",
             Self::ValidationReport => "validation_report",
             Self::TrajectoryAnnotation => "trajectory_annotation",
+            Self::ContextPressureReport => "context_pressure_report",
         }
     }
 }

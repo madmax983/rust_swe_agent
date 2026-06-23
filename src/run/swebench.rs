@@ -406,6 +406,9 @@ pub struct InstanceResult {
     /// Pass/fail value of the most recent recognized pre-submit test command.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_tests_passed: Option<bool>,
+    /// Context pressure telemetry. Present and zero/false when no budget is configured.
+    #[serde(default)]
+    pub context_pressure: crate::trajectory::ContextPressure,
     /// Number of fallback attempts for this instance. `None` means no
     /// fallback telemetry was recorded (single-model run or legacy artifact).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -2691,6 +2694,7 @@ pub async fn run(mut args: SwebenchArgs) -> Result<SweepResults, Error> {
                                 retry_id: None,
                                 previous_failure_category: None,
                                 trace_id: None,
+                                context_pressure: Default::default(),
                             },
                         );
                         {
@@ -3901,6 +3905,7 @@ fn budget_halt_result(instance_id: &str) -> InstanceResult {
         retry_id: None,
         previous_failure_category: None,
         trace_id: None,
+        context_pressure: Default::default(),
     }
 }
 
@@ -3955,6 +3960,7 @@ fn cancelled_wait_result(ctx: CancelledWaitContext<'_>) -> InstanceResult {
         retry_id: None,
         previous_failure_category: None,
         trace_id: ctx.trace_id.clone(),
+        context_pressure: Default::default(),
     });
     ctx.instance_id.clone_into(&mut result.instance_id);
     result.exit_reason = exit_reason::CANCELLED.into();
@@ -4587,6 +4593,7 @@ fn skipped_result_from_info(
             && info.failure_category.is_none(),
         tests_run_before_submit: info.tests_run_before_submit,
         last_tests_passed: info.last_tests_passed,
+        context_pressure: info.context_pressure.clone(),
 
         fallback_count: info.fallback_summary.as_ref().map(|s| s.fallback_count),
         // When all candidates failed no model produced a response — leave None
@@ -4616,6 +4623,7 @@ fn skipped_result_from_prior_result(
     out.non_empty_patch = traj_based.non_empty_patch;
     out.tests_run_before_submit = traj_based.tests_run_before_submit;
     out.last_tests_passed = traj_based.last_tests_passed;
+    out.context_pressure = traj_based.context_pressure.clone();
     out.runs = 1;
     out.resolved_count = u32::from(is_resolved_instance_result(&out));
     out.pass_at_1 = is_resolved_instance_result(&out);
@@ -4961,6 +4969,7 @@ async fn run_one(inst: SweBenchInstance, run_index: u32, params: RunOneParams) -
                         retry_id: None,
                         previous_failure_category: None,
                         trace_id: trace_id.clone(),
+                        context_pressure: Default::default(),
                     };
                 }
             }
@@ -5151,6 +5160,10 @@ async fn run_one(inst: SweBenchInstance, run_index: u32, params: RunOneParams) -
             pass_at_1: outcome_str == outcome::SUBMITTED && failure_category.is_none(),
             tests_run_before_submit: info.as_ref().is_some_and(|i| i.tests_run_before_submit),
             last_tests_passed: info.as_ref().and_then(|i| i.last_tests_passed),
+            context_pressure: info
+                .as_ref()
+                .map(|i| i.context_pressure.clone())
+                .unwrap_or_default(),
 
             // Use the accumulated count across all retry attempts, not just
             // the final trajectory's count.
@@ -5694,6 +5707,7 @@ mod tests {
             retry_id: None,
             previous_failure_category: None,
             trace_id: None,
+            context_pressure: Default::default(),
         }
     }
 
@@ -6036,6 +6050,7 @@ mod tests {
             previous_failure_category: None,
 
             trace_id: None,
+            context_pressure: Default::default(),
         };
         let expected = estimate_cost_usd(100_000, 0, 0, 100_000, "openai/gpt-4o-mini");
         assert!(
@@ -6080,6 +6095,7 @@ mod tests {
             previous_failure_category: None,
 
             trace_id: None,
+            context_pressure: Default::default(),
         };
 
         assert_eq!(row.actual_cost_usd(), Some(0.0));

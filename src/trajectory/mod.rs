@@ -46,6 +46,29 @@ pub struct FallbackSummary {
     pub all_failed: bool,
 }
 
+/// Context pressure telemetry for the agent run, recording the history elision pressure.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ContextPressure {
+    /// Count of model calls that triggered elision.
+    #[serde(default)]
+    pub elision_trigger_count: u32,
+    /// Total observations elided.
+    #[serde(default)]
+    pub observations_elided: u32,
+    /// Total bytes elided.
+    #[serde(default)]
+    pub bytes_elided: u64,
+    /// Peak projected input tokens of any model call during the run.
+    #[serde(default)]
+    pub peak_projected_tokens: u64,
+    /// Configured ceiling in tokens, or 0 if none.
+    #[serde(default)]
+    pub token_ceiling: u64,
+    /// Whether the run terminated due to compaction failure (history overflow).
+    #[serde(default)]
+    pub compaction_failed: bool,
+}
+
 #[allow(clippy::trivially_copy_pass_by_ref)]
 fn is_false(b: &bool) -> bool {
     !b
@@ -648,6 +671,9 @@ pub struct TrajectoryInfo {
     /// exhausted and the run ended with `failure_category: model_parse`.
     #[serde(default, skip_serializing_if = "is_zero_u32")]
     pub parse_retries: u32,
+    /// Context pressure telemetry. Present and zero/false when no budget is configured.
+    #[serde(default)]
+    pub context_pressure: ContextPressure,
     /// Whether this trajectory file represents a mid-run checkpoint rather than
     /// a completed run. `true` while the agent is running; `false` (or absent)
     /// on the final write. Old files without this field parse as `false`.

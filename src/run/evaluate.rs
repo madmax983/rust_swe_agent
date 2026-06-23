@@ -3458,6 +3458,7 @@ mod tests {
             retry_id: None,
             previous_failure_category: None,
             trace_id: None,
+            context_pressure: Default::default(),
         }
     }
 
@@ -3493,6 +3494,7 @@ mod tests {
             previous_failure_category: None,
 
             trace_id: None,
+            context_pressure: Default::default(),
         }
     }
 
@@ -4419,6 +4421,7 @@ mod tests {
             previous_failure_category: None,
 
             trace_id: None,
+            context_pressure: Default::default(),
         };
         let run_slots = vec![
             crate::run::compare::LoadedRunSlot {

@@ -140,6 +140,7 @@ fn instance(
         retry_id: None,
         previous_failure_category: None,
         trace_id: None,
+        context_pressure: Default::default(),
     }
 }
 
@@ -363,6 +364,7 @@ fn forecast_uses_manifest_model_for_fallback_cost_repricing() {
         retry_id: None,
         previous_failure_category: None,
         trace_id: None,
+        context_pressure: Default::default(),
     }];
     results.total = 1;
     results.submitted = 1;

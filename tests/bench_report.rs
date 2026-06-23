@@ -60,6 +60,7 @@ fn submitted(id: &str) -> InstanceResult {
         retry_id: None,
         previous_failure_category: None,
         trace_id: None,
+        context_pressure: Default::default(),
     }
 }
 
@@ -92,6 +93,7 @@ fn errored(id: &str, cat: FailureCategory) -> InstanceResult {
         retry_id: None,
         previous_failure_category: None,
         trace_id: None,
+        context_pressure: Default::default(),
     }
 }
 
@@ -1269,6 +1271,7 @@ fn submitted_with_cache(id: &str, input: u64, reads: u64, creation: u64) -> Inst
         retry_id: None,
         previous_failure_category: None,
         trace_id: None,
+        context_pressure: Default::default(),
     }
 }
 

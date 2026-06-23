@@ -1391,6 +1391,7 @@ fn instance_result_from_trajectory(
         retry_id: None,
         previous_failure_category: None,
         trace_id: info.trace_id,
+        context_pressure: Default::default(),
     }))
 }
 
@@ -3378,6 +3379,7 @@ mod tests {
             retry_id: None,
             previous_failure_category: None,
             trace_id: None,
+            context_pressure: Default::default(),
         }
     }
 
@@ -3413,6 +3415,7 @@ mod tests {
             previous_failure_category: None,
 
             trace_id: None,
+            context_pressure: Default::default(),
         }
     }
 
@@ -3450,6 +3453,7 @@ mod tests {
             previous_failure_category: None,
 
             trace_id: None,
+            context_pressure: Default::default(),
         }
     }
 
@@ -3750,6 +3754,7 @@ mod tests {
             previous_failure_category: None,
 
             trace_id: None,
+            context_pressure: Default::default(),
         }]);
         let candidate = map_of([InstanceResult {
             instance_id: "cached".into(),
@@ -3782,6 +3787,7 @@ mod tests {
             previous_failure_category: None,
 
             trace_id: None,
+            context_pressure: Default::default(),
         }]);
         let r = diff(Path::new("/b"), Path::new("/c"), &baseline, &candidate);
         let t = r.human_table();

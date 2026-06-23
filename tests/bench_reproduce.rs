@@ -124,6 +124,7 @@ fn instance_result(id: &str, resolved: bool) -> InstanceResult {
         retry_id: None,
         previous_failure_category: None,
         trace_id: None,
+        context_pressure: Default::default(),
     }
 }
 

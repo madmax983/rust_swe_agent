@@ -444,6 +444,8 @@ pub struct DefaultAgent {
     /// Running count of consecutive unactionable model responses in this run.
     /// Compared against `config.root.agent.parse_error_retries` to bound retries.
     parse_error_count: u32,
+    /// Indices of all observations ever elided in the trajectory's history.
+    elided_indices: std::collections::HashSet<usize>,
 }
 
 pub struct DefaultAgentBuilder {
@@ -624,6 +626,19 @@ impl DefaultAgentBuilder {
             (history, trajectory, 0, 0.0, 0, 0, 0, 0)
         };
 
+        let mut elided_indices = std::collections::HashSet::new();
+        for (i, msg) in history.iter().enumerate() {
+            if msg
+                .extra
+                .other
+                .get("history_elided")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false)
+            {
+                elided_indices.insert(i);
+            }
+        }
+
         Ok(DefaultAgent {
             config: self.config,
             model: self.model,
@@ -662,6 +677,7 @@ impl DefaultAgentBuilder {
             // cap resets per session rather than per lifetime. Bounded impact:
             // at most parse_error_retries extra retries per kill/resume cycle.
             parse_error_count: 0,
+            elided_indices,
         })
     }
 }
@@ -846,6 +862,10 @@ impl Agent for DefaultAgent {
             self.config.root.agent.history_max_input_tokens,
         );
         if elision.compaction_failed {
+            self.trajectory.info.context_pressure.compaction_failed = true;
+            if let Some(limit) = self.config.root.agent.history_max_input_tokens {
+                self.trajectory.info.context_pressure.token_ceiling = limit;
+            }
             self.trajectory.info.exit_reason = Some("history_compaction_failed".into());
             self.trajectory.info.failure_category = Some(FailureCategory::HistoryCompactionFailed);
             self.trajectory.info.steps = Some(self.steps);
@@ -856,6 +876,39 @@ impl Agent for DefaultAgent {
                 None,
             );
             return Ok(StepOutcome::Terminate(ExitReason::HistoryCompactionFailed));
+        }
+
+        let has_budget = self.config.root.agent.history_max_input_tokens.is_some()
+            || self
+                .config
+                .root
+                .agent
+                .history_keep_last_observations
+                .is_some();
+        if has_budget {
+            let mut initial_total: usize = self.history.iter().map(|m| m.content.len()).sum();
+            for &(hist_idx, orig_bytes) in &elision.elided {
+                if let Some(msg) = self.history.get(hist_idx) {
+                    initial_total = initial_total
+                        .saturating_add(orig_bytes)
+                        .saturating_sub(msg.content.len());
+                }
+            }
+            let projected_tokens = (initial_total as u64).div_ceil(BYTES_PER_TOKEN as u64);
+
+            let pressure = &mut self.trajectory.info.context_pressure;
+            pressure.peak_projected_tokens = pressure.peak_projected_tokens.max(projected_tokens);
+            pressure.token_ceiling = self.config.root.agent.history_max_input_tokens.unwrap_or(0);
+
+            if !elision.elided.is_empty() {
+                pressure.elision_trigger_count += 1;
+                for &(hist_idx, orig_bytes) in &elision.elided {
+                    if self.elided_indices.insert(hist_idx) {
+                        pressure.observations_elided += 1;
+                        pressure.bytes_elided += orig_bytes as u64;
+                    }
+                }
+            }
         }
         // Retroactively mark elided observations in the trajectory.
         // We also store the marker text so bench-inspect can reconstruct
