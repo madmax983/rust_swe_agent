@@ -79,6 +79,14 @@ pub fn registry() -> Vec<ExportFormat> {
         render: CsvExporter::export,
     });
 
+    #[cfg(feature = "json-export")]
+    formats.push(ExportFormat {
+        name: "json",
+        tier: StabilityTier::Stable,
+        consumer: "API integrations, programmatic parsing",
+        render: JsonExporter::export,
+    });
+
     #[cfg(feature = "html-export")]
     formats.push(ExportFormat {
         name: "html",
@@ -107,6 +115,7 @@ pub fn registry() -> Vec<ExportFormat> {
 /// but present here so the CLI can still route it and explain how to enable it.
 pub const FEATURE_GATED_FORMATS: &[(&str, &str)] = &[
     ("csv", "csv-export"),
+    ("json", "json-export"),
     ("html", "html-export"),
     ("mermaid", "mermaid-export"),
 ];
@@ -452,5 +461,83 @@ mod tests {
         assert!(html.contains("submitted"));
         assert!(html.contains("Hello agent"));
         assert!(html.contains("Hello user"));
+    }
+}
+
+#[cfg(feature = "json-export")]
+pub struct JsonExporter;
+
+#[cfg(feature = "json-export")]
+#[derive(serde::Serialize)]
+struct JsonExportPayload {
+    task: Option<String>,
+    outcome: Option<String>,
+    messages: Vec<JsonExportMessage>,
+}
+
+#[cfg(feature = "json-export")]
+#[derive(serde::Serialize)]
+struct JsonExportMessage {
+    role: String,
+    content: String,
+}
+
+#[cfg(feature = "json-export")]
+impl TrajectoryExporter for JsonExporter {
+    fn export(trajectory: &Trajectory) -> String {
+        let redactor = Redactor::default_enabled();
+
+        let task = trajectory
+            .info
+            .task
+            .as_ref()
+            .map(|t| redactor.redact_text(t, surface::EXPORT).text);
+        let outcome = trajectory
+            .info
+            .outcome
+            .as_ref()
+            .map(|o| redactor.redact_text(o, surface::EXPORT).text);
+
+        let messages = trajectory
+            .messages
+            .iter()
+            .map(|msg| JsonExportMessage {
+                role: msg.role.as_str().to_string(),
+                content: redactor.redact_text(&msg.content, surface::EXPORT).text,
+            })
+            .collect();
+
+        let payload = JsonExportPayload {
+            task,
+            outcome,
+            messages,
+        };
+
+        serde_json::to_string(&payload).unwrap_or_default()
+    }
+}
+
+#[cfg(test)]
+mod json_export_tests {
+    use super::*;
+    use crate::model::Message;
+    use crate::trajectory::outcome;
+
+    #[cfg(feature = "json-export")]
+    #[test]
+    fn test_json_export_format() {
+        let mut t = Trajectory::new();
+        t.info.task = Some("Add a feature".to_string());
+        t.info.outcome = Some(outcome::SUBMITTED.to_string());
+
+        t.record_message(&Message::system("System prompt"));
+        t.record_message(&Message::user("Hello agent\nMulti-line"));
+        t.record_message(&Message::assistant("Hello \"user\""));
+
+        let json = JsonExporter::export(&t);
+
+        assert!(json.contains("Add a feature"));
+        assert!(json.contains("submitted"));
+        assert!(json.contains("System prompt"));
     }
 }
