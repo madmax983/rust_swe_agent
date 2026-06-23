@@ -96,3 +96,117 @@ pub fn is_free_tier_model(model: &str) -> bool {
         .is_some_and(|name| name.ends_with(":free"))
         || model.ends_with(":free")
 }
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::float_cmp)]
+    use super::*;
+
+    #[test]
+    fn test_cost_source_label() {
+        let cases = vec![
+            (CostSource::ProviderReported, "provider_reported"),
+            (CostSource::RateCardEstimate, "rate_card_estimate"),
+            (CostSource::FreeTierInferred, "free_tier_inferred"),
+            (CostSource::Unknown, "unknown"),
+        ];
+        for (source, expected) in cases {
+            assert_eq!(source.label(), expected);
+            assert_eq!(source.to_string(), expected);
+        }
+    }
+
+    #[test]
+    fn test_cost_source_combine() {
+        let cases = vec![
+            (
+                CostSource::Unknown,
+                CostSource::Unknown,
+                CostSource::Unknown,
+            ),
+            (
+                CostSource::Unknown,
+                CostSource::ProviderReported,
+                CostSource::Unknown,
+            ),
+            (
+                CostSource::ProviderReported,
+                CostSource::Unknown,
+                CostSource::Unknown,
+            ),
+            (
+                CostSource::RateCardEstimate,
+                CostSource::ProviderReported,
+                CostSource::RateCardEstimate,
+            ),
+            (
+                CostSource::ProviderReported,
+                CostSource::RateCardEstimate,
+                CostSource::RateCardEstimate,
+            ),
+            (
+                CostSource::ProviderReported,
+                CostSource::FreeTierInferred,
+                CostSource::ProviderReported,
+            ),
+            (
+                CostSource::FreeTierInferred,
+                CostSource::ProviderReported,
+                CostSource::ProviderReported,
+            ),
+            (
+                CostSource::ProviderReported,
+                CostSource::ProviderReported,
+                CostSource::ProviderReported,
+            ),
+            (
+                CostSource::FreeTierInferred,
+                CostSource::FreeTierInferred,
+                CostSource::FreeTierInferred,
+            ),
+        ];
+
+        for (a, b, expected) in cases {
+            assert_eq!(a.combine(b), expected, "combining {a:?} and {b:?} failed");
+        }
+    }
+
+    #[test]
+    fn test_estimate_cost_usd() {
+        let cases = vec![
+            (1_000_000, 1_000_000, 1_000_000, 1_000_000, "gpt-4o", 24.0),
+            (
+                1_000_000,
+                1_000_000,
+                1_000_000,
+                1_000_000,
+                "claude-3-5-sonnet",
+                22.05,
+            ),
+            (2_000_000, 0, 0, 500_000, "gpt-4", 13.5),
+        ];
+
+        for (p, cr, cc, c, model, expected) in cases {
+            let cost = estimate_cost_usd(p, cr, cc, c, model);
+            assert_eq!(cost, expected, "estimation for {model} failed");
+        }
+    }
+
+    #[test]
+    fn test_is_free_tier_model() {
+        let cases = vec![
+            ("gemini-1.5-flash:free", true),
+            ("openrouter/gemini-1.5-flash:free", true),
+            ("gpt-4o", false),
+            ("free-model-not-suffix", false),
+        ];
+
+        for (model, expected) in cases {
+            assert_eq!(
+                is_free_tier_model(model),
+                expected,
+                "free tier check for {model} failed"
+            );
+        }
+    }
+}
