@@ -175,12 +175,14 @@ pub async fn run() -> Result<(), Error> {
         Command::Catalog(c) => catalog::run_catalog(c),
         Command::Explain(c) => explain::run_explain(&c),
         Command::Completions(c) => {
+            use std::io::Write as _;
             use clap::CommandFactory;
             let mut cmd = Cli::command();
             let bin_name = cmd.get_name().to_string();
             let stdout = std::io::stdout();
             let mut writer = std::io::BufWriter::new(stdout.lock());
             clap_complete::generate(c.shell, &mut cmd, bin_name, &mut writer);
+            writer.flush()?;
             Ok(())
         }
         Command::Ui(u) => Box::pin(ui_cmd(u)).await,
