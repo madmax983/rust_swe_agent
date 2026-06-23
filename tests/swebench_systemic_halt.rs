@@ -11,9 +11,10 @@ use std::path::Path;
 use std::process::Command;
 
 use maxwells_daemon::artifact::ArtifactKind;
+use maxwells_daemon::run::circuit_breaker::CircuitBreaker;
 use maxwells_daemon::run::swebench::{
     SWEEP_STATUS_COMPLETED, SWEEP_STATUS_SYSTEMIC_HALT, SwebenchArgs, SweepHaltReport,
-    SweepResults, circuit_breaker::CircuitBreaker, run,
+    SweepResults, run,
 };
 use maxwells_daemon::trajectory::FailureCategory;
 

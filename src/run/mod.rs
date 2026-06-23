@@ -18,6 +18,7 @@ pub mod bundle;
 pub mod cache_stats;
 pub mod calibrate;
 pub mod cascade;
+pub mod circuit_breaker;
 pub mod claude_driver;
 pub mod codex_driver;
 pub mod command_stats;
