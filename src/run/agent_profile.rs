@@ -8,6 +8,7 @@ use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
+use comfy_table::{Table, modifiers::UTF8_ROUND_CORNERS, presets::UTF8_FULL};
 
 use crate::artifact::{ArtifactKind, ArtifactSchemaVersion};
 use crate::error::Error;
@@ -278,44 +279,34 @@ pub fn format_text(report: &AgentProfileReport) -> String {
         "\n── Stage Breakdown ──────────────────────────────────────"
     );
     let sb = &report.stage_breakdown;
-    let _ = writeln!(out, "  {:<10} {:>10}   {:>5}", "stage", "ms", "share");
-    let _ = writeln!(out, "  {}", "─".repeat(30));
-    let _ = writeln!(
-        out,
-        "  {:<10} {:>10}   {:>5}",
-        "model",
-        fmt_ms(sb.model_ms),
-        fmt_pct(sb.model_pct)
-    );
-    let _ = writeln!(
-        out,
-        "  {:<10} {:>10}   {:>5}",
-        "tool",
-        fmt_ms(sb.tool_ms),
-        fmt_pct(sb.tool_pct)
-    );
-    let _ = writeln!(
-        out,
-        "  {:<10} {:>10}   {:>5}",
-        "harness",
-        fmt_ms(sb.harness_ms),
-        fmt_pct(sb.harness_pct)
-    );
+    let mut table_sb = Table::new();
+    table_sb
+        .load_preset(UTF8_FULL)
+        .apply_modifier(UTF8_ROUND_CORNERS)
+        .set_header(vec!["stage", "ms", "share"]);
+    table_sb.add_row(vec!["model".to_string(), fmt_ms(sb.model_ms), fmt_pct(sb.model_pct)]);
+    table_sb.add_row(vec!["tool".to_string(), fmt_ms(sb.tool_ms), fmt_pct(sb.tool_pct)]);
+    table_sb.add_row(vec!["harness".to_string(), fmt_ms(sb.harness_ms), fmt_pct(sb.harness_pct)]);
+    let _ = write!(out, "{table_sb}\n");
 
     // Action mix
     let _ = writeln!(
         out,
         "\n── Action Mix ───────────────────────────────────────────"
     );
-    let _ = writeln!(out, "  {:<10} {:>6}   {:>6}", "class", "count", "share");
-    let _ = writeln!(out, "  {}", "─".repeat(28));
+    let mut table_mix = Table::new();
+    table_mix
+        .load_preset(UTF8_FULL)
+        .apply_modifier(UTF8_ROUND_CORNERS)
+        .set_header(vec!["class", "count", "share"]);
     for (name, entry) in &report.action_mix {
-        let _ = writeln!(
-            out,
-            "  {:<10} {:>6}   {:>5.1}%",
-            name, entry.count, entry.share_pct
-        );
+        table_mix.add_row(vec![
+            name.to_owned(),
+            entry.count.to_string(),
+            format!("{:.1}%", entry.share_pct)
+        ]);
     }
+    let _ = write!(out, "{table_mix}\n");
 
     out
 }
