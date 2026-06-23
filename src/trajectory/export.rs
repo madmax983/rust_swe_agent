@@ -517,7 +517,7 @@ impl TrajectoryExporter for JsonExporter {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "json-export"))]
 mod json_export_tests {
     use super::*;
     use crate::model::Message;
