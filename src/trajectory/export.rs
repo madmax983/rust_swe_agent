@@ -95,6 +95,14 @@ pub fn registry() -> Vec<ExportFormat> {
         render: MermaidExporter::export,
     });
 
+    #[cfg(feature = "trace-export")]
+    formats.push(ExportFormat {
+        name: "trace",
+        tier: StabilityTier::Experimental,
+        consumer: "Chrome tracing (chrome://tracing, Perfetto)",
+        render: TraceExporter::export,
+    });
+
     formats
 }
 
@@ -452,5 +460,155 @@ mod tests {
         assert!(html.contains("submitted"));
         assert!(html.contains("Hello agent"));
         assert!(html.contains("Hello user"));
+    }
+}
+
+#[cfg(feature = "trace-export")]
+pub struct TraceExporter;
+
+#[cfg(feature = "trace-export")]
+#[derive(serde::Serialize)]
+struct TraceEventArgs {
+    role: String,
+    msg_idx: usize,
+}
+
+#[cfg(feature = "trace-export")]
+#[derive(serde::Serialize)]
+struct TraceEvent {
+    name: String,
+    cat: String,
+    ph: String,
+    ts: u64,
+    dur: u64,
+    pid: u64,
+    tid: u64,
+    args: TraceEventArgs,
+}
+
+#[cfg(feature = "trace-export")]
+impl TrajectoryExporter for TraceExporter {
+    fn export(trajectory: &Trajectory) -> String {
+        let mut events = Vec::new();
+        let mut current_time_us: u64 = 0;
+
+        for (i, msg) in trajectory.messages.iter().enumerate() {
+            let harness_overhead_ms = msg.extra.harness_overhead_ms.unwrap_or(0);
+            let model_latency_ms = msg.extra.model_latency_ms.unwrap_or(0);
+            let tool_latency_ms = msg.extra.tool_latency_ms.unwrap_or(0);
+
+            if harness_overhead_ms > 0 {
+                events.push(TraceEvent {
+                    name: "Harness Overhead".to_string(),
+                    cat: "harness".to_string(),
+                    ph: "X".to_string(),
+                    ts: current_time_us,
+                    dur: harness_overhead_ms * 1000,
+                    pid: 1,
+                    tid: 1,
+                    args: TraceEventArgs {
+                        role: msg.role.clone(),
+                        msg_idx: i,
+                    },
+                });
+                current_time_us += harness_overhead_ms * 1000;
+            }
+
+            if model_latency_ms > 0 {
+                events.push(TraceEvent {
+                    name: "Model Latency".to_string(),
+                    cat: "model".to_string(),
+                    ph: "X".to_string(),
+                    ts: current_time_us,
+                    dur: model_latency_ms * 1000,
+                    pid: 1,
+                    tid: 1,
+                    args: TraceEventArgs {
+                        role: msg.role.clone(),
+                        msg_idx: i,
+                    },
+                });
+                current_time_us += model_latency_ms * 1000;
+            }
+
+            if tool_latency_ms > 0 {
+                events.push(TraceEvent {
+                    name: "Tool Execution".to_string(),
+                    cat: "tool".to_string(),
+                    ph: "X".to_string(),
+                    ts: current_time_us,
+                    dur: tool_latency_ms * 1000,
+                    pid: 1,
+                    tid: 1,
+                    args: TraceEventArgs {
+                        role: msg.role.clone(),
+                        msg_idx: i,
+                    },
+                });
+                current_time_us += tool_latency_ms * 1000;
+            }
+
+            // Fallback: if no latency metrics exist, just step time a bit so events don't stack completely.
+            if harness_overhead_ms == 0 && model_latency_ms == 0 && tool_latency_ms == 0 {
+                current_time_us += 1000;
+            }
+        }
+
+        serde_json::to_string_pretty(&events).unwrap_or_else(|_| "[]".to_string())
+    }
+}
+
+#[cfg(feature = "trace-export")]
+#[cfg(test)]
+mod trace_tests {
+    use super::*;
+    use crate::model::MessageExtra;
+    use crate::trajectory::MessageRecord;
+
+    #[derive(serde::Deserialize)]
+    struct TraceEventParsed {
+        name: String,
+        dur: u64,
+    }
+
+    #[test]
+    #[allow(clippy::unwrap_used)]
+    fn test_trace_export_format() {
+        let mut t = Trajectory::new();
+
+        let extra1 = MessageExtra {
+            model_latency_ms: Some(150),
+            harness_overhead_ms: Some(20),
+            ..Default::default()
+        };
+
+        t.messages.push(MessageRecord {
+            role: "assistant".to_string(),
+            content: "Model thinking".to_string(),
+            extra: extra1,
+        });
+
+        let extra2 = MessageExtra {
+            tool_latency_ms: Some(500),
+            ..Default::default()
+        };
+
+        t.messages.push(MessageRecord {
+            role: "tool".to_string(),
+            content: "Tool run".to_string(),
+            extra: extra2,
+        });
+
+        let trace = TraceExporter::export(&t);
+
+        let arr: Vec<TraceEventParsed> = serde_json::from_str(&trace).unwrap();
+
+        assert_eq!(arr.len(), 3);
+        assert_eq!(arr[0].name, "Harness Overhead");
+        assert_eq!(arr[0].dur, 20_000); // 20ms * 1000 us/ms
+        assert_eq!(arr[1].name, "Model Latency");
+        assert_eq!(arr[1].dur, 150_000); // 150ms * 1000 us/ms
+        assert_eq!(arr[2].name, "Tool Execution");
+        assert_eq!(arr[2].dur, 500_000); // 500ms * 1000 us/ms
     }
 }
