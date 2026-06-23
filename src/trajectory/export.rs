@@ -95,6 +95,14 @@ pub fn registry() -> Vec<ExportFormat> {
         render: MermaidExporter::export,
     });
 
+    #[cfg(feature = "traj-json-export")]
+    formats.push(ExportFormat {
+        name: "traj-json",
+        tier: StabilityTier::Stable,
+        consumer: "jq pipelines, un-trusted transfer mediums",
+        render: JsonExporter::export,
+    });
+
     formats
 }
 
@@ -109,6 +117,7 @@ pub const FEATURE_GATED_FORMATS: &[(&str, &str)] = &[
     ("csv", "csv-export"),
     ("html", "html-export"),
     ("mermaid", "mermaid-export"),
+    ("traj-json", "traj-json-export"),
 ];
 
 /// Returns `true` if `name` is a trajectory export format known to this codebase,
@@ -165,6 +174,9 @@ pub struct MermaidExporter;
 
 #[cfg(feature = "html-export")]
 pub struct HtmlExporter;
+
+#[cfg(feature = "traj-json-export")]
+pub struct JsonExporter;
 
 use std::fmt::Write;
 
@@ -307,6 +319,28 @@ impl TrajectoryExporter for HtmlExporter {
     }
 }
 
+#[cfg(feature = "traj-json-export")]
+impl TrajectoryExporter for JsonExporter {
+    fn export(trajectory: &Trajectory) -> String {
+        let redactor = Redactor::default_enabled();
+        let mut redacted_traj = trajectory.clone();
+
+        if let Some(task) = &mut redacted_traj.info.task {
+            *task = redactor.redact_text(task, surface::EXPORT).text;
+        }
+
+        if let Some(outcome) = &mut redacted_traj.info.outcome {
+            *outcome = redactor.redact_text(outcome, surface::EXPORT).text;
+        }
+
+        for msg in &mut redacted_traj.messages {
+            msg.content = redactor.redact_text(&msg.content, surface::EXPORT).text;
+        }
+
+        serde_json::to_string_pretty(&redacted_traj).unwrap_or_else(|_| String::new())
+    }
+}
+
 #[cfg(feature = "mermaid-export")]
 impl TrajectoryExporter for MermaidExporter {
     fn export(trajectory: &Trajectory) -> String {
@@ -432,6 +466,27 @@ mod tests {
         assert!(mermaid.contains("U->>A: Hello \"user\""));
 
         assert!(mermaid.contains("Note over S,T: Outcome: submitted"));
+    }
+
+    #[cfg(feature = "traj-json-export")]
+    #[test]
+    fn test_traj_json_export_format() {
+        let mut t = Trajectory::new();
+        t.info.task = Some("Add a feature".to_string());
+        t.info.outcome = Some("submitted".to_string());
+
+        t.record_message(&Message::user("Hello agent"));
+        t.record_message(&Message::user("Hello user"));
+
+        let json = JsonExporter::export(&t);
+        #[allow(clippy::unwrap_used)]
+        let parsed: Trajectory = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(parsed.info.task.as_deref(), Some("Add a feature"));
+        assert_eq!(parsed.info.outcome.as_deref(), Some("submitted"));
+        assert_eq!(parsed.messages.len(), 2);
+        assert_eq!(parsed.messages[0].content, "Hello agent");
+        assert_eq!(parsed.messages[1].content, "Hello user");
     }
 
     #[cfg(feature = "html-export")]
