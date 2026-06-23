@@ -178,7 +178,9 @@ pub async fn run() -> Result<(), Error> {
             use clap::CommandFactory;
             let mut cmd = Cli::command();
             let bin_name = cmd.get_name().to_string();
-            clap_complete::generate(c.shell, &mut cmd, bin_name, &mut std::io::stdout());
+            let stdout = std::io::stdout();
+            let mut writer = std::io::BufWriter::new(stdout.lock());
+            clap_complete::generate(c.shell, &mut cmd, bin_name, &mut writer);
             Ok(())
         }
         Command::Ui(u) => ui_cmd(u).await,

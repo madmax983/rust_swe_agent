@@ -467,10 +467,12 @@ max completions fish > ~/.config/fish/completions/max.fish
 
 #### PowerShell
 ```powershell
-max completions powershell > $PROFILE.CurrentUserAllHosts
-# Or save to a file and dot-source it in your profile:
+# Append to your profile (use >> to avoid overwriting your existing profile):
+max completions powershell >> $PROFILE.CurrentUserAllHosts
+
+# Or save to a separate file and dot-source it in your profile:
 max completions powershell > ~/max-completion.ps1
-# Add `. ~/max-completion.ps1` to $PROFILE
+# Add `. ~/max-completion.ps1` to your profile file
 ```
 
 #### Elvish
