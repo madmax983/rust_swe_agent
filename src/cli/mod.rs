@@ -6648,64 +6648,12 @@ fn parse_dataset_source_stats(
     }
 }
 
-#[allow(clippy::too_many_lines)]
-pub fn compare_rehearsals(
-    baseline: &std::path::Path,
-    candidate: &std::path::Path,
-) -> Result<(), Error> {
-    println!("=== Comparing Rehearsal Results ===");
-    println!("Baseline:  {}", baseline.display());
-    println!("Candidate: {}", candidate.display());
-
-    let base_results_path = baseline.join("results.json");
-    let cand_results_path = candidate.join("results.json");
-
-    if !base_results_path.exists() {
-        return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
-            "Baseline results file not found: {}",
-            base_results_path.display()
-        ))));
-    }
-    if !cand_results_path.exists() {
-        return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
-            "Candidate results file not found: {}",
-            cand_results_path.display()
-        ))));
-    }
-
-    let base_sweep: crate::run::swebench::SweepResults =
-        serde_json::from_str(&std::fs::read_to_string(&base_results_path)?)
-            .map_err(|e| Error::Trajectory(format!("Failed to parse baseline results: {e}")))?;
-    let cand_sweep: crate::run::swebench::SweepResults =
-        serde_json::from_str(&std::fs::read_to_string(&cand_results_path)?)
-            .map_err(|e| Error::Trajectory(format!("Failed to parse candidate results: {e}")))?;
-
-    let base_eval_path = baseline.join("evaluation.json");
-    let cand_eval_path = candidate.join("evaluation.json");
-
-    let base_eval: Option<crate::run::evaluate::EvaluationResults> =
-        if base_eval_path.exists() {
-            let text = std::fs::read_to_string(&base_eval_path)?;
-            Some(serde_json::from_str(&text).map_err(|e| {
-                Error::Trajectory(format!("Failed to parse baseline evaluation: {e}"))
-            })?)
-        } else {
-            None
-        };
-
-    let cand_eval: Option<crate::run::evaluate::EvaluationResults> =
-        if cand_eval_path.exists() {
-            let text = std::fs::read_to_string(&cand_eval_path)?;
-            Some(serde_json::from_str(&text).map_err(|e| {
-                Error::Trajectory(format!("Failed to parse candidate evaluation: {e}"))
-            })?)
-        } else {
-            None
-        };
-
-    let mut regressions = Vec::new();
-    let mut drift_messages = Vec::new();
-
+fn compare_sweep_results(
+    base_sweep: &crate::run::swebench::SweepResults,
+    cand_sweep: &crate::run::swebench::SweepResults,
+    regressions: &mut Vec<String>,
+    drift_messages: &mut Vec<String>,
+) {
     let base_instances: std::collections::HashMap<_, _> = base_sweep
         .instances
         .iter()
@@ -6771,7 +6719,14 @@ pub fn compare_rehearsals(
             ));
         }
     }
+}
 
+fn compare_evaluation_results(
+    base_eval: Option<&crate::run::evaluate::EvaluationResults>,
+    cand_eval: Option<&crate::run::evaluate::EvaluationResults>,
+    regressions: &mut Vec<String>,
+    drift_messages: &mut Vec<String>,
+) {
     match (base_eval, cand_eval) {
         (Some(b_eval), Some(c_eval)) => {
             let base_eval_map: std::collections::HashMap<_, _> = b_eval
@@ -6853,6 +6808,77 @@ pub fn compare_rehearsals(
             );
         }
     }
+}
+#[allow(clippy::too_many_lines)]
+pub fn compare_rehearsals(
+    baseline: &std::path::Path,
+    candidate: &std::path::Path,
+) -> Result<(), Error> {
+    println!("=== Comparing Rehearsal Results ===");
+    println!("Baseline:  {}", baseline.display());
+    println!("Candidate: {}", candidate.display());
+
+    let base_results_path = baseline.join("results.json");
+    let cand_results_path = candidate.join("results.json");
+
+    if !base_results_path.exists() {
+        return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+            "Baseline results file not found: {}",
+            base_results_path.display()
+        ))));
+    }
+    if !cand_results_path.exists() {
+        return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+            "Candidate results file not found: {}",
+            cand_results_path.display()
+        ))));
+    }
+
+    let base_sweep: crate::run::swebench::SweepResults =
+        serde_json::from_str(&std::fs::read_to_string(&base_results_path)?)
+            .map_err(|e| Error::Trajectory(format!("Failed to parse baseline results: {e}")))?;
+    let cand_sweep: crate::run::swebench::SweepResults =
+        serde_json::from_str(&std::fs::read_to_string(&cand_results_path)?)
+            .map_err(|e| Error::Trajectory(format!("Failed to parse candidate results: {e}")))?;
+
+    let base_eval_path = baseline.join("evaluation.json");
+    let cand_eval_path = candidate.join("evaluation.json");
+
+    let base_eval: Option<crate::run::evaluate::EvaluationResults> =
+        if base_eval_path.exists() {
+            let text = std::fs::read_to_string(&base_eval_path)?;
+            Some(serde_json::from_str(&text).map_err(|e| {
+                Error::Trajectory(format!("Failed to parse baseline evaluation: {e}"))
+            })?)
+        } else {
+            None
+        };
+
+    let cand_eval: Option<crate::run::evaluate::EvaluationResults> =
+        if cand_eval_path.exists() {
+            let text = std::fs::read_to_string(&cand_eval_path)?;
+            Some(serde_json::from_str(&text).map_err(|e| {
+                Error::Trajectory(format!("Failed to parse candidate evaluation: {e}"))
+            })?)
+        } else {
+            None
+        };
+
+    let mut regressions = Vec::new();
+    let mut drift_messages = Vec::new();
+
+    compare_sweep_results(
+        &base_sweep,
+        &cand_sweep,
+        &mut regressions,
+        &mut drift_messages,
+    );
+    compare_evaluation_results(
+        base_eval.as_ref(),
+        cand_eval.as_ref(),
+        &mut regressions,
+        &mut drift_messages,
+    );
 
     println!("\n=== Comparison Summary ===");
     for msg in &drift_messages {
