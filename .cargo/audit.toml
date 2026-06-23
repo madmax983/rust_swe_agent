@@ -1,0 +1,11 @@
+# .cargo/audit.toml
+# Ignore pre-existing transitive dependency advisories that cannot be updated offline.
+
+[advisories]
+ignore = [
+    "RUSTSEC-2026-0185", # quinn-proto: Remote memory exhaustion
+    "RUSTSEC-2024-0436", # paste: unmaintained
+    "RUSTSEC-2025-0067", # libyml: unsound and unmaintained
+    "RUSTSEC-2026-0002", # lru: Stacked Borrows violation in IterMut
+    "RUSTSEC-2025-0068", # serde_yml: unsound and unmaintained
+]
