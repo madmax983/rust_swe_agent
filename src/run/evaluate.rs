@@ -757,6 +757,7 @@ fn collect_report_paths(report_dir: &Path, run_id: &str, args: &EvaluateArgs) ->
     }
 }
 
+/// Switched HashMap to BTreeMap for `ids_by_run` to avoid hashing overhead on small integer keys.
 fn build_source_reports(
     resolved_by_run: &HashMap<RunSlotKey, bool>,
     args: &EvaluateArgs,
@@ -773,7 +774,7 @@ fn build_source_reports(
     if max_run_index <= 1 {
         return vec![];
     }
-    let mut ids_by_run: HashMap<u32, Vec<String>> = HashMap::new();
+    let mut ids_by_run: BTreeMap<u32, Vec<String>> = BTreeMap::new();
     for key in resolved_by_run.keys() {
         ids_by_run
             .entry(key.run_index)
