@@ -2883,18 +2883,65 @@ fn json_str(value: &serde_json::Value) -> String {
     }
 }
 
-fn capped_env_context(value: &serde_json::Value) -> serde_json::Value {
+/// Optimizes serialization of hook and tool environment payloads by lazily cloning the JSON tree.
+/// Reduces heavy `Vec` and `String` allocations across large megabyte-sized task histories.
+fn capped_env_context(value: &serde_json::Value) -> std::borrow::Cow<'_, serde_json::Value> {
     match value {
-        serde_json::Value::String(s) => serde_json::Value::String(truncate_for_hook_env(s)),
-        serde_json::Value::Array(values) => {
-            serde_json::Value::Array(values.iter().map(capped_env_context).collect())
+        serde_json::Value::String(s) => {
+            let truncated = truncate_for_hook_env(s);
+            if truncated.len() == s.len() {
+                std::borrow::Cow::Borrowed(value)
+            } else {
+                std::borrow::Cow::Owned(serde_json::Value::String(truncated))
+            }
         }
-        serde_json::Value::Object(map) => serde_json::Value::Object(
-            map.iter()
-                .map(|(key, value)| (key.clone(), capped_env_context(value)))
-                .collect(),
-        ),
-        other => other.clone(),
+        serde_json::Value::Array(values) => {
+            let mut new_values: Option<Vec<serde_json::Value>> = None;
+            for (i, v) in values.iter().enumerate() {
+                let capped = capped_env_context(v);
+                if let std::borrow::Cow::Owned(owned_v) = capped {
+                    if new_values.is_none() {
+                        let mut vec = Vec::with_capacity(values.len());
+                        vec.extend(values[..i].iter().cloned());
+                        new_values = Some(vec);
+                    }
+                    if let Some(vec) = new_values.as_mut() {
+                        vec.push(owned_v);
+                    }
+                } else if let Some(vec) = new_values.as_mut() {
+                    vec.push(v.clone());
+                }
+            }
+            if let Some(vec) = new_values {
+                std::borrow::Cow::Owned(serde_json::Value::Array(vec))
+            } else {
+                std::borrow::Cow::Borrowed(value)
+            }
+        }
+        serde_json::Value::Object(map) => {
+            let mut new_map: Option<Vec<(String, serde_json::Value)>> = None;
+            for (i, (k, v)) in map.iter().enumerate() {
+                let capped = capped_env_context(v);
+                if let std::borrow::Cow::Owned(owned_v) = capped {
+                    if new_map.is_none() {
+                        let mut vec = Vec::with_capacity(map.len());
+                        vec.extend(map.iter().take(i).map(|(k, v)| (k.clone(), v.clone())));
+                        new_map = Some(vec);
+                    }
+                    if let Some(vec) = new_map.as_mut() {
+                        vec.push((k.clone(), owned_v));
+                    }
+                } else if let Some(vec) = new_map.as_mut() {
+                    vec.push((k.clone(), v.clone()));
+                }
+            }
+            if let Some(vec) = new_map {
+                std::borrow::Cow::Owned(serde_json::Value::Object(vec.into_iter().collect()))
+            } else {
+                std::borrow::Cow::Borrowed(value)
+            }
+        }
+        _ => std::borrow::Cow::Borrowed(value),
     }
 }
 
