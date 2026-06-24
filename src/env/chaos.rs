@@ -114,4 +114,21 @@ mod tests {
         assert!(res3.timed_out);
         assert_eq!(res3.exit_code, -1);
     }
+
+    #[tokio::test]
+    async fn test_chaos_environment_never_injects_failures_when_fail_every_is_zero()
+    -> Result<(), crate::error::EnvError> {
+        let inner = Box::new(LocalEnvironment::new());
+        let env = ChaosEnvironment::new(inner, 0); // Never fail
+
+        let req = RunRequest::new("echo hello");
+
+        for _ in 0..5 {
+            let res = env.run(req.clone()).await?;
+            assert_eq!(res.exit_code, 0);
+            assert!(!res.timed_out);
+        }
+
+        Ok(())
+    }
 }
