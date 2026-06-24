@@ -7,7 +7,8 @@
 use super::args::ExplainCmd;
 use crate::error::{ConfigError, Error};
 use crate::explain::{self, EXPLAIN_SCHEMA_VERSION, ExplainEntry};
-use comfy_table::{Table, modifiers::UTF8_ROUND_CORNERS, presets::UTF8_FULL};
+use comfy_table::{Attribute, Cell, Color, Table, modifiers::UTF8_ROUND_CORNERS, presets::UTF8_FULL};
+use crossterm::style::Stylize;
 
 /// Run `max explain`. With a selector, explain that code/class/category; without
 /// one, print the full index. An unknown selector returns a usage error (exit 2).
@@ -66,18 +67,18 @@ fn print_entry_json(entry: &ExplainEntry) -> Result<(), Error> {
 
 fn print_entry_text(entry: &ExplainEntry) {
     if let Some(code) = entry.code {
-        println!("Exit code:     {code}");
+        println!("{} {}", "Exit code:    ".bold(), code.to_string().cyan());
     }
-    println!("Outcome class: {}", entry.outcome_class);
-    println!("Family:        {}", families_label(entry));
+    println!("{} {}", "Outcome class:".bold(), entry.outcome_class.yellow());
+    println!("{} {}", "Family:       ".bold(), families_label(entry));
     println!();
-    println!("Meaning:");
+    println!("{}", "Meaning:".bold());
     println!("  {}", entry.meaning);
     println!();
-    println!("Remediation:");
+    println!("{}", "Remediation:".bold());
     println!("  {}", entry.remediation);
     println!();
-    println!("Docs: {}", entry.docs_ref);
+    println!("{} {}", "Docs:".bold(), entry.docs_ref);
 }
 
 fn print_index_json() -> Result<(), Error> {
@@ -98,16 +99,21 @@ fn print_index_text() {
     table
         .load_preset(UTF8_FULL)
         .apply_modifier(UTF8_ROUND_CORNERS)
-        .set_header(["Code", "Outcome Class", "Family", "Meaning"]);
+        .set_header([
+            Cell::new("Code").add_attribute(Attribute::Bold),
+            Cell::new("Outcome Class").add_attribute(Attribute::Bold),
+            Cell::new("Family").add_attribute(Attribute::Bold),
+            Cell::new("Meaning").add_attribute(Attribute::Bold),
+        ]);
     for entry in explain::entries() {
         let code = entry
             .code
             .map_or_else(|| "-".to_string(), |c| c.to_string());
         table.add_row([
-            comfy_table::Cell::from(code),
-            comfy_table::Cell::from(entry.outcome_class),
-            comfy_table::Cell::from(families_label(entry)),
-            comfy_table::Cell::from(entry.meaning),
+            Cell::new(code).fg(Color::Cyan),
+            Cell::new(entry.outcome_class).fg(Color::Yellow),
+            Cell::new(families_label(entry)),
+            Cell::new(entry.meaning),
         ]);
     }
     println!("{table}");

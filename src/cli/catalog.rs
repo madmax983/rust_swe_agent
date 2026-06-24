@@ -1,6 +1,6 @@
 use super::args::CatalogCmd;
 use crate::error::Error;
-use comfy_table::{Table, modifiers::UTF8_ROUND_CORNERS, presets::UTF8_FULL};
+use comfy_table::{Attribute, Cell, Color, Table, modifiers::UTF8_ROUND_CORNERS, presets::UTF8_FULL};
 use serde::Serialize;
 
 pub const STAGES: &[&str] = &["preflight", "run", "inspect", "analyze", "publish"];
@@ -569,10 +569,35 @@ pub fn run_catalog(cmd: CatalogCmd) -> Result<(), Error> {
     table
         .load_preset(UTF8_FULL)
         .apply_modifier(UTF8_ROUND_CORNERS)
-        .set_header(["Command", "Summary", "Cost", "Stage"]);
+        .set_header([
+            Cell::new("Command").add_attribute(Attribute::Bold),
+            Cell::new("Summary").add_attribute(Attribute::Bold),
+            Cell::new("Cost").add_attribute(Attribute::Bold),
+            Cell::new("Stage").add_attribute(Attribute::Bold),
+        ]);
 
     for entry in &filtered {
-        table.add_row([entry.path, entry.summary, entry.cost_tier, entry.stage]);
+        let cost_cell = if entry.cost_tier == "free" {
+            Cell::new(entry.cost_tier).fg(Color::Green)
+        } else {
+            Cell::new(entry.cost_tier).fg(Color::Yellow)
+        };
+
+        let stage_cell = match entry.stage {
+            "preflight" => Cell::new(entry.stage).fg(Color::Cyan),
+            "run" => Cell::new(entry.stage).fg(Color::Magenta),
+            "inspect" => Cell::new(entry.stage).fg(Color::Blue),
+            "analyze" => Cell::new(entry.stage).fg(Color::DarkYellow),
+            "publish" => Cell::new(entry.stage).fg(Color::Green),
+            _ => Cell::new(entry.stage),
+        };
+
+        table.add_row([
+            Cell::new(entry.path).fg(Color::Cyan),
+            Cell::new(entry.summary),
+            cost_cell,
+            stage_cell,
+        ]);
     }
 
     println!("{table}");
