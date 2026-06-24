@@ -95,6 +95,14 @@ pub fn registry() -> Vec<ExportFormat> {
         render: MermaidExporter::export,
     });
 
+    #[cfg(feature = "yaml-export")]
+    formats.push(ExportFormat {
+        name: "yaml",
+        tier: StabilityTier::Stable,
+        consumer: "YAML-based parsers, human review",
+        render: YamlExporter::export,
+    });
+
     formats
 }
 
@@ -109,6 +117,7 @@ pub const FEATURE_GATED_FORMATS: &[(&str, &str)] = &[
     ("csv", "csv-export"),
     ("html", "html-export"),
     ("mermaid", "mermaid-export"),
+    ("yaml", "yaml-export"),
 ];
 
 /// Returns `true` if `name` is a trajectory export format known to this codebase,
@@ -358,6 +367,30 @@ impl TrajectoryExporter for MermaidExporter {
     }
 }
 
+#[cfg(feature = "yaml-export")]
+pub struct YamlExporter;
+
+#[cfg(feature = "yaml-export")]
+impl TrajectoryExporter for YamlExporter {
+    fn export(trajectory: &Trajectory) -> String {
+        let redactor = Redactor::default_enabled();
+        let mut redacted_traj = trajectory.clone();
+
+        if let Some(task) = &mut redacted_traj.info.task {
+            *task = redactor.redact_text(task, surface::EXPORT).text;
+        }
+        if let Some(outcome) = &mut redacted_traj.info.outcome {
+            *outcome = redactor.redact_text(outcome, surface::EXPORT).text;
+        }
+        for msg in &mut redacted_traj.messages {
+            msg.content = redactor.redact_text(&msg.content, surface::EXPORT).text;
+        }
+
+        serde_yml::to_string(&redacted_traj)
+            .unwrap_or_else(|e| format!("error_serializing_yaml: {e}"))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -452,5 +485,25 @@ mod tests {
         assert!(html.contains("submitted"));
         assert!(html.contains("Hello agent"));
         assert!(html.contains("Hello user"));
+    }
+
+    #[cfg(feature = "yaml-export")]
+    #[test]
+    fn test_yaml_export_format() {
+        let mut t = Trajectory::new();
+        t.info.task = Some("Add a feature".to_string());
+        t.info.outcome = Some(outcome::SUBMITTED.to_string());
+
+        t.record_message(&Message::system("System prompt"));
+        t.record_message(&Message::user("Hello agent"));
+        t.record_message(&Message::assistant("Hello user"));
+
+        let yaml = YamlExporter::export(&t);
+
+        assert!(yaml.contains("task: Add a feature"));
+        assert!(yaml.contains("outcome: submitted"));
+        assert!(yaml.contains("content: System prompt"));
+        assert!(yaml.contains("content: Hello agent"));
+        assert!(yaml.contains("content: Hello user"));
     }
 }
