@@ -317,6 +317,12 @@ fn build_report(args: &LedgerArgs) -> Result<LedgerReport, Error> {
         let paths = collect_traj_paths(dir, true)?;
         all_paths.extend(paths);
     }
+    // Canonicalize before dedup so overlapping roots with different spellings
+    // (relative vs absolute, symlinked) don't inflate counts.
+    all_paths = all_paths
+        .into_iter()
+        .map(|p| std::fs::canonicalize(&p).unwrap_or(p))
+        .collect();
     all_paths.sort();
     all_paths.dedup();
 
