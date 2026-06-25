@@ -1416,7 +1416,8 @@ fn read_archive_inventory(archive_path: &Path) -> Result<ArchiveInventory, Bundl
                     )));
                 }
                 let mut bundle_bytes = Vec::new();
-                entry.read_to_end(&mut bundle_bytes)?;
+                // 🛡️ Defense: Cap the maximum size of the manifest to prevent memory exhaustion DoS
+                std::io::Read::read_to_end(&mut entry.take(10 * 1024 * 1024), &mut bundle_bytes)?;
                 inventory.bundle_bytes = Some(bundle_bytes);
                 continue;
             }

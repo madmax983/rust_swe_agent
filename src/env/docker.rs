@@ -488,6 +488,7 @@ const _COMPILE_TIME_USED: Duration = Duration::from_secs(0);
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used)]
     use super::*;
 
     fn test_env() -> DockerEnvironment {
