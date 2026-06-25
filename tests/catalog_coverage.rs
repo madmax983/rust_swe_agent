@@ -1,7 +1,7 @@
 #![allow(clippy::unwrap_used)]
 
 use clap::CommandFactory as _;
-use maxwells_daemon::cli::{args::CatalogCmd, catalog, Cli};
+use maxwells_daemon::cli::{Cli, args::CatalogCmd, catalog};
 
 #[test]
 fn test_catalog_subcommand_coverage() {

@@ -531,10 +531,7 @@ mod tests {
         let args = build_run_args("my-image", "/workspace", LABEL, Some("none"));
         #[allow(clippy::unwrap_used)]
         let network_pos = args.iter().position(|a| a == "--network").unwrap();
-        assert_eq!(
-            args.get(network_pos + 1).map(String::as_str),
-            Some("none")
-        );
+        assert_eq!(args.get(network_pos + 1).map(String::as_str), Some("none"));
     }
 
     #[test]
