@@ -1,7 +1,7 @@
 #![allow(clippy::unwrap_used)]
 
 use clap::CommandFactory as _;
-use maxwells_daemon::cli::{Cli, catalog};
+use maxwells_daemon::cli::{args::CatalogCmd, catalog, Cli};
 
 #[test]
 fn test_catalog_subcommand_coverage() {
@@ -118,4 +118,34 @@ fn collect_executable_paths(cmd: &clap::Command, current_path: &[String], paths:
             collect_executable_paths(sub, &next_path, paths);
         }
     }
+}
+
+#[test]
+fn test_run_catalog_free_only() {
+    let cmd = CatalogCmd {
+        stage: None,
+        free_only: true,
+        format: "text".to_string(),
+    };
+    catalog::run_catalog(cmd).unwrap();
+}
+
+#[test]
+fn test_run_catalog_json() {
+    let cmd = CatalogCmd {
+        stage: None,
+        free_only: false,
+        format: "json".to_string(),
+    };
+    catalog::run_catalog(cmd).unwrap();
+}
+
+#[test]
+fn test_run_catalog_stage_filter() {
+    let cmd = CatalogCmd {
+        stage: Some("preflight".to_string()),
+        free_only: false,
+        format: "text".to_string(),
+    };
+    catalog::run_catalog(cmd).unwrap();
 }
