@@ -570,12 +570,12 @@ impl Redactor {
     }
 
     fn increment(&self, surface: &str, kind: &str) {
+        let key = (surface.to_owned(), kind.to_owned());
         let mut counts = self
             .inner
             .counts
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
-        let key = (surface.to_owned(), kind.to_owned());
         let value = counts.entry(key).or_insert(0);
         *value = value.saturating_add(1);
         drop(counts);

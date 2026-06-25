@@ -843,9 +843,6 @@ fn mcp_content_to_text(content: &serde_json::Value) -> String {
 /// Iterates over a list of MCP server configurations, launching and discovering tools for each.
 ///
 /// Returns a vector of `ToolProvider` traits that can be registered with a `ToolRegistry`.
-/// Iterates over a list of MCP server configurations, launching and discovering tools for each.
-///
-/// Returns a vector of `ToolProvider` traits that can be registered with a `ToolRegistry`.
 pub async fn discover_mcp_servers(
     env: &dyn crate::env::Environment,
     servers: &[crate::config::McpServerCfg],
@@ -862,18 +859,6 @@ pub async fn discover_mcp_servers(
     Ok(providers)
 }
 
-/// Validates that a tool name conforms to strict alphanumeric constraints.
-///
-/// Must start with an ASCII letter and contain only ASCII letters, digits, `_`, or `-`.
-///
-/// ## Examples
-/// ```
-/// use maxwells_daemon::tool::validate_tool_name;
-///
-/// assert!(validate_tool_name("valid_tool-name").is_ok());
-/// assert!(validate_tool_name("1invalid").is_err());
-/// assert!(validate_tool_name("invalid tool").is_err());
-/// ```
 /// Validates that a tool name conforms to strict alphanumeric constraints.
 ///
 /// Must start with an ASCII letter and contain only ASCII letters, digits, `_`, or `-`.

@@ -27,6 +27,16 @@ pub enum Family {
     FailureCategory,
 }
 
+impl std::fmt::Display for Family {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let s = match self {
+            Self::ExitCode => "exit_code",
+            Self::FailureCategory => "failure_category",
+        };
+        write!(f, "{s}")
+    }
+}
+
 impl Family {
     /// Stable lowercase wire string for JSON output.
     #[must_use]
