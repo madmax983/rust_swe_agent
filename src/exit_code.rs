@@ -218,6 +218,12 @@ pub enum ExitCode {
     /// so CI can route "host not ready before any run" separately from
     /// sweep-time dependency failures. See `docs/spec-agent-doctor.md`.
     HostNotReady = 48,
+    /// 49 — `bench ledger --budget-usd <N>` found that the grand total actual
+    /// spend across discovered trajectories meets or exceeds N. The report is
+    /// printed before exit; the non-zero exit allows CI to gate on budget
+    /// exhaustion. Distinct from `budget_halt` (5) which is a forecast/sweep
+    /// cap, not a post-hoc accounting check.
+    LedgerBudgetExceeded = 49,
     /// 130 — user interruption (graceful SIGINT / Ctrl-C; 128 + SIGINT(2)).
     Interrupted = 130,
     /// 137 — forced kill (SIGKILL escalation after graceful-cancel deadline; 128 + SIGKILL(9)).
@@ -287,6 +293,7 @@ impl ExitCode {
             Self::FsAuditScanError => "fs_audit_scan_error",
             Self::ArtifactCheckFailure => "artifact_check_failure",
             Self::HostNotReady => "host_not_ready",
+            Self::LedgerBudgetExceeded => "ledger_budget_exceeded",
             Self::Interrupted => "interrupted",
             Self::Killed => "killed",
         }
@@ -598,5 +605,14 @@ mod tests {
     fn host_not_ready_exit_code_is_48() {
         assert_eq!(ExitCode::HostNotReady.as_i32(), 48);
         assert_eq!(ExitCode::HostNotReady.outcome_class(), "host_not_ready");
+    }
+
+    #[test]
+    fn ledger_budget_exceeded_exit_code_is_49() {
+        assert_eq!(ExitCode::LedgerBudgetExceeded.as_i32(), 49);
+        assert_eq!(
+            ExitCode::LedgerBudgetExceeded.outcome_class(),
+            "ledger_budget_exceeded"
+        );
     }
 }

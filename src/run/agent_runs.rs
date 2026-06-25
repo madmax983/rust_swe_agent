@@ -198,7 +198,7 @@ pub fn run_agent_runs(opts: &AgentRunsOpts) -> Result<AgentRunsReport, Error> {
 /// immediate directory is scanned; if true the full tree is walked.
 /// I/O errors on the scan root are propagated; unreadable child subdirectories
 /// are skipped silently (analogous to malformed trajectory files).
-fn collect_traj_paths(dir: &Path, recursive: bool) -> Result<Vec<PathBuf>, Error> {
+pub(crate) fn collect_traj_paths(dir: &Path, recursive: bool) -> Result<Vec<PathBuf>, Error> {
     if !dir.exists() {
         return Err(Error::Trajectory(format!(
             "directory does not exist: {}",
@@ -233,7 +233,7 @@ fn collect_traj_paths(dir: &Path, recursive: bool) -> Result<Vec<PathBuf>, Error
 
 /// Recursively collect `.traj.json` files under `dir`, silently skipping
 /// subdirectories that cannot be read (permission errors, etc.).
-fn walk_children(dir: &Path, out: &mut Vec<PathBuf>) {
+pub(crate) fn walk_children(dir: &Path, out: &mut Vec<PathBuf>) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
     };
@@ -248,7 +248,7 @@ fn walk_children(dir: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
-fn is_traj_file(p: &Path) -> bool {
+pub(crate) fn is_traj_file(p: &Path) -> bool {
     p.is_file()
         && p.file_name()
             .and_then(|n| n.to_str())

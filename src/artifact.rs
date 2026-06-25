@@ -80,6 +80,7 @@ pub enum ArtifactKind {
     ValidationReport,
     TrajectoryAnnotation,
     ContextPressureReport,
+    LedgerReport,
 }
 
 impl ArtifactKind {
@@ -117,6 +118,7 @@ impl ArtifactKind {
             Self::ValidationReport => "validation_report",
             Self::TrajectoryAnnotation => "trajectory_annotation",
             Self::ContextPressureReport => "context_pressure_report",
+            Self::LedgerReport => "ledger_report",
         }
     }
 }

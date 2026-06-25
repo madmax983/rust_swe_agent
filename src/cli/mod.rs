@@ -146,6 +146,7 @@ pub async fn run() -> Result<(), Error> {
             args::BenchCmd::ExportOtlp(c) => Box::pin(bench_export_otlp(c)).await,
             args::BenchCmd::Variance(v) => bench_variance(v),
             args::BenchCmd::Merge(m) => bench_merge(&m),
+            args::BenchCmd::Ledger(l) => bench_ledger(l),
         },
         Command::Agent { cmd } => match *cmd {
             args::AgentCmd::SkillsPreview(s) => agent_skills_preview_cmd(&s),
@@ -4342,6 +4343,42 @@ fn bench_cache_stats(c: args::CacheStatsCmd) -> Result<(), Error> {
         println!("{json}");
     } else {
         print!("{}", crate::run::cache_stats::render_text(&report, c.top));
+    }
+    Ok(())
+}
+
+fn bench_ledger(c: args::LedgerCmd) -> Result<(), Error> {
+    let is_json = match c.format.as_str() {
+        "text" => false,
+        "json" => true,
+        other => {
+            return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+                "ledger: unknown --format `{other}` (expected `text` or `json`)"
+            ))));
+        }
+    };
+    let report = crate::run::ledger::run(&crate::run::ledger::LedgerArgs {
+        dirs: c.dirs,
+        budget_usd: c.budget_usd,
+    })?;
+    if is_json {
+        let json = crate::artifact::to_string_pretty(
+            crate::artifact::ArtifactKind::LedgerReport,
+            &report,
+        )?;
+        println!("{json}");
+    } else {
+        print!("{}", crate::run::ledger::render_text(&report));
+    }
+    if report.over_budget == Some(true) {
+        exit_with_outcome(
+            crate::exit_code::ExitCode::LedgerBudgetExceeded,
+            &format!(
+                "ledger: grand total ${:.6} exceeds budget ${:.6}",
+                report.grand_total_usd,
+                report.budget_usd.unwrap_or(0.0)
+            ),
+        );
     }
     Ok(())
 }

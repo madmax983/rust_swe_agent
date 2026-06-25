@@ -73,6 +73,7 @@ fn all_exit_codes() -> Vec<ExitCode> {
             | ExitCode::FsAuditScanError
             | ExitCode::ArtifactCheckFailure
             | ExitCode::HostNotReady
+            | ExitCode::LedgerBudgetExceeded
             | ExitCode::Interrupted
             | ExitCode::Killed => e,
         }
@@ -128,6 +129,7 @@ fn all_exit_codes() -> Vec<ExitCode> {
         ExitCode::FsAuditScanError,
         ExitCode::ArtifactCheckFailure,
         ExitCode::HostNotReady,
+        ExitCode::LedgerBudgetExceeded,
         ExitCode::Interrupted,
         ExitCode::Killed,
     ]
