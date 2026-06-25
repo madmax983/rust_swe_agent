@@ -36,7 +36,11 @@ pub struct LedgerReport {
     pub generated_at: String,
     pub roots: Vec<String>,
     pub grand_total_usd: f64,
+    /// Number of logical runs (resume chains collapsed to one) that had a recorded cost.
     pub counted_trajectories: usize,
+    /// Extra trajectory files absorbed into resume chains (chain members beyond the first).
+    /// Invariant: discovered_trajectories == counted_trajectories + chained_trajectories + uncosted.
+    pub chained_trajectories: usize,
     pub discovered_trajectories: usize,
     pub uncosted: usize,
     pub by_model: Vec<GroupSubtotal>,
@@ -55,7 +59,12 @@ pub struct LedgerReport {
 pub fn run(args: &LedgerArgs) -> Result<LedgerReport, Error> {
     let report = build_report(args)?;
     if let Some(first_dir) = args.dirs.first() {
-        write_artifact(first_dir, &report)?;
+        if let Err(e) = write_artifact(first_dir, &report) {
+            eprintln!(
+                "warning: ledger: could not write ledger.json to {}: {e}",
+                first_dir.display()
+            );
+        }
     }
     Ok(report)
 }
@@ -74,8 +83,11 @@ pub fn render_text(report: &LedgerReport) -> String {
     let _ = writeln!(out);
     let _ = writeln!(
         out,
-        "Discovered: {}  Counted: {}  Uncosted: {}",
-        report.discovered_trajectories, report.counted_trajectories, report.uncosted
+        "Discovered: {}  Counted: {}  Chained: {}  Uncosted: {}",
+        report.discovered_trajectories,
+        report.counted_trajectories,
+        report.chained_trajectories,
+        report.uncosted
     );
     let _ = writeln!(out, "Grand total: ${:.6}", report.grand_total_usd);
 
@@ -323,41 +335,35 @@ fn build_report(args: &LedgerArgs) -> Result<LedgerReport, Error> {
     // For each logical run, select the max cost and record attribution.
     let mut grand_total: f64 = 0.0;
     let mut counted: usize = 0;
+    let mut chained: usize = 0;
     let mut uncosted: usize = 0;
     let mut by_model: HashMap<String, (f64, usize)> = HashMap::new();
     let mut by_dataset: HashMap<String, (f64, usize)> = HashMap::new();
     let mut by_day: HashMap<String, (f64, usize)> = HashMap::new();
 
     for entries in groups.values() {
-        let costs: Vec<Option<f64>> = entries.iter().map(|(c, _, _, _)| *c).collect();
-        let selected_cost = select_chain_cost(&costs);
-
-        // Use the last entry's attribution (or first with Some cost).
-        let (_, model, day, dataset) = entries
+        // Find the entry with the highest cost. For a resume chain the deepest
+        // resumed trajectory has the cumulative total, so using the max-cost
+        // entry also gives us the correct attribution (model/day/dataset of the
+        // continuation, not the original checkpoint).
+        let best = entries
             .iter()
-            .find(|(c, _, _, _)| c.is_some())
-            .or_else(|| entries.last())
-            .map(|(c, m, d, ds)| (c, m.clone(), d.clone(), ds.clone()))
-            .unwrap_or_else(|| {
-                (
-                    &None,
-                    "unknown".to_owned(),
-                    "unknown".to_owned(),
-                    "unknown".to_owned(),
-                )
-            });
+            .filter_map(|(c, m, d, ds)| c.map(|v| (v, m, d, ds)))
+            .reduce(|acc, cur| if cur.0 >= acc.0 { cur } else { acc });
 
-        match selected_cost {
-            Some(cost) => {
+        match best {
+            Some((cost, best_model, best_day, best_dataset)) => {
                 grand_total += cost;
                 counted += 1;
-                let e = by_model.entry(model).or_insert((0.0, 0));
+                // Files beyond the one "counted" run are chain members.
+                chained += entries.len() - 1;
+                let e = by_model.entry(best_model.clone()).or_insert((0.0, 0));
                 e.0 += cost;
                 e.1 += 1;
-                let e = by_dataset.entry(dataset).or_insert((0.0, 0));
+                let e = by_dataset.entry(best_dataset.clone()).or_insert((0.0, 0));
                 e.0 += cost;
                 e.1 += 1;
-                let e = by_day.entry(day).or_insert((0.0, 0));
+                let e = by_day.entry(best_day.clone()).or_insert((0.0, 0));
                 e.0 += cost;
                 e.1 += 1;
             }
@@ -380,6 +386,7 @@ fn build_report(args: &LedgerArgs) -> Result<LedgerReport, Error> {
         roots: args.dirs.iter().map(|d| d.display().to_string()).collect(),
         grand_total_usd: grand_total,
         counted_trajectories: counted,
+        chained_trajectories: chained,
         discovered_trajectories: discovered,
         uncosted,
         by_model: group_subtotals(&by_model),

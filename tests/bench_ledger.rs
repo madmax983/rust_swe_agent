@@ -477,6 +477,10 @@ fn json_format_shape() {
         "counted_trajectories required"
     );
     assert!(
+        report["chained_trajectories"].is_u64(),
+        "chained_trajectories required"
+    );
+    assert!(
         report["discovered_trajectories"].is_u64(),
         "discovered_trajectories required"
     );
@@ -522,6 +526,18 @@ fn resume_chain_counted_once() {
         report["counted_trajectories"].as_u64().unwrap(),
         1,
         "resume chain = 1 logical run"
+    );
+    assert_eq!(
+        report["chained_trajectories"].as_u64().unwrap(),
+        1,
+        "one chain member absorbed (checkpoint); discovered == counted + chained + uncosted"
+    );
+    assert_eq!(
+        report["discovered_trajectories"].as_u64().unwrap(),
+        report["counted_trajectories"].as_u64().unwrap()
+            + report["chained_trajectories"].as_u64().unwrap()
+            + report["uncosted"].as_u64().unwrap(),
+        "invariant: discovered == counted + chained + uncosted"
     );
 }
 
