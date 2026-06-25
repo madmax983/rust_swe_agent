@@ -322,12 +322,11 @@ fn by_dataset_unknown_when_no_results_json() {
 
     let report = run_ledger_json(&[dir.path()], &[]);
     let by_dataset = report["by_dataset"].as_array().unwrap();
-    let labels: Vec<&str> = by_dataset
-        .iter()
-        .map(|g| g["key"].as_str().unwrap())
-        .collect();
     assert!(
-        labels.contains(&"unknown"),
+        by_dataset
+            .iter()
+            .map(|g| g["key"].as_str().unwrap())
+            .any(|x| x == "unknown"),
         "expected 'unknown' when no results.json"
     );
 }
@@ -454,7 +453,7 @@ fn json_format_shape() {
     for field in &["by_model", "by_dataset", "by_day"] {
         let arr = report[field]
             .as_array()
-            .expect(&format!("{field} must be array"));
+            .unwrap_or_else(|| panic!("{field} must be array"));
         if !arr.is_empty() {
             let item = &arr[0];
             assert!(item["key"].is_string(), "{field}[0].key must be string");

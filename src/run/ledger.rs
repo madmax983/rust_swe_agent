@@ -16,6 +16,11 @@ use crate::error::Error;
 use crate::run::agent_runs::collect_traj_paths;
 use crate::trajectory::{ResumeRecord, Trajectory};
 
+// ── type aliases ──────────────────────────────────────────────────────────────
+
+type GroupKey = (String, String);
+type GroupEntry = (Option<f64>, String, String, String);
+
 // ── public data types ─────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone)]
@@ -72,10 +77,6 @@ pub fn run(args: &LedgerArgs) -> Result<LedgerReport, Error> {
 // ── rendering ─────────────────────────────────────────────────────────────────
 
 pub fn render_text(report: &LedgerReport) -> String {
-    use comfy_table::Table;
-    use comfy_table::modifiers::UTF8_ROUND_CORNERS;
-    use comfy_table::presets::UTF8_FULL;
-
     let mut out = String::new();
     let _ = writeln!(out, "\n=== bench ledger ===");
     let _ = writeln!(out, "Roots: {}", report.roots.join(", "));
@@ -115,24 +116,28 @@ pub fn render_text(report: &LedgerReport) -> String {
         "\nNote: each grouping independently sums to the grand total."
     );
 
-    fn render_group_table(out: &mut String, title: &str, groups: &[GroupSubtotal]) {
-        let _ = writeln!(out, "\n{title}:");
-        let mut table = Table::new();
-        table
-            .load_preset(UTF8_FULL)
-            .apply_modifier(UTF8_ROUND_CORNERS)
-            .set_header(vec!["key", "total_cost_usd", "trajectory_count"]);
-        for g in groups {
-            table.add_row(vec![
-                g.key.clone(),
-                format!("{:.6}", g.total_cost_usd),
-                g.trajectory_count.to_string(),
-            ]);
-        }
-        let _ = writeln!(out, "{table}");
-    }
-
     out
+}
+
+fn render_group_table(out: &mut String, title: &str, groups: &[GroupSubtotal]) {
+    use comfy_table::modifiers::UTF8_ROUND_CORNERS;
+    use comfy_table::presets::UTF8_FULL;
+    use comfy_table::Table;
+
+    let _ = writeln!(out, "\n{title}:");
+    let mut table = Table::new();
+    table
+        .load_preset(UTF8_FULL)
+        .apply_modifier(UTF8_ROUND_CORNERS)
+        .set_header(vec!["key", "total_cost_usd", "trajectory_count"]);
+    for g in groups {
+        table.add_row(vec![
+            g.key.clone(),
+            format!("{:.6}", g.total_cost_usd),
+            g.trajectory_count.to_string(),
+        ]);
+    }
+    let _ = writeln!(out, "{table}");
 }
 
 // ── pure helpers (unit-testable) ──────────────────────────────────────────────
@@ -161,9 +166,8 @@ pub fn logical_run_key(
         .and_then(|r| r.original_started_at.as_deref())
         .or(started_at);
 
-    let anchor_str = anchor
-        .map(ToOwned::to_owned)
-        .unwrap_or_else(|| file_path.display().to_string());
+    let anchor_str =
+        anchor.map_or_else(|| file_path.display().to_string(), ToOwned::to_owned);
 
     (parent, anchor_str)
 }
@@ -182,12 +186,14 @@ pub fn select_chain_cost(costs: &[Option<f64>]) -> Option<f64> {
 pub fn day_bucket(started_at: Option<&str>) -> String {
     started_at
         .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
-        .map(|dt| {
-            dt.with_timezone(&chrono::Utc)
-                .format("%Y-%m-%d")
-                .to_string()
-        })
-        .unwrap_or_else(|| "unknown".to_owned())
+        .map_or_else(
+            || "unknown".to_owned(),
+            |dt| {
+                dt.with_timezone(&chrono::Utc)
+                    .format("%Y-%m-%d")
+                    .to_string()
+            },
+        )
 }
 
 /// Extract a human-readable dataset label from the first ancestor directory
@@ -196,38 +202,58 @@ pub fn day_bucket(started_at: Option<&str>) -> String {
 /// Uses `alias` when set, otherwise the basename of `path`.
 /// Falls back to `"unknown"` when no suitable `results.json` is found.
 #[must_use]
-pub fn dataset_label_for(traj_path: &Path, cache: &mut HashMap<PathBuf, String>) -> String {
+pub fn dataset_label_for<S: ::std::hash::BuildHasher>(
+    traj_path: &Path,
+    cache: &mut HashMap<PathBuf, String, S>,
+) -> String {
     dataset_label_for_inner(traj_path, cache)
 }
 
-fn dataset_label_for_inner(traj_path: &Path, cache: &mut HashMap<PathBuf, String>) -> String {
+fn dataset_label_for_inner<S: ::std::hash::BuildHasher>(
+    traj_path: &Path,
+    cache: &mut HashMap<PathBuf, String, S>,
+) -> String {
     // Walk from the trajectory's directory up to root, stopping at the first
     // ancestor that has a results.json we can parse.
     let start = traj_path
         .parent()
-        .map(Path::to_path_buf)
-        .unwrap_or_else(|| PathBuf::from("."));
+        .map_or_else(|| PathBuf::from("."), Path::to_path_buf);
 
+    // Collect visited dirs so we can back-fill the cache once the label is known,
+    // avoiding re-walks for siblings under the same sweep directory.
+    let mut trail: Vec<PathBuf> = Vec::new();
     let mut current = start;
-    loop {
-        if let Some(label) = cache.get(&current) {
-            return label.clone();
+
+    let result = loop {
+        if let Some(cached) = cache.get(&current) {
+            let label = cached.clone();
+            for dir in trail {
+                cache.insert(dir, label.clone());
+            }
+            return label;
         }
 
         let results_path = current.join("results.json");
         if results_path.exists() {
             if let Some(label) = try_parse_dataset_label(&results_path) {
-                cache.insert(current.clone(), label.clone());
-                return label;
+                trail.push(current);
+                break label;
             }
         }
 
-        match current.parent() {
-            Some(p) => current = p.to_path_buf(),
-            None => break,
+        match current.parent().map(Path::to_path_buf) {
+            Some(parent) => {
+                trail.push(current);
+                current = parent;
+            }
+            None => break "unknown".to_owned(),
         }
+    };
+
+    for dir in trail {
+        cache.insert(dir, result.clone());
     }
-    "unknown".to_owned()
+    result
 }
 
 fn try_parse_dataset_label(results_path: &Path) -> Option<String> {
@@ -255,7 +281,9 @@ fn try_parse_dataset_label(results_path: &Path) -> Option<String> {
 /// Summarise a map of `key → (total_cost, count)` into a sorted `Vec<GroupSubtotal>`.
 /// Sorted by `total_cost_usd` descending, then `key` ascending.
 #[must_use]
-pub fn group_subtotals(map: &HashMap<String, (f64, usize)>) -> Vec<GroupSubtotal> {
+pub fn group_subtotals<S: ::std::hash::BuildHasher>(
+    map: &HashMap<String, (f64, usize), S>,
+) -> Vec<GroupSubtotal> {
     let mut v: Vec<GroupSubtotal> = map
         .iter()
         .map(|(key, (cost, count))| GroupSubtotal {
@@ -300,8 +328,8 @@ fn build_report(args: &LedgerArgs) -> Result<LedgerReport, Error> {
     for path in &all_paths {
         match load_record(path) {
             Ok(r) => records.push(r),
-            Err(_) => {
-                // Unreadable/unparseable trajectory: skip (count as uncosted below).
+            Err(e) => {
+                tracing::warn!(path = %path.display(), error = %e, "ledger: skipping unreadable trajectory");
                 records.push(TrajRecord {
                     path: path.clone(),
                     cost: None,
@@ -318,8 +346,7 @@ fn build_report(args: &LedgerArgs) -> Result<LedgerReport, Error> {
 
     // Group by logical-run key; collect costs per group.
     // Key → list of (cost, model, day, dataset).
-    let mut groups: HashMap<(String, String), Vec<(Option<f64>, String, String, String)>> =
-        HashMap::new();
+    let mut groups: HashMap<GroupKey, Vec<GroupEntry>> = HashMap::new();
 
     for rec in &records {
         let key = logical_run_key(&rec.path, rec.started_at.as_deref(), &rec.resume_history);
@@ -404,13 +431,14 @@ fn load_record(path: &Path) -> Result<TrajRecord, Error> {
     let traj: Trajectory = serde_json::from_str(&raw)
         .map_err(|e| Error::Trajectory(format!("cannot parse {}: {e}", path.display())))?;
     let info = &traj.info;
+    // Fall back to actual_cost_usd for interrupted checkpoints that were never
+    // cleanly finalised (their total_cost_usd may be None while actual_cost_usd
+    // already reflects the spend up to the interruption point).
+    let cost = info.total_cost_usd.or(info.actual_cost_usd);
     Ok(TrajRecord {
         path: path.to_path_buf(),
-        cost: info.total_cost_usd,
-        model: info
-            .model_name
-            .clone()
-            .unwrap_or_else(|| "unknown".to_owned()),
+        cost,
+        model: info.model_name.as_deref().unwrap_or("unknown").to_owned(),
         started_at: info.started_at.clone(),
         resume_history: info.resume_history.clone(),
     })

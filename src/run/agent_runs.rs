@@ -233,7 +233,7 @@ pub(crate) fn collect_traj_paths(dir: &Path, recursive: bool) -> Result<Vec<Path
 
 /// Recursively collect `.traj.json` files under `dir`, silently skipping
 /// subdirectories that cannot be read (permission errors, etc.).
-pub(crate) fn walk_children(dir: &Path, out: &mut Vec<PathBuf>) {
+fn walk_children(dir: &Path, out: &mut Vec<PathBuf>) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
     };
@@ -248,7 +248,7 @@ pub(crate) fn walk_children(dir: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
-pub(crate) fn is_traj_file(p: &Path) -> bool {
+fn is_traj_file(p: &Path) -> bool {
     p.is_file()
         && p.file_name()
             .and_then(|n| n.to_str())
