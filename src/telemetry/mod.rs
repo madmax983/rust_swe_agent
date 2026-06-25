@@ -176,7 +176,7 @@ fn percent_decode(s: &str) -> String {
         out.push(bytes[i]);
         i += 1;
     }
-    String::from_utf8(out).unwrap_or_default()
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 /// Parse a comma-separated OTel header env var value into `(name, value)` pairs.
@@ -1133,6 +1133,15 @@ mod tests {
             .get_or_init(Mutex::default)
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    #[test]
+    fn percent_decode_preserves_valid_chars_with_invalid_utf8() {
+        let input = "abc%FFdef";
+        let decoded = percent_decode(input);
+        // %FF is invalid UTF-8, it should be replaced with the replacement char (),
+        // but the valid characters before and after should be preserved.
+        assert_eq!(decoded, "abc\u{FFFD}def");
     }
 
     #[test]
