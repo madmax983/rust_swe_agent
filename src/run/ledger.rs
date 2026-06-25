@@ -120,9 +120,9 @@ pub fn render_text(report: &LedgerReport) -> String {
 }
 
 fn render_group_table(out: &mut String, title: &str, groups: &[GroupSubtotal]) {
+    use comfy_table::Table;
     use comfy_table::modifiers::UTF8_ROUND_CORNERS;
     use comfy_table::presets::UTF8_FULL;
-    use comfy_table::Table;
 
     let _ = writeln!(out, "\n{title}:");
     let mut table = Table::new();
@@ -166,8 +166,7 @@ pub fn logical_run_key(
         .and_then(|r| r.original_started_at.as_deref())
         .or(started_at);
 
-    let anchor_str =
-        anchor.map_or_else(|| file_path.display().to_string(), ToOwned::to_owned);
+    let anchor_str = anchor.map_or_else(|| file_path.display().to_string(), ToOwned::to_owned);
 
     (parent, anchor_str)
 }
