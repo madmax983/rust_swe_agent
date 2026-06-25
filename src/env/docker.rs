@@ -530,12 +530,10 @@ mod tests {
     fn build_run_args_include_network_none_when_mode_is_none() {
         let args = build_run_args("my-image", "/workspace", LABEL, Some("none"));
         let network_pos = args.iter().position(|a| a == "--network");
-        assert!(
-            network_pos.is_some(),
-            "expected --network flag in args: {args:?}"
-        );
+        #[allow(clippy::unwrap_used)]
+        let pos = network_pos.unwrap();
         assert_eq!(
-            args.get(network_pos.unwrap() + 1).map(String::as_str),
+            args.get(pos + 1).map(String::as_str),
             Some("none")
         );
     }
@@ -552,7 +550,9 @@ mod tests {
     #[test]
     fn build_run_args_network_none_positioned_before_image() {
         let args = build_run_args("my-image", "/workspace", LABEL, Some("none"));
+        #[allow(clippy::unwrap_used)]
         let network_pos = args.iter().position(|a| a == "--network").unwrap();
+        #[allow(clippy::unwrap_used)]
         let image_pos = args.iter().position(|a| a == "my-image").unwrap();
         assert!(
             network_pos < image_pos,
