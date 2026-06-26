@@ -5581,6 +5581,95 @@ fn stratified_sample_by_repo(
     out
 }
 
+/// Deterministically partition `instances` into `n_shards` disjoint groups
+/// using continuous global round-robin assignment.
+///
+/// Algorithm:
+/// 1. Build a deterministic ordering of all instances (`ordered`):
+///    - `stratify_by == Some(Repo)`: group by `repo` (`BTreeMap` — deterministic
+///      order, `"<unknown>"` fallback), shuffle each group with
+///      `XorShift64::new(seed ^ simple_hash(&format!("{i}")))` (mirroring
+///      `stratified_sample_by_repo` exactly), then flatten in `BTreeMap` order.
+///      Because each repo's instances are contiguous in `ordered`, round-robin
+///      assignment spreads every repo evenly across shards (a repo of size
+///      `q * n_shards` lands exactly `q` per shard).
+///    - `stratify_by == None`: a single global shuffle of all instances with
+///      `XorShift64::new(seed ^ simple_hash("shard-global-shuffle"))`.  Repos are
+///      partitioned uniformly at random rather than deliberately spread.
+/// 2. Assign item `k` of `ordered` to shard `(start + k) % n_shards` with a
+///    **continuous global cursor** that does NOT reset at repo boundaries — the
+///    only property that guarantees max−min ≤ 1 regardless of how repo sizes
+///    divide across shards.
+///
+/// `start`:
+/// - `Balanced` (default): `seed % n_shards` — spreads the `T mod N` leftover
+///   across different shards depending on the seed, and rotates repo start points.
+/// - `Proportional`: `0` — same guarantee, different leftover placement (API
+///   symmetry with `bench subset`; for a *full* partition both modes are balanced).
+///
+/// Returns one `Vec<SweBenchInstance>` per shard (length == `n_shards`).
+pub(crate) fn partition_into_shards(
+    instances: Vec<SweBenchInstance>,
+    n_shards: usize,
+    seed: u64,
+    stratify_by: Option<StratifyBy>,
+    mode: StratifyMode,
+) -> Vec<Vec<SweBenchInstance>> {
+    if n_shards == 0 || instances.is_empty() {
+        return vec![];
+    }
+
+    // 1. Build a deterministic ordering of all instances.
+    let ordered: Vec<SweBenchInstance> = match stratify_by {
+        Some(StratifyBy::Repo) => {
+            // Group by repo in BTreeMap order, shuffle each group (same RNG as
+            // stratified_sample_by_repo), then flatten.  Contiguous per-repo runs
+            // + round-robin => every repo is spread evenly across shards.
+            let mut map: BTreeMap<String, Vec<SweBenchInstance>> = BTreeMap::new();
+            for inst in instances {
+                let key = inst.repo.clone().unwrap_or_else(|| "<unknown>".to_owned());
+                map.entry(key).or_default().push(inst);
+            }
+            let mut ordered: Vec<SweBenchInstance> = Vec::new();
+            for (i, (_, mut group)) in map.into_iter().enumerate() {
+                let mut rng = XorShift64::new(seed ^ simple_hash(&format!("{i}")));
+                for j in (1..group.len()).rev() {
+                    let k = rng.next_usize() % (j + 1);
+                    group.swap(j, k);
+                }
+                ordered.extend(group);
+            }
+            ordered
+        }
+        None => {
+            // No stratification: a single global deterministic shuffle.  Balance
+            // is still guaranteed by round-robin; repos are not deliberately spread.
+            let mut ordered = instances;
+            let mut rng = XorShift64::new(seed ^ simple_hash("shard-global-shuffle"));
+            for j in (1..ordered.len()).rev() {
+                let k = rng.next_usize() % (j + 1);
+                ordered.swap(j, k);
+            }
+            ordered
+        }
+    };
+
+    // 2. Continuous global round-robin assignment.
+    let n_shards_u64 = u64::try_from(n_shards).unwrap_or(u64::MAX);
+    let start = match mode {
+        StratifyMode::Balanced => usize::try_from(seed % n_shards_u64.max(1)).unwrap_or(0),
+        StratifyMode::Proportional => 0,
+    };
+
+    let mut shards: Vec<Vec<SweBenchInstance>> = vec![Vec::new(); n_shards];
+    for (k, inst) in ordered.into_iter().enumerate() {
+        let shard_idx = (start + k) % n_shards;
+        shards[shard_idx].push(inst);
+    }
+
+    shards
+}
+
 fn parse_instance_ids_arg(instance_ids_arg: Option<&str>) -> Result<Option<Vec<String>>, Error> {
     let Some(raw) = instance_ids_arg.map(str::trim).filter(|s| !s.is_empty()) else {
         return Ok(None);

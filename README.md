@@ -493,6 +493,13 @@ a valid trajectory in hand:
 - [`bench grep`](docs/spec-grep.md): regex search across all trajectory messages
   in a sweep — filter by role, instance, or outcome; redaction-safe; zero-cost
   (reads only on-disk artifacts).
+- [`bench shard`](docs/spec-shard.md): deterministically partition a source
+  dataset into N disjoint, balanced, provenance-stamped shard files
+  (`shard-000.jsonl` … `shard-(N-1).jsonl`) with per-shard `shard-NNN.manifest.json`
+  sidecars (`shard-manifest-v1`).  Offline, zero model cost, byte-identical
+  output for the same `(dataset, N, seed)` triple.  The producer that feeds
+  `bench merge`; see [spec-shard.md](docs/spec-shard.md) for a worked
+  split → run → merge example.
 - [`bench merge`](docs/spec-merge.md): combine K completed sharded sweep
   directories into one canonical aggregate — arithmetically correct cost/token/
   pass@k recomputation, collision policies (`error`/`first-wins`/`last-wins`),

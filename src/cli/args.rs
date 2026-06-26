@@ -1496,6 +1496,8 @@ pub enum BenchCmd {
     Variance(BenchVarianceCmd),
     /// Combine two or more completed sharded sweep directories into one canonical aggregate (offline; zero model cost).
     Merge(MergeCmd),
+    /// Deterministically partition a dataset into N disjoint, balanced, provenance-stamped shards (offline; zero model cost).
+    Shard(ShardCmd),
     /// Report context-window pressure telemetry per sweep (zero-cost: reads only on-disk artifacts).
     ContextPressure(ContextPressureCmd),
     /// Roll up cumulative actual spend across runs/sweeps by model, dataset, and day (zero-cost: reads only on-disk artifacts).
@@ -1691,6 +1693,79 @@ pub struct SubsetCmd {
     /// The sidecar manifest is written to `<stem>.manifest.json` next to it.
     #[arg(long)]
     pub output: PathBuf,
+}
+
+/// `bench shard` — deterministically partition a dataset into N balanced, provenance-stamped shards.
+///
+/// Writes `shard-000.jsonl … shard-(N-1).jsonl` plus a per-shard
+/// `shard-NNN.manifest.json` sidecar to `--output`.  Fully offline; zero
+/// model or network calls.  The same `(dataset, N, --seed)` triple produces
+/// byte-identical shard files across runs and hosts.
+#[derive(Debug, Args, Clone)]
+pub struct ShardCmd {
+    /// Local JSONL dataset file.  Mutually exclusive with `--dataset`.
+    #[arg(long)]
+    pub dataset_path: Option<PathBuf>,
+
+    /// Named SWE-bench dataset alias: `full`, `lite`, or `verified`.
+    #[arg(long, value_name = "ALIAS")]
+    pub dataset: Option<String>,
+
+    /// Dataset split for named aliases: `train`, `test`, or `dev`.
+    #[arg(long, default_value = "test", value_name = "SPLIT")]
+    pub split: Option<String>,
+
+    /// Directory for the named-dataset on-disk cache.
+    #[arg(long, value_name = "DIR")]
+    pub dataset_cache_dir: Option<PathBuf>,
+
+    /// Number of output shards.  Must be ≥ 1 and ≤ the dataset instance count.
+    #[arg(long, value_name = "N", value_parser = clap::value_parser!(u64).range(1..))]
+    pub shards: u64,
+
+    /// Destination directory for shard files.  Created if absent; must be empty otherwise.
+    #[arg(long)]
+    pub output: PathBuf,
+
+    /// Determinism seed.  Same `(dataset, N, seed)` always produces byte-identical shards.
+    /// Recorded in each shard's sidecar manifest.
+    #[arg(long, default_value_t = 0)]
+    pub seed: u64,
+
+    /// Stratify partitioning by key.  Only `repo` is currently supported.
+    #[arg(long, value_enum)]
+    pub stratify_by: Option<StratifyByArg>,
+
+    /// Allocation mode used with `--stratify-by` (default: `balanced`).
+    /// For a full partition both modes guarantee max−min ≤ 1; the mode only
+    /// controls which shards receive the `T mod N` leftover instances.
+    #[arg(long, value_enum)]
+    pub stratify_mode: Option<StratifyModeArg>,
+
+    /// Balance instances by a cost/size key.  Reserved for future use;
+    /// not yet implemented.  Use `--stratify-by repo` for repo-spread balancing.
+    #[arg(long, value_name = "KEY")]
+    pub balance_by: Option<String>,
+
+    /// Overwrite the output directory if it is non-empty.
+    #[arg(long, default_value_t = false)]
+    pub force: bool,
+
+    /// Output format: `text` (default) or `json`.
+    /// `json` emits a machine-readable summary with shard count, per-shard
+    /// instance counts, total instances, source `dataset_sha256`, and balance
+    /// spread (max−min instance count).
+    #[arg(long, value_enum, default_value_t = ShardFormat::Text)]
+    pub format: ShardFormat,
+}
+
+/// Output format for `bench shard`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum ShardFormat {
+    /// Human-readable text summary (default).
+    Text,
+    /// Machine-readable JSON summary emitted to stdout.
+    Json,
 }
 
 /// `bench failure-digest` — self-contained failure summary for one sweep instance.
