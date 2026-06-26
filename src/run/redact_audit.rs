@@ -1,6 +1,6 @@
 //! `agent redact-audit <dir>` — post-hoc secret-leak detection for sweep artifacts.
 //!
-//! Issue #342. The runtime [`Redactor`](crate::redaction::Redactor) masks secrets
+//! Issue #342. The runtime [`crate::redaction::Redactor`] masks secrets
 //! *at write-time* and explicitly does not retroactively rewrite stored
 //! artifacts. Trajectories and sweep outputs are routinely shared (PRs, HTML
 //! exports, bundles), so a redaction-config bug or an unanticipated secret shape
