@@ -1,6 +1,6 @@
 use super::args::CatalogCmd;
 use crate::error::Error;
-use comfy_table::{Table, modifiers::UTF8_ROUND_CORNERS, presets::UTF8_FULL};
+use comfy_table::{Cell, Color, Table, modifiers::UTF8_ROUND_CORNERS, presets::UTF8_FULL};
 use serde::Serialize;
 
 pub const STAGES: &[&str] = &["preflight", "run", "inspect", "analyze", "publish"];
@@ -581,7 +581,12 @@ pub fn run_catalog(cmd: CatalogCmd) -> Result<(), Error> {
     table
         .load_preset(UTF8_FULL)
         .apply_modifier(UTF8_ROUND_CORNERS)
-        .set_header(["Command", "Summary", "Cost", "Stage"]);
+        .set_header([
+            Cell::new("Command").fg(Color::Cyan),
+            Cell::new("Summary").fg(Color::White),
+            Cell::new("Cost").fg(Color::Yellow),
+            Cell::new("Stage").fg(Color::Green),
+        ]);
 
     for entry in &filtered {
         table.add_row([entry.path, entry.summary, entry.cost_tier, entry.stage]);

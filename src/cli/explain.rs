@@ -7,7 +7,7 @@
 use super::args::ExplainCmd;
 use crate::error::{ConfigError, Error};
 use crate::explain::{self, EXPLAIN_SCHEMA_VERSION, ExplainEntry};
-use comfy_table::{Table, modifiers::UTF8_ROUND_CORNERS, presets::UTF8_FULL};
+use comfy_table::{Cell, Color, Table, modifiers::UTF8_ROUND_CORNERS, presets::UTF8_FULL};
 
 /// Run `max explain`. With a selector, explain that code/class/category; without
 /// one, print the full index. An unknown selector returns a usage error (exit 2).
@@ -98,7 +98,12 @@ fn print_index_text() {
     table
         .load_preset(UTF8_FULL)
         .apply_modifier(UTF8_ROUND_CORNERS)
-        .set_header(["Code", "Outcome Class", "Family", "Meaning"]);
+        .set_header([
+            Cell::new("Code").fg(Color::Cyan),
+            Cell::new("Outcome Class").fg(Color::Yellow),
+            Cell::new("Family").fg(Color::Magenta),
+            Cell::new("Meaning").fg(Color::White),
+        ]);
     for entry in explain::entries() {
         let code = entry
             .code
