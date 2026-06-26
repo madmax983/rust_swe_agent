@@ -5582,16 +5582,24 @@ fn stratified_sample_by_repo(
 }
 
 /// Deterministically partition `instances` into `n_shards` disjoint groups
-/// using round-robin assignment within `repo` strata.
+/// using continuous global round-robin assignment.
 ///
 /// Algorithm:
-/// 1. Group by `repo` (`BTreeMap` — deterministic order, `"<unknown>"` fallback).
-/// 2. Shuffle each group with `XorShift64::new(seed ^ simple_hash(&format!("{i}")))`,
-///    mirroring `stratified_sample_by_repo` exactly.
-/// 3. Flatten groups in `BTreeMap` order into one ordered list; assign item `k`
-///    to shard `(start + k) % n_shards` with a **continuous global cursor** that
-///    does NOT reset at repo boundaries — the only property that guarantees
-///    max−min ≤ 1 regardless of how repo sizes divide across shards.
+/// 1. Build a deterministic ordering of all instances (`ordered`):
+///    - `stratify_by == Some(Repo)`: group by `repo` (`BTreeMap` — deterministic
+///      order, `"<unknown>"` fallback), shuffle each group with
+///      `XorShift64::new(seed ^ simple_hash(&format!("{i}")))` (mirroring
+///      `stratified_sample_by_repo` exactly), then flatten in `BTreeMap` order.
+///      Because each repo's instances are contiguous in `ordered`, round-robin
+///      assignment spreads every repo evenly across shards (a repo of size
+///      `q * n_shards` lands exactly `q` per shard).
+///    - `stratify_by == None`: a single global shuffle of all instances with
+///      `XorShift64::new(seed ^ simple_hash("shard-global-shuffle"))`.  Repos are
+///      partitioned uniformly at random rather than deliberately spread.
+/// 2. Assign item `k` of `ordered` to shard `(start + k) % n_shards` with a
+///    **continuous global cursor** that does NOT reset at repo boundaries — the
+///    only property that guarantees max−min ≤ 1 regardless of how repo sizes
+///    divide across shards.
 ///
 /// `start`:
 /// - `Balanced` (default): `seed % n_shards` — spreads the `T mod N` leftover
@@ -5604,31 +5612,49 @@ pub(crate) fn partition_into_shards(
     instances: Vec<SweBenchInstance>,
     n_shards: usize,
     seed: u64,
+    stratify_by: Option<StratifyBy>,
     mode: StratifyMode,
 ) -> Vec<Vec<SweBenchInstance>> {
     if n_shards == 0 || instances.is_empty() {
         return vec![];
     }
 
-    // 1. Group by repo in BTreeMap order for deterministic iteration.
-    let mut map: BTreeMap<String, Vec<SweBenchInstance>> = BTreeMap::new();
-    for inst in instances {
-        let key = inst.repo.clone().unwrap_or_else(|| "<unknown>".to_owned());
-        map.entry(key).or_default().push(inst);
-    }
-
-    // 2. Shuffle each group deterministically (same RNG as stratified_sample_by_repo).
-    let mut ordered: Vec<SweBenchInstance> = Vec::new();
-    for (i, (_, mut group)) in map.into_iter().enumerate() {
-        let mut rng = XorShift64::new(seed ^ simple_hash(&format!("{i}")));
-        for j in (1..group.len()).rev() {
-            let k = rng.next_usize() % (j + 1);
-            group.swap(j, k);
+    // 1. Build a deterministic ordering of all instances.
+    let ordered: Vec<SweBenchInstance> = match stratify_by {
+        Some(StratifyBy::Repo) => {
+            // Group by repo in BTreeMap order, shuffle each group (same RNG as
+            // stratified_sample_by_repo), then flatten.  Contiguous per-repo runs
+            // + round-robin => every repo is spread evenly across shards.
+            let mut map: BTreeMap<String, Vec<SweBenchInstance>> = BTreeMap::new();
+            for inst in instances {
+                let key = inst.repo.clone().unwrap_or_else(|| "<unknown>".to_owned());
+                map.entry(key).or_default().push(inst);
+            }
+            let mut ordered: Vec<SweBenchInstance> = Vec::new();
+            for (i, (_, mut group)) in map.into_iter().enumerate() {
+                let mut rng = XorShift64::new(seed ^ simple_hash(&format!("{i}")));
+                for j in (1..group.len()).rev() {
+                    let k = rng.next_usize() % (j + 1);
+                    group.swap(j, k);
+                }
+                ordered.extend(group);
+            }
+            ordered
         }
-        ordered.extend(group);
-    }
+        None => {
+            // No stratification: a single global deterministic shuffle.  Balance
+            // is still guaranteed by round-robin; repos are not deliberately spread.
+            let mut ordered = instances;
+            let mut rng = XorShift64::new(seed ^ simple_hash("shard-global-shuffle"));
+            for j in (1..ordered.len()).rev() {
+                let k = rng.next_usize() % (j + 1);
+                ordered.swap(j, k);
+            }
+            ordered
+        }
+    };
 
-    // 3. Continuous global round-robin assignment.
+    // 2. Continuous global round-robin assignment.
     let n_shards_u64 = u64::try_from(n_shards).unwrap_or(u64::MAX);
     let start = match mode {
         StratifyMode::Balanced => {

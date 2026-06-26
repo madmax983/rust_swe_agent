@@ -6508,10 +6508,13 @@ fn bench_shard(s: args::ShardCmd) -> Result<(), Error> {
         DatasetSource::LocalPath(_) => None,
     };
 
+    // Clap guarantees `shards >= 1`; clamp the u64→usize conversion for safety.
+    let n_shards = usize::try_from(s.shards).unwrap_or(usize::MAX);
+
     let report = run_shard(ShardArgs {
         instances,
         source_sha256: meta.sha256,
-        n_shards: s.shards,
+        n_shards,
         seed: s.seed,
         stratify_by,
         stratify_mode,

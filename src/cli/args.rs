@@ -1720,8 +1720,8 @@ pub struct ShardCmd {
     pub dataset_cache_dir: Option<PathBuf>,
 
     /// Number of output shards.  Must be ≥ 1 and ≤ the dataset instance count.
-    #[arg(long, value_name = "N")]
-    pub shards: usize,
+    #[arg(long, value_name = "N", value_parser = clap::value_parser!(u64).range(1..))]
+    pub shards: u64,
 
     /// Destination directory for shard files.  Created if absent; must be empty otherwise.
     #[arg(long)]

@@ -167,18 +167,31 @@ pub fn run_shard(args: ShardArgs<'_>) -> Result<ShardReport, Error> {
     // Prepare output directory
     prepare_output_dir(args.output, args.force)?;
 
-    // Partition into N groups
+    // Capture source provenance before the instances are moved into the
+    // partitioner — this avoids cloning the (potentially very large) instance
+    // vector just to retain the source ID set for the invariant check.
+    let total_instances = args.instances.len();
+    let source_ids: std::collections::BTreeSet<String> =
+        args.instances.iter().map(|i| i.instance_id.clone()).collect();
+
+    // Partition into N groups (consumes the instance vector — no clone).
     let shards = partition_into_shards(
-        args.instances.clone(),
+        args.instances,
         args.n_shards,
         args.seed,
+        args.stratify_by,
         args.stratify_mode,
     );
 
+    // Compute per-shard counts and balance spread once; reused below for both
+    // the invariant assertion and the returned report.
+    let per_shard_counts: Vec<usize> = shards.iter().map(|s| s.len()).collect();
+    let min_count = per_shard_counts.iter().copied().min().unwrap_or(0);
+    let max_count = per_shard_counts.iter().copied().max().unwrap_or(0);
+    let balance_spread = max_count - min_count;
+
     // Assert coverage and disjointness invariants BEFORE writing any files.
     {
-        let source_ids: std::collections::BTreeSet<&str> =
-            args.instances.iter().map(|i| i.instance_id.as_str()).collect();
         let mut union_ids: std::collections::BTreeSet<&str> =
             std::collections::BTreeSet::new();
 
@@ -193,8 +206,10 @@ pub fn run_shard(args: ShardArgs<'_>) -> Result<ShardReport, Error> {
             }
         }
 
-        if union_ids != source_ids {
-            let dropped: Vec<&str> = source_ids.difference(&union_ids).copied().collect();
+        let source_ids_ref: std::collections::BTreeSet<&str> =
+            source_ids.iter().map(String::as_str).collect();
+        if union_ids != source_ids_ref {
+            let dropped: Vec<&str> = source_ids_ref.difference(&union_ids).copied().collect();
             return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
                 "partition invariant violated: {} instance(s) were dropped: {}",
                 dropped.len(),
@@ -202,13 +217,9 @@ pub fn run_shard(args: ShardArgs<'_>) -> Result<ShardReport, Error> {
             ))));
         }
 
-        let counts: Vec<usize> = shards.iter().map(|s| s.len()).collect();
-        let min_count = counts.iter().copied().min().unwrap_or(0);
-        let max_count = counts.iter().copied().max().unwrap_or(0);
-        if max_count - min_count > 1 {
+        if balance_spread > 1 {
             return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
-                "partition invariant violated: balance spread is {} (expected ≤ 1)",
-                max_count - min_count
+                "partition invariant violated: balance spread is {balance_spread} (expected ≤ 1)"
             ))));
         }
     }
@@ -244,7 +255,10 @@ pub fn run_shard(args: ShardArgs<'_>) -> Result<ShardReport, Error> {
             shard_count: args.n_shards,
             seed: args.seed,
             stratify_by: args.stratify_by,
-            stratify_mode: args.stratify_by.map(|_| args.stratify_mode),
+            // Always recorded: the mode affects leftover placement (`start`) in
+            // `partition_into_shards` even when `stratify_by` is `None`, so the
+            // manifest must capture it for the run to be reproducible from disk.
+            stratify_mode: Some(args.stratify_mode),
             instance_count: shard.len(),
             resolved_instance_ids: shard.iter().map(|inst| inst.instance_id.clone()).collect(),
             per_stratum_counts,
@@ -256,14 +270,9 @@ pub fn run_shard(args: ShardArgs<'_>) -> Result<ShardReport, Error> {
         std::fs::write(&manifest_path, serde_json::to_string_pretty(&manifest)?)?;
     }
 
-    let per_shard_counts: Vec<usize> = shards.iter().map(|s| s.len()).collect();
-    let min_count = per_shard_counts.iter().copied().min().unwrap_or(0);
-    let max_count = per_shard_counts.iter().copied().max().unwrap_or(0);
-    let balance_spread = max_count - min_count;
-
     Ok(ShardReport {
         shard_count: args.n_shards,
-        total_instances: args.instances.len(),
+        total_instances,
         per_shard_counts,
         balance_spread,
         source_dataset_sha256: args.source_sha256,
@@ -768,6 +777,86 @@ mod tests {
         assert_eq!(report.balance_spread, 0);
         for &count in &report.per_shard_counts {
             assert_eq!(count, 1, "each shard should have exactly 1 instance");
+        }
+    }
+
+    #[test]
+    fn stratify_mode_recorded_even_without_stratify_by() {
+        let temp = tempfile::tempdir().unwrap();
+        run_shard(ShardArgs {
+            instances: instances_n(6),
+            source_sha256: "s".to_owned(),
+            n_shards: 2,
+            seed: 3,
+            stratify_by: None,
+            stratify_mode: StratifyMode::Proportional,
+            output: temp.path(),
+            force: false,
+            alias: None,
+            split: None,
+        })
+        .unwrap();
+
+        let m: ShardManifest = serde_json::from_str(
+            &std::fs::read_to_string(temp.path().join("shard-000.manifest.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(m.stratify_by, None);
+        assert_eq!(
+            m.stratify_mode,
+            Some(StratifyMode::Proportional),
+            "stratify_mode must be recorded even when stratify_by is None (it controls leftover placement)"
+        );
+    }
+
+    #[test]
+    fn stratify_by_repo_spreads_a_large_repo_evenly() {
+        let temp = tempfile::tempdir().unwrap();
+        // repo-a has 6 == 2 * n_shards instances → must land exactly 2 per shard
+        // under --stratify-by repo, regardless of seed/start rotation.
+        let mut instances = Vec::new();
+        for i in 0..6 {
+            instances.push(make_instance(&format!("a__{i:03}"), "owner/repo-a"));
+        }
+        for i in 0..3 {
+            instances.push(make_instance(&format!("b__{i:03}"), "owner/repo-b"));
+        }
+        for i in 0..3 {
+            instances.push(make_instance(&format!("c__{i:03}"), "owner/repo-c"));
+        }
+
+        run_shard(ShardArgs {
+            instances,
+            source_sha256: "s".to_owned(),
+            n_shards: 3,
+            seed: 1,
+            stratify_by: Some(StratifyBy::Repo),
+            stratify_mode: StratifyMode::Balanced,
+            output: temp.path(),
+            force: false,
+            alias: None,
+            split: None,
+        })
+        .unwrap();
+
+        for i in 0..3_usize {
+            let m: ShardManifest = serde_json::from_str(
+                &std::fs::read_to_string(
+                    temp.path().join(format!("shard-{i:03}.manifest.json")),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+            let a_count = m
+                .per_stratum_counts
+                .unwrap()
+                .get("owner/repo-a")
+                .copied()
+                .unwrap_or(0);
+            assert_eq!(
+                a_count, 2,
+                "--stratify-by repo must spread repo-a exactly 2 per shard (got {a_count} in shard-{i:03})"
+            );
         }
     }
 }

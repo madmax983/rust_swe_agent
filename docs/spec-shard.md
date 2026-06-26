@@ -45,7 +45,7 @@ bench shard \
 | `--shards <N>` | *(required)* | Number of output shards.  Must be ≥ 1 and ≤ the dataset instance count. |
 | `--output <DIR>` | *(required)* | Destination directory.  Created if absent; must be empty unless `--force`. |
 | `--seed <SEED>` | `0` | Determinism seed.  Identical `(dataset, N, seed)` → byte-identical output.  Recorded in every shard's manifest. |
-| `--stratify-by repo` | *(off)* | Spread repo families across shards rather than clustering them. |
+| `--stratify-by repo` | *(off)* | Guarantee every repo is spread **evenly** across shards (a repo of size `q·N` lands exactly `q` per shard). When off, instances are partitioned by a single uniform global shuffle instead. |
 | `--stratify-mode balanced\|proportional` | `balanced` | Controls rotation start point for leftover assignment (see below). |
 | `--balance-by <KEY>` | *(not yet implemented)* | Reserved for future cost/size-proxy balancing.  Exits non-zero now; use `--stratify-by repo` instead. |
 | `--force` | `false` | Overwrite non-empty output directory. |
@@ -74,7 +74,7 @@ Schema-versioned JSON sidecar (`schema_version: "shard-manifest-v1"`):
 | `shard_count` | Total number of shards (`N`). |
 | `seed` | Determinism seed used for this partition. |
 | `stratify_by` | Stratification key (`repo`), if set. |
-| `stratify_mode` | Allocation mode (`balanced` or `proportional`), if `stratify_by` was set. |
+| `stratify_mode` | Allocation mode (`balanced` or `proportional`); always recorded, since the mode affects leftover placement even when `stratify_by` is off. |
 | `instance_count` | Instances written to this shard's JSONL. |
 | `resolved_instance_ids` | Ordered list of instance IDs in this shard. |
 | `per_stratum_counts` | Per-repo instance counts; present only when `--stratify-by` was used. |
@@ -85,11 +85,18 @@ Schema-versioned JSON sidecar (`schema_version: "shard-manifest-v1"`):
 
 ## Partition Algorithm
 
-1. **Group** instances by `repo` in `BTreeMap` order (`"<unknown>"` fallback).
-2. **Shuffle** each group deterministically with `XorShift64(seed ^ hash(group_index))`,
-   reusing the same RNG as the existing stratified sampler.
-3. **Flatten** groups in `BTreeMap` order into one ordered list.
-4. **Assign** item at position `k` to shard `(start + k) % N` with a
+1. **Order** all instances deterministically into one list:
+   - With `--stratify-by repo`: **group** by `repo` in `BTreeMap` order
+     (`"<unknown>"` fallback), **shuffle** each group with
+     `XorShift64(seed ^ hash(group_index))` (the same RNG as the existing
+     stratified sampler), then **flatten** in `BTreeMap` order. Because each
+     repo's instances are contiguous, the round-robin in step 2 spreads every
+     repo evenly across shards.
+   - Without `--stratify-by`: a single uniform global shuffle with
+     `XorShift64(seed ^ hash("shard-global-shuffle"))`. Balance is still
+     guaranteed by step 2; repos are partitioned uniformly at random rather
+     than deliberately spread.
+2. **Assign** item at position `k` to shard `(start + k) % N` with a
    **continuous global cursor** that does not reset at repo boundaries —
    the only assignment that guarantees `max − min ≤ 1` regardless of repo sizes.
    - `balanced` (default): `start = seed % N` — rotates leftover placement.
@@ -97,7 +104,7 @@ Schema-versioned JSON sidecar (`schema_version: "shard-manifest-v1"`):
    For a **full** partition (no instances dropped), both modes guarantee
    `max − min ≤ 1`; they differ only in which shards receive the `T mod N`
    leftover instances.
-5. **Assert** invariants before writing:
+3. **Assert** invariants before writing:
    - union of all shard IDs == source IDs (no dropped instance)
    - pairwise intersections empty (no duplicated instance)
    - `max − min ≤ 1` (balance)
