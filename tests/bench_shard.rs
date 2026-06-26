@@ -322,6 +322,47 @@ fn non_empty_output_without_force_exits_nonzero() {
 }
 
 #[test]
+fn force_refuses_to_clear_output_containing_the_input_dataset() {
+    let work = tempfile::tempdir().unwrap();
+    let output = work.path().join("shards");
+    fs::create_dir_all(&output).unwrap();
+    // Source dataset lives *inside* the output directory.
+    let dataset = output.join("source.jsonl");
+    write_dataset(&dataset, 8, &["owner/repo"]);
+
+    let out = Command::new(binary_path())
+        .args(["bench", "shard"])
+        .arg("--dataset-path")
+        .arg(&dataset)
+        .arg("--shards")
+        .arg("2")
+        .arg("--output")
+        .arg(&output)
+        .arg("--force")
+        .output()
+        .unwrap();
+
+    assert!(
+        !out.status.success(),
+        "--force must refuse to clear an output dir that contains the input dataset"
+    );
+    // The operator's dataset must survive the rejection.
+    assert!(
+        dataset.exists(),
+        "input dataset must not be deleted when the command is rejected"
+    );
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        combined.contains("contains the input dataset"),
+        "error should explain the output/dataset collision:\n{combined}"
+    );
+}
+
+#[test]
 fn balance_by_exits_nonzero_with_clear_message() {
     let work = tempfile::tempdir().unwrap();
     let dataset = work.path().join("dataset.jsonl");

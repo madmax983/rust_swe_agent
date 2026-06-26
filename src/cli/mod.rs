@@ -6488,6 +6488,28 @@ fn bench_shard(s: args::ShardCmd) -> Result<(), Error> {
     let (dataset_bytes, meta) = crate::run::dataset::resolve_dataset(&dataset_source, &cache_dir)?;
     let instances = crate::run::swebench::load_dataset_from_bytes_pub(&dataset_bytes)?;
 
+    // Guard against destroying the input dataset: `--force` clears the whole
+    // output directory, so if the source JSONL lives inside `--output` the
+    // command would delete the operator's dataset while still succeeding from
+    // the in-memory copy. Refuse before any deletion happens.
+    if let DatasetSource::LocalPath(ds_path) = &dataset_source {
+        if s.output.exists() {
+            if let (Ok(ds_canon), Ok(out_canon)) = (
+                std::fs::canonicalize(ds_path),
+                std::fs::canonicalize(&s.output),
+            ) {
+                if ds_canon.starts_with(&out_canon) {
+                    return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+                        "--output directory '{}' contains the input dataset '{}'; \
+                         refusing to overwrite it (choose a different --output)",
+                        s.output.display(),
+                        ds_path.display()
+                    ))));
+                }
+            }
+        }
+    }
+
     let stratify_by = s.stratify_by.map(|v| match v {
         args::StratifyByArg::Repo => crate::run::swebench::StratifyBy::Repo,
     });
