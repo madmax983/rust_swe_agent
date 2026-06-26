@@ -464,6 +464,14 @@ pub fn entries() -> &'static [ExplainEntry] {
             docs_ref: EXIT_DOC,
         },
         ExplainEntry {
+            code: Some(49),
+            outcome_class: "ledger_budget_exceeded",
+            families: EXIT_ONLY,
+            meaning: "`bench ledger --budget-usd <N>` found that the grand total actual spend across discovered trajectories meets or exceeds N. The report is printed before exit.",
+            remediation: "Review the per-model/dataset/day breakdown in the ledger report and reduce spend, or raise `--budget-usd`.",
+            docs_ref: EXIT_DOC,
+        },
+        ExplainEntry {
             code: Some(130),
             outcome_class: "interrupted",
             families: EXIT_ONLY,

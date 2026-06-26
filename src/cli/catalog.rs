@@ -236,6 +236,12 @@ pub fn entries() -> &'static [CatalogEntry] {
             stage: "analyze",
         },
         CatalogEntry {
+            path: "bench ledger",
+            summary: "Roll up cumulative actual spend across runs/sweeps by model, dataset, and day",
+            cost_tier: "free",
+            stage: "analyze",
+        },
+        CatalogEntry {
             path: "bench context-pressure",
             summary: "Report context-window pressure telemetry per sweep",
             cost_tier: "free",

@@ -151,9 +151,9 @@ fn explain_index_json_lists_all_entries() {
     let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(v["schema_version"], "1.0");
     let entries = v["entries"].as_array().unwrap();
-    // 51 exit-code classes (0–48, 130, 137) + 15 failure categories, minus the
-    // 1 merged collision (agent_stagnation) = 65 distinct entries.
-    assert_eq!(entries.len(), 65, "unexpected index size");
+    // 52 exit-code classes (0–49, 130, 137) + 15 failure categories, minus the
+    // 1 merged collision (agent_stagnation) = 66 distinct entries.
+    assert_eq!(entries.len(), 66, "unexpected index size");
 }
 
 // ── AC: offline / $0 — runs with no API key set ──────────────────────────────

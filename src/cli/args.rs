@@ -1498,6 +1498,8 @@ pub enum BenchCmd {
     Merge(MergeCmd),
     /// Report context-window pressure telemetry per sweep (zero-cost: reads only on-disk artifacts).
     ContextPressure(ContextPressureCmd),
+    /// Roll up cumulative actual spend across runs/sweeps by model, dataset, and day (zero-cost: reads only on-disk artifacts).
+    Ledger(LedgerCmd),
 }
 
 /// `bench merge` — combine completed sharded sweep directories into one canonical aggregate.
@@ -2157,6 +2159,25 @@ pub struct ContextPressureCmd {
     /// Output format: `text` (default) or `json`.
     #[arg(long, default_value = "text", value_name = "FMT")]
     pub format: String,
+}
+
+/// `bench ledger` — roll up cumulative actual spend across runs/sweeps (zero-cost: reads only on-disk artifacts).
+#[derive(Debug, Args)]
+pub struct LedgerCmd {
+    /// One or more run or sweep directories to aggregate. Trajectories are
+    /// discovered recursively under each directory.
+    #[arg(value_name = "DIR", required = true, num_args = 1..)]
+    pub dirs: Vec<std::path::PathBuf>,
+
+    /// Output format: `text` (default) or `json`.
+    #[arg(long, default_value = "text", value_name = "FMT")]
+    pub format: String,
+
+    /// Budget ceiling in USD. When the grand total meets or exceeds this value
+    /// the report is printed and the process exits with code 49
+    /// (`ledger_budget_exceeded`).
+    #[arg(long, value_name = "USD")]
+    pub budget_usd: Option<f64>,
 }
 
 /// `bench budget-fit` — right-size step, cost, and wallclock caps (zero-cost: reads only on-disk artifacts).

@@ -198,7 +198,7 @@ pub fn run_agent_runs(opts: &AgentRunsOpts) -> Result<AgentRunsReport, Error> {
 /// immediate directory is scanned; if true the full tree is walked.
 /// I/O errors on the scan root are propagated; unreadable child subdirectories
 /// are skipped silently (analogous to malformed trajectory files).
-fn collect_traj_paths(dir: &Path, recursive: bool) -> Result<Vec<PathBuf>, Error> {
+pub(crate) fn collect_traj_paths(dir: &Path, recursive: bool) -> Result<Vec<PathBuf>, Error> {
     if !dir.exists() {
         return Err(Error::Trajectory(format!(
             "directory does not exist: {}",
