@@ -879,4 +879,86 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn error_n_shards_zero() {
+        let temp = tempfile::tempdir().unwrap();
+        let result = run_shard(ShardArgs {
+            instances: instances_n(4),
+            source_sha256: "x".to_owned(),
+            n_shards: 0,
+            seed: 0,
+            stratify_by: None,
+            stratify_mode: StratifyMode::Balanced,
+            output: temp.path(),
+            force: false,
+            alias: None,
+            split: None,
+        });
+        assert!(result.is_err(), "--shards 0 should error");
+        let msg = format!("{:?}", result.unwrap_err());
+        assert!(
+            msg.contains("at least 1"),
+            "error message should mention 'at least 1': {msg}"
+        );
+    }
+
+    #[test]
+    fn output_path_is_a_file_without_force_errors() {
+        let temp = tempfile::tempdir().unwrap();
+        let file_path = temp.path().join("collides");
+        std::fs::write(&file_path, b"not a directory").unwrap();
+
+        let result = run_shard(ShardArgs {
+            instances: instances_n(4),
+            source_sha256: "x".to_owned(),
+            n_shards: 2,
+            seed: 0,
+            stratify_by: None,
+            stratify_mode: StratifyMode::Balanced,
+            output: &file_path,
+            force: false,
+            alias: None,
+            split: None,
+        });
+        assert!(
+            result.is_err(),
+            "output path that is an existing file must error without --force"
+        );
+        let msg = format!("{:?}", result.unwrap_err());
+        assert!(
+            msg.contains("as a file"),
+            "error message should mention the file collision: {msg}"
+        );
+        // The pre-existing file must be left untouched on the rejection path.
+        assert!(file_path.is_file(), "existing file should not be removed");
+    }
+
+    #[test]
+    fn output_path_is_a_file_with_force_replaces_it_with_a_dir() {
+        let temp = tempfile::tempdir().unwrap();
+        let file_path = temp.path().join("collides");
+        std::fs::write(&file_path, b"not a directory").unwrap();
+
+        run_shard(ShardArgs {
+            instances: instances_n(4),
+            source_sha256: "x".to_owned(),
+            n_shards: 2,
+            seed: 0,
+            stratify_by: None,
+            stratify_mode: StratifyMode::Balanced,
+            output: &file_path,
+            force: true,
+            alias: None,
+            split: None,
+        })
+        .unwrap();
+
+        assert!(
+            file_path.is_dir(),
+            "with --force the colliding file should be replaced by the output directory"
+        );
+        assert!(file_path.join("shard-000.jsonl").exists());
+        assert!(file_path.join("shard-001.jsonl").exists());
+    }
 }
