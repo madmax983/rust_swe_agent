@@ -146,6 +146,7 @@ pub async fn run() -> Result<(), Error> {
             args::BenchCmd::ExportOtlp(c) => Box::pin(bench_export_otlp(c)).await,
             args::BenchCmd::Variance(v) => bench_variance(v),
             args::BenchCmd::Merge(m) => bench_merge(&m),
+            args::BenchCmd::Shard(s) => bench_shard(s),
             args::BenchCmd::Ledger(l) => bench_ledger(l),
         },
         Command::Agent { cmd } => match *cmd {
@@ -6438,6 +6439,97 @@ fn bench_merge(m: &args::MergeCmd) -> Result<(), Error> {
     } else {
         report.render_text();
     }
+    Ok(())
+}
+
+fn bench_shard(s: args::ShardCmd) -> Result<(), Error> {
+    use crate::run::dataset::DatasetSource;
+    use crate::run::shard::{ShardArgs, run_shard};
+
+    // --balance-by is reserved for future use; reject loudly with actionable guidance
+    if let Some(key) = &s.balance_by {
+        return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+            "--balance-by '{key}' is not yet implemented; \
+             reserved for future use — use --stratify-by repo for repo-spread balancing"
+        ))));
+    }
+
+    // Resolve dataset source (same mutual-exclusion logic as bench_subset)
+    let cache_dir = s
+        .dataset_cache_dir
+        .clone()
+        .unwrap_or_else(crate::run::dataset::default_cache_dir);
+
+    let dataset_source = match (&s.dataset_path, &s.dataset) {
+        (Some(_), Some(_)) => {
+            return Err(Error::Config(crate::error::ConfigError::Invalid(
+                "--dataset-path and --dataset are mutually exclusive; provide only one".into(),
+            )));
+        }
+        (None, None) => {
+            return Err(Error::Config(crate::error::ConfigError::Invalid(
+                "one of --dataset-path or --dataset is required".into(),
+            )));
+        }
+        (Some(path), None) => DatasetSource::LocalPath(path.clone()),
+        (None, Some(alias_str)) => {
+            let alias = alias_str
+                .parse::<crate::run::dataset::SwebenchAlias>()
+                .map_err(|e| Error::Config(crate::error::ConfigError::Invalid(e)))?;
+            let split_str = s.split.as_deref().unwrap_or("test");
+            let split = split_str
+                .parse::<crate::run::dataset::SwebenchSplit>()
+                .map_err(|e| Error::Config(crate::error::ConfigError::Invalid(e)))?;
+            DatasetSource::Named { alias, split }
+        }
+    };
+
+    let (dataset_bytes, meta) =
+        crate::run::dataset::resolve_dataset(&dataset_source, &cache_dir)?;
+    let instances = crate::run::swebench::load_dataset_from_bytes_pub(&dataset_bytes)?;
+
+    let stratify_by = s.stratify_by.map(|v| match v {
+        args::StratifyByArg::Repo => crate::run::swebench::StratifyBy::Repo,
+    });
+    let stratify_mode = match s
+        .stratify_mode
+        .unwrap_or(args::StratifyModeArg::Balanced)
+    {
+        args::StratifyModeArg::Proportional => crate::run::swebench::StratifyMode::Proportional,
+        args::StratifyModeArg::Balanced => crate::run::swebench::StratifyMode::Balanced,
+    };
+
+    let alias_str = match &dataset_source {
+        DatasetSource::Named { alias, .. } => Some(alias.to_string()),
+        DatasetSource::LocalPath(_) => None,
+    };
+    let split_str = match &dataset_source {
+        DatasetSource::Named { split, .. } => Some(split.to_string()),
+        DatasetSource::LocalPath(_) => None,
+    };
+
+    let report = run_shard(ShardArgs {
+        instances,
+        source_sha256: meta.sha256,
+        n_shards: s.shards,
+        seed: s.seed,
+        stratify_by,
+        stratify_mode,
+        output: &s.output,
+        force: s.force,
+        alias: alias_str.as_deref(),
+        split: split_str.as_deref(),
+    })?;
+
+    match s.format {
+        args::ShardFormat::Json => {
+            println!("{}", serde_json::to_string_pretty(&report)?);
+        }
+        args::ShardFormat::Text => {
+            report.render_text();
+        }
+    }
+
     Ok(())
 }
 

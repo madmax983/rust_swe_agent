@@ -75,6 +75,7 @@ pub mod skill_coverage;
 pub mod skills_preview;
 pub mod stability;
 pub mod stagnation_report;
+pub mod shard;
 pub mod subset;
 pub mod suite;
 pub mod swebench;
