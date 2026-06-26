@@ -6442,6 +6442,7 @@ fn bench_merge(m: &args::MergeCmd) -> Result<(), Error> {
     Ok(())
 }
 
+#[allow(clippy::needless_pass_by_value)]
 fn bench_shard(s: args::ShardCmd) -> Result<(), Error> {
     use crate::run::dataset::DatasetSource;
     use crate::run::shard::{ShardArgs, run_shard};
@@ -6484,17 +6485,13 @@ fn bench_shard(s: args::ShardCmd) -> Result<(), Error> {
         }
     };
 
-    let (dataset_bytes, meta) =
-        crate::run::dataset::resolve_dataset(&dataset_source, &cache_dir)?;
+    let (dataset_bytes, meta) = crate::run::dataset::resolve_dataset(&dataset_source, &cache_dir)?;
     let instances = crate::run::swebench::load_dataset_from_bytes_pub(&dataset_bytes)?;
 
     let stratify_by = s.stratify_by.map(|v| match v {
         args::StratifyByArg::Repo => crate::run::swebench::StratifyBy::Repo,
     });
-    let stratify_mode = match s
-        .stratify_mode
-        .unwrap_or(args::StratifyModeArg::Balanced)
-    {
+    let stratify_mode = match s.stratify_mode.unwrap_or(args::StratifyModeArg::Balanced) {
         args::StratifyModeArg::Proportional => crate::run::swebench::StratifyMode::Proportional,
         args::StratifyModeArg::Balanced => crate::run::swebench::StratifyMode::Balanced,
     };

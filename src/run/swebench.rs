@@ -5657,9 +5657,7 @@ pub(crate) fn partition_into_shards(
     // 2. Continuous global round-robin assignment.
     let n_shards_u64 = u64::try_from(n_shards).unwrap_or(u64::MAX);
     let start = match mode {
-        StratifyMode::Balanced => {
-            usize::try_from(seed % n_shards_u64.max(1)).unwrap_or(0)
-        }
+        StratifyMode::Balanced => usize::try_from(seed % n_shards_u64.max(1)).unwrap_or(0),
         StratifyMode::Proportional => 0,
     };
 

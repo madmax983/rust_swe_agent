@@ -37,7 +37,11 @@ fn write_dataset(path: &Path, n: usize, repos: &[&str]) {
 fn happy_path_creates_n_shards_and_manifests() {
     let work = tempfile::tempdir().unwrap();
     let dataset = work.path().join("dataset.jsonl");
-    write_dataset(&dataset, 20, &["owner/repo-a", "owner/repo-b", "owner/repo-c"]);
+    write_dataset(
+        &dataset,
+        20,
+        &["owner/repo-a", "owner/repo-b", "owner/repo-c"],
+    );
     let output = work.path().join("shards");
 
     let out = Command::new(binary_path())
@@ -144,7 +148,11 @@ fn deterministic_byte_identical_shards() {
             .output()
             .unwrap()
             .status;
-        assert!(status.success(), "bench shard failed on run to {}", output.display());
+        assert!(
+            status.success(),
+            "bench shard failed on run to {}",
+            output.display()
+        );
     }
 
     for i in 0..3_usize {
@@ -188,14 +196,26 @@ fn json_format_contains_required_fields() {
     let report: serde_json::Value = serde_json::from_str(&stdout)
         .unwrap_or_else(|e| panic!("stdout is not valid JSON: {e}\n{stdout}"));
 
-    assert!(report.get("shard_count").is_some(), "missing 'shard_count':\n{report}");
-    assert!(report.get("total_instances").is_some(), "missing 'total_instances':\n{report}");
-    assert!(report.get("per_shard_counts").is_some(), "missing 'per_shard_counts':\n{report}");
+    assert!(
+        report.get("shard_count").is_some(),
+        "missing 'shard_count':\n{report}"
+    );
+    assert!(
+        report.get("total_instances").is_some(),
+        "missing 'total_instances':\n{report}"
+    );
+    assert!(
+        report.get("per_shard_counts").is_some(),
+        "missing 'per_shard_counts':\n{report}"
+    );
     assert!(
         report.get("source_dataset_sha256").is_some(),
         "missing 'source_dataset_sha256':\n{report}"
     );
-    assert!(report.get("balance_spread").is_some(), "missing 'balance_spread':\n{report}");
+    assert!(
+        report.get("balance_spread").is_some(),
+        "missing 'balance_spread':\n{report}"
+    );
 
     assert_eq!(report["shard_count"].as_u64().unwrap(), 4);
     assert_eq!(report["total_instances"].as_u64().unwrap(), 16);
@@ -369,8 +389,7 @@ fn all_manifests_carry_same_source_sha256() {
 
     for sha in &shas[1..] {
         assert_eq!(
-            &shas[0],
-            sha,
+            &shas[0], sha,
             "source_dataset_sha256 should be identical across all shard manifests"
         );
     }

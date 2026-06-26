@@ -122,6 +122,7 @@ pub struct ShardArgs<'a> {
 /// - Source dataset contains duplicate `instance_id` values
 /// - Output directory is non-empty and `--force` was not set
 /// - Any I/O failure while writing files
+#[allow(clippy::too_many_lines)]
 pub fn run_shard(args: ShardArgs<'_>) -> Result<ShardReport, Error> {
     // Validate --shards >= 1
     if args.n_shards == 0 {
@@ -171,8 +172,11 @@ pub fn run_shard(args: ShardArgs<'_>) -> Result<ShardReport, Error> {
     // partitioner — this avoids cloning the (potentially very large) instance
     // vector just to retain the source ID set for the invariant check.
     let total_instances = args.instances.len();
-    let source_ids: std::collections::BTreeSet<String> =
-        args.instances.iter().map(|i| i.instance_id.clone()).collect();
+    let source_ids: std::collections::BTreeSet<String> = args
+        .instances
+        .iter()
+        .map(|i| i.instance_id.clone())
+        .collect();
 
     // Partition into N groups (consumes the instance vector — no clone).
     let shards = partition_into_shards(
@@ -185,15 +189,14 @@ pub fn run_shard(args: ShardArgs<'_>) -> Result<ShardReport, Error> {
 
     // Compute per-shard counts and balance spread once; reused below for both
     // the invariant assertion and the returned report.
-    let per_shard_counts: Vec<usize> = shards.iter().map(|s| s.len()).collect();
+    let per_shard_counts: Vec<usize> = shards.iter().map(Vec::len).collect();
     let min_count = per_shard_counts.iter().copied().min().unwrap_or(0);
     let max_count = per_shard_counts.iter().copied().max().unwrap_or(0);
     let balance_spread = max_count - min_count;
 
     // Assert coverage and disjointness invariants BEFORE writing any files.
     {
-        let mut union_ids: std::collections::BTreeSet<&str> =
-            std::collections::BTreeSet::new();
+        let mut union_ids: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
 
         for shard in &shards {
             for inst in shard {
@@ -227,20 +230,21 @@ pub fn run_shard(args: ShardArgs<'_>) -> Result<ShardReport, Error> {
     // Write shard JSONLs and per-shard sidecar manifests
     for (i, shard) in shards.iter().enumerate() {
         let jsonl_path = args.output.join(format!("shard-{i:03}.jsonl"));
-        let mut jsonl = String::new();
-        for inst in shard {
-            jsonl.push_str(&serde_json::to_string(inst)?);
-            jsonl.push('\n');
+        {
+            use std::io::Write as _;
+            let file = std::fs::File::create(&jsonl_path)?;
+            let mut writer = std::io::BufWriter::new(file);
+            for inst in shard {
+                serde_json::to_writer(&mut writer, inst)?;
+                writer.write_all(b"\n")?;
+            }
+            writer.flush()?;
         }
-        std::fs::write(&jsonl_path, &jsonl)?;
 
         let per_stratum_counts = if args.stratify_by.is_some() {
             let mut counts: BTreeMap<String, usize> = BTreeMap::new();
             for inst in shard {
-                let key = inst
-                    .repo
-                    .clone()
-                    .unwrap_or_else(|| "<unknown>".to_owned());
+                let key = inst.repo.as_deref().unwrap_or("<unknown>").to_owned();
                 *counts.entry(key).or_default() += 1;
             }
             Some(counts)
@@ -281,23 +285,37 @@ pub fn run_shard(args: ShardArgs<'_>) -> Result<ShardReport, Error> {
 
 fn prepare_output_dir(output: &Path, force: bool) -> Result<(), Error> {
     if output.exists() {
-        let is_empty = output
-            .read_dir()
-            .is_ok_and(|mut d| d.next().is_none());
-        if !is_empty {
+        if output.is_file() {
             if !force {
                 return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
-                    "shard: output directory '{}' already exists and is non-empty; \
+                    "shard: output path '{}' already exists as a file; \
                      use --force to overwrite",
                     output.display()
                 ))));
             }
-            std::fs::remove_dir_all(output).map_err(|e| {
+            std::fs::remove_file(output).map_err(|e| {
                 Error::Config(crate::error::ConfigError::Invalid(format!(
-                    "shard: failed to clear output directory '{}': {e}",
+                    "shard: failed to remove existing file '{}': {e}",
                     output.display()
                 )))
             })?;
+        } else {
+            let is_empty = output.read_dir().is_ok_and(|mut d| d.next().is_none());
+            if !is_empty {
+                if !force {
+                    return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+                        "shard: output directory '{}' already exists and is non-empty; \
+                         use --force to overwrite",
+                        output.display()
+                    ))));
+                }
+                std::fs::remove_dir_all(output).map_err(|e| {
+                    Error::Config(crate::error::ConfigError::Invalid(format!(
+                        "shard: failed to clear output directory '{}': {e}",
+                        output.display()
+                    )))
+                })?;
+            }
         }
     }
     std::fs::create_dir_all(output).map_err(|e| {
@@ -387,13 +405,10 @@ mod tests {
         })
         .unwrap();
 
-        let mut all_ids: std::collections::BTreeSet<String> =
-            std::collections::BTreeSet::new();
+        let mut all_ids: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
         for i in 0..4_usize {
-            let content = std::fs::read_to_string(
-                temp.path().join(format!("shard-{i:03}.jsonl")),
-            )
-            .unwrap();
+            let content =
+                std::fs::read_to_string(temp.path().join(format!("shard-{i:03}.jsonl"))).unwrap();
             for line in content.lines() {
                 let v: serde_json::Value = serde_json::from_str(line).unwrap();
                 let id = v["instance_id"].as_str().unwrap().to_owned();
@@ -541,14 +556,15 @@ mod tests {
         // Re-uniting all shard JSONLs reproduces the source instance-ID set exactly.
         let mut union: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
         for i in 0..5_usize {
-            let content = std::fs::read_to_string(
-                temp.path().join(format!("shard-{i:03}.jsonl")),
-            )
-            .unwrap();
+            let content =
+                std::fs::read_to_string(temp.path().join(format!("shard-{i:03}.jsonl"))).unwrap();
             for line in content.lines().filter(|l| !l.is_empty()) {
                 let v: serde_json::Value = serde_json::from_str(line).unwrap();
                 let id = v["instance_id"].as_str().unwrap().to_owned();
-                assert!(union.insert(id.clone()), "duplicate id in round-trip union: {id}");
+                assert!(
+                    union.insert(id.clone()),
+                    "duplicate id in round-trip union: {id}"
+                );
             }
         }
         assert_eq!(union, source_ids, "offline round-trip: union ≠ source");
@@ -589,7 +605,10 @@ mod tests {
         });
         assert!(result.is_err(), "--shards > instance count should error");
         let msg = format!("{:?}", result.unwrap_err());
-        assert!(msg.contains("larger than"), "error message should mention 'larger than': {msg}");
+        assert!(
+            msg.contains("larger than"),
+            "error message should mention 'larger than': {msg}"
+        );
     }
 
     #[test]
@@ -611,7 +630,10 @@ mod tests {
         });
         assert!(result.is_err(), "duplicate IDs in source should error");
         let msg = format!("{:?}", result.unwrap_err());
-        assert!(msg.contains("duplicate"), "error message should mention 'duplicate': {msg}");
+        assert!(
+            msg.contains("duplicate"),
+            "error message should mention 'duplicate': {msg}"
+        );
     }
 
     #[test]
@@ -841,10 +863,8 @@ mod tests {
 
         for i in 0..3_usize {
             let m: ShardManifest = serde_json::from_str(
-                &std::fs::read_to_string(
-                    temp.path().join(format!("shard-{i:03}.manifest.json")),
-                )
-                .unwrap(),
+                &std::fs::read_to_string(temp.path().join(format!("shard-{i:03}.manifest.json")))
+                    .unwrap(),
             )
             .unwrap();
             let a_count = m
