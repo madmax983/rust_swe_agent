@@ -410,6 +410,12 @@ pub fn entries() -> &'static [CatalogEntry] {
             stage: "analyze",
         },
         CatalogEntry {
+            path: "bench shard",
+            summary: "Deterministically partition a dataset into N disjoint balanced shards",
+            cost_tier: "free",
+            stage: "preflight",
+        },
+        CatalogEntry {
             path: "bench near-miss",
             summary: "Rank unresolved sweep instances by gold-patch proximity",
             cost_tier: "free",
