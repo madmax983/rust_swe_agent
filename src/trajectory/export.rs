@@ -95,6 +95,14 @@ pub fn registry() -> Vec<ExportFormat> {
         render: MermaidExporter::export,
     });
 
+    #[cfg(feature = "jsonl-export")]
+    formats.push(ExportFormat {
+        name: "jsonl",
+        tier: StabilityTier::Stable,
+        consumer: "streaming ingestion, fine-tuning scripts, standard jsonl loaders",
+        render: JsonlExporter::export,
+    });
+
     formats
 }
 
@@ -109,6 +117,7 @@ pub const FEATURE_GATED_FORMATS: &[(&str, &str)] = &[
     ("csv", "csv-export"),
     ("html", "html-export"),
     ("mermaid", "mermaid-export"),
+    ("jsonl", "jsonl-export"),
 ];
 
 /// Returns `true` if `name` is a trajectory export format known to this codebase,
@@ -165,6 +174,9 @@ pub struct MermaidExporter;
 
 #[cfg(feature = "html-export")]
 pub struct HtmlExporter;
+
+#[cfg(feature = "jsonl-export")]
+pub struct JsonlExporter;
 
 use std::fmt::Write;
 
@@ -358,6 +370,32 @@ impl TrajectoryExporter for MermaidExporter {
     }
 }
 
+#[cfg(feature = "jsonl-export")]
+impl TrajectoryExporter for JsonlExporter {
+    fn export(trajectory: &Trajectory) -> String {
+        let redactor = Redactor::default_enabled();
+        let mut jsonl = String::new();
+
+        for msg in &trajectory.messages {
+            let role = msg.role.as_str();
+            let content = redactor.redact_text(&msg.content, surface::EXPORT).text;
+
+            let obj = serde_json::json!({
+                "role": role,
+                "content": content
+            });
+
+            let line = serde_json::to_string(&obj).unwrap_or_default();
+            if !line.is_empty() {
+                jsonl.push_str(&line);
+                jsonl.push('\n');
+            }
+        }
+
+        jsonl
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -452,5 +490,31 @@ mod tests {
         assert!(html.contains("submitted"));
         assert!(html.contains("Hello agent"));
         assert!(html.contains("Hello user"));
+    }
+
+    #[cfg(feature = "jsonl-export")]
+    #[test]
+    fn test_jsonl_export_format() {
+        let mut t = Trajectory::new();
+        t.info.task = Some("Add a feature".to_string());
+        t.info.outcome = Some("submitted".to_string());
+
+        t.record_message(&Message::system("System prompt"));
+        t.record_message(&Message::user("Hello agent\nMulti-line"));
+
+        let jsonl = JsonlExporter::export(&t);
+        let lines: Vec<&str> = jsonl.lines().collect();
+
+        assert_eq!(lines.len(), 2);
+
+        #[allow(clippy::unwrap_used)]
+        let parsed0: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
+        assert_eq!(parsed0["role"], "system");
+        assert_eq!(parsed0["content"], "System prompt");
+
+        #[allow(clippy::unwrap_used)]
+        let parsed1: serde_json::Value = serde_json::from_str(lines[1]).unwrap();
+        assert_eq!(parsed1["role"], "user");
+        assert_eq!(parsed1["content"], "Hello agent\nMulti-line");
     }
 }
