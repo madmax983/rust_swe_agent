@@ -242,7 +242,6 @@ impl StreamSink for WebhookSinkHandle {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used)]
     use super::*;
     use std::time::Duration;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -256,11 +255,16 @@ mod tests {
 
     #[tokio::test]
     async fn test_webhook_sink_emits_http_post_with_envelope() {
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
+        let Ok(listener) = TcpListener::bind("127.0.0.1:0").await else {
+            panic!("err");
+        };
+        let Ok(addr) = listener.local_addr() else {
+            panic!("err");
+        };
         let url = format!("http://{addr}");
 
-        let sink_inner = Arc::new(WebhookSink::new(url, &[]).unwrap());
+        let sink_inner_raw = WebhookSink::new(url, &[]).unwrap();
+        let sink_inner = Arc::new(sink_inner_raw);
         let sink = WebhookSinkHandle::new(sink_inner, run_id());
 
         let event = StreamEvent::RunStarted {
@@ -277,9 +281,14 @@ mod tests {
 
         assert!(req.starts_with("POST / HTTP/1.1"));
 
-        let body_start = req.find("\r\n\r\n").unwrap() + 4;
+        let Some(idx) = req.find("\r\n\r\n") else {
+            panic!("err");
+        };
+        let body_start = idx + 4;
         let body = &req[body_start..];
-        let v: serde_json::Value = serde_json::from_str(body).unwrap();
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(body) else {
+            panic!("err");
+        };
 
         // Must have schema envelope.
         assert_eq!(v["schema_version"]["major"], 1);
@@ -318,14 +327,21 @@ mod tests {
             .enable_all()
             .build()
             .unwrap();
-        let std_listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        std_listener.set_nonblocking(true).unwrap();
-        let addr = std_listener.local_addr().unwrap();
+        let Ok(std_listener) = std::net::TcpListener::bind("127.0.0.1:0") else {
+            panic!("err");
+        };
+        let Ok(_) = std_listener.set_nonblocking(true) else {
+            panic!("err");
+        };
+        let Ok(addr) = std_listener.local_addr() else {
+            panic!("err");
+        };
         let url = format!("http://{addr}");
 
         {
             let _guard = rt.enter();
-            let sink_inner = Arc::new(WebhookSink::with_buffer_capacity(url, &[], 1).unwrap());
+            let sink_inner_raw = WebhookSink::with_buffer_capacity(url, &[], 1).unwrap();
+            let sink_inner = Arc::new(sink_inner_raw);
             let sink = WebhookSinkHandle::new(sink_inner.clone(), run_id());
 
             sink.emit(run_started("first"));
@@ -337,7 +353,9 @@ mod tests {
         }
 
         rt.block_on(async move {
-            let listener = TcpListener::from_std(std_listener).unwrap();
+            let Ok(listener) = TcpListener::from_std(std_listener) else {
+                panic!("err");
+            };
             let socket = accept_connection(&listener).await;
             let request = read_full_http_request(socket).await;
             assert!(request.contains("\"task\":\"first\""));
@@ -350,11 +368,16 @@ mod tests {
 
     #[tokio::test]
     async fn run_ended_envelope_includes_drop_count() {
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
+        let Ok(listener) = TcpListener::bind("127.0.0.1:0").await else {
+            panic!("err");
+        };
+        let Ok(addr) = listener.local_addr() else {
+            panic!("err");
+        };
         let url = format!("http://{addr}");
 
-        let sink_inner = Arc::new(WebhookSink::new(url, &[]).unwrap());
+        let sink_inner_raw = WebhookSink::new(url, &[]).unwrap();
+        let sink_inner = Arc::new(sink_inner_raw);
         let sink = WebhookSinkHandle::new(sink_inner, run_id());
 
         sink.emit(StreamEvent::RunEnded {
@@ -368,8 +391,13 @@ mod tests {
 
         let socket = accept_connection(&listener).await;
         let request = read_full_http_request(socket).await;
-        let body_start = request.find("\r\n\r\n").unwrap() + 4;
-        let v: serde_json::Value = serde_json::from_str(&request[body_start..]).unwrap();
+        let Some(idx) = request.find("\r\n\r\n") else {
+            panic!("err");
+        };
+        let body_start = idx + 4;
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(&request[body_start..]) else {
+            panic!("err");
+        };
 
         assert!(
             v.get("webhook_events_dropped").is_some(),
@@ -379,12 +407,17 @@ mod tests {
 
     #[tokio::test]
     async fn custom_headers_appear_in_request() {
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
+        let Ok(listener) = TcpListener::bind("127.0.0.1:0").await else {
+            panic!("err");
+        };
+        let Ok(addr) = listener.local_addr() else {
+            panic!("err");
+        };
         let url = format!("http://{addr}");
 
         let headers = vec![("X-Test-Header".to_owned(), "hello-world".to_owned())];
-        let sink_inner = Arc::new(WebhookSink::new(url, &headers).unwrap());
+        let sink_inner_raw = WebhookSink::new(url, &headers).unwrap();
+        let sink_inner = Arc::new(sink_inner_raw);
         let sink = WebhookSinkHandle::new(sink_inner, run_id());
 
         sink.emit(run_started("hdr-test"));

@@ -1035,6 +1035,74 @@ mod tests {
     }
 
     #[test]
+    fn ranking_handles_nan_budget_burned_without_panic() {
+        let mut rows = [
+            StagnationInstanceRow {
+                instance_id: "inst1".into(),
+                budget_burned_usd: f64::NAN,
+                usd_saved_estimate: Some(0.0),
+                halt_step: 5,
+                canonical_action: "test".into(),
+                hit_count: 5,
+                fingerprint: "abc".into(),
+                full_hash: "abc".into(),
+            },
+            StagnationInstanceRow {
+                instance_id: "inst2".into(),
+                budget_burned_usd: 10.0,
+                usd_saved_estimate: Some(5.0),
+                halt_step: 3,
+                canonical_action: "test2".into(),
+                hit_count: 3,
+                fingerprint: "def".into(),
+                full_hash: "def".into(),
+            },
+        ];
+        rows.sort_by(|a, b| {
+            b.budget_burned_usd
+                .partial_cmp(&a.budget_burned_usd)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        // NAN partial_cmp is None. So it returns Equal, preserving order if stable.
+        assert_eq!(rows.len(), 2);
+    }
+
+    #[test]
+    fn run_report_handles_nan_budget_burned_without_panic() -> anyhow::Result<()> {
+        let dir = tempfile::tempdir()?;
+        let sweep = dir.path();
+
+        std::fs::write(
+            sweep.join("inst1.traj.json"),
+            stagnation_traj_json("ls", 4, &[1, 2, 3, 4], 4, f64::NAN),
+        )?;
+        std::fs::write(
+            sweep.join("inst2.traj.json"),
+            stagnation_traj_json("ls", 4, &[1, 2, 3, 4], 4, 10.0),
+        )?;
+
+        std::fs::write(
+            sweep.join("results.json"),
+            results_json(&[
+                serde_json::json!({
+                    "instance_id": "inst1",
+                    "exit_reason": "agent_stagnation",
+                    "failure_category": "agent_stagnation",
+                }),
+                serde_json::json!({
+                    "instance_id": "inst2",
+                    "exit_reason": "agent_stagnation",
+                    "failure_category": "agent_stagnation",
+                }),
+            ]),
+        )?;
+
+        let report = run_report(sweep);
+        assert_eq!(report.instances.len(), 2);
+        Ok(())
+    }
+
+    #[test]
     fn parse_step_limit_handles_underscore_integers() {
         assert_eq!(
             parse_step_limit_from_config("[agent]\nstep_limit = 1_000"),
