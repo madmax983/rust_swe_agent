@@ -430,6 +430,17 @@ fn version_at_least(active: (u32, u32, u32), required: (u32, u32, u32)) -> bool 
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
+    use std::sync::{Mutex, OnceLock};
+
+    static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+    fn env_lock() -> std::sync::MutexGuard<'static, ()> {
+        ENV_LOCK
+            .get_or_init(Mutex::default)
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
     use super::*;
 
     // ── expected_credential_env (AC#2b) ──────────────────────────────────
@@ -624,10 +635,13 @@ mod tests {
         // Use a uniquely-named var to avoid clobbering real provider keys.
         let model = "weirdprov/model";
         let var = expected_credential_env(model).unwrap();
-        // SAFETY: single-threaded test; restore immediately after.
-        unsafe { std::env::set_var(&var, "TOPSECRETVALUE") };
-        let check = check_credential(model);
-        unsafe { std::env::remove_var(&var) };
+        let check = {
+            let _guard = env_lock();
+            unsafe { std::env::set_var(&var, "TOPSECRETVALUE") };
+            let check = check_credential(model);
+            unsafe { std::env::remove_var(&var) };
+            check
+        };
         assert_eq!(check.status, CheckStatus::Pass);
         assert!(!check.detail.contains("TOPSECRETVALUE"));
     }
@@ -638,9 +652,11 @@ mod tests {
         // with a remediation hint naming the variable.
         let model = "zzznoprov/model";
         let var = expected_credential_env(model).unwrap();
-        // SAFETY: single-threaded test; ensure the var is absent.
-        unsafe { std::env::remove_var(&var) };
-        let check = check_credential(model);
+        let check = {
+            let _guard = env_lock();
+            unsafe { std::env::remove_var(&var) };
+            check_credential(model)
+        };
         assert_eq!(check.status, CheckStatus::Fail);
         assert!(check.detail.contains(&var));
         assert!(check.detail.contains("export"));

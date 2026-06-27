@@ -353,6 +353,17 @@ impl SweepWebhookSink {
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used)]
+    use std::sync::{Mutex, OnceLock};
+
+    static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+    fn env_lock() -> std::sync::MutexGuard<'static, ()> {
+        ENV_LOCK
+            .get_or_init(Mutex::default)
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
     use super::*;
     use std::time::Duration;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -455,8 +466,10 @@ mod tests {
         // Synthetic env var picked up automatically by from_config_lossy.
         let unique_val = format!("sk-deadbeef-sweep-wh-{}", addr.port());
         let env_name = format!("FAKE_API_KEY_SWH_{}", addr.port());
-        // SAFETY: single-threaded test context; no concurrent env reads.
-        unsafe { std::env::set_var(&env_name, &unique_val) };
+        {
+            let _guard = env_lock();
+            unsafe { std::env::set_var(&env_name, &unique_val) };
+        }
         let redactor = Redactor::default_enabled();
 
         let sink = SweepWebhookSink::new(url, &[], redactor, "sweep-redact".to_owned()).unwrap();
@@ -470,8 +483,10 @@ mod tests {
 
         let socket = accept(&listener).await;
         let req = read_http(socket).await;
-        // SAFETY: single-threaded test context; no concurrent env reads.
-        unsafe { std::env::remove_var(&env_name) };
+        {
+            let _guard = env_lock();
+            unsafe { std::env::remove_var(&env_name) };
+        }
 
         assert!(
             !req.contains(&unique_val),

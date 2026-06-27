@@ -2183,12 +2183,23 @@ pub fn slugify(task: &str) -> String {
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used)]
+    use std::sync::{Mutex, OnceLock};
+
+    static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+    fn env_lock() -> std::sync::MutexGuard<'static, ()> {
+        ENV_LOCK
+            .get_or_init(Mutex::default)
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
 
     use super::*;
     use async_trait::async_trait;
     use std::path::Path;
     use std::process::Command;
-    use std::sync::Mutex;
+
 
     use crate::stream::{NullSink, StreamEvent, StreamSink};
 
@@ -3914,14 +3925,19 @@ index 8a1218a..24c5735 100644\n\
         // Inject a fake secret as an environment variable that the redactor picks up.
         // We use a value that looks like a real API key pattern so the redactor fires.
         let fake_secret = "sk-ant-fake-secret-value-for-test-0123456789abcdef";
-        // SAFETY: test-only; single-threaded context for secret injection.
-        unsafe { std::env::set_var("TEST_MANIFEST_API_KEY", fake_secret) };
+        {
+            let _guard = env_lock();
+            unsafe { std::env::set_var("TEST_MANIFEST_API_KEY", fake_secret) };
+        }
 
         let args = make_mini_args_for_manifest_test(tmp.path().to_path_buf(), "secret-test");
         run(args).await.unwrap();
 
         // Clean up env var
-        unsafe { std::env::remove_var("TEST_MANIFEST_API_KEY") };
+        {
+            let _guard = env_lock();
+            unsafe { std::env::remove_var("TEST_MANIFEST_API_KEY") };
+        }
 
         let traj_path = tmp.path().join("secret-test.traj.json");
         let content = std::fs::read_to_string(&traj_path).unwrap();

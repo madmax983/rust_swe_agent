@@ -2192,6 +2192,17 @@ pub fn parse_format(json_flag: bool, format: &str) -> Result<AuditFormat, Error>
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::pedantic)]
+    use std::sync::{Mutex, OnceLock};
+
+    static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+    fn env_lock() -> std::sync::MutexGuard<'static, ()> {
+        ENV_LOCK
+            .get_or_init(Mutex::default)
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
     use super::*;
 
     fn default_cfg() -> Config {
@@ -3133,14 +3144,17 @@ mod tests {
             "x.output.txt",
             "leaked: super-secret-ci-token-value-123\n",
         );
-        // SAFETY: set/remove a process-local var in a serial unit test.
-        unsafe {
-            std::env::set_var("DATABASE_PASSWORD", "super-secret-ci-token-value-123");
-        }
-        let report = audit(dir.path());
-        unsafe {
-            std::env::remove_var("DATABASE_PASSWORD");
-        }
+        let report = {
+            let _guard = env_lock();
+            unsafe {
+                std::env::set_var("DATABASE_PASSWORD", "super-secret-ci-token-value-123");
+            }
+            let report = audit(dir.path());
+            unsafe {
+                std::env::remove_var("DATABASE_PASSWORD");
+            }
+            report
+        };
         assert!(
             report
                 .findings
