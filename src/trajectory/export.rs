@@ -95,6 +95,14 @@ pub fn registry() -> Vec<ExportFormat> {
         render: MermaidExporter::export,
     });
 
+    #[cfg(feature = "jupyter-export")]
+    formats.push(ExportFormat {
+        name: "jupyter",
+        tier: StabilityTier::Experimental,
+        consumer: "Jupyter Notebooks, Colab, interactive data science tools",
+        render: JupyterExporter::export,
+    });
+
     formats
 }
 
@@ -108,6 +116,7 @@ pub fn registry() -> Vec<ExportFormat> {
 pub const FEATURE_GATED_FORMATS: &[(&str, &str)] = &[
     ("csv", "csv-export"),
     ("html", "html-export"),
+    ("jupyter", "jupyter-export"),
     ("mermaid", "mermaid-export"),
 ];
 
@@ -453,4 +462,73 @@ mod tests {
         assert!(html.contains("Hello agent"));
         assert!(html.contains("Hello user"));
     }
+}
+
+/// Transforms a [`Trajectory`] into a Jupyter Notebook (`.ipynb`).
+pub struct JupyterExporter;
+
+#[cfg(feature = "jupyter-export")]
+impl TrajectoryExporter for JupyterExporter {
+    fn export(trajectory: &Trajectory) -> String {
+        use crate::redaction::surface;
+        let redactor = Redactor::default_enabled();
+
+        let mut cells = Vec::new();
+
+        let task = trajectory.info.task.as_deref().unwrap_or("Unknown Task");
+        let task = redactor.redact_text(task, surface::EXPORT).text;
+        cells.push(serde_json::json!({
+            "cell_type": "markdown",
+            "metadata": {},
+            "source": [format!("# Trajectory Export\n**Task:** {}", task)]
+        }));
+
+        for msg in &trajectory.messages {
+            let role = msg.role.as_str();
+            let mut role_capitalized = role.to_string();
+            if let Some(r) = role_capitalized.get_mut(0..1) {
+                r.make_ascii_uppercase();
+            }
+            let content = redactor.redact_text(&msg.content, surface::EXPORT).text;
+
+            cells.push(serde_json::json!({
+                "cell_type": "markdown",
+                "metadata": {},
+                "source": [
+                    format!("### {}\n\n", role_capitalized),
+                    content
+                ]
+            }));
+        }
+
+        let notebook = serde_json::json!({
+            "cells": cells,
+            "metadata": {},
+            "nbformat": 4,
+            "nbformat_minor": 5
+        });
+
+        // Pretty print for readability
+        serde_json::to_string_pretty(&notebook).unwrap_or_default()
+    }
+}
+
+#[cfg(test)]
+#[cfg(feature = "jupyter-export")]
+#[test]
+fn test_jupyter_export_format() {
+    let mut t = Trajectory::new();
+    t.info.task = Some("Add a feature".to_string());
+    t.info.outcome = Some(crate::trajectory::outcome::SUBMITTED.to_string());
+
+    t.record_message(&crate::model::Message::system("System prompt"));
+    t.record_message(&crate::model::Message::user("Hello agent\nMulti-line"));
+
+    let ipynb = JupyterExporter::export(&t);
+
+    assert!(ipynb.contains("\"cell_type\": \"markdown\""));
+    assert!(ipynb.contains("Trajectory Export"));
+    assert!(ipynb.contains("Add a feature"));
+    assert!(ipynb.contains("System prompt"));
+    assert!(ipynb.contains("Hello agent"));
 }
