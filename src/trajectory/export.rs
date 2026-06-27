@@ -454,3 +454,57 @@ mod tests {
         assert!(html.contains("Hello user"));
     }
 }
+
+#[cfg(feature = "jsonl-export")]
+#[derive(serde::Serialize)]
+struct JsonlMessage<'a> {
+    role: &'a str,
+    content: String,
+}
+
+#[cfg(feature = "jsonl-export")]
+pub struct JsonlExporter;
+
+#[cfg(feature = "jsonl-export")]
+impl TrajectoryExporter for JsonlExporter {
+    fn export(trajectory: &Trajectory) -> String {
+        let redactor = Redactor::default_enabled();
+        let mut jsonl = String::new();
+
+        for msg in &trajectory.messages {
+            let role = msg.role.as_str();
+            let content = redactor.redact_text(&msg.content, surface::EXPORT).text;
+
+            let obj = JsonlMessage { role, content };
+
+            let Ok(serialized) = serde_json::to_string(&obj) else {
+                continue;
+            };
+            let _ = writeln!(jsonl, "{serialized}");
+        }
+
+        jsonl
+    }
+}
+
+#[cfg(test)]
+#[cfg(feature = "jsonl-export")]
+mod jsonl_tests {
+    use super::*;
+    use crate::model::Message;
+
+    #[test]
+    fn test_jsonl_export_format() {
+        let mut t = Trajectory::new();
+        t.info.task = Some("Add a feature".to_string());
+        t.info.outcome = Some("submitted".to_string());
+
+        t.record_message(&Message::system("System prompt"));
+        t.record_message(&Message::user("Hello agent\nMulti-line"));
+
+        let jsonl = JsonlExporter::export(&t);
+
+        assert!(jsonl.contains("{\"role\":\"system\",\"content\":\"System prompt\"}"));
+        assert!(jsonl.contains("{\"role\":\"user\",\"content\":\"Hello agent\\nMulti-line\"}"));
+    }
+}
