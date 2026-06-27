@@ -2854,15 +2854,52 @@ fn github_pr_failure_count(results: &crate::run::swebench::SweepResults) -> usiz
     results.github_pr_failures
 }
 
-fn parse_dataset_source(
-    s: &args::SwebenchCmd,
-) -> Result<(crate::run::dataset::DatasetSource, std::path::PathBuf), Error> {
-    let cache_dir = s
-        .dataset_cache_dir
-        .clone()
-        .unwrap_or_else(crate::run::dataset::default_cache_dir);
+trait DatasetSourceArgs {
+    fn dataset_path(&self) -> Option<&std::path::Path>;
+    fn dataset(&self) -> Option<&str>;
+    fn split(&self) -> Option<&str>;
+    fn dataset_cache_dir(&self) -> Option<&std::path::Path>;
+}
 
-    match (&s.dataset_path, &s.dataset) {
+impl DatasetSourceArgs for args::SwebenchCmd {
+    fn dataset_path(&self) -> Option<&std::path::Path> {
+        self.dataset_path.as_deref()
+    }
+    fn dataset(&self) -> Option<&str> {
+        self.dataset.as_deref()
+    }
+    fn split(&self) -> Option<&str> {
+        self.split.as_deref()
+    }
+    fn dataset_cache_dir(&self) -> Option<&std::path::Path> {
+        self.dataset_cache_dir.as_deref()
+    }
+}
+
+impl DatasetSourceArgs for args::DatasetStatsCmd {
+    fn dataset_path(&self) -> Option<&std::path::Path> {
+        self.dataset_path.as_deref()
+    }
+    fn dataset(&self) -> Option<&str> {
+        self.dataset.as_deref()
+    }
+    fn split(&self) -> Option<&str> {
+        self.split.as_deref()
+    }
+    fn dataset_cache_dir(&self) -> Option<&std::path::Path> {
+        self.dataset_cache_dir.as_deref()
+    }
+}
+
+fn parse_dataset_source(
+    s: &impl DatasetSourceArgs,
+) -> Result<(crate::run::dataset::DatasetSource, std::path::PathBuf), Error> {
+    let cache_dir = s.dataset_cache_dir().map_or_else(
+        crate::run::dataset::default_cache_dir,
+        std::path::PathBuf::from,
+    );
+
+    match (s.dataset_path(), s.dataset()) {
         (Some(_), Some(_)) => Err(Error::Config(crate::error::ConfigError::Invalid(
             "--dataset-path and --dataset are mutually exclusive; provide only one".into(),
         ))),
@@ -2870,14 +2907,14 @@ fn parse_dataset_source(
             "one of --dataset-path or --dataset is required".into(),
         ))),
         (Some(path), None) => Ok((
-            crate::run::dataset::DatasetSource::LocalPath(path.clone()),
+            crate::run::dataset::DatasetSource::LocalPath(path.to_path_buf()),
             cache_dir,
         )),
         (None, Some(alias_str)) => {
             let alias = alias_str
                 .parse::<crate::run::dataset::SwebenchAlias>()
                 .map_err(|e| Error::Config(crate::error::ConfigError::Invalid(e)))?;
-            let split_str = s.split.as_deref().unwrap_or("test");
+            let split_str = s.split().unwrap_or("test");
             let split = split_str
                 .parse::<crate::run::dataset::SwebenchSplit>()
                 .map_err(|e| Error::Config(crate::error::ConfigError::Invalid(e)))?;
@@ -6105,7 +6142,7 @@ fn bench_dataset_stats(s: args::DatasetStatsCmd) -> Result<(), Error> {
             s.format
         ))));
     }
-    let (dataset_source, dataset_cache_dir) = parse_dataset_source_stats(&s)?;
+    let (dataset_source, dataset_cache_dir) = parse_dataset_source(&s)?;
     let (dataset_bytes, meta) =
         crate::run::dataset::resolve_dataset(&dataset_source, &dataset_cache_dir)?;
     let full_instances = crate::run::swebench::load_dataset_from_bytes_pub(&dataset_bytes)?;
@@ -6761,41 +6798,6 @@ fn bench_annotate(a: args::AnnotateCmd) -> Result<(), Error> {
             let report = run_rm(&args)?;
             eprint!("{}", render_rm_text(&report));
             Ok(())
-        }
-    }
-}
-
-fn parse_dataset_source_stats(
-    s: &args::DatasetStatsCmd,
-) -> Result<(crate::run::dataset::DatasetSource, std::path::PathBuf), Error> {
-    let cache_dir = s
-        .dataset_cache_dir
-        .clone()
-        .unwrap_or_else(crate::run::dataset::default_cache_dir);
-
-    match (&s.dataset_path, &s.dataset) {
-        (Some(_), Some(_)) => Err(Error::Config(crate::error::ConfigError::Invalid(
-            "--dataset-path and --dataset are mutually exclusive; provide only one".into(),
-        ))),
-        (None, None) => Err(Error::Config(crate::error::ConfigError::Invalid(
-            "one of --dataset-path or --dataset is required".into(),
-        ))),
-        (Some(path), None) => Ok((
-            crate::run::dataset::DatasetSource::LocalPath(path.clone()),
-            cache_dir,
-        )),
-        (None, Some(alias_str)) => {
-            let alias = alias_str
-                .parse::<crate::run::dataset::SwebenchAlias>()
-                .map_err(|e| Error::Config(crate::error::ConfigError::Invalid(e)))?;
-            let split_str = s.split.as_deref().unwrap_or("test");
-            let split = split_str
-                .parse::<crate::run::dataset::SwebenchSplit>()
-                .map_err(|e| Error::Config(crate::error::ConfigError::Invalid(e)))?;
-            Ok((
-                crate::run::dataset::DatasetSource::Named { alias, split },
-                cache_dir,
-            ))
         }
     }
 }
