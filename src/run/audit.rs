@@ -3,9 +3,9 @@ use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::io::Read;
-use std::path::{Path, PathBuf};
+use std::path::Path;
+use std::path::PathBuf;
 
-use crate::cli::args::AuditCmd;
 use crate::error::Error;
 
 /// Recompute sweep-wide aggregates and reconcile with results.json and evaluation.json.
@@ -750,4 +750,28 @@ fn compute_sha256(path: &Path) -> Result<String, std::io::Error> {
     }
     let result = hasher.finalize();
     Ok(format!("{result:x}"))
+}
+
+#[derive(Debug, clap::Args, Clone)]
+/// `bench audit` — re-derive and verify sweep aggregates against trajectories.
+pub struct AuditCmd {
+    /// Path to a completed sweep directory or extracted bench bundle directory.
+    #[arg(long)]
+    pub sweep: PathBuf,
+
+    /// Local dataset file to verify the recorded manifest hash.
+    #[arg(long)]
+    pub dataset_path: Option<PathBuf>,
+
+    /// USD tolerance for cost reconciliation.
+    #[arg(long, default_value_t = 0.0001)]
+    pub cost_tolerance_usd: f64,
+
+    /// Seconds tolerance for wall-clock reconciliation.
+    #[arg(long, default_value_t = 1.0)]
+    pub wallclock_tolerance_secs: f64,
+
+    /// Output format: `text` or `json`.
+    #[arg(long, default_value = "text")]
+    pub format: String,
 }
