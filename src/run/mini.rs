@@ -2184,11 +2184,21 @@ pub fn slugify(task: &str) -> String {
 mod tests {
     #![allow(clippy::unwrap_used)]
 
+    use std::sync::{Mutex, OnceLock};
+    #[allow(dead_code)]
+    static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    #[allow(dead_code)]
+    fn env_lock() -> std::sync::MutexGuard<'static, ()> {
+        ENV_LOCK
+            .get_or_init(Mutex::default)
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
     use super::*;
     use async_trait::async_trait;
     use std::path::Path;
     use std::process::Command;
-    use std::sync::Mutex;
 
     use crate::stream::{NullSink, StreamEvent, StreamSink};
 

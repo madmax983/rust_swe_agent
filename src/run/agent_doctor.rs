@@ -430,6 +430,16 @@ fn version_at_least(active: (u32, u32, u32), required: (u32, u32, u32)) -> bool 
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
+
+    use std::sync::{Mutex, OnceLock};
+    static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    fn env_lock() -> std::sync::MutexGuard<'static, ()> {
+        ENV_LOCK
+            .get_or_init(Mutex::default)
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
     use super::*;
 
     // ── expected_credential_env (AC#2b) ──────────────────────────────────
@@ -620,6 +630,7 @@ mod tests {
 
     #[test]
     fn credential_detail_never_contains_value() {
+        let _guard = env_lock();
         // Even when present, the detail must only name the var, never its value.
         // Use a uniquely-named var to avoid clobbering real provider keys.
         let model = "weirdprov/model";
@@ -634,6 +645,7 @@ mod tests {
 
     #[test]
     fn credential_fail_when_var_absent() {
+        let _guard = env_lock();
         // A uniquely-named provider whose env var is guaranteed unset → fail
         // with a remediation hint naming the variable.
         let model = "zzznoprov/model";
