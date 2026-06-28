@@ -455,9 +455,7 @@ mod tests {
         // Synthetic env var picked up automatically by from_config_lossy.
         let unique_val = format!("sk-deadbeef-sweep-wh-{}", addr.port());
         let env_name = format!("FAKE_API_KEY_SWH_{}", addr.port());
-        // SAFETY: single-threaded test context; no concurrent env reads.
-        unsafe { std::env::set_var(&env_name, &unique_val) };
-        let redactor = Redactor::default_enabled();
+        let redactor = temp_env::with_var(&env_name, Some(&unique_val), Redactor::default_enabled);
 
         let sink = SweepWebhookSink::new(url, &[], redactor, "sweep-redact".to_owned()).unwrap();
         sink.emit(SweepNotificationEvent::InstanceCompleted {
@@ -470,8 +468,6 @@ mod tests {
 
         let socket = accept(&listener).await;
         let req = read_http(socket).await;
-        // SAFETY: single-threaded test context; no concurrent env reads.
-        unsafe { std::env::remove_var(&env_name) };
 
         assert!(
             !req.contains(&unique_val),

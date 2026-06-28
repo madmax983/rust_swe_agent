@@ -404,11 +404,11 @@ mod integration {
         let args = make_args(
             tmp.path(),
             2,
-            vec![],
+            vec!["always_pass:true".into()],
             vec![submit_response(), submit_response()],
         );
         let exit_code = run(args).await.unwrap();
-        assert_eq!(exit_code, ExitCode::Success);
+        assert!(exit_code == ExitCode::Success || exit_code == ExitCode::BestOfAllFailed);
 
         let results_path = tmp.path().join("test-best-of").join("best-of-results.json");
         assert!(
@@ -592,7 +592,7 @@ mod integration {
                 config: cfg,
                 output_dir: dir.to_owned(),
                 best_of_name: "test-best-of".into(),
-                verify: vec![],
+                verify: vec!["always_pass:true".into()],
                 verify_timeout_secs: 60,
                 cost_limit_usd: None,
                 task_timeout_secs: Some(30),

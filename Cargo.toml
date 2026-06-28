@@ -78,6 +78,7 @@ proptest = "1"
 insta = { version = "1", features = ["json"] }
 pretty_assertions = "1"
 tokio = { version = "1", features = ["full", "test-util"] }
+temp-env = "0.3.6"
 
 [features]
 default = ["webhook"]
@@ -114,13 +115,7 @@ option_if_let_else = "allow"
 unwrap_used = "deny"
 expect_used = "deny"
 
-[profile.dev.package.maxwells-daemon]
-debug = 0
-
 [profile.dev.package.litellm-rs]
-debug = 0
-
-[profile.test.package.maxwells-daemon]
 debug = 0
 
 [profile.test.package.litellm-rs]
