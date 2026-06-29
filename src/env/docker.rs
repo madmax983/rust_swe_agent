@@ -536,10 +536,7 @@ mod tests {
         );
         #[allow(clippy::unwrap_used)]
         let pos = network_pos.unwrap();
-        assert_eq!(
-            args.get(pos + 1).map(String::as_str),
-            Some("none")
-        );
+        assert_eq!(args.get(pos + 1).map(String::as_str), Some("none"));
     }
 
     #[test]

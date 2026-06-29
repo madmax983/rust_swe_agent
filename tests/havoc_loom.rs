@@ -1,6 +1,6 @@
 use loom::sync::Mutex;
 use loom::thread;
-use maxwells_daemon::agent::confirm::{ConfirmContext, ConfirmDecision};
+use maxwells_daemon::agent::confirm::{ConfirmDecision, ConfirmContext};
 use std::sync::Arc;
 
 #[allow(clippy::unwrap_used)]
@@ -19,8 +19,8 @@ impl LoomScriptedConfirmer {
         }
     }
 
-    #[must_use]
     #[allow(clippy::unwrap_used)]
+    #[must_use]
     pub fn call_count(&self) -> u32 {
         *self.calls.lock().unwrap()
     }
@@ -36,12 +36,11 @@ impl LoomScriptedConfirmer {
     }
 }
 
-#[test]
 #[allow(clippy::unwrap_used, clippy::redundant_clone)]
+#[test]
 fn test_scripted_confirmer_concurrent() {
     loom::model(|| {
-        let decisions: Vec<ConfirmDecision> =
-            vec![ConfirmDecision::Approve, ConfirmDecision::Abort];
+        let decisions: Vec<ConfirmDecision> = vec![ConfirmDecision::Approve, ConfirmDecision::Abort];
         let confirmer = Arc::new(LoomScriptedConfirmer::new(decisions));
         let ctx = ConfirmContext {
             tool_name: "bash".into(),
@@ -56,13 +55,13 @@ fn test_scripted_confirmer_concurrent() {
         let c1 = confirmer.clone();
         let ctx1 = ctx.clone();
         let t1 = thread::spawn(move || {
-            let _ = c1.confirm_sync(&ctx1);
+             let _ = c1.confirm_sync(&ctx1);
         });
 
         let c2 = confirmer.clone();
         let ctx2 = ctx.clone();
         let t2 = thread::spawn(move || {
-            let _ = c2.confirm_sync(&ctx2);
+             let _ = c2.confirm_sync(&ctx2);
         });
 
         t1.join().unwrap();
