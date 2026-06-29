@@ -1471,4 +1471,37 @@ mod tests {
         let exporter = MetricsExporter::noop();
         assert!(!exporter.is_active());
     }
+
+    #[test]
+    fn test_percent_decode() {
+        assert_eq!(percent_decode("hello%20world"), "hello world");
+        assert_eq!(percent_decode("hello%2Fworld"), "hello/world");
+        assert_eq!(percent_decode("hello%25world"), "hello%world");
+        assert_eq!(percent_decode("hello%2"), "hello%2"); // incomplete
+        assert_eq!(percent_decode("hello%2Z"), "hello%2Z"); // invalid hex
+        assert_eq!(percent_decode("hello%Z2"), "hello%Z2"); // invalid hex
+    }
+
+    #[test]
+    fn test_parse_otlp_header_env() {
+        let headers = parse_otlp_header_env("key1=val1,key2=val2%20with%20spaces");
+        assert_eq!(headers.len(), 2);
+        assert_eq!(headers[0], ("key1".to_owned(), "val1".to_owned()));
+        assert_eq!(
+            headers[1],
+            ("key2".to_owned(), "val2 with spaces".to_owned())
+        );
+
+        let headers = parse_otlp_header_env("Authorization=Bearer%20token");
+        assert_eq!(headers.len(), 1);
+        assert_eq!(
+            headers[0],
+            ("Authorization".to_owned(), "Bearer token".to_owned())
+        );
+
+        let headers = parse_otlp_header_env("a=b,c=d=e");
+        assert_eq!(headers.len(), 2);
+        assert_eq!(headers[0], ("a".to_owned(), "b".to_owned()));
+        assert_eq!(headers[1], ("c".to_owned(), "d=e".to_owned()));
+    }
 }
