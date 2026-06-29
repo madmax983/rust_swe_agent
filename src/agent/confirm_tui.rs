@@ -1384,12 +1384,18 @@ fn handle_key(dash: &Arc<RatatuiDashboard>, key: KeyEvent) {
             if !s.is_monitor {
                 match key.code {
                     KeyCode::Up | KeyCode::Char('k' | 'K') => {
-                        move_cursor_up(&mut s);
+                        // Rationale scroll takes priority; only move the feed
+                        // cursor when the rationale fits entirely on screen.
+                        if !perform_rationale_scroll(&mut s, &pending.ctx, KeyCode::Up) {
+                            move_cursor_up(&mut s);
+                        }
                         dash.notify.notify_waiters();
                         handled_by_navigation = true;
                     }
                     KeyCode::Down | KeyCode::Char('j' | 'J') => {
-                        move_cursor_down(&mut s);
+                        if !perform_rationale_scroll(&mut s, &pending.ctx, KeyCode::Down) {
+                            move_cursor_down(&mut s);
+                        }
                         dash.notify.notify_waiters();
                         handled_by_navigation = true;
                     }
