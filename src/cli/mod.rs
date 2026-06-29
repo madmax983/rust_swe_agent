@@ -175,8 +175,8 @@ pub async fn run() -> Result<(), Error> {
         Command::Catalog(c) => catalog::run_catalog(c),
         Command::Explain(c) => explain::run_explain(&c),
         Command::Completions(c) => {
-            use std::io::Write as _;
             use clap::CommandFactory;
+            use std::io::Write as _;
             let mut cmd = Cli::command();
             let bin_name = cmd.get_name().to_string();
             let stdout = std::io::stdout();
