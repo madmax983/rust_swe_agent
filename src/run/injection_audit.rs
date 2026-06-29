@@ -569,7 +569,7 @@ fn load_custom_signatures(path: &Path) -> Result<Vec<RawSignature>, Error> {
         .to_ascii_lowercase();
 
     if ext == "yaml" || ext == "yml" {
-        serde_yml::from_str(&content).map_err(|e| {
+        serde_norway::from_str(&content).map_err(|e| {
             Error::Config(crate::error::ConfigError::Invalid(format!(
                 "invalid YAML signature file: {e}"
             )))
