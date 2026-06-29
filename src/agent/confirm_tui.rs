@@ -1405,8 +1405,28 @@ fn handle_key(dash: &Arc<RatatuiDashboard>, key: KeyEvent) {
                         dash.notify.notify_waiters();
                         handled_by_navigation = true;
                     }
-                    // Don't open detail behind the confirm modal; Enter is handled
-                    // by handle_key_normal (sends to responder) in that path.
+                    KeyCode::Esc if s.detail_open => {
+                        // Close detail pane without aborting the pending
+                        // confirmation. A second Esc will then reach
+                        // handle_key_normal and abort the modal.
+                        s.detail_open = false;
+                        dash.notify.notify_waiters();
+                        handled_by_navigation = true;
+                    }
+                    KeyCode::Enter if !s.detail_open => {
+                        // Open the detail inspector; draw_modal is guarded by
+                        // !snap.detail_open so the modal hides while the pane
+                        // is open. A following Esc will close the pane, then a
+                        // second Esc aborts the pending confirmation.
+                        if let Some(idx) = s.selected_index {
+                            if idx < s.log.len() {
+                                s.detail_open = true;
+                                s.detail_scroll_top = 0;
+                                dash.notify.notify_waiters();
+                            }
+                        }
+                        handled_by_navigation = true;
+                    }
                     _ => {}
                 }
             }
@@ -4049,6 +4069,10 @@ mod tests {
                     text: format!("filler line number {i}"),
                 });
             }
+            // Simulate auto-follow: position feed_scroll_top so the bottom
+            // entries are visible (render_to_buffer height=11 gives inner_feed
+            // height=3 after borders and chrome; 21 entries – 3 visible = 18).
+            s.feed_scroll_top = s.log.len().saturating_sub(3);
             drop(s);
         }
         // Before search: the token line is off-screen (auto-follow at bottom).
@@ -5499,10 +5523,13 @@ mod tests {
         let long_line = "a".repeat(50);
         d.append(LineKind::Info, &long_line, None);
 
-        // total_wrapped_lines on main feed should return 1 (not wrapping)
+        // total_wrapped_lines counts rendered rows (ceil(len/width)), which is
+        // 5 for a 50-char line at width 10. The main feed uses entry-based
+        // feed_scroll_top (not wrapped rows), so this function is only used
+        // for monitor-mode scroll math.
         let s = snap(&d);
         let total = total_wrapped_lines(&s.log, 10);
-        assert_eq!(total, 1);
+        assert_eq!(total, 5);
     }
 
     #[test]
