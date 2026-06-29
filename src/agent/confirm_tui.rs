@@ -1876,89 +1876,89 @@ fn header_paragraph(snap: &DashboardSnapshot) -> Paragraph<'_> {
     Paragraph::new(line).block(Block::default().borders(Borders::ALL).title(block_title))
 }
 
+fn line_base_style(kind: LineKind) -> Style {
+    match kind {
+        LineKind::Info => Style::default().fg(Color::Gray),
+        LineKind::AssistantMsg => Style::default().fg(Color::Cyan),
+        LineKind::BashRun => Style::default().fg(Color::White),
+        LineKind::BashOk => Style::default().fg(Color::Green),
+        LineKind::BashErr => Style::default().fg(Color::Red),
+        LineKind::Observation => Style::default().fg(Color::LightBlue),
+        LineKind::Warn => Style::default().fg(Color::LightYellow),
+    }
+}
+
+fn log_paragraph_monitor<'a>(snap: &'a DashboardSnapshot, window: &[&'a LogLine]) -> Paragraph<'a> {
+    let query = snap.search.as_ref().map_or("", |s| s.query.as_str());
+    let matches = search_matches(window, query);
+    let match_set: HashSet<usize> = matches.iter().copied().collect();
+    let current_line = snap.search.as_ref().and_then(|s| {
+        matches
+            .get(s.current.min(matches.len().saturating_sub(1)))
+            .copied()
+    });
+    let lines: Vec<Line> = window
+        .iter()
+        .enumerate()
+        .map(|(i, l)| {
+            let base = line_base_style(l.kind);
+            let style = if current_line == Some(i) {
+                Style::default()
+                    .bg(Color::Yellow)
+                    .fg(Color::Black)
+                    .add_modifier(Modifier::BOLD)
+            } else if match_set.contains(&i) {
+                base.bg(Color::DarkGray)
+            } else {
+                base
+            };
+            Line::from(Span::styled(l.text.clone(), style))
+        })
+        .collect();
+    let total = total_wrapped_lines(&snap.log, snap.last_log_width);
+    let max_scroll = total.saturating_sub(snap.last_log_height);
+    let scroll_y = if snap.auto_follow {
+        max_scroll
+    } else {
+        snap.scroll_offset.min(max_scroll)
+    };
+    let title = if let Some(search) = &snap.search {
+        let total_matches = matches.len();
+        let pos = if total_matches == 0 {
+            0
+        } else {
+            search.current.min(total_matches - 1) + 1
+        };
+        format!(" trajectory [SEARCH {pos}/{total_matches}] ")
+    } else if snap.auto_follow {
+        " trajectory [LIVE] ".to_string()
+    } else {
+        " trajectory [SCROLLED] ".to_string()
+    };
+    #[allow(clippy::cast_possible_truncation)]
+    let scroll_y_u16 = scroll_y.min(u16::MAX as usize) as u16;
+    Paragraph::new(lines)
+        .block(Block::default().borders(Borders::ALL).title(title))
+        .scroll((scroll_y_u16, 0))
+        .wrap(Wrap { trim: false })
+}
+
 fn log_paragraph(snap: &DashboardSnapshot, visible_lines: usize) -> Paragraph<'_> {
     // Both branches operate on the last MAX_LOG_LINES entries of the log.
     let max_lines = snap.log.len().min(MAX_LOG_LINES);
     let take_from = snap.log.len().saturating_sub(max_lines);
+    let window: Vec<&LogLine> = snap.log[take_from..].iter().collect();
 
     if snap.is_monitor {
-        // Monitor mode: apply search highlights, wrapping, and Paragraph::scroll.
-        let window: Vec<&LogLine> = snap.log[take_from..].iter().collect();
-
-        let query = snap.search.as_ref().map_or("", |s| s.query.as_str());
-        let matches = search_matches(&window, query);
-        let match_set: HashSet<usize> = matches.iter().copied().collect();
-        let current_line = snap.search.as_ref().and_then(|s| {
-            matches
-                .get(s.current.min(matches.len().saturating_sub(1)))
-                .copied()
-        });
-
-        let lines: Vec<Line> = window
-            .iter()
-            .enumerate()
-            .map(|(i, l)| {
-                let base = match l.kind {
-                    LineKind::Info => Style::default().fg(Color::Gray),
-                    LineKind::AssistantMsg => Style::default().fg(Color::Cyan),
-                    LineKind::BashRun => Style::default().fg(Color::White),
-                    LineKind::BashOk => Style::default().fg(Color::Green),
-                    LineKind::BashErr => Style::default().fg(Color::Red),
-                    LineKind::Observation => Style::default().fg(Color::LightBlue),
-                    LineKind::Warn => Style::default().fg(Color::LightYellow),
-                };
-                let style = if current_line == Some(i) {
-                    Style::default()
-                        .bg(Color::Yellow)
-                        .fg(Color::Black)
-                        .add_modifier(Modifier::BOLD)
-                } else if match_set.contains(&i) {
-                    base.bg(Color::DarkGray)
-                } else {
-                    base
-                };
-                Line::from(Span::styled(l.text.clone(), style))
-            })
-            .collect();
-
-        let total = total_wrapped_lines(&snap.log, snap.last_log_width);
-        let max_scroll = total.saturating_sub(snap.last_log_height);
-        let scroll_y = if snap.auto_follow {
-            max_scroll
-        } else {
-            snap.scroll_offset.min(max_scroll)
-        };
-
-        let title = if let Some(search) = &snap.search {
-            let total_matches = matches.len();
-            let pos = if total_matches == 0 {
-                0
-            } else {
-                search.current.min(total_matches - 1) + 1
-            };
-            format!(" trajectory [SEARCH {pos}/{total_matches}] ")
-        } else if snap.auto_follow {
-            " trajectory [LIVE] ".to_string()
-        } else {
-            " trajectory [SCROLLED] ".to_string()
-        };
-
-        #[allow(clippy::cast_possible_truncation)]
-        let scroll_y_u16 = scroll_y.min(u16::MAX as usize) as u16;
-
-        Paragraph::new(lines)
-            .block(Block::default().borders(Borders::ALL).title(title))
-            .scroll((scroll_y_u16, 0))
-            .wrap(Wrap { trim: false })
-    } else {
+        return log_paragraph_monitor(snap, &window);
+    }
+    {
         // Interactive mode: slice by feed_scroll_top for rendering, but compute
         // search matches over the same full window that handle_key_search uses
         // so that match indices stay consistent and scroll_to_line can bring
         // off-screen matches into view.
-        let full_window: Vec<&LogLine> = snap.log[take_from..].iter().collect();
-
         let query = snap.search.as_ref().map_or("", |s| s.query.as_str());
-        let all_matches = search_matches(&full_window, query);
+        let all_matches = search_matches(&window, query);
         let current_window_match = snap.search.as_ref().and_then(|s| {
             all_matches
                 .get(s.current.min(all_matches.len().saturating_sub(1)))
@@ -1983,17 +1983,9 @@ fn log_paragraph(snap: &DashboardSnapshot, visible_lines: usize) -> Paragraph<'_
             .map(|(i, l)| {
                 let abs_idx = snap.feed_scroll_top + i;
                 let is_selected = Some(abs_idx) == snap.selected_index;
-                // window_idx is the index into full_window (same frame as matches).
+                // window_idx is the index into window (same frame as matches).
                 let window_idx = abs_idx.saturating_sub(take_from);
-                let base = match l.kind {
-                    LineKind::Info => Style::default().fg(Color::Gray),
-                    LineKind::AssistantMsg => Style::default().fg(Color::Cyan),
-                    LineKind::BashRun => Style::default().fg(Color::White),
-                    LineKind::BashOk => Style::default().fg(Color::Green),
-                    LineKind::BashErr => Style::default().fg(Color::Red),
-                    LineKind::Observation => Style::default().fg(Color::LightBlue),
-                    LineKind::Warn => Style::default().fg(Color::LightYellow),
-                };
+                let base = line_base_style(l.kind);
                 let style = if current_window_match == Some(window_idx) {
                     Style::default()
                         .bg(Color::Yellow)
