@@ -1877,11 +1877,12 @@ fn header_paragraph(snap: &DashboardSnapshot) -> Paragraph<'_> {
 }
 
 fn log_paragraph(snap: &DashboardSnapshot, visible_lines: usize) -> Paragraph<'_> {
+    // Both branches operate on the last MAX_LOG_LINES entries of the log.
+    let max_lines = snap.log.len().min(MAX_LOG_LINES);
+    let take_from = snap.log.len().saturating_sub(max_lines);
+
     if snap.is_monitor {
-        // Monitor mode: take the last MAX_LOG_LINES entries, apply search highlights,
-        // wrapping, and Paragraph::scroll.
-        let max_lines = snap.log.len().min(MAX_LOG_LINES);
-        let take_from = snap.log.len().saturating_sub(max_lines);
+        // Monitor mode: apply search highlights, wrapping, and Paragraph::scroll.
         let window: Vec<&LogLine> = snap.log[take_from..].iter().collect();
 
         let query = snap.search.as_ref().map_or("", |s| s.query.as_str());
@@ -1952,10 +1953,8 @@ fn log_paragraph(snap: &DashboardSnapshot, visible_lines: usize) -> Paragraph<'_
     } else {
         // Interactive mode: slice by feed_scroll_top for rendering, but compute
         // search matches over the same full window that handle_key_search uses
-        // (last MAX_LOG_LINES entries) so that match indices stay consistent and
-        // scroll_to_line can bring off-screen matches into view.
-        let max_lines = snap.log.len().min(MAX_LOG_LINES);
-        let take_from = snap.log.len().saturating_sub(max_lines);
+        // so that match indices stay consistent and scroll_to_line can bring
+        // off-screen matches into view.
         let full_window: Vec<&LogLine> = snap.log[take_from..].iter().collect();
 
         let query = snap.search.as_ref().map_or("", |s| s.query.as_str());
