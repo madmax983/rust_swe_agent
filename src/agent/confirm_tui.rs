@@ -787,16 +787,8 @@ fn handle_key(dash: &Arc<RatatuiDashboard>, key: KeyEvent) {
                         dash.notify.notify_waiters();
                         handled_by_navigation = true;
                     }
-                    KeyCode::Enter => {
-                        if let Some(idx) = s.selected_index {
-                            if idx < s.log.len() {
-                                s.detail_open = true;
-                                s.detail_scroll_top = 0;
-                                dash.notify.notify_waiters();
-                            }
-                        }
-                        handled_by_navigation = true;
-                    }
+                    // Don't open detail behind the confirm modal; Enter is handled
+                    // by handle_key_normal (sends to responder) in that path.
                     _ => {}
                 }
             }
@@ -1103,17 +1095,22 @@ fn header_paragraph(snap: &DashboardSnapshot) -> Paragraph<'_> {
 }
 
 fn log_paragraph(snap: &DashboardSnapshot, visible_lines: usize) -> Paragraph<'_> {
-    let items = if visible_lines > 0 {
+    // Monitor mode uses Paragraph::scroll to handle scrolling, so include the
+    // full log. Interactive mode slices by entry index (feed_scroll_top) and
+    // sets scroll to 0.
+    let items: Vec<_> = if snap.is_monitor {
+        snap.log.iter().collect()
+    } else if visible_lines > 0 {
         snap.log
             .iter()
             .skip(snap.feed_scroll_top)
             .take(visible_lines)
-            .collect::<Vec<_>>()
+            .collect()
     } else {
         snap.log
             .iter()
             .skip(snap.feed_scroll_top)
-            .collect::<Vec<_>>()
+            .collect()
     };
 
     let lines: Vec<Line> = items
