@@ -1425,22 +1425,8 @@ fn handle_key(dash: &Arc<RatatuiDashboard>, key: KeyEvent) {
             }
         }
 
-        // The active /-search sub-mode owns Esc/Enter/typing/n/N, taking
-        // priority over the finished-close and scroll handling below. Ctrl-C
-        // still falls through so the global stop/close keeps working.
-        if !ctrl_c {
-            if let Some(search) = s.search.take() {
-                handle_key_search(dash, &mut s, search, key);
-                return;
-            }
-            if matches!(key.code, KeyCode::Char('/')) {
-                s.search = Some(SearchState::new());
-                drop(s);
-                dash.notify.notify_waiters();
-                return;
-            }
-        }
-
+        // Detail inspector consumes all keys while open so that '/', Esc,
+        // j/k, etc. are not intercepted by search or finished-close handling.
         if s.detail_open {
             match key.code {
                 KeyCode::Esc | KeyCode::Char('q' | 'Q') => {
@@ -1484,6 +1470,22 @@ fn handle_key(dash: &Arc<RatatuiDashboard>, key: KeyEvent) {
                 }
             }
         } else {
+            // The active /-search sub-mode owns Esc/Enter/typing/n/N, taking
+            // priority over the finished-close and scroll handling below. Ctrl-C
+            // still falls through so the global stop/close keeps working.
+            if !ctrl_c {
+                if let Some(search) = s.search.take() {
+                    handle_key_search(dash, &mut s, search, key);
+                    return;
+                }
+                if matches!(key.code, KeyCode::Char('/')) {
+                    s.search = Some(SearchState::new());
+                    drop(s);
+                    dash.notify.notify_waiters();
+                    return;
+                }
+            }
+
             if s.finished.is_some() {
                 let close_key =
                     matches!(key.code, KeyCode::Char('q' | 'Q') | KeyCode::Esc) || ctrl_c;
