@@ -491,8 +491,11 @@ impl RatatuiDashboard {
             full_text: full_text.map(|t| Arc::from(truncate_to_cap(t))),
         });
 
+        // Don't advance the feed while a search is active: scroll_to_line
+        // already positioned the viewport at the match, and moving selected_index
+        // forward on each new append would scroll away from it.
         let auto_follow_selection =
-            was_at_end && !s.detail_open && (!s.is_monitor || s.auto_follow);
+            was_at_end && !s.detail_open && s.search.is_none() && (!s.is_monitor || s.auto_follow);
         if auto_follow_selection {
             s.selected_index = Some(s.log.len() - 1);
             let visible_height = s.viewport_height as usize;
