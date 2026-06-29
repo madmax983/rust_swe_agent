@@ -983,6 +983,21 @@ fn scroll_to_line(s: &mut DashboardState, line_idx: usize) {
 
     s.scroll_offset = new_top.min(max_scroll);
     s.auto_follow = false;
+
+    // In interactive mode the feed is sliced by feed_scroll_top (entry-based),
+    // not by scroll_offset. Bring the matched entry into the visible window.
+    if !s.is_monitor {
+        let take_from = s.log.len().saturating_sub(MAX_LOG_LINES.min(s.log.len()));
+        let abs_idx = take_from + line_idx;
+        let viewport = s.viewport_height as usize;
+        if viewport > 0 {
+            if abs_idx < s.feed_scroll_top {
+                s.feed_scroll_top = abs_idx;
+            } else if abs_idx >= s.feed_scroll_top + viewport {
+                s.feed_scroll_top = abs_idx + 1 - viewport;
+            }
+        }
+    }
 }
 
 /// Handle a keystroke while the `/`-search sub-mode is active. Implements the
@@ -1893,7 +1908,24 @@ fn log_paragraph(snap: &DashboardSnapshot, visible_lines: usize) -> Paragraph<'_
             .scroll((scroll_y_u16, 0))
             .wrap(Wrap { trim: false })
     } else {
-        // Interactive mode: slice by feed_scroll_top, apply selection + search highlights.
+        // Interactive mode: slice by feed_scroll_top for rendering, but compute
+        // search matches over the same full window that handle_key_search uses
+        // (last MAX_LOG_LINES entries) so that match indices stay consistent and
+        // scroll_to_line can bring off-screen matches into view.
+        let max_lines = snap.log.len().min(MAX_LOG_LINES);
+        let take_from = snap.log.len().saturating_sub(max_lines);
+        let full_window: Vec<&LogLine> = snap.log[take_from..].iter().collect();
+
+        let query = snap.search.as_ref().map_or("", |s| s.query.as_str());
+        let all_matches = search_matches(&full_window, query);
+        let current_window_match = snap.search.as_ref().and_then(|s| {
+            all_matches
+                .get(s.current.min(all_matches.len().saturating_sub(1)))
+                .copied()
+        });
+        let match_set: HashSet<usize> = all_matches.iter().copied().collect();
+
+        // Visible slice for rendering (entry-based viewport).
         let items: Vec<_> = if visible_lines > 0 {
             snap.log
                 .iter()
@@ -1904,22 +1936,14 @@ fn log_paragraph(snap: &DashboardSnapshot, visible_lines: usize) -> Paragraph<'_
             snap.log.iter().skip(snap.feed_scroll_top).collect()
         };
 
-        let query = snap.search.as_ref().map_or("", |s| s.query.as_str());
-        let window: Vec<&LogLine> = items.iter().copied().collect();
-        let matches = search_matches(&window, query);
-        let match_set: HashSet<usize> = matches.iter().copied().collect();
-        let current_line = snap.search.as_ref().and_then(|s| {
-            matches
-                .get(s.current.min(matches.len().saturating_sub(1)))
-                .copied()
-        });
-
         let lines: Vec<Line> = items
             .iter()
             .enumerate()
             .map(|(i, l)| {
-                let idx = snap.feed_scroll_top + i;
-                let is_selected = Some(idx) == snap.selected_index;
+                let abs_idx = snap.feed_scroll_top + i;
+                let is_selected = Some(abs_idx) == snap.selected_index;
+                // window_idx is the index into full_window (same frame as matches).
+                let window_idx = abs_idx.saturating_sub(take_from);
                 let base = match l.kind {
                     LineKind::Info => Style::default().fg(Color::Gray),
                     LineKind::AssistantMsg => Style::default().fg(Color::Cyan),
@@ -1929,12 +1953,12 @@ fn log_paragraph(snap: &DashboardSnapshot, visible_lines: usize) -> Paragraph<'_
                     LineKind::Observation => Style::default().fg(Color::LightBlue),
                     LineKind::Warn => Style::default().fg(Color::LightYellow),
                 };
-                let style = if current_line == Some(i) {
+                let style = if current_window_match == Some(window_idx) {
                     Style::default()
                         .bg(Color::Yellow)
                         .fg(Color::Black)
                         .add_modifier(Modifier::BOLD)
-                } else if match_set.contains(&i) {
+                } else if match_set.contains(&window_idx) {
                     base.bg(Color::DarkGray)
                 } else if is_selected {
                     base.add_modifier(Modifier::REVERSED)
