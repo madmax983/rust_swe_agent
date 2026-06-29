@@ -95,6 +95,13 @@ pub fn registry() -> Vec<ExportFormat> {
         render: MermaidExporter::export,
     });
 
+    #[cfg(feature = "chrome-trace-export")]
+    formats.push(ExportFormat {
+        name: "chrome-trace",
+        tier: StabilityTier::Experimental,
+        consumer: "Chrome Tracing (Perfetto), performance visualization",
+        render: ChromeTraceExporter::export,
+    });
     formats
 }
 
@@ -109,6 +116,7 @@ pub const FEATURE_GATED_FORMATS: &[(&str, &str)] = &[
     ("csv", "csv-export"),
     ("html", "html-export"),
     ("mermaid", "mermaid-export"),
+    ("chrome-trace", "chrome-trace-export"),
 ];
 
 /// Returns `true` if `name` is a trajectory export format known to this codebase,
@@ -193,6 +201,118 @@ impl TrajectoryExporter for CsvExporter {
         }
 
         csv
+    }
+}
+
+pub struct ChromeTraceExporter;
+
+#[cfg(feature = "chrome-trace-export")]
+impl TrajectoryExporter for ChromeTraceExporter {
+    fn export(trajectory: &Trajectory) -> String {
+        let redactor = Redactor::default_enabled();
+        let mut events = Vec::new();
+
+        let task = trajectory.info.task.as_deref().unwrap_or("");
+        let redacted_task = redactor.redact_text(task, surface::EXPORT).text;
+        let outcome = trajectory.info.outcome.as_deref().unwrap_or("");
+        let redacted_outcome = redactor.redact_text(outcome, surface::EXPORT).text;
+
+        let mut meta_args = serde_json::Map::new();
+        if !redacted_task.is_empty() {
+            meta_args.insert("task".to_string(), serde_json::Value::String(redacted_task));
+        }
+        if !redacted_outcome.is_empty() {
+            meta_args.insert(
+                "outcome".to_string(),
+                serde_json::Value::String(redacted_outcome),
+            );
+        }
+
+        events.push(serde_json::json!({
+            "name": "Trajectory Info",
+            "cat": "metadata",
+            "ph": "i",
+            "ts": 0,
+            "pid": 1,
+            "tid": 1,
+            "args": meta_args
+        }));
+
+        let mut current_ts_us = 0u64;
+
+        for msg in &trajectory.messages {
+            let role = msg.role.as_str();
+            let content = redactor.redact_text(&msg.content, surface::EXPORT).text;
+
+            let mut args = serde_json::Map::new();
+            args.insert("content".to_string(), serde_json::Value::String(content));
+
+            let has_latency = msg.extra.harness_overhead_ms.is_some()
+                || msg.extra.model_latency_ms.is_some()
+                || msg.extra.tool_latency_ms.is_some();
+
+            if let Some(harness_ms) = msg.extra.harness_overhead_ms {
+                let dur = harness_ms * 1000;
+                events.push(serde_json::json!({
+                    "name": format!("Harness ({role})"),
+                    "cat": "harness",
+                    "ph": "X",
+                    "ts": current_ts_us,
+                    "dur": dur,
+                    "pid": 1,
+                    "tid": 1,
+                    "args": args.clone()
+                }));
+                current_ts_us += dur;
+            }
+
+            if let Some(model_ms) = msg.extra.model_latency_ms {
+                let dur = model_ms * 1000;
+                events.push(serde_json::json!({
+                    "name": format!("Model ({role})"),
+                    "cat": "model",
+                    "ph": "X",
+                    "ts": current_ts_us,
+                    "dur": dur,
+                    "pid": 1,
+                    "tid": 1,
+                    "args": args.clone()
+                }));
+                current_ts_us += dur;
+            }
+
+            if let Some(tool_ms) = msg.extra.tool_latency_ms {
+                let dur = tool_ms * 1000;
+                events.push(serde_json::json!({
+                    "name": format!("Tool ({role})"),
+                    "cat": "tool",
+                    "ph": "X",
+                    "ts": current_ts_us,
+                    "dur": dur,
+                    "pid": 1,
+                    "tid": 1,
+                    "args": args.clone()
+                }));
+                current_ts_us += dur;
+            }
+
+            if !has_latency {
+                events.push(serde_json::json!({
+                    "name": format!("Message ({role})"),
+                    "cat": "message",
+                    "ph": "i",
+                    "ts": current_ts_us,
+                    "pid": 1,
+                    "tid": 1,
+                    "args": args
+                }));
+            }
+        }
+
+        let Ok(output) = serde_json::to_string_pretty(&events) else {
+            return "[]".to_string();
+        };
+        output
     }
 }
 
@@ -452,5 +572,58 @@ mod tests {
         assert!(html.contains("submitted"));
         assert!(html.contains("Hello agent"));
         assert!(html.contains("Hello user"));
+    }
+}
+
+#[cfg(all(test, feature = "chrome-trace-export"))]
+mod chrome_trace_tests {
+    use super::*;
+    use crate::model::MessageExtra;
+
+    #[test]
+    fn test_chrome_trace_exporter() {
+        let mut traj = Trajectory::new();
+        traj.info.task = Some("Test task".to_string());
+
+        let mut msg1 = crate::model::Message::user("Hello");
+        msg1.extra = MessageExtra {
+            harness_overhead_ms: Some(10),
+            ..Default::default()
+        };
+        traj.record_message(&msg1);
+
+        let mut msg2 = crate::model::Message::assistant("World");
+        msg2.extra = MessageExtra {
+            model_latency_ms: Some(20),
+            ..Default::default()
+        };
+        traj.record_message(&msg2);
+
+        let output = ChromeTraceExporter::export(&traj);
+        assert!(output.starts_with('['));
+        assert!(output.ends_with(']'));
+
+        // Should contain metadata, harness event, and model event
+        assert!(output.contains("Trajectory Info"));
+        assert!(output.contains("Harness (user)"));
+        assert!(output.contains("Model (assistant)"));
+
+        #[allow(clippy::expect_used)]
+        let json: serde_json::Value = serde_json::from_str(&output).expect("Invalid JSON");
+        #[allow(clippy::expect_used)]
+        let arr = json.as_array().expect("Expected array");
+        assert_eq!(arr.len(), 3);
+
+        // Metadata event
+        assert_eq!(arr[0]["cat"], "metadata");
+        assert_eq!(arr[0]["args"]["task"], "Test task");
+
+        // Harness event
+        assert_eq!(arr[1]["cat"], "harness");
+        assert_eq!(arr[1]["dur"], 10000);
+
+        // Model event
+        assert_eq!(arr[2]["cat"], "model");
+        assert_eq!(arr[2]["dur"], 20000);
     }
 }
