@@ -1535,6 +1535,32 @@ fn handle_key(dash: &Arc<RatatuiDashboard>, key: KeyEvent) {
                         move_cursor_down(&mut s);
                         dash.notify.notify_waiters();
                     }
+                    KeyCode::PageUp => {
+                        let page = s.viewport_height as usize;
+                        for _ in 0..page {
+                            move_cursor_up(&mut s);
+                        }
+                        dash.notify.notify_waiters();
+                    }
+                    KeyCode::PageDown => {
+                        let page = s.viewport_height as usize;
+                        for _ in 0..page {
+                            move_cursor_down(&mut s);
+                        }
+                        dash.notify.notify_waiters();
+                    }
+                    KeyCode::Home => {
+                        if !s.log.is_empty() {
+                            s.selected_index = Some(0);
+                            s.feed_scroll_top = 0;
+                            dash.notify.notify_waiters();
+                        }
+                    }
+                    KeyCode::End => {
+                        let last = s.log.len().saturating_sub(1);
+                        s.selected_index = Some(last);
+                        dash.notify.notify_waiters();
+                    }
                     KeyCode::Enter => {
                         if let Some(idx) = s.selected_index {
                             if idx < s.log.len() {
@@ -1653,6 +1679,7 @@ fn draw_frame(
     let log_chunk = chunks[1];
     let log_width = log_chunk.width.saturating_sub(2) as usize;
     let log_height = log_chunk.height.saturating_sub(2) as usize;
+    let inner_feed_height = log_chunk.height.saturating_sub(2);
 
     let snapshot = {
         let mut s = dash
@@ -1661,6 +1688,21 @@ fn draw_frame(
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         s.last_log_width = log_width;
         s.last_log_height = log_height;
+        s.viewport_height = inner_feed_height;
+        // Clamp feed_scroll_top before the snapshot so this frame renders
+        // the corrected offset. Skip while search is active to avoid undoing
+        // scroll_to_line's positioning.
+        if s.search.is_none() {
+            if let Some(idx) = s.selected_index {
+                if log_height > 0 {
+                    if idx < s.feed_scroll_top {
+                        s.feed_scroll_top = idx;
+                    } else if idx >= s.feed_scroll_top + log_height {
+                        s.feed_scroll_top = idx + 1 - log_height;
+                    }
+                }
+            }
+        }
 
         // Capture the modal's rationale layout metrics (in wrapped display
         // rows) so the key handler can clamp scrolling correctly (issue #655).
@@ -1756,29 +1798,6 @@ fn draw(frame: &mut ratatui::Frame, dash: &Arc<RatatuiDashboard>, snap: &Dashboa
         .split(area);
 
     let inner_feed_height = chunks[1].height.saturating_sub(2);
-    {
-        let mut s = dash
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        s.viewport_height = inner_feed_height;
-        // Keep selected_index visible by adjusting feed_scroll_top.
-        // Skip while search is active: scroll_to_line already positioned
-        // feed_scroll_top at the match; re-clamping to the stale selection
-        // would undo that jump.
-        if s.search.is_none() {
-            if let Some(idx) = s.selected_index {
-                let visible_height = inner_feed_height as usize;
-                if visible_height > 0 {
-                    if idx < s.feed_scroll_top {
-                        s.feed_scroll_top = idx;
-                    } else if idx >= s.feed_scroll_top + visible_height {
-                        s.feed_scroll_top = idx + 1 - visible_height;
-                    }
-                }
-            }
-        }
-    }
 
     frame.render_widget(header_paragraph(snap), chunks[0]);
     frame.render_widget(log_paragraph(snap, inner_feed_height as usize), chunks[1]);
