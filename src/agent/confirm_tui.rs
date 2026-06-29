@@ -630,7 +630,9 @@ impl StreamSink for RatatuiDashboard {
                 } else if stdout.is_empty() {
                     Some(stderr)
                 } else {
-                    Some(format!("{stdout}\n--- stderr ---\n{stderr}"))
+                    Some(truncate_to_cap(format!(
+                        "{stdout}\n--- stderr ---\n{stderr}"
+                    )))
                 };
                 self.append(kind, summary, full_content);
             }
@@ -1735,14 +1737,19 @@ fn draw(frame: &mut ratatui::Frame, dash: &Arc<RatatuiDashboard>, snap: &Dashboa
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         s.viewport_height = inner_feed_height;
-        // Keep selected_index visible by adjusting feed_scroll_top
-        if let Some(idx) = s.selected_index {
-            let visible_height = inner_feed_height as usize;
-            if visible_height > 0 {
-                if idx < s.feed_scroll_top {
-                    s.feed_scroll_top = idx;
-                } else if idx >= s.feed_scroll_top + visible_height {
-                    s.feed_scroll_top = idx + 1 - visible_height;
+        // Keep selected_index visible by adjusting feed_scroll_top.
+        // Skip while search is active: scroll_to_line already positioned
+        // feed_scroll_top at the match; re-clamping to the stale selection
+        // would undo that jump.
+        if s.search.is_none() {
+            if let Some(idx) = s.selected_index {
+                let visible_height = inner_feed_height as usize;
+                if visible_height > 0 {
+                    if idx < s.feed_scroll_top {
+                        s.feed_scroll_top = idx;
+                    } else if idx >= s.feed_scroll_top + visible_height {
+                        s.feed_scroll_top = idx + 1 - visible_height;
+                    }
                 }
             }
         }
