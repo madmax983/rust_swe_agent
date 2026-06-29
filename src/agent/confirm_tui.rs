@@ -44,6 +44,7 @@ fn truncate_to_cap(mut s: String) -> String {
     s
 }
 
+#[allow(clippy::struct_excessive_bools)]
 struct DashboardState {
     task: Option<String>,
     model: Option<String>,
@@ -888,6 +889,7 @@ fn handle_key(dash: &Arc<RatatuiDashboard>, key: KeyEvent) {
                             if idx < s.log.len() {
                                 s.detail_open = true;
                                 s.detail_scroll_top = 0;
+                                drop(s);
                                 dash.notify.notify_waiters();
                             }
                         }
@@ -1598,6 +1600,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::significant_drop_tightening)]
     fn test_scroll_navigation_keys() {
         let d = make_dashboard();
         {
@@ -1677,6 +1680,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::significant_drop_tightening)]
     fn test_scroll_navigation_keys_when_modal_open() {
         let d = make_dashboard();
         let _rx = make_pending(&d);
@@ -1751,6 +1755,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::significant_drop_tightening)]
     fn test_render_scrolled_vs_live() {
         let d = make_dashboard();
         {
@@ -1784,6 +1789,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::significant_drop_tightening)]
     fn test_interactive_mode_does_not_scroll() {
         let d = make_dashboard();
         {
