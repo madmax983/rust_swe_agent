@@ -648,7 +648,11 @@ impl StreamSink for RatatuiDashboard {
                         command: label.clone(),
                     };
                 }
-                self.append(LineKind::BashRun, format!("step {step} tool: {label}"), None);
+                self.append(
+                    LineKind::BashRun,
+                    format!("step {step} tool: {label}"),
+                    None,
+                );
             }
             StreamEvent::ToolEnd { .. } => {
                 {
@@ -2022,7 +2026,9 @@ fn footer_paragraph(snap: &DashboardSnapshot) -> Paragraph<'_> {
     } else if let Some(pending) = &snap.pending {
         let scope = pending.derive_scope();
         Span::styled(
-            format!("(y) approve   (n) reject   (e) edit   (a) abort   (A) auto-approve {scope}   [Up/Down] navigate   [Enter] inspect"),
+            format!(
+                "(y) approve   (n) reject   (e) edit   (a) abort   (A) auto-approve {scope}   [Up/Down] navigate   [Enter] inspect"
+            ),
             bold,
         )
     } else {
