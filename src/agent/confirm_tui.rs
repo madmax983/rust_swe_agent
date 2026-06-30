@@ -157,6 +157,9 @@ struct DashboardState {
     should_exit: bool,
     is_monitor: bool,
     search: Option<SearchState>,
+    /// True while the operator has pressed the global stop key (Ctrl-Q) and we
+    /// are waiting for the y/N confirmation before aborting the run (#638).
+    stop_pending: bool,
     /// Scroll offset (in wrapped display rows) within the confirm modal's
     /// reasoning region (issue #655). Reset to 0 each time a new prompt opens.
     rationale_scroll: usize,
@@ -203,6 +206,7 @@ impl Default for DashboardState {
             should_exit: false,
             is_monitor: false,
             search: None,
+            stop_pending: false,
             rationale_scroll: 0,
             last_rationale_total_rows: 0,
             last_rationale_visible_rows: 0,
@@ -1330,6 +1334,51 @@ fn handle_key(dash: &Arc<RatatuiDashboard>, key: KeyEvent) {
     let ctrl_c = key.modifiers.contains(KeyModifiers::CONTROL)
         && matches!(key.code, KeyCode::Char('c' | 'C'));
 
+    // Global stop gesture (Ctrl-Q, #638): works in every state — mid-activity,
+    // modal-open, and monitor/yolo mode where no modal ever appears.
+    let ctrl_q = key.modifiers.contains(KeyModifiers::CONTROL)
+        && matches!(key.code, KeyCode::Char('q' | 'Q'));
+
+    // When a stop confirmation is waiting, only y/n/Esc are meaningful; swallow
+    // everything else so a stray keypress cannot accidentally approve a pending
+    // modal or navigate the feed while the operator is deciding.
+    if s.stop_pending {
+        match key.code {
+            KeyCode::Char('y' | 'Y') => {
+                s.stop_pending = false;
+                if let Some(pending) = s.pending.take() {
+                    s.feedback_input = None;
+                    s.edit_input = None;
+                    drop(s);
+                    let _ = pending.responder.send(ConfirmDecision::Abort);
+                } else if s.finished.is_none() {
+                    if let Some(ref tx) = dash.cancel_tx {
+                        let _ = tx.send(true);
+                    }
+                    drop(s);
+                } else {
+                    drop(s);
+                }
+                dash.notify.notify_waiters();
+            }
+            KeyCode::Char('n' | 'N') | KeyCode::Esc => {
+                s.stop_pending = false;
+                drop(s);
+                dash.notify.notify_waiters();
+            }
+            _ => {}
+        }
+        return;
+    }
+
+    // Activate the stop confirmation when the run is still live.
+    if ctrl_q && s.finished.is_none() {
+        s.stop_pending = true;
+        drop(s);
+        dash.notify.notify_waiters();
+        return;
+    }
+
     if let Some(pending) = s.pending.take() {
         if ctrl_c {
             s.feedback_input = None;
@@ -1750,6 +1799,7 @@ fn draw_frame(
             last_log_height: s.last_log_height,
             is_monitor: s.is_monitor,
             search: s.search.clone(),
+            stop_pending: s.stop_pending,
             rationale_scroll: s.rationale_scroll,
             activity: ActivitySnapshot::from_activity(&s.activity),
             stall_threshold: s.stall_threshold,
@@ -1781,6 +1831,7 @@ struct DashboardSnapshot {
     last_log_height: usize,
     is_monitor: bool,
     search: Option<SearchState>,
+    stop_pending: bool,
     rationale_scroll: usize,
     activity: ActivitySnapshot,
     stall_threshold: Duration,
@@ -2029,12 +2080,17 @@ fn log_paragraph(snap: &DashboardSnapshot, visible_lines: usize) -> Paragraph<'_
 
 fn footer_paragraph(snap: &DashboardSnapshot) -> Paragraph<'_> {
     let bold = Style::default().add_modifier(Modifier::BOLD);
-    // detail_open, search, finished, edit, pending, and idle activity all
-    // take precedence in this order.
+    // detail_open, stop_pending, search, finished, edit, pending, and idle
+    // activity all take precedence in this order.
     let span = if snap.detail_open {
         Span::styled(
             "[Esc/q] close   [Up/Down/j/k] scroll   [PgUp/PgDn] page   [Home/End] bounds",
             bold,
+        )
+    } else if snap.stop_pending {
+        Span::styled(
+            "stop run? [y] yes   [n/Esc] cancel",
+            bold.fg(Color::Red),
         )
     } else if let Some(search) = &snap.search {
         let max_lines = snap.log.len().min(MAX_LOG_LINES);
@@ -2079,7 +2135,7 @@ fn footer_paragraph(snap: &DashboardSnapshot) -> Paragraph<'_> {
         match &snap.activity {
             ActivitySnapshot::Thinking { elapsed } => Span::styled(
                 format!(
-                    "{} thinking… (model · {}s)",
+                    "{} thinking… (model · {}s)   [Ctrl-Q] stop",
                     spinner_frame(*elapsed),
                     elapsed.as_secs()
                 ),
@@ -2087,14 +2143,14 @@ fn footer_paragraph(snap: &DashboardSnapshot) -> Paragraph<'_> {
             ),
             ActivitySnapshot::Running { elapsed, command } => Span::styled(
                 format!(
-                    "{} running: {command} ({}s)",
+                    "{} running: {command} ({}s)   [Ctrl-Q] stop",
                     spinner_frame(*elapsed),
                     elapsed.as_secs()
                 ),
                 activity_style(*elapsed, snap.stall_threshold),
             ),
             ActivitySnapshot::Idle => Span::styled(
-                "waiting for next agent step…  [↑/↓] navigate   [Enter] inspect   [/ search]",
+                "waiting for next agent step…  [↑/↓] navigate   [Enter] inspect   [/ search]   [Ctrl-Q] stop",
                 bold,
             ),
         }
@@ -3289,6 +3345,7 @@ mod tests {
             last_log_height: s.last_log_height,
             is_monitor: s.is_monitor,
             search: s.search.clone(),
+            stop_pending: s.stop_pending,
             rationale_scroll: s.rationale_scroll,
             activity: ActivitySnapshot::from_activity(&s.activity),
             stall_threshold: s.stall_threshold,
@@ -5622,5 +5679,202 @@ mod tests {
 
         // Since auto_follow is false, feed_scroll_top should remain stable at 2 (not advance to 3)
         assert_eq!(snap(&d).feed_scroll_top, 2);
+    }
+
+    // ── Global stop key (#638) ─────────────────────────────────────────────
+
+    fn ctrl_q() -> KeyEvent {
+        KeyEvent::new(KeyCode::Char('q'), KeyModifiers::CONTROL)
+    }
+
+    fn make_dashboard_with_cancel() -> (Arc<RatatuiDashboard>, tokio::sync::watch::Receiver<bool>) {
+        let (tx, rx) = tokio::sync::watch::channel(false);
+        let d = Arc::new(RatatuiDashboard {
+            state: Mutex::new(DashboardState::default()),
+            notify: Notify::new(),
+            cancel_tx: Some(tx),
+            bell: Bell::silent(),
+        });
+        (d, rx)
+    }
+
+    #[test]
+    fn stop_key_sets_stop_pending_no_modal() {
+        let d = make_dashboard();
+        assert!(!snap(&d).stop_pending, "stop_pending starts false");
+        handle_key(&d, ctrl_q());
+        assert!(snap(&d).stop_pending, "Ctrl-Q must set stop_pending");
+    }
+
+    #[test]
+    fn stop_key_works_in_monitor_mode() {
+        let d = make_dashboard();
+        {
+            let mut s = d.state.lock().unwrap();
+            s.is_monitor = true;
+        }
+        handle_key(&d, ctrl_q());
+        assert!(snap(&d).stop_pending, "Ctrl-Q must work in monitor/yolo mode");
+    }
+
+    #[test]
+    fn stop_key_no_op_when_finished() {
+        let d = make_dashboard();
+        {
+            let mut s = d.state.lock().unwrap();
+            s.finished = Some("done".into());
+        }
+        handle_key(&d, ctrl_q());
+        assert!(!snap(&d).stop_pending, "Ctrl-Q is no-op after run finished");
+    }
+
+    #[test]
+    fn stop_pending_n_cancels_stop() {
+        let d = make_dashboard();
+        handle_key(&d, ctrl_q());
+        assert!(snap(&d).stop_pending);
+        handle_key(&d, KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE));
+        assert!(!snap(&d).stop_pending, "'n' must clear stop_pending");
+    }
+
+    #[test]
+    fn stop_pending_esc_cancels_stop() {
+        let d = make_dashboard();
+        handle_key(&d, ctrl_q());
+        assert!(snap(&d).stop_pending);
+        handle_key(&d, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert!(!snap(&d).stop_pending, "Esc must clear stop_pending");
+    }
+
+    #[test]
+    fn stop_pending_y_fires_cancel_tx() {
+        let (d, rx) = make_dashboard_with_cancel();
+        handle_key(&d, ctrl_q());
+        assert!(snap(&d).stop_pending);
+        assert!(!*rx.borrow(), "cancel not yet signalled");
+        handle_key(&d, KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE));
+        assert!(!snap(&d).stop_pending, "stop_pending cleared after confirm");
+        assert!(*rx.borrow(), "'y' must fire cancel_tx");
+    }
+
+    #[test]
+    fn stop_pending_y_aborts_pending_modal() {
+        let d = make_dashboard();
+        let mut rx = make_pending(&d);
+        handle_key(&d, ctrl_q());
+        assert!(snap(&d).stop_pending);
+        handle_key(&d, KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE));
+        assert!(!snap(&d).stop_pending);
+        assert!(snap(&d).pending.is_none(), "modal must be cleared on abort");
+        assert_eq!(
+            rx.try_recv().unwrap(),
+            ConfirmDecision::Abort,
+            "'y' while modal pending must send Abort"
+        );
+    }
+
+    #[test]
+    fn stop_pending_swallows_other_keys() {
+        let (d, rx) = make_dashboard_with_cancel();
+        handle_key(&d, ctrl_q());
+        assert!(snap(&d).stop_pending);
+        // Any key other than y/n/Esc should NOT trigger cancel or clear stop_pending
+        handle_key(&d, KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
+        assert!(snap(&d).stop_pending, "other keys must leave stop_pending set");
+        assert!(!*rx.borrow(), "other keys must not fire cancel");
+    }
+
+    #[test]
+    fn single_ctrl_q_does_not_abort() {
+        let (d, rx) = make_dashboard_with_cancel();
+        handle_key(&d, ctrl_q());
+        // After one Ctrl-Q, cancel must NOT have fired yet (confirmation step)
+        assert!(!*rx.borrow(), "single Ctrl-Q must not abort without confirmation");
+    }
+
+    #[test]
+    fn footer_shows_stop_gesture_when_thinking() {
+        let d = make_dashboard();
+        {
+            let mut s = d.state.lock().unwrap();
+            s.activity = Activity::Thinking {
+                since: std::time::Instant::now(),
+            };
+        }
+        let s = snap(&d);
+        let buf = render_to_buffer(&s, 100, 6);
+        let text = buffer_text(&buf);
+        assert!(
+            text.contains("Ctrl-Q"),
+            "footer must advertise Ctrl-Q stop when thinking; got:\n{text}"
+        );
+    }
+
+    #[test]
+    fn footer_shows_stop_gesture_when_idle() {
+        let d = make_dashboard();
+        let s = snap(&d);
+        let buf = render_to_buffer(&s, 100, 6);
+        let text = buffer_text(&buf);
+        assert!(
+            text.contains("Ctrl-Q"),
+            "footer must advertise Ctrl-Q stop when idle; got:\n{text}"
+        );
+    }
+
+    #[test]
+    fn footer_shows_stop_gesture_when_running() {
+        let d = make_dashboard();
+        {
+            let mut s = d.state.lock().unwrap();
+            s.activity = Activity::Running {
+                since: std::time::Instant::now(),
+                command: "ls".into(),
+            };
+        }
+        let s = snap(&d);
+        let buf = render_to_buffer(&s, 100, 6);
+        let text = buffer_text(&buf);
+        assert!(
+            text.contains("Ctrl-Q"),
+            "footer must advertise Ctrl-Q stop when running; got:\n{text}"
+        );
+    }
+
+    #[test]
+    fn footer_shows_stop_confirmation_when_pending() {
+        let d = make_dashboard();
+        {
+            let mut s = d.state.lock().unwrap();
+            s.stop_pending = true;
+        }
+        let s = snap(&d);
+        let buf = render_to_buffer(&s, 100, 6);
+        let text = buffer_text(&buf);
+        assert!(
+            text.contains("[y]") || text.contains("yes"),
+            "footer must show stop confirmation prompt; got:\n{text}"
+        );
+        assert!(
+            text.contains("[n]") || text.contains("cancel"),
+            "footer must show cancel option in stop prompt; got:\n{text}"
+        );
+    }
+
+    #[test]
+    fn footer_does_not_show_stop_gesture_after_finished() {
+        let d = make_dashboard();
+        {
+            let mut s = d.state.lock().unwrap();
+            s.finished = Some("done".into());
+        }
+        let s = snap(&d);
+        let buf = render_to_buffer(&s, 100, 6);
+        let text = buffer_text(&buf);
+        // finished state uses its own message; stop hint should not appear there
+        assert!(
+            text.contains("run complete"),
+            "finished footer should show run-complete message; got:\n{text}"
+        );
     }
 }
