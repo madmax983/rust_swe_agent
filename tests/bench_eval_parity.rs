@@ -41,7 +41,7 @@ fn write_sweep_results(dir: &std::path::Path, instances: &[(&str, bool)]) -> Pat
     }
     let sweep_json = serde_json::json!({
         "artifact_kind": "sweep_results",
-        "schema_version": {"major": 1, "minor": 10},
+        "schema_version": {"major": 1, "minor": 11},
         "instances": rows.lines().map(|l| serde_json::from_str::<serde_json::Value>(l).unwrap()).collect::<Vec<_>>(),
         "total": instances.len(),
         "submitted": instances.iter().filter(|(_, r)| *r).count(),

@@ -30,6 +30,18 @@ pub fn entries() -> &'static [CatalogEntry] {
             stage: "preflight",
         },
         CatalogEntry {
+            path: "explain",
+            summary: "Explain an exit code, outcome class, or failure category offline",
+            cost_tier: "free",
+            stage: "inspect",
+        },
+        CatalogEntry {
+            path: "completions",
+            summary: "Generate shell completion scripts",
+            cost_tier: "free",
+            stage: "preflight",
+        },
+        CatalogEntry {
             path: "cleanup",
             summary: "Reap leftover Maxwell's Daemon containers, including legacy labels",
             cost_tier: "free",
@@ -61,6 +73,12 @@ pub fn entries() -> &'static [CatalogEntry] {
         },
         // Agent subcommands
         CatalogEntry {
+            path: "agent annotate",
+            summary: "Attach a schema-versioned human verdict and notes to a trajectory sidecar",
+            cost_tier: "free",
+            stage: "inspect",
+        },
+        CatalogEntry {
             path: "agent best-of",
             summary: "Sample N runs and emit the best patch by --verify oracle",
             cost_tier: "paid",
@@ -85,10 +103,28 @@ pub fn entries() -> &'static [CatalogEntry] {
             stage: "preflight",
         },
         CatalogEntry {
+            path: "agent doctor",
+            summary: "Preflight host readiness before a live run (no model call, $0)",
+            cost_tier: "free",
+            stage: "preflight",
+        },
+        CatalogEntry {
+            path: "agent fs-audit",
+            summary: "Audit sweep trajectories for out-of-workdir filesystem access",
+            cost_tier: "free",
+            stage: "analyze",
+        },
+        CatalogEntry {
             path: "agent injection-audit",
             summary: "Audit sweep trajectories for prompt-injection signals",
             cost_tier: "free",
             stage: "analyze",
+        },
+        CatalogEntry {
+            path: "agent artifact-check",
+            summary: "Validate artifact files against the Artifact Contract (zero-cost, no model call)",
+            cost_tier: "free",
+            stage: "preflight",
         },
         CatalogEntry {
             path: "agent policy-check",
@@ -99,6 +135,12 @@ pub fn entries() -> &'static [CatalogEntry] {
         CatalogEntry {
             path: "agent profile",
             summary: "Profile a single trajectory file: cost, tokens, stage latency, and action mix",
+            cost_tier: "free",
+            stage: "inspect",
+        },
+        CatalogEntry {
+            path: "agent runs",
+            summary: "List and summarize single-task trajectory files in a directory",
             cost_tier: "free",
             stage: "inspect",
         },
@@ -182,6 +224,12 @@ pub fn entries() -> &'static [CatalogEntry] {
             stage: "analyze",
         },
         CatalogEntry {
+            path: "bench variance",
+            summary: "Classify per-instance flakiness from a rerun sweep (zero cost)",
+            cost_tier: "free",
+            stage: "analyze",
+        },
+        CatalogEntry {
             path: "bench bundle",
             summary: "Export or verify a portable, redacted sweep archive",
             cost_tier: "free",
@@ -190,6 +238,18 @@ pub fn entries() -> &'static [CatalogEntry] {
         CatalogEntry {
             path: "bench cache-stats",
             summary: "Surface prompt-cache hit rate, savings, and spend for a completed sweep",
+            cost_tier: "free",
+            stage: "analyze",
+        },
+        CatalogEntry {
+            path: "bench ledger",
+            summary: "Roll up cumulative actual spend across runs/sweeps by model, dataset, and day",
+            cost_tier: "free",
+            stage: "analyze",
+        },
+        CatalogEntry {
+            path: "bench context-pressure",
+            summary: "Report context-window pressure telemetry per sweep",
             cost_tier: "free",
             stage: "analyze",
         },
@@ -272,6 +332,12 @@ pub fn entries() -> &'static [CatalogEntry] {
             stage: "preflight",
         },
         CatalogEntry {
+            path: "bench events",
+            summary: "Query the structured per-run event log by type, instance, and time window",
+            cost_tier: "free",
+            stage: "inspect",
+        },
+        CatalogEntry {
             path: "bench export-ci",
             summary: "Export a completed sweep as JUnit XML and/or GitHub Actions annotations",
             cost_tier: "free",
@@ -342,6 +408,18 @@ pub fn entries() -> &'static [CatalogEntry] {
             summary: "Run multiple sweep arms against the same instance set",
             cost_tier: "paid",
             stage: "run",
+        },
+        CatalogEntry {
+            path: "bench merge",
+            summary: "Combine sharded sweep result directories into one aggregate",
+            cost_tier: "free",
+            stage: "analyze",
+        },
+        CatalogEntry {
+            path: "bench shard",
+            summary: "Deterministically partition a dataset into N disjoint balanced shards",
+            cost_tier: "free",
+            stage: "preflight",
         },
         CatalogEntry {
             path: "bench near-miss",

@@ -58,7 +58,7 @@ instance IDs are de-duplicated before clustering.
 
 Each unresolved instance produces one pure `FailureSignature` from four fields:
 
-1. `failure_category`
+1. `failure_category` (see [`docs/failure-categories.md`](failure-categories.md) for the full vocabulary)
 2. The last assistant message tail, capped at the final 500 Unicode scalar
    values.
 3. The last bash exit code, or `none` when no bash result is present.
@@ -91,6 +91,12 @@ stderr_line=<normalized stderr line>
 ```
 
 Two failures collide only when all four normalized fields match.
+
+The same `FailureSignature` primitive is surfaced per-instance by
+`bench failure-digest` as a stable `signature_id`; see
+[`docs/spec-failure-signature.md`](spec-failure-signature.md) for the
+single-instance digest surface and its redaction/record-replay stability
+guarantees.
 
 ## Output Schema
 

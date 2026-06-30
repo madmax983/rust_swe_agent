@@ -61,6 +61,7 @@ fn resolved(id: &str) -> InstanceResult {
         retry_id: None,
         previous_failure_category: None,
         trace_id: None,
+        context_pressure: Default::default(),
     }
 }
 
@@ -93,6 +94,7 @@ fn unresolved(id: &str, cat: FailureCategory) -> InstanceResult {
         retry_id: None,
         previous_failure_category: None,
         trace_id: None,
+        context_pressure: Default::default(),
     }
 }
 
@@ -125,6 +127,7 @@ fn errored(id: &str, cat: FailureCategory) -> InstanceResult {
         retry_id: None,
         previous_failure_category: None,
         trace_id: None,
+        context_pressure: Default::default(),
     }
 }
 

@@ -190,6 +190,40 @@ pub enum ExitCode {
     /// `slo_rule_failure` (27) so automation can route "concurrency
     /// under-utilized" separately from generic SLO failures.
     UtilizationGateFailure = 44,
+    /// 45 — `agent fs-audit` found at least one finding (a bash command accessed a
+    /// path outside the configured workdir). The audit completed and its report was
+    /// printed; the non-zero exit is the CI publish gate. Distinct from
+    /// `internal_error` (1) so automation can route "filesystem boundary violated"
+    /// separately from an unexpected crash.
+    FsAuditFindings = 45,
+    /// 46 — `agent fs-audit` could not read or parse one or more trajectory files
+    /// (unreadable file, invalid JSON, missing sweep directory). The scan is
+    /// incomplete, so a "clean" verdict cannot be trusted. Distinct from
+    /// `usage_error` (2) so CI can tell "the scan broke" from "your invocation is
+    /// broken".
+    FsAuditScanError = 46,
+    /// 47 — `agent artifact-check` found at least one artifact that is `invalid`
+    /// or `unsupported_major`. With `--strict`, also triggers on
+    /// `legacy_unversioned` and `valid_with_warnings`. Zero model calls are made;
+    /// the check is purely a structural conformance gate. Distinct from
+    /// `internal_error` (1) so CI can route "artifact does not conform to
+    /// contract" separately from an unexpected infrastructure failure.
+    ArtifactCheckFailure = 47,
+    /// 48 — `agent doctor` found at least one failing host-readiness check
+    /// (git missing, provider credential absent, Docker daemon unreachable when
+    /// a docker environment is selected, runs/output dir not writable, or the
+    /// active toolchain below the crate `rust-version`). Zero model calls and no
+    /// provider network probe were made; the check is a pure host preflight.
+    /// Skipped checks never trigger this. Distinct from `preflight_failure` (3)
+    /// so CI can route "host not ready before any run" separately from
+    /// sweep-time dependency failures. See `docs/spec-agent-doctor.md`.
+    HostNotReady = 48,
+    /// 49 — `bench ledger --budget-usd <N>` found that the grand total actual
+    /// spend across discovered trajectories meets or exceeds N. The report is
+    /// printed before exit; the non-zero exit allows CI to gate on budget
+    /// exhaustion. Distinct from `budget_halt` (5) which is a forecast/sweep
+    /// cap, not a post-hoc accounting check.
+    LedgerBudgetExceeded = 49,
     /// 130 — user interruption (graceful SIGINT / Ctrl-C; 128 + SIGINT(2)).
     Interrupted = 130,
     /// 137 — forced kill (SIGKILL escalation after graceful-cancel deadline; 128 + SIGKILL(9)).
@@ -255,6 +289,11 @@ impl ExitCode {
             Self::ConfigOverrideWarning => "config_override_warning",
             Self::EvalParityGateFailure => "eval_parity_gate_failure",
             Self::UtilizationGateFailure => "utilization_gate_failure",
+            Self::FsAuditFindings => "fs_audit_findings",
+            Self::FsAuditScanError => "fs_audit_scan_error",
+            Self::ArtifactCheckFailure => "artifact_check_failure",
+            Self::HostNotReady => "host_not_ready",
+            Self::LedgerBudgetExceeded => "ledger_budget_exceeded",
             Self::Interrupted => "interrupted",
             Self::Killed => "killed",
         }
@@ -557,6 +596,23 @@ mod tests {
         assert_eq!(
             ExitCode::UtilizationGateFailure.outcome_class(),
             "utilization_gate_failure"
+        );
+    }
+
+    // ── RED-phase: agent doctor host-readiness exit code (issue #526) ─────────
+
+    #[test]
+    fn host_not_ready_exit_code_is_48() {
+        assert_eq!(ExitCode::HostNotReady.as_i32(), 48);
+        assert_eq!(ExitCode::HostNotReady.outcome_class(), "host_not_ready");
+    }
+
+    #[test]
+    fn ledger_budget_exceeded_exit_code_is_49() {
+        assert_eq!(ExitCode::LedgerBudgetExceeded.as_i32(), 49);
+        assert_eq!(
+            ExitCode::LedgerBudgetExceeded.outcome_class(),
+            "ledger_budget_exceeded"
         );
     }
 }

@@ -51,6 +51,10 @@ jobs:
       - run: cargo build --all-targets --no-default-features
       - run: cargo test --all-targets --no-default-features
       - run: cargo test --doc --no-default-features
+      # Run the export redaction conformance test with every exporter feature enabled so
+      # all registered formats (csv/html/mermaid), not just markdown, are covered. See
+      # docs/spec-export.md (mandatory redaction invariant).
+      - run: cargo test --all-features --test export_redaction_conformance
 
   swebench-cancel:
     name: swebench cancellation (${{ matrix.os }})

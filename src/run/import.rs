@@ -395,6 +395,7 @@ pub fn run(args: &ImportArgs) -> Result<ImportSummary, Error> {
             retry_id: None,
             previous_failure_category: None,
             trace_id: None,
+            context_pressure: Default::default(),
         });
     }
 
@@ -472,6 +473,7 @@ pub fn run(args: &ImportArgs) -> Result<ImportSummary, Error> {
         import_predictions_path: Some(predictions_path_str),
         import_predictions_sha256: Some(predictions_sha256.clone()),
         reproduced_from: None,
+        merged_from: None,
     };
 
     // 8. Build SweepResults.
@@ -552,6 +554,7 @@ pub fn run(args: &ImportArgs) -> Result<ImportSummary, Error> {
             run_id: args.run_id.clone(),
             breakdown: crate::run::evaluate::BreakdownSelection::default_axes(),
             cost_attribution: true,
+            force: false,
         };
         Some(crate::run::evaluate::run(&eval_args)?)
     } else {

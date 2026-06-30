@@ -72,6 +72,12 @@ fn slo_rule_failure_code_is_27() {
     assert_eq!(ExitCode::SloRuleFailure.outcome_class(), "slo_rule_failure");
 }
 
+#[test]
+fn host_not_ready_code_is_48() {
+    assert_eq!(ExitCode::HostNotReady.as_i32(), 48);
+    assert_eq!(ExitCode::HostNotReady.outcome_class(), "host_not_ready");
+}
+
 // ── outcome_class strings ─────────────────────────────────────────────────────
 
 #[test]

@@ -295,6 +295,7 @@ fn test_historical_resolved_rates_legacy_and_hash_handling() {
             retry_id: None,
             previous_failure_category: None,
             trace_id: None,
+            context_pressure: Default::default(),
         }],
         rate_limit_events: None,
         total_fallbacks: 0,
@@ -364,6 +365,7 @@ fn test_historical_resolved_rates_legacy_and_hash_handling() {
         import_predictions_path: None,
         import_predictions_sha256: None,
         reproduced_from: None,
+        merged_from: None,
     };
 
     // 2. Write a modern results.json that has a manifest matching our expected hash

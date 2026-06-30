@@ -22,7 +22,7 @@ pub struct ArtifactSchemaVersion {
 impl ArtifactSchemaVersion {
     pub const CURRENT: Self = Self {
         major: 1,
-        minor: 10,
+        minor: 12,
     };
     pub const LEGACY_PRE_VERSIONING: Self = Self { major: 0, minor: 0 };
 
@@ -74,6 +74,13 @@ pub enum ArtifactKind {
     BestOfResults,
     AgentProfileReport,
     EvalParityReport,
+    AgentRunsReport,
+    MiniResult,
+    BenchVarianceReport,
+    ValidationReport,
+    TrajectoryAnnotation,
+    ContextPressureReport,
+    LedgerReport,
 }
 
 impl ArtifactKind {
@@ -105,6 +112,13 @@ impl ArtifactKind {
             Self::BestOfResults => "best_of_results",
             Self::AgentProfileReport => "agent_profile_report",
             Self::EvalParityReport => "eval_parity_report",
+            Self::AgentRunsReport => "agent_runs_report",
+            Self::MiniResult => "mini_result",
+            Self::BenchVarianceReport => "bench_variance_report",
+            Self::ValidationReport => "validation_report",
+            Self::TrajectoryAnnotation => "trajectory_annotation",
+            Self::ContextPressureReport => "context_pressure_report",
+            Self::LedgerReport => "ledger_report",
         }
     }
 }

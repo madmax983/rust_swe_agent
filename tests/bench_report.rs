@@ -60,6 +60,7 @@ fn submitted(id: &str) -> InstanceResult {
         retry_id: None,
         previous_failure_category: None,
         trace_id: None,
+        context_pressure: Default::default(),
     }
 }
 
@@ -92,6 +93,7 @@ fn errored(id: &str, cat: FailureCategory) -> InstanceResult {
         retry_id: None,
         previous_failure_category: None,
         trace_id: None,
+        context_pressure: Default::default(),
     }
 }
 
@@ -202,6 +204,7 @@ fn write_sweep(dir: &Path, instances: Vec<InstanceResult>) {
             import_predictions_path: None,
             import_predictions_sha256: None,
             reproduced_from: None,
+            merged_from: None,
         }),
         cost_limit_usd: None,
         instances,
@@ -1268,6 +1271,7 @@ fn submitted_with_cache(id: &str, input: u64, reads: u64, creation: u64) -> Inst
         retry_id: None,
         previous_failure_category: None,
         trace_id: None,
+        context_pressure: Default::default(),
     }
 }
 

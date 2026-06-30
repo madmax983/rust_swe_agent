@@ -10,6 +10,7 @@ use async_trait::async_trait;
 use maxwells_daemon::agent::default::{DefaultAgentBuilder, retag_cache_hints};
 use maxwells_daemon::env::CancellationToken;
 use maxwells_daemon::error::EnvError;
+use maxwells_daemon::stream::{BroadcastSink, StreamEvent, StreamSink};
 use maxwells_daemon::{
     Agent, CacheHint, Config, DeterministicModel, Environment, Error, ExitReason, LocalEnvironment,
     McpServerCfg, McpStdioServer, Message, Model, ModelResponse, ModelUsage, QueryOpts, Role,
@@ -595,6 +596,7 @@ timeout_secs = 3
 }
 
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn command_tool_adapter_executes_from_matching_fenced_block() {
     let cfg = Config::from_toml_str(
         r#"
@@ -616,6 +618,8 @@ timeout_secs = 3
     ]));
     let env = PluginToolEnv::default();
     let calls = Arc::clone(&env.calls);
+    let bcast = Arc::new(BroadcastSink::default());
+    let mut rx = bcast.subscribe();
     let mut agent = DefaultAgentBuilder {
         config: cfg,
         model,
@@ -623,7 +627,7 @@ timeout_secs = 3
         task: "round trip".into(),
         extra_context: None,
         renderer: None,
-        stream: None,
+        stream: Some(bcast.clone() as Arc<dyn StreamSink>),
         resume_from: None,
         read_only: false,
     }
@@ -632,6 +636,43 @@ timeout_secs = 3
 
     let exit = agent.run().await.unwrap();
     assert!(matches!(exit, ExitReason::Submitted { .. }));
+
+    // A command tool runs a real shell via `env.run`; it must surface a generic
+    // tool-activity span so activity-inferring consumers (the ratatui dashboard,
+    // issue #649) see the in-flight command rather than a static idle footer.
+    // BashStart/BashResult stay reserved for the Bash tool, so bash-command
+    // telemetry is not polluted by other tool types.
+    let mut events = Vec::new();
+    while let Ok(e) = rx.try_recv() {
+        events.push(e);
+    }
+    assert!(
+        events.iter().any(
+            |e| matches!(e, StreamEvent::ToolStart { label, .. } if label == "diagnose-helper")
+        ),
+        "command tool should emit ToolStart with the rendered command: {events:#?}"
+    );
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, StreamEvent::ToolEnd { .. })),
+        "command tool should emit ToolEnd to close the activity span: {events:#?}"
+    );
+    assert!(
+        !events.iter().any(|e| matches!(
+            e,
+            StreamEvent::BashStart { .. } | StreamEvent::BashResult { .. }
+        )),
+        "command tool must not emit bash-command telemetry: {events:#?}"
+    );
+    assert!(
+        events.iter().any(|e| matches!(
+            e,
+            StreamEvent::Observation { content, .. }
+                if content.contains("diagnose saw check flaky test")
+        )),
+        "command tool output should surface in an Observation: {events:#?}"
+    );
 
     let calls = calls.lock().unwrap().clone();
     assert_eq!(calls.len(), 1);
@@ -764,6 +805,8 @@ async fn runtime_tool_provider_executes_without_command_tool_config() {
     ]));
     let provider = Arc::new(InMemoryToolProvider::new("diagnose"));
     let calls = Arc::clone(&provider.calls);
+    let bcast = Arc::new(BroadcastSink::default());
+    let mut rx = bcast.subscribe();
     let mut agent = DefaultAgentBuilder {
         config: cfg,
         model,
@@ -771,7 +814,7 @@ async fn runtime_tool_provider_executes_without_command_tool_config() {
         task: "round trip".into(),
         extra_context: None,
         renderer: None,
-        stream: None,
+        stream: Some(bcast.clone() as Arc<dyn StreamSink>),
         resume_from: None,
         read_only: false,
     }
@@ -780,6 +823,34 @@ async fn runtime_tool_provider_executes_without_command_tool_config() {
 
     let exit = agent.run().await.unwrap();
     assert!(matches!(exit, ExitReason::Submitted { .. }));
+
+    // A runtime/MCP provider tool runs real work (an MCP server runs a command
+    // via `env.run`); like a command tool it must surface a generic activity
+    // span so a slow call reaches the stall indicator (issue #649) instead of a
+    // static idle footer, without polluting bash-command telemetry.
+    let mut events = Vec::new();
+    while let Ok(e) = rx.try_recv() {
+        events.push(e);
+    }
+    assert!(
+        events.iter().any(
+            |e| matches!(e, StreamEvent::ToolStart { label, .. } if label == "tool: diagnose")
+        ),
+        "provider tool should emit ToolStart labeled with the tool name: {events:#?}"
+    );
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, StreamEvent::ToolEnd { .. })),
+        "provider tool should emit ToolEnd to close the activity span: {events:#?}"
+    );
+    assert!(
+        !events.iter().any(|e| matches!(
+            e,
+            StreamEvent::BashStart { .. } | StreamEvent::BashResult { .. }
+        )),
+        "provider tool must not emit bash-command telemetry: {events:#?}"
+    );
 
     let calls = calls.lock().unwrap().clone();
     assert_eq!(calls.len(), 1);

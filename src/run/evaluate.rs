@@ -155,6 +155,8 @@ pub struct EvaluateArgs {
     pub run_id: Option<String>,
     pub breakdown: BreakdownSelection,
     pub cost_attribution: bool,
+    /// Re-evaluate every instance regardless of cached verdicts.
+    pub force: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -221,6 +223,10 @@ pub struct InstanceEvaluation {
     /// secret-redactor before being persisted or printed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub patch_error_log: Option<String>,
+    /// SHA-256 fingerprint of the submission patch artifact(s) at evaluation
+    /// time. Used on re-run to detect stale cached verdicts (issue #530).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub submission_fingerprint: Option<String>,
 }
 
 #[allow(clippy::trivially_copy_pass_by_ref)]
@@ -250,6 +256,18 @@ pub struct SubmissionClassRollup {
     pub empty: SubmissionClassStats,
 }
 
+/// Counts from the reuse/resume pass: how many instances were evaluated fresh,
+/// reused from a prior `evaluation.json`, or invalidated due to a changed patch.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ReuseSummary {
+    /// Total instances the backend executed (new + invalidated).
+    pub evaluated: u32,
+    /// Instances whose cached verdict was preserved unchanged.
+    pub reused: u32,
+    /// Subset of `evaluated` that were re-run because the patch artifact changed.
+    pub invalidated: u32,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct EvaluationResults {
     pub instances: Vec<InstanceEvaluation>,
@@ -276,6 +294,9 @@ pub struct EvaluationResults {
     pub submission_class_rollup: Option<SubmissionClassRollup>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub test_only_resolved_rate: Option<f64>,
+    /// Reuse/resume counts populated by the resume pass (issue #530).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reuse_summary: Option<ReuseSummary>,
 }
 
 /// p50 / p95 of each wall-clock stage measured across every trajectory in
@@ -426,6 +447,7 @@ pub fn evaluation_path(sweep_dir: &Path) -> PathBuf {
     sweep_dir.join("evaluation.json")
 }
 
+#[allow(clippy::too_many_lines)]
 pub fn run(args: &EvaluateArgs) -> Result<EvaluationResults, Error> {
     let loaded = load_sweep(&args.sweep_dir)?;
     let model_name = loaded.manifest.as_ref().map(|m| m.model.name.clone());
@@ -435,21 +457,68 @@ pub fn run(args: &EvaluateArgs) -> Result<EvaluationResults, Error> {
         ));
     }
     let results = loaded.instances;
+
+    // Resume/reuse pass: classify instances into reused vs. needs-eval.
+    let plan = classify_for_reuse(args, &results);
+    let fresh_ids: std::collections::HashSet<&str> =
+        plan.needs_eval.keys().map(String::as_str).collect();
+
     let eval_started_at = utc_now_iso8601();
-    let run_output = match args.backend {
-        EvaluateBackend::None => {
-            EvaluateRunOutput::without_run_resolution(build_none_eval(&results))
+    // Fully-cached resume: skip the backend entirely. The backends eagerly load
+    // the dataset / predictions file up front, so dispatching with an empty plan
+    // would needlessly fail when those artifacts have moved even though no
+    // instance needs evaluation.
+    let run_output = if plan.needs_eval.is_empty() {
+        EvaluateRunOutput::without_run_resolution(EvaluationResults::default())
+    } else {
+        match args.backend {
+            EvaluateBackend::None => {
+                EvaluateRunOutput::without_run_resolution(build_none_eval(&plan.needs_eval))
+            }
+            EvaluateBackend::SbCli => {
+                // Decide single-run vs per-run submission from the FULL sweep, not
+                // the filtered plan: a pass@k sweep whose only fresh instance is
+                // single-run must still use the per-run predictions files (the
+                // aggregate all_preds.jsonl uses synthetic <id>::run-k IDs for
+                // multi-run sweeps and yields no verdict on the single-run path).
+                let sweep_max_runs = results.values().map(effective_runs).max().unwrap_or(1);
+                run_sb_cli(args, &plan.needs_eval, sweep_max_runs)?
+            }
+            EvaluateBackend::Rehearsal => run_rehearsal_eval(args, &plan.needs_eval)?,
+            EvaluateBackend::DockerTests => run_docker_tests(args, &plan.needs_eval)?,
         }
-        EvaluateBackend::SbCli => run_sb_cli(args, &results)?,
-        EvaluateBackend::Rehearsal => run_rehearsal_eval(args, &results)?,
-        EvaluateBackend::DockerTests => run_docker_tests(args, &results)?,
     };
     let EvaluateRunOutput {
         mut eval,
-        resolved_by_run,
+        mut resolved_by_run,
         effective_run_id,
         docker_image_names,
     } = run_output;
+
+    // Populate submission fingerprints for fresh instances before merge.
+    for inst in &mut eval.instances {
+        let runs = results.get(&inst.instance_id).map_or(1, effective_runs);
+        inst.submission_fingerprint =
+            submission_fingerprint_for_instance(&args.sweep_dir, &inst.instance_id, runs);
+    }
+
+    // Merge reused cached verdicts with freshly evaluated ones.
+    // Reconstruct resolved_by_run for reused instances so that cost/model-mix
+    // aggregates are correct over the full merged set.
+    for cached in &plan.reused {
+        for run_idx in 1..=cached.runs.max(1) {
+            let resolved = if cached.runs <= 1 {
+                cached.resolved
+            } else {
+                run_idx <= cached.resolved_count
+            };
+            resolved_by_run.insert(RunSlotKey::new(&cached.instance_id, run_idx), resolved);
+        }
+    }
+    eval.instances.extend(plan.reused);
+    eval.instances
+        .sort_by(|a, b| a.instance_id.cmp(&b.instance_id));
+
     let (dataset_sha256, dataset_instance_count) = if let Some(ref dataset_path) = args.dataset_path
     {
         let sha = sha256_file(dataset_path).ok();
@@ -463,16 +532,39 @@ pub fn run(args: &EvaluateArgs) -> Result<EvaluationResults, Error> {
     } else {
         (None, None)
     };
-    let provenance = build_provenance(
-        args,
-        &resolved_by_run,
-        effective_run_id.as_deref(),
-        eval_started_at,
-        dataset_sha256,
-        dataset_instance_count,
-        docker_image_names,
-    );
-    attach_patch_stats(&mut eval, args, &resolved_by_run)?;
+    // On a full cache hit (no instance re-evaluated) the backend was skipped, so a
+    // freshly rebuilt provenance would blank out comparability metadata (run_id,
+    // report paths, docker image_names, dataset hash) even though every verdict
+    // came from the prior evaluation. Preserve the prior provenance verbatim — it
+    // is exactly correct, since nothing changed. Falls back to a rebuild if no
+    // prior provenance exists. (Partial resumes keep the fresh backend's
+    // provenance; its aggregate docker image_names cover only freshly evaluated
+    // rows, since the artifact has no per-instance image attribution.)
+    let provenance = if plan.needs_eval.is_empty() {
+        prior_provenance(&args.sweep_dir).unwrap_or_else(|| {
+            build_provenance(
+                args,
+                &resolved_by_run,
+                effective_run_id.as_deref(),
+                eval_started_at,
+                dataset_sha256,
+                dataset_instance_count,
+                docker_image_names,
+            )
+        })
+    } else {
+        build_provenance(
+            args,
+            &resolved_by_run,
+            effective_run_id.as_deref(),
+            eval_started_at,
+            dataset_sha256,
+            dataset_instance_count,
+            docker_image_names,
+        )
+    };
+    // Recompute patch_stats only for fresh instances; reused keep cached stats.
+    attach_patch_stats(&mut eval, args, &resolved_by_run, &fresh_ids)?;
     let (rollup, test_only_resolved_rate) = build_submission_class_rollup(&eval.instances);
     eval.submission_class_rollup = Some(rollup);
     eval.test_only_resolved_rate = Some(test_only_resolved_rate);
@@ -500,6 +592,7 @@ pub fn run(args: &EvaluateArgs) -> Result<EvaluationResults, Error> {
     eval.model_mix_summary = build_model_mix_summary_from_slots(&run_slots, &resolved_by_run);
     eval.latency_summary = build_latency_summary_from_slots(&args.sweep_dir, &run_slots);
     eval.provenance = Some(provenance);
+    eval.reuse_summary = Some(plan.counts);
     let redactor = Redactor::default_enabled();
     for inst in &mut eval.instances {
         inst.patch_error_log = inst
@@ -732,6 +825,170 @@ fn sha256_file(path: &Path) -> Result<String, std::io::Error> {
     Ok(format!("{digest:x}"))
 }
 
+// ---------------------------------------------------------------------------
+// Resume/reuse infrastructure (issue #530)
+// ---------------------------------------------------------------------------
+
+/// Compute a fingerprint for an instance's submission patch artifact(s).
+///
+/// Hashes all existing `run-<N>.patch` files (1..=runs) as
+/// `"<N>:<sha256>\n"` lines. Returns `None` when no patch files exist
+/// (instance was not submitted, or submission left no artifact).
+fn submission_fingerprint_for_instance(
+    sweep_dir: &Path,
+    instance_id: &str,
+    runs: u32,
+) -> Option<String> {
+    use sha2::{Digest as _, Sha256};
+    let mut hasher = Sha256::new();
+    let mut any = false;
+    for run_index in 1..=runs {
+        let path = swebench::existing_patch_path_for_run(sweep_dir, instance_id, run_index);
+        if let Ok(sha) = sha256_file(&path) {
+            hasher.update(format!("{run_index}:{sha}\n").as_bytes());
+            any = true;
+        }
+    }
+    if any {
+        Some(format!("{:x}", hasher.finalize()))
+    } else {
+        None
+    }
+}
+
+/// Outcome of the reuse classification pass.
+struct ReusePlan {
+    /// Cached `InstanceEvaluation` entries to carry forward unchanged.
+    reused: Vec<InstanceEvaluation>,
+    /// Subset of the current sweep that must be sent to the backend.
+    needs_eval: HashMap<String, InstanceResult>,
+    /// Counts for the one-line summary and JSON artifact.
+    counts: ReuseSummary,
+}
+
+/// Whether a cached verdict is consistent with the current submission state.
+///
+/// The check is one-directional: a cached verdict is only rejected when the
+/// instance is *no longer submitted* (so a prior resolved/unresolved/eval-error
+/// verdict would be stale and must become `SkippedNoPatch`). The reverse — a
+/// currently-submitted instance with a cached `SkippedNoPatch` — is left to the
+/// patch fingerprint, because a submitted-but-empty patch is legitimately
+/// skipped by the DockerTests/Rehearsal backends and should still be a cache hit
+/// on resume. New patch bytes (None → Some) are caught by the fingerprint.
+fn reuse_consistent_with_submission(cached: &InstanceEvaluation, current_submitted: bool) -> bool {
+    current_submitted || cached.eval_exit_reason == EvalExitReason::SkippedNoPatch
+}
+
+/// Read the prior `evaluation.json` *only* if it classifies as a supported
+/// `EvaluationResults` artifact. Mirrors the artifact header check other readers
+/// use, so a future-major (breaking) schema whose rows happen to still
+/// deserialize is rejected here (returns None) rather than being reused. Legacy
+/// pre-versioning and older-minor artifacts remain supported.
+fn load_supported_prior_evaluation(sweep_dir: &Path) -> Option<EvaluationResults> {
+    let path = evaluation_path(sweep_dir);
+    let text = std::fs::read_to_string(&path).ok()?;
+    let value: serde_json::Value = serde_json::from_str(&text).ok()?;
+    crate::artifact::classify_json_value(
+        &value,
+        crate::artifact::ArtifactKind::EvaluationResults,
+        "evaluation.json",
+    )
+    .ok()?;
+    serde_json::from_value(value).ok()
+}
+
+/// Read the evaluator provenance recorded in the prior `evaluation.json`, if any.
+/// Used to preserve comparability metadata (run_id, report paths, docker
+/// image_names, dataset hash) verbatim across a full cache-hit resume, where the
+/// backend is skipped and a freshly rebuilt provenance would otherwise blank it.
+fn prior_provenance(sweep_dir: &Path) -> Option<EvaluatorProvenance> {
+    load_supported_prior_evaluation(sweep_dir)?.provenance
+}
+
+/// Classify each instance in the current sweep as reused / invalidated / new.
+///
+/// When `args.force` is set, all instances are sent to the backend (today's
+/// behaviour as an explicit opt-in). Otherwise we:
+///   1. Load the prior `evaluation.json` (absent ⇒ empty map, all new).
+///   2. Compute the current submission fingerprint for every instance.
+///   3. Reuse cached verdicts whose fingerprint matches; invalidate the rest.
+fn classify_for_reuse(args: &EvaluateArgs, results: &HashMap<String, InstanceResult>) -> ReusePlan {
+    // --force: skip all reuse logic and send everything to the backend.
+    if args.force {
+        return ReusePlan {
+            reused: vec![],
+            needs_eval: results.clone(),
+            counts: ReuseSummary {
+                evaluated: u32::try_from(results.len()).unwrap_or(u32::MAX),
+                reused: 0,
+                invalidated: 0,
+            },
+        };
+    }
+
+    // Load the prior evaluation.json (tolerate absence / parse errors and reject
+    // unsupported future-major artifacts → empty prior ⇒ re-evaluate).
+    let prior_map: HashMap<String, InstanceEvaluation> =
+        load_supported_prior_evaluation(&args.sweep_dir)
+            .map(|prior| {
+                prior
+                    .instances
+                    .into_iter()
+                    .map(|e| (e.instance_id.clone(), e))
+                    .collect()
+            })
+            .unwrap_or_default();
+
+    let mut reused = Vec::new();
+    let mut needs_eval: HashMap<String, InstanceResult> = HashMap::new();
+    let mut reuse_count = 0u32;
+    let mut invalidated_count = 0u32;
+
+    for (id, r) in results {
+        let runs = effective_runs(r);
+        let current_fp = submission_fingerprint_for_instance(&args.sweep_dir, id, runs);
+        // Whether the current sweep would submit this instance for evaluation.
+        // A cached verdict is only reusable if the current submission state still
+        // agrees with the state that produced it (a SkippedNoPatch verdict is only
+        // valid while the instance remains non-submitted, and vice versa).
+        let current_submitted = r.outcome.as_deref() == Some(outcome::SUBMITTED) && r.patch_present;
+
+        match prior_map.get(id) {
+            Some(cached)
+                if cached.runs == runs
+                    && cached.submission_fingerprint == current_fp
+                    && reuse_consistent_with_submission(cached, current_submitted) =>
+            {
+                // Patch bytes, run count, and submission state all match
+                // (including None == None for no-patch instances).
+                reused.push(cached.clone());
+                reuse_count += 1;
+            }
+            Some(_) => {
+                // Prior exists but patch artifact, run count, or submission
+                // state changed — invalidate.
+                needs_eval.insert(id.clone(), r.clone());
+                invalidated_count += 1;
+            }
+            None => {
+                // No prior verdict — new instance.
+                needs_eval.insert(id.clone(), r.clone());
+            }
+        }
+    }
+
+    let evaluated_count = u32::try_from(needs_eval.len()).unwrap_or(u32::MAX);
+    ReusePlan {
+        reused,
+        needs_eval,
+        counts: ReuseSummary {
+            evaluated: evaluated_count,
+            reused: reuse_count,
+            invalidated: invalidated_count,
+        },
+    }
+}
+
 fn probe_sb_cli_version() -> Option<String> {
     let output = Command::new("sb-cli").arg("--version").output().ok()?;
     let text = String::from_utf8_lossy(&output.stdout);
@@ -751,10 +1008,20 @@ fn attach_patch_stats(
     eval: &mut EvaluationResults,
     args: &EvaluateArgs,
     resolved_by_run: &HashMap<RunSlotKey, bool>,
+    fresh_ids: &std::collections::HashSet<&str>,
 ) -> Result<(), Error> {
+    // Nothing fresh to recompute (e.g. a fully-cached resume): reused instances
+    // keep their cached patch_stats, so avoid loading the dataset / gold patches.
+    if fresh_ids.is_empty() {
+        return Ok(());
+    }
     let classifiers = PatchClassifiers::from_default_toml()?;
     let gold_patches = load_gold_patches(args.dataset_path.as_deref())?;
     for row in &mut eval.instances {
+        // Skip reused instances — their patch_stats are preserved unchanged.
+        if !fresh_ids.contains(row.instance_id.as_str()) {
+            continue;
+        }
         let run_index = patch_stats_run_index(&row.instance_id, resolved_by_run);
         let patch_text = read_patch_or_empty(&args.sweep_dir, &row.instance_id, run_index)?;
         row.patch_stats = Some(score_patch(
@@ -767,7 +1034,9 @@ fn attach_patch_stats(
 }
 
 #[allow(clippy::cast_precision_loss, clippy::too_many_lines)]
-fn build_submission_class_rollup(instances: &[InstanceEvaluation]) -> (SubmissionClassRollup, f64) {
+pub(crate) fn build_submission_class_rollup(
+    instances: &[InstanceEvaluation],
+) -> (SubmissionClassRollup, f64) {
     let mut total_submitted = 0;
     let mut total_resolved = 0;
 
@@ -1192,6 +1461,7 @@ fn run_rehearsal_eval(
             eval_log_path: None,
             patch_stats: None,
             patch_error_log: None,
+            submission_fingerprint: None,
         });
     }
 
@@ -1238,6 +1508,7 @@ fn none_eval_for_result(id: &str, r: &InstanceResult) -> InstanceEvaluation {
         eval_log_path: None,
         patch_stats: None,
         patch_error_log: None,
+        submission_fingerprint: None,
     }
 }
 
@@ -1284,6 +1555,7 @@ fn run_docker_tests(
                 eval_log_path: None,
                 patch_stats: None,
                 patch_error_log: None,
+                submission_fingerprint: None,
             });
             continue;
         }
@@ -1303,6 +1575,7 @@ fn run_docker_tests(
                 eval_log_path: None,
                 patch_stats: None,
                 patch_error_log: None,
+                submission_fingerprint: None,
             });
             continue;
         };
@@ -1382,6 +1655,7 @@ fn run_docker_tests(
                 eval_log_path: None,
                 patch_stats: None,
                 patch_error_log: None,
+                submission_fingerprint: None,
             });
             continue;
         }
@@ -1465,6 +1739,7 @@ fn run_docker_tests(
             eval_log_path: None,
             patch_stats: None,
             patch_error_log,
+            submission_fingerprint: None,
         });
     }
 
@@ -2044,6 +2319,7 @@ fn parse_pytest_output(output: &str, all_tests: &[&str]) -> (Vec<String>, Vec<St
 fn run_sb_cli(
     args: &EvaluateArgs,
     results: &HashMap<String, InstanceResult>,
+    sweep_max_runs: u32,
 ) -> Result<EvaluateRunOutput, Error> {
     let preds = swebench::predictions_path(&args.sweep_dir);
     if !preds.exists() {
@@ -2057,7 +2333,9 @@ fn run_sb_cli(
     std::fs::create_dir_all(&report_dir)?;
     let run_id = args.run_id.clone().unwrap_or_else(generated_run_id);
 
-    let max_runs = results.values().map(effective_runs).max().unwrap_or(1);
+    // Run-mode is a sweep-level property; use the full sweep's run count so a
+    // partial resume of a pass@k sweep doesn't fall back to the single-run path.
+    let max_runs = sweep_max_runs.max(results.values().map(effective_runs).max().unwrap_or(1));
     let mut resolved_by_run = HashMap::new();
     if max_runs > 1 {
         let mut reports = BTreeMap::new();
@@ -2248,6 +2526,7 @@ fn parse_sb_cli_results(path: &Path) -> Result<HashMap<String, InstanceEvaluatio
                             eval_log_path: None,
                             patch_stats: None,
                             patch_error_log: None,
+                            submission_fingerprint: None,
                         },
                     );
                 }
@@ -2267,6 +2546,7 @@ fn parse_sb_cli_results(path: &Path) -> Result<HashMap<String, InstanceEvaluatio
                                 eval_log_path: None,
                                 patch_stats: None,
                                 patch_error_log: None,
+                                submission_fingerprint: None,
                             },
                         );
                     }
@@ -2336,6 +2616,7 @@ fn parse_generic_eval_row(v: &serde_json::Value) -> Option<InstanceEvaluation> {
         eval_log_path,
         patch_stats: None,
         patch_error_log,
+        submission_fingerprint: None,
     })
 }
 
@@ -2378,6 +2659,7 @@ fn merge_with_results(
             eval_log_path: None,
             patch_stats: None,
             patch_error_log: None,
+            submission_fingerprint: None,
         });
     }
     instances.sort_by(|a, b| a.instance_id.cmp(&b.instance_id));
@@ -2582,6 +2864,7 @@ fn missing_eval_for_result(id: &str, result: &InstanceResult) -> InstanceEvaluat
         eval_log_path: None,
         patch_stats: None,
         patch_error_log: None,
+        submission_fingerprint: None,
     }
 }
 
@@ -3175,6 +3458,7 @@ mod tests {
             retry_id: None,
             previous_failure_category: None,
             trace_id: None,
+            context_pressure: Default::default(),
         }
     }
 
@@ -3210,6 +3494,7 @@ mod tests {
             previous_failure_category: None,
 
             trace_id: None,
+            context_pressure: Default::default(),
         }
     }
 
@@ -3230,6 +3515,7 @@ mod tests {
             eval_log_path: None,
             patch_stats: None,
             patch_error_log: None,
+            submission_fingerprint: None,
         }
     }
 
@@ -3330,6 +3616,7 @@ mod tests {
                         eval_log_path: None,
                         patch_stats: None,
                         patch_error_log: None,
+                        submission_fingerprint: None,
                     },
                 )]),
             ),
@@ -3349,6 +3636,7 @@ mod tests {
                         eval_log_path: None,
                         patch_stats: None,
                         patch_error_log: None,
+                        submission_fingerprint: None,
                     },
                 )]),
             ),
@@ -3391,6 +3679,7 @@ mod tests {
             eval_log_path: None,
             patch_stats: None,
             patch_error_log: None,
+            submission_fingerprint: None,
         }];
         let rows = build_breakdown(
             &evals,
@@ -3837,6 +4126,7 @@ mod tests {
             run_id: Some("test-run".into()),
             breakdown: BreakdownSelection::none(),
             cost_attribution: false,
+            force: false,
         };
         let report_dir = dir.path().join("sb_cli_reports");
         let paths = collect_report_paths(&report_dir, "test-run", &args);
@@ -3861,6 +4151,7 @@ mod tests {
             run_id: Some("test-run".into()),
             breakdown: BreakdownSelection::none(),
             cost_attribution: false,
+            force: false,
         };
         let paths = collect_report_paths(&report_dir, "test-run", &args);
         assert_eq!(paths.len(), 1);
@@ -3880,6 +4171,7 @@ mod tests {
             run_id: Some("r".into()),
             breakdown: BreakdownSelection::none(),
             cost_attribution: false,
+            force: false,
         };
         let entries = build_source_reports(&HashMap::new(), &args, "r");
         assert!(entries.is_empty());
@@ -3900,6 +4192,7 @@ mod tests {
             run_id: Some("r".into()),
             breakdown: BreakdownSelection::none(),
             cost_attribution: false,
+            force: false,
         };
         let entries = build_source_reports(&resolved_by_run, &args, "r");
         assert!(
@@ -3922,6 +4215,7 @@ mod tests {
             run_id: Some("my-run".into()),
             breakdown: BreakdownSelection::none(),
             cost_attribution: false,
+            force: false,
         };
         let prov = build_provenance(
             &args,
@@ -3961,6 +4255,7 @@ mod tests {
             run_id: None,
             breakdown: BreakdownSelection::none(),
             cost_attribution: false,
+            force: false,
         };
         let prov = build_provenance(
             &args,
@@ -3988,6 +4283,7 @@ mod tests {
             run_id: Some("test-run".into()),
             breakdown: BreakdownSelection::none(),
             cost_attribution: false,
+            force: false,
         };
         let preds = dir.path().join("all_preds.jsonl");
         let report_dir = dir.path().join("sb_cli_reports");
@@ -4014,6 +4310,7 @@ mod tests {
             run_id: Some("test-run".into()),
             breakdown: BreakdownSelection::none(),
             cost_attribution: false,
+            force: false,
         };
         let report_dir = dir.path().join("sb_cli_reports");
         let cmd = build_redacted_report_command(&args, &report_dir, "test-run");
@@ -4124,6 +4421,7 @@ mod tests {
             previous_failure_category: None,
 
             trace_id: None,
+            context_pressure: Default::default(),
         };
         let run_slots = vec![
             crate::run::compare::LoadedRunSlot {

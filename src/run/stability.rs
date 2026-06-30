@@ -363,6 +363,7 @@ pub async fn run(args: StabilityArgs) -> Result<ExitCode, Error> {
             verification_timeout_secs: args.verify_timeout_secs,
             resume_from: None,
             interactive_mode: crate::run::mini::InteractiveMode::Off,
+            no_bell: false,
             trace_id: None,
             webhook_url: None,
             webhook_headers: vec![],
@@ -378,7 +379,7 @@ pub async fn run(args: StabilityArgs) -> Result<ExitCode, Error> {
             issue_provenance: None,
         };
 
-        if let Err(e) = crate::run::mini::run(mini_args).await {
+        if let Err(e) = Box::pin(crate::run::mini::run(mini_args)).await {
             // Only propagate errors that prevented the trajectory from being
             // written (preflight, Docker setup, config errors). Post-start
             // errors (timeouts, stagnation, verification failures) still write

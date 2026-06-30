@@ -17,7 +17,7 @@ use std::time::{Duration, Instant};
 
 use super::{
     Action, Agent, ExitReason, StepOutcome, extract_action_for_tools,
-    extract_action_from_model_response,
+    extract_action_from_model_response, strip_action_block,
 };
 use crate::config::{Config, ToolHookCfg};
 use crate::cost::{BASELINE_COST_MODEL, CostSource, estimate_cost_usd, is_free_tier_model};
@@ -441,6 +441,11 @@ pub struct DefaultAgent {
     /// When true, tool execution is blocked and any attempted tool action
     /// terminates the run with a read-only failure.
     pub read_only: bool,
+    /// Running count of consecutive unactionable model responses in this run.
+    /// Compared against `config.root.agent.parse_error_retries` to bound retries.
+    parse_error_count: u32,
+    /// Indices of all observations ever elided in the trajectory's history.
+    elided_indices: std::collections::HashSet<usize>,
 }
 
 pub struct DefaultAgentBuilder {
@@ -621,6 +626,19 @@ impl DefaultAgentBuilder {
             (history, trajectory, 0, 0.0, 0, 0, 0, 0)
         };
 
+        let mut elided_indices = std::collections::HashSet::new();
+        for (i, msg) in history.iter().enumerate() {
+            if msg
+                .extra
+                .other
+                .get("history_elided")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false)
+            {
+                elided_indices.insert(i);
+            }
+        }
+
         Ok(DefaultAgent {
             config: self.config,
             model: self.model,
@@ -653,6 +671,13 @@ impl DefaultAgentBuilder {
             confirm_callback: None,
             auto_approve_rules: std::sync::Mutex::new(std::collections::HashSet::new()),
             read_only: self.read_only,
+            // Consecutive parse-error counter always starts at 0. On --resume,
+            // the on-disk parse_retries (cumulative) is restored via the
+            // trajectory, but this consecutive counter is not, so the effective
+            // cap resets per session rather than per lifetime. Bounded impact:
+            // at most parse_error_retries extra retries per kill/resume cycle.
+            parse_error_count: 0,
+            elided_indices,
         })
     }
 }
@@ -837,6 +862,10 @@ impl Agent for DefaultAgent {
             self.config.root.agent.history_max_input_tokens,
         );
         if elision.compaction_failed {
+            self.trajectory.info.context_pressure.compaction_failed = true;
+            if let Some(limit) = self.config.root.agent.history_max_input_tokens {
+                self.trajectory.info.context_pressure.token_ceiling = limit;
+            }
             self.trajectory.info.exit_reason = Some("history_compaction_failed".into());
             self.trajectory.info.failure_category = Some(FailureCategory::HistoryCompactionFailed);
             self.trajectory.info.steps = Some(self.steps);
@@ -847,6 +876,39 @@ impl Agent for DefaultAgent {
                 None,
             );
             return Ok(StepOutcome::Terminate(ExitReason::HistoryCompactionFailed));
+        }
+
+        let has_budget = self.config.root.agent.history_max_input_tokens.is_some()
+            || self
+                .config
+                .root
+                .agent
+                .history_keep_last_observations
+                .is_some();
+        if has_budget {
+            let mut initial_total: usize = self.history.iter().map(|m| m.content.len()).sum();
+            for &(hist_idx, orig_bytes) in &elision.elided {
+                if let Some(msg) = self.history.get(hist_idx) {
+                    initial_total = initial_total
+                        .saturating_add(orig_bytes)
+                        .saturating_sub(msg.content.len());
+                }
+            }
+            let projected_tokens = (initial_total as u64).div_ceil(BYTES_PER_TOKEN as u64);
+
+            let pressure = &mut self.trajectory.info.context_pressure;
+            pressure.peak_projected_tokens = pressure.peak_projected_tokens.max(projected_tokens);
+            pressure.token_ceiling = self.config.root.agent.history_max_input_tokens.unwrap_or(0);
+
+            if !elision.elided.is_empty() {
+                pressure.elision_trigger_count += 1;
+                for &(hist_idx, orig_bytes) in &elision.elided {
+                    if self.elided_indices.insert(hist_idx) {
+                        pressure.observations_elided += 1;
+                        pressure.bytes_elided += orig_bytes as u64;
+                    }
+                }
+            }
         }
         // Retroactively mark elided observations in the trajectory.
         // We also store the marker text so bench-inspect can reconstruct
@@ -1062,20 +1124,19 @@ impl Agent for DefaultAgent {
                 }));
             }
             Action::Bash(cmd) => {
+                self.parse_error_count = 0;
                 asst.extra.actions = Some(vec![cmd.clone()]);
             }
             Action::Tool(call) => {
+                self.parse_error_count = 0;
                 asst.extra.actions = Some(vec![call.action_label()]);
             }
             Action::None => {
-                // Keep a breadcrumb that at least one model response could
-                // not be parsed into a valid action. Terminal limit checks
-                // above still take precedence if the run eventually ends on
-                // step/cost exhaustion.
-                self.trajectory
-                    .info
-                    .failure_category
-                    .get_or_insert(FailureCategory::ModelParse);
+                // Count this unactionable response and record it in the trajectory
+                // so triage can distinguish one-off flakes from chronic format failures.
+                self.parse_error_count += 1;
+                self.trajectory.info.parse_retries += 1;
+
                 self.history.push(Message::assistant(
                     self.redactor
                         .redact_text(&assistant_content, surface::MODEL_OBSERVATION)
@@ -1087,6 +1148,75 @@ impl Agent for DefaultAgent {
                     asst.extra.clone(),
                     &self.redactor,
                 );
+
+                if self.parse_error_count > self.config.root.agent.parse_error_retries {
+                    // Before classifying as ModelParse, check if a budget limit was
+                    // exceeded by this model call — budget precedence must hold even
+                    // when the call that exhausts retries is also the one that pushes
+                    // total_cost_usd past the cap, since the next step's budget check
+                    // won't run if we terminate here.
+                    // Order matches the normal limit gate at the top of step(): cost_limit first.
+                    if let Some(limit) = self.config.root.agent.cost_limit_usd {
+                        if self.total_cost_usd >= limit {
+                            self.trajectory.info.exit_reason = Some("cost_limit".into());
+                            self.trajectory.info.failure_category =
+                                Some(FailureCategory::CostLimit);
+                            self.trajectory.info.steps = Some(self.steps);
+                            self.trajectory.info.total_cost_usd = Some(self.total_cost_usd);
+                            self.finalize_run_metadata(outcome::STEP_LIMIT_REACHED);
+                            self.emit_run_ended(
+                                "cost_limit",
+                                Some(FailureCategory::CostLimit),
+                                None,
+                            );
+                            return Ok(StepOutcome::Terminate(ExitReason::CostLimit {
+                                limit_usd: limit,
+                                spent_usd: self.total_cost_usd,
+                            }));
+                        }
+                    }
+                    if let Some(limit) = self.config.root.agent.per_task_budget_usd {
+                        if self.total_cost_usd >= limit {
+                            self.trajectory.info.exit_reason = Some("budget_exhausted".into());
+                            self.trajectory.info.failure_category =
+                                Some(FailureCategory::BudgetExhausted);
+                            self.trajectory.info.steps = Some(self.steps);
+                            self.trajectory.info.total_cost_usd = Some(self.total_cost_usd);
+                            self.trajectory.info.ended_at = Some(chrono::Utc::now().to_rfc3339());
+                            self.finalize_run_metadata(outcome::BUDGET_EXHAUSTED);
+                            self.emit_run_ended(
+                                "budget_exhausted",
+                                Some(FailureCategory::BudgetExhausted),
+                                None,
+                            );
+                            return Ok(StepOutcome::Terminate(ExitReason::BudgetExhausted {
+                                limit_usd: limit,
+                                spent_usd: self.total_cost_usd,
+                            }));
+                        }
+                    }
+                    // Retries exhausted with no budget exceeded — fail with ModelParse.
+                    // Terminal limit checks at the top of step() still take precedence
+                    // if the run eventually ends on step exhaustion.
+                    self.trajectory
+                        .info
+                        .exit_reason
+                        .get_or_insert_with(|| "error".into());
+                    self.trajectory
+                        .info
+                        .failure_category
+                        .get_or_insert(FailureCategory::ModelParse);
+                    self.trajectory.info.steps = Some(self.steps);
+                    self.trajectory.info.total_cost_usd = Some(self.total_cost_usd);
+                    self.finalize_run_metadata(crate::trajectory::outcome::ERROR);
+                    self.emit_run_ended("error", Some(FailureCategory::ModelParse), None);
+                    return Err(Error::Model(ModelError::Malformed(format!(
+                        "parse-error retries exhausted after {} attempt(s)",
+                        self.parse_error_count
+                    ))));
+                }
+
+                // Under retry limit — re-prompt with format_error_template.
                 // Observation = format_error_template, verbatim (no vars in
                 // default template, but we still render to pick up any
                 // future placeholders).
@@ -1110,9 +1240,22 @@ impl Agent for DefaultAgent {
                 record_redacted_message(&mut self.trajectory, &obs, obs_extra, &self.redactor);
                 self.last_measurement_end = Instant::now();
                 self.steps += 1;
+                if let Some(path) = &self.checkpoint_path.clone() {
+                    self.trajectory.info.steps = Some(self.steps);
+                    self.trajectory.info.actual_cost_usd = Some(self.total_cost_usd);
+                    if let Err(e) = self.trajectory.save_partial_atomic(path) {
+                        tracing::warn!(error=%e, "checkpoint write failed; continuing without checkpoint");
+                    }
+                }
                 return Ok(StepOutcome::Continue);
             }
         }
+
+        // Prose-only rationale for the confirm modal (issue #655): the
+        // assistant's reasoning with the proposed command fence removed, so the
+        // command is not echoed back as its own justification. Captured here
+        // while `action` is still available (it is consumed by the match below).
+        let action_rationale = strip_action_block(&resp.content, &action);
 
         // 5. Policy gate: check bash commands before hooks or execution.
         let tool_call = match action {
@@ -1263,7 +1406,10 @@ impl Agent for DefaultAgent {
         // PreToolUse hook layer already blocked the tool — the operator
         // never sees a prompt for a command that won't run anyway.
         if !tool_use_blocked {
-            if let Some(decision) = self.confirm_operator_action(&tool_name, &tool_input).await {
+            if let Some(decision) = self
+                .confirm_operator_action(&tool_name, &tool_input, &action_rationale)
+                .await
+            {
                 match decision {
                     super::ConfirmDecision::Approve => {}
                     super::ConfirmDecision::AutoApprove(scope) => {
@@ -2003,6 +2149,7 @@ impl DefaultAgent {
         &self,
         tool_name: &str,
         tool_input: &str,
+        rationale: &str,
     ) -> Option<super::ConfirmDecision> {
         let cb = self.confirm_callback.as_ref()?;
         let ctx = super::ConfirmContext {
@@ -2019,6 +2166,16 @@ impl DefaultAgent {
             } else {
                 "cache:auto-or-none"
             },
+            // Display-only retention of the assistant prose that proposed this
+            // command (issue #655): redact first so secrets never surface, then
+            // bound the length so an adversarial message cannot exhaust the
+            // dashboard's memory.
+            rationale: super::confirm::cap_rationale(
+                &self
+                    .redactor
+                    .redact_text(rationale, surface::TRAJECTORY)
+                    .text,
+            ),
         };
         let scope = ctx.derive_scope();
         let has_rule = {
@@ -2191,13 +2348,40 @@ impl DefaultAgent {
         tool_input: &str,
         result: Option<&RunResult>,
     ) -> Result<Vec<ToolHookResult>, Error> {
-        let mut reports = Vec::new();
-        for hook in hooks {
-            reports.push(
-                self.run_tool_hook(phase, hook, tool_name, tool_input, result)
-                    .await?,
-            );
+        if hooks.is_empty() {
+            return Ok(Vec::new());
         }
+        // Configured hooks run real commands via `env.run`. Surface the phase as
+        // a generic tool-activity span so a long-running hook shows the in-flight
+        // (and stall) indicator on the dashboard (issue #649) instead of a static
+        // idle footer. `self.stream` is the RedactingSink, so the label is
+        // redacted on the stream surface.
+        self.stream.emit(StreamEvent::ToolStart {
+            step: self.steps,
+            label: format!("{} hooks: {tool_name}", phase.as_str()),
+            timestamp: chrono::Utc::now().to_rfc3339(),
+        });
+        let mut reports = Vec::new();
+        let mut outcome = Ok(());
+        for hook in hooks {
+            match self
+                .run_tool_hook(phase, hook, tool_name, tool_input, result)
+                .await
+            {
+                Ok(report) => reports.push(report),
+                Err(err) => {
+                    outcome = Err(err);
+                    break;
+                }
+            }
+        }
+        // Close the span even on a hook error, so the dashboard never sticks on
+        // a stale running footer.
+        self.stream.emit(StreamEvent::ToolEnd {
+            step: self.steps,
+            timestamp: chrono::Utc::now().to_rfc3339(),
+        });
+        outcome?;
         Ok(reports)
     }
 
@@ -2310,14 +2494,34 @@ impl DefaultAgent {
         let timeout_secs = tool
             .timeout_secs
             .unwrap_or(self.config.root.environment.timeout_secs);
-        let mut req = RunRequest::new(rendered_command)
+        let mut req = RunRequest::new(rendered_command.clone())
             .with_timeout(Duration::from_secs(timeout_secs))
             .with_stdin(tool_input.to_owned());
         if let Some(cancellation) = self.cancellation.clone() {
             req = req.with_cancellation(cancellation);
         }
         req.env = tool_process_env(&context)?;
-        Ok(self.env.run(req).await?)
+        // A configured command tool runs a real shell via `env.run` but is a
+        // distinct tool type from the Bash tool, so surface it as a generic
+        // tool-activity span rather than bash telemetry: a dashboard that infers
+        // liveness (issue #649) shows the in-flight command — and the stall
+        // indicator for a slow one — while `--event-log`/SSE/webhook consumers
+        // that audit bash commands are unaffected. `self.stream` is the
+        // RedactingSink, so the raw command label is redacted on the stream
+        // surface.
+        self.stream.emit(StreamEvent::ToolStart {
+            step: self.steps,
+            label: rendered_command,
+            timestamp: chrono::Utc::now().to_rfc3339(),
+        });
+        let result = self.env.run(req).await;
+        // Close the span even if the run errored, so the dashboard never sticks
+        // on a stale running footer.
+        self.stream.emit(StreamEvent::ToolEnd {
+            step: self.steps,
+            timestamp: chrono::Utc::now().to_rfc3339(),
+        });
+        result.map_err(Into::into)
     }
 
     async fn run_non_bash_tool(
@@ -2341,10 +2545,28 @@ impl DefaultAgent {
             step: self.steps,
             total_cost_usd: self.total_cost_usd,
         };
-        Ok(provider
+        // A runtime/MCP provider tool does real work — an MCP server runs a
+        // command via `env.run` — but, unlike a command tool, exposes no
+        // rendered command. Wrap the call in the same generic tool-activity span
+        // so a slow provider call escalates to the stall indicator (issue #649)
+        // instead of rendering as a static idle footer; the tool name is the
+        // best available label. `self.stream` is the RedactingSink, so the label
+        // is redacted on the stream surface.
+        self.stream.emit(StreamEvent::ToolStart {
+            step: self.steps,
+            label: format!("tool: {tool_name}"),
+            timestamp: chrono::Utc::now().to_rfc3339(),
+        });
+        let result = provider
             .call(self.env.as_ref(), invocation, self.cancellation.clone())
-            .await?
-            .into())
+            .await;
+        // Close the span even if the call errored, so the dashboard never sticks
+        // on a stale running footer.
+        self.stream.emit(StreamEvent::ToolEnd {
+            step: self.steps,
+            timestamp: chrono::Utc::now().to_rfc3339(),
+        });
+        Ok(result?.into())
     }
 
     fn command_tool_context(&self, tool: &CommandTool, tool_input: &str) -> serde_json::Value {
@@ -2997,6 +3219,227 @@ mod tests {
                 .any(|m| m.content.contains("did not include a valid tool call"))
         );
     }
+
+    // ── RED phase: parse-retry AC tests (issue #517) ─────────────────────────
+
+    fn make_agent_with_parse_retries(
+        responses: Vec<String>,
+        parse_error_retries: u32,
+    ) -> DefaultAgent {
+        let mut cfg = Config::defaults().unwrap();
+        cfg.root.agent.step_limit = 10;
+        cfg.root.agent.parse_error_retries = parse_error_retries;
+        let model = Arc::new(DeterministicModel::new(responses));
+        DefaultAgentBuilder {
+            config: cfg,
+            model,
+            env: Box::new(LocalEnvironment::new()),
+            task: "test".into(),
+            extra_context: None,
+            renderer: None,
+            stream: None,
+            resume_from: None,
+            read_only: false,
+        }
+        .build()
+        .unwrap()
+    }
+
+    /// AC (a): empty/garbage first response is retried then succeeds → run proceeds past step 0.
+    #[tokio::test]
+    async fn parse_retry_first_garbage_then_success_proceeds() {
+        let mut agent = make_agent_with_parse_retries(
+            vec![
+                "no fenced block here".into(),
+                "COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT\n```\nok\n```".into(),
+            ],
+            2,
+        );
+        let exit = agent.run().await.unwrap();
+        assert!(
+            matches!(exit, ExitReason::Submitted { .. }),
+            "run should succeed after retry, got {exit:?}"
+        );
+        assert_eq!(
+            agent.trajectory.info.failure_category, None,
+            "no failure_category on a successful run"
+        );
+        assert_eq!(
+            agent.trajectory.info.parse_retries, 1,
+            "one parse retry should be recorded"
+        );
+    }
+
+    /// AC (b): persistently empty responses fail with model_parse only after N retries.
+    #[tokio::test]
+    async fn parse_retry_persistent_fails_after_n_retries() {
+        let model = Arc::new(DeterministicModel::new([
+            "garbage no action".into(),
+            "garbage no action".into(),
+            "garbage no action".into(),
+            // Should not reach a 4th call
+            "COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT\n```\nok\n```".into(),
+        ]));
+        let mut cfg = Config::defaults().unwrap();
+        cfg.root.agent.step_limit = 10;
+        cfg.root.agent.parse_error_retries = 2;
+        let mut agent = DefaultAgentBuilder {
+            config: cfg,
+            model: model.clone(),
+            env: Box::new(LocalEnvironment::new()),
+            task: "test".into(),
+            extra_context: None,
+            renderer: None,
+            stream: None,
+            resume_from: None,
+            read_only: false,
+        }
+        .build()
+        .unwrap();
+        let result = agent.run().await;
+        assert!(result.is_err(), "should fail after retries exhausted");
+        assert_eq!(
+            agent.trajectory.info.failure_category,
+            Some(FailureCategory::ModelParse),
+            "failure_category must be model_parse after N retries"
+        );
+        assert_eq!(
+            agent.trajectory.info.parse_retries, 3,
+            "3 parse errors should be recorded"
+        );
+        assert_eq!(model.call_count(), 3, "model called exactly N+1 times");
+    }
+
+    /// AC (c): retries stop at budget exhaustion; failure_category is budget_exhausted not model_parse.
+    #[tokio::test]
+    async fn parse_retry_stops_at_budget_exhaustion() {
+        let usage = ModelUsage {
+            input_tokens: 0,
+            output_tokens: 0,
+            cache_read_tokens: 0,
+            cache_creation_tokens: 0,
+            cost_usd: Some(0.10),
+        };
+        let mut cfg = Config::defaults().unwrap();
+        cfg.root.agent.step_limit = 10;
+        cfg.root.agent.per_task_budget_usd = Some(0.15);
+        cfg.root.agent.parse_error_retries = 5;
+        let model = Arc::new(DeterministicModel::with_usage(
+            [
+                "garbage no action".into(),
+                "garbage no action".into(),
+                "garbage no action".into(),
+            ],
+            usage,
+        ));
+        let mut agent = DefaultAgentBuilder {
+            config: cfg,
+            model,
+            env: Box::new(LocalEnvironment::new()),
+            task: "test".into(),
+            extra_context: None,
+            renderer: None,
+            stream: None,
+            resume_from: None,
+            read_only: false,
+        }
+        .build()
+        .unwrap();
+        let exit = agent.run().await.unwrap();
+        assert!(
+            matches!(exit, ExitReason::BudgetExhausted { .. }),
+            "should be budget_exhausted when budget runs out during parse retry: {exit:?}"
+        );
+        assert_eq!(
+            agent.trajectory.info.failure_category,
+            Some(FailureCategory::BudgetExhausted),
+            "failure_category must be budget_exhausted, not model_parse"
+        );
+    }
+
+    /// Budget exceeded by the very model call that also exhausts parse retries → BudgetExhausted wins.
+    #[tokio::test]
+    async fn parse_retry_budget_wins_when_exceeded_on_same_call_as_retry_exhaustion() {
+        let usage = ModelUsage {
+            input_tokens: 0,
+            output_tokens: 0,
+            cache_read_tokens: 0,
+            cache_creation_tokens: 0,
+            cost_usd: Some(0.10),
+        };
+        // N=1, budget=$0.15: step 0 call costs $0.10 (under budget, retry), step 1 call
+        // costs another $0.10 (total $0.20 > $0.15) AND exhausts retries simultaneously.
+        let mut cfg = Config::defaults().unwrap();
+        cfg.root.agent.step_limit = 10;
+        cfg.root.agent.per_task_budget_usd = Some(0.15);
+        cfg.root.agent.parse_error_retries = 1;
+        let model = Arc::new(DeterministicModel::with_usage(
+            ["garbage".into(), "garbage".into()],
+            usage,
+        ));
+        let mut agent = DefaultAgentBuilder {
+            config: cfg,
+            model,
+            env: Box::new(LocalEnvironment::new()),
+            task: "test".into(),
+            extra_context: None,
+            renderer: None,
+            stream: None,
+            resume_from: None,
+            read_only: false,
+        }
+        .build()
+        .unwrap();
+        let exit = agent.run().await.unwrap();
+        assert!(
+            matches!(exit, ExitReason::BudgetExhausted { .. }),
+            "budget must win over model_parse even when both conditions fire together: {exit:?}"
+        );
+        assert_eq!(
+            agent.trajectory.info.failure_category,
+            Some(FailureCategory::BudgetExhausted),
+            "failure_category must be budget_exhausted, not model_parse"
+        );
+    }
+
+    /// AC (d): N=0 reproduces today's abort-at-step-0 behavior (no re-prompt, immediate fail).
+    #[tokio::test]
+    async fn parse_retry_n_zero_aborts_immediately() {
+        let model = Arc::new(DeterministicModel::new([
+            "garbage no action".into(),
+            // Should never reach second call
+            "COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT\n```\nok\n```".into(),
+        ]));
+        let mut cfg = Config::defaults().unwrap();
+        cfg.root.agent.step_limit = 10;
+        cfg.root.agent.parse_error_retries = 0;
+        let mut agent = DefaultAgentBuilder {
+            config: cfg,
+            model: model.clone(),
+            env: Box::new(LocalEnvironment::new()),
+            task: "test".into(),
+            extra_context: None,
+            renderer: None,
+            stream: None,
+            resume_from: None,
+            read_only: false,
+        }
+        .build()
+        .unwrap();
+        let result = agent.run().await;
+        assert!(
+            result.is_err(),
+            "N=0 should immediately fail on first parse error"
+        );
+        assert_eq!(
+            agent.trajectory.info.failure_category,
+            Some(FailureCategory::ModelParse),
+            "failure_category must be model_parse with N=0"
+        );
+        assert_eq!(model.call_count(), 1, "model called exactly once with N=0");
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
 
     #[tokio::test]
     async fn wallclock_deadline_warning_is_visible_before_model_query() {

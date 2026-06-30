@@ -51,6 +51,7 @@ fn submitted(id: &str) -> InstanceResult {
         retry_id: None,
         previous_failure_category: None,
         trace_id: None,
+        context_pressure: Default::default(),
     }
 }
 
@@ -85,6 +86,7 @@ fn errored(id: &str, cat: FailureCategory) -> InstanceResult {
         retry_id: None,
         previous_failure_category: None,
         trace_id: None,
+        context_pressure: Default::default(),
     }
 }
 
@@ -226,6 +228,7 @@ fn write_results_with_filter_spec_and_model(
             import_predictions_path: None,
             import_predictions_sha256: None,
             reproduced_from: None,
+            merged_from: None,
         }),
         cost_limit_usd: None,
         instances,
@@ -1454,6 +1457,7 @@ fn evaluate_cost_attribution_off_matches_legacy_stdout() {
     );
     let stdout = String::from_utf8_lossy(&out.stdout);
     let expected = "\
+reuse: 2 evaluated, 0 reused, 0 invalidated\n\
 resolved: 0\n\
 resolved_rate: 0.0000\n\
 pass@1: 0.0000\n\

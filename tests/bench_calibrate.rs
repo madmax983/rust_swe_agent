@@ -928,6 +928,7 @@ fn instance(id: &str, submitted: bool, cost_usd: f64, duration_secs: f64) -> Ins
         retry_id: None,
         previous_failure_category: None,
         trace_id: None,
+        context_pressure: Default::default(),
     }
 }
 
@@ -991,6 +992,7 @@ fn manifest_for(case: ManifestCase, total: usize, wall_clock_secs: f64) -> Prove
         import_predictions_path: None,
         import_predictions_sha256: None,
         reproduced_from: None,
+        merged_from: None,
     }
 }
 

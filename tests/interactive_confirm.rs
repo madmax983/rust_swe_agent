@@ -302,6 +302,49 @@ async fn confirm_context_carries_command_and_step_metadata() {
 }
 
 #[tokio::test]
+async fn confirm_context_carries_assistant_rationale() {
+    let cfg = Config::defaults().unwrap();
+    let model = Arc::new(DeterministicModel::new(vec![
+        "I will probe the working directory first.\n```bash\necho context-probe\n```".into(),
+        "COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT\n```\nok\n```".into(),
+    ]));
+    let env: Box<dyn Environment> = Box::new(LocalEnvironment::new());
+    let recorder = Arc::new(ContextRecorder::default());
+    let mut agent = DefaultAgentBuilder {
+        config: cfg,
+        model,
+        env,
+        task: "rationale-probe".into(),
+        extra_context: None,
+        renderer: None,
+        stream: None,
+        resume_from: None,
+        read_only: false,
+    }
+    .build()
+    .unwrap();
+    agent.confirm_callback = Some(recorder.clone() as Arc<dyn ConfirmCallback>);
+
+    let _ = agent.run().await.unwrap();
+    let ctx = {
+        let seen = recorder.seen.lock().unwrap();
+        assert_eq!(seen.len(), 1);
+        seen[0].clone()
+    };
+    assert!(
+        ctx.rationale
+            .contains("I will probe the working directory first."),
+        "rationale should carry the assistant prose; got: {:?}",
+        ctx.rationale
+    );
+    assert!(
+        !ctx.rationale.contains("echo context-probe"),
+        "rationale should not echo the proposed command; got: {:?}",
+        ctx.rationale
+    );
+}
+
+#[tokio::test]
 async fn reject_with_feedback_records_synthetic_observation_and_event() {
     let mut cfg = Config::defaults().unwrap();
     cfg.root.agent.step_limit = 5;

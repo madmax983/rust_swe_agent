@@ -6,6 +6,30 @@ use clap::{Args, Subcommand, ValueEnum};
 
 // ── Agent subcommands ─────────────────────────────────────────────────────────
 
+/// Container network isolation mode for `--network-mode` (issue #523).
+///
+/// `unrestricted` (default) preserves today's behavior — no `--network` flag
+/// is added to `docker run`. `none` passes `--network none` to `docker run`,
+/// disabling all container egress.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum NetworkModeArg {
+    /// Default bridge networking — no isolation, no change from current behavior.
+    Unrestricted,
+    /// Pass `--network none` to `docker run`; all outbound calls fail inside
+    /// the container.
+    None,
+}
+
+impl NetworkModeArg {
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Unrestricted => "unrestricted",
+            Self::None => "none",
+        }
+    }
+}
+
 /// Validated environment-type selector for `agent env preview`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum EnvTypeArg {
@@ -319,6 +343,28 @@ pub struct SuiteCmd {
     /// re-run only missing or non-terminal tasks.
     #[arg(long, default_value_t = false)]
     pub resume: bool,
+}
+
+/// `agent artifact-check` — zero-cost structural conformance gate for artifact files (issue #534).
+///
+/// Validates one or more artifact files or directories (recursively) against the
+/// Artifact Contract (`docs/artifact-contract.md`). No model call, no network I/O.
+#[derive(Debug, Args)]
+pub struct ArtifactCheckCmd {
+    /// One or more artifact files or directories to validate. Directories are
+    /// scanned recursively for `*.json` files.
+    #[arg(required = true, value_name = "PATH")]
+    pub paths: Vec<std::path::PathBuf>,
+
+    /// Output format: `text` (default human-readable table) or `json`
+    /// (emits a `validation_report` artifact with `schema_version`).
+    #[arg(long, default_value = "text")]
+    pub format: String,
+
+    /// Promote `legacy_unversioned` and `valid_with_warnings` verdicts to
+    /// failures in addition to the always-fatal `invalid` and `unsupported_major`.
+    #[arg(long, default_value_t = false)]
+    pub strict: bool,
 }
 
 /// `agent redact-check` — zero-cost preflight for the secret-redaction config (issue #321).
@@ -670,6 +716,86 @@ pub enum AgentCmd {
     BestOf(Box<BestOfCmd>),
     /// Profile a single trajectory file: cost, tokens, stage latency, and action mix (issue #503).
     Profile(AgentProfileCmd),
+    /// List and summarize single-task trajectory files in a directory (issue #509).
+    Runs(AgentRunsCmd),
+    /// Audit trajectory files for filesystem accesses outside the workdir (issue #511).
+    FsAudit(FsAuditCmd),
+    /// Validate artifact files against the Artifact Contract (zero-cost, no model call).
+    ArtifactCheck(ArtifactCheckCmd),
+    /// Preflight host readiness before a live run (zero-cost, no model call, $0).
+    Doctor(AgentDoctorCmd),
+    /// Attach a human verdict and notes to a trajectory as a sidecar file (issue #539).
+    Annotate(AgentAnnotateCmd),
+}
+
+/// `agent doctor` — zero-cost host-readiness preflight (issue #526).
+///
+/// Answers the simplest go/no-go question before your first live run: can this
+/// machine run a task right now, and if not, what do I fix? It makes **no model
+/// call and no provider network probe — it costs $0** — and checks: git on
+/// PATH, the provider credential env var expected for the resolved model is
+/// present (presence only; the value is never read or printed), the Docker
+/// daemon when a docker environment is selected (otherwise `skip`), the
+/// runs/output directory is writable, and the active toolchain meets the crate
+/// `rust-version` (or `skip` when unknowable).
+///
+/// Exits 0 when every check passes, or 48 (`host_not_ready`) when any check
+/// fails. Skipped checks never fail the command. Use `--format json` for a
+/// machine-readable `{ check, status, detail }` checklist suitable for CI gating.
+#[derive(Debug, Args)]
+pub struct AgentDoctorCmd {
+    /// Environment type to validate: `local` or `docker`. When omitted, the
+    /// environment kind from the resolved config is used (default `local`).
+    /// Docker daemon reachability is only checked when `docker` is in effect.
+    #[arg(long)]
+    pub env: Option<EnvTypeArg>,
+
+    /// Override the model name used to pick the expected credential env var.
+    /// When omitted the resolved config model is used.
+    #[arg(long)]
+    pub model: Option<String>,
+
+    /// Optional path to a TOML config file (overlays defaults).
+    #[arg(long)]
+    pub config: Option<PathBuf>,
+
+    /// Output format: `text` (default) or `json` (machine-readable checklist).
+    #[arg(long, default_value = "text")]
+    pub format: PreviewFormatArg,
+
+    /// Runs/output directory whose write access is checked.
+    #[arg(long, default_value = "./runs")]
+    pub output: PathBuf,
+
+    /// Override the Docker image to preflight (requires `--env docker`).
+    /// When omitted the configured `environment.docker_image` is used.
+    #[arg(long)]
+    pub docker_image: Option<String>,
+}
+
+/// `agent runs` — list and summarize single-task trajectory files (issue #509).
+#[derive(Debug, Args)]
+pub struct AgentRunsCmd {
+    /// Directory to scan for `*.traj.json` files.
+    #[arg(long, default_value = "./runs")]
+    pub dir: PathBuf,
+
+    /// Recurse into subdirectories (default: top-level only).
+    #[arg(long, default_value_t = false)]
+    pub recursive: bool,
+
+    /// Output format: `text` (default, human table) or `json` (schema-versioned array).
+    #[arg(long, default_value = "text")]
+    pub format: String,
+
+    /// Filter rows by `key=value`. Supported keys: `outcome`, `failure_category`.
+    /// Repeatable. Example: `--filter outcome=submitted --filter failure_category=step_limit`.
+    #[arg(long = "filter", value_name = "KEY=VALUE")]
+    pub filters: Vec<String>,
+
+    /// Sort column: `task` (default), `cost`, `steps`, or `duration`.
+    #[arg(long, default_value = "task")]
+    pub sort: String,
 }
 
 /// `agent profile` — profile a single trajectory file (issue #503).
@@ -679,6 +805,81 @@ pub struct AgentProfileCmd {
     pub trajectory: std::path::PathBuf,
 
     /// Output format: `text` (default) or `json`.
+    #[arg(long, default_value = "text")]
+    pub format: String,
+}
+
+/// `agent annotate` — attach a human verdict and notes to a trajectory sidecar (issue #539).
+///
+/// Writes `<id>.annotation.json` next to the trajectory without mutating the trajectory.
+/// Use `--show` to read an existing annotation back.
+#[derive(Debug, Args)]
+pub struct AgentAnnotateCmd {
+    /// Path to the `.traj.json` file to annotate.
+    pub trajectory: std::path::PathBuf,
+
+    /// Human verdict label (controlled vocabulary): `correct`, `incorrect`, `partial`, `unsure`.
+    /// Required in write mode; ignored with `--show`.
+    #[arg(long, value_name = "VERDICT")]
+    pub verdict: Option<String>,
+
+    /// Optional failure-category tag (free string; values from the `failure_category` taxonomy
+    /// are recommended but not enforced). Ignored with `--show`.
+    #[arg(long, value_name = "CATEGORY")]
+    pub failure_category: Option<String>,
+
+    /// Optional free-text note attached to the annotation. Redacted before writing.
+    #[arg(long, value_name = "TEXT")]
+    pub note: Option<String>,
+
+    /// Step-level note: `--step-note <INDEX>=<TEXT>`, repeatable. INDEX is the zero-based
+    /// message index in the trajectory. Exits non-zero if the index is out of range.
+    #[arg(long = "step-note", value_name = "INDEX=TEXT")]
+    pub step_notes: Vec<String>,
+
+    /// Overwrite an existing annotation if present. Without this flag, re-running on an
+    /// already-annotated trajectory exits non-zero.
+    #[arg(long, default_value_t = false)]
+    pub force: bool,
+
+    /// Read mode: print the existing annotation instead of writing one. Exits non-zero if
+    /// no annotation exists.
+    #[arg(long, default_value_t = false)]
+    pub show: bool,
+
+    /// Output format: `text` (default) or `json`. Applies to `--show` and to the write
+    /// confirmation message.
+    #[arg(long, default_value = "text")]
+    pub format: String,
+}
+
+/// `agent fs-audit` — post-hoc filesystem boundary audit (issue #511).
+///
+/// Scans bash commands in trajectory files for path references outside the
+/// configured workdir: absolute paths, `..` traversals, `$HOME`/`~/`
+/// references. Zero-cost: read-only, no model calls, no network.
+#[derive(Debug, Args)]
+pub struct FsAuditCmd {
+    /// Single trajectory file to audit. Mutually exclusive with `--sweep`.
+    #[arg(long, value_name = "PATH", group = "source")]
+    pub trajectory: Option<PathBuf>,
+
+    /// Sweep directory containing `*.traj.json` files to audit.
+    /// Mutually exclusive with `--trajectory`.
+    #[arg(long, value_name = "DIR", group = "source")]
+    pub sweep: Option<PathBuf>,
+
+    /// Override the workdir used for path boundary checks. When omitted,
+    /// each trajectory's `info.local_workdir` is used (default `/repo`).
+    #[arg(long, value_name = "PATH")]
+    pub workdir: Option<PathBuf>,
+
+    /// Suppress findings whose `matched_path` starts with this prefix.
+    /// Repeatable. Example: `--allow /etc --allow /tmp`.
+    #[arg(long = "allow", value_name = "PATH")]
+    pub allow: Vec<PathBuf>,
+
+    /// Output format: `text` (default, human-readable) or `json`.
     #[arg(long, default_value = "text")]
     pub format: String,
 }
@@ -930,6 +1131,13 @@ pub struct MiniCmd {
     #[arg(long)]
     pub docker_image: Option<String>,
 
+    /// Container network isolation mode (issue #523). Overrides
+    /// `environment.network_mode` in the config file.
+    /// `unrestricted` (default): today's behavior, no `--network` flag.
+    /// `none`: adds `--network none` to `docker run`, disabling all egress.
+    #[arg(long, value_enum)]
+    pub network_mode: Option<NetworkModeArg>,
+
     /// Output directory for trajectories.
     #[arg(long, default_value = "./runs")]
     pub output: PathBuf,
@@ -1041,6 +1249,14 @@ pub struct MiniCmd {
     #[arg(long, value_enum, default_value_t = UiKind::Stderr)]
     pub ui: UiKind,
 
+    /// Issue #648 — suppress the terminal bell (BEL) that the
+    /// `--interactive --ui ratatui` dashboard rings to get the operator's
+    /// attention when a confirm modal is raised or the run ends. Bells are
+    /// also suppressed automatically when `NO_BELL` is set (to any non-empty
+    /// value) or stdout is not a TTY.
+    #[arg(long, default_value_t = false)]
+    pub no_bell: bool,
+
     /// Disable per-step atomic trajectory checkpoints (issue #326 opt-out).
     /// By default, `mini` writes the trajectory after every completed agent
     /// step so a crash never destroys the full run budget. Pass this flag to
@@ -1056,6 +1272,21 @@ pub struct MiniCmd {
     /// trajectory is reproducible.
     #[arg(long, value_name = "N", default_value_t = 0)]
     pub chaos_fail_every: u32,
+
+    /// Output format for the run result on stdout. `text` (default) preserves
+    /// today's output — no structured output. `json` prints exactly one
+    /// schema-versioned JSON object to stdout on completion (submitted or
+    /// verification-failure); all human/log text goes to stderr.
+    /// Has no effect for hard errors before a trajectory exists.
+    #[arg(long, value_enum, default_value_t = crate::run::mini::ResultFormat::Text)]
+    pub result_format: crate::run::mini::ResultFormat,
+
+    /// Hidden test/CI hook: scripted model responses (repeatable; one response
+    /// per assistant turn), bypassing the real model API. Identical to the
+    /// mechanism used internally by `max hello-world`. Lets CI drive
+    /// `--result-format json` deterministically without a real API key.
+    #[arg(long = "deterministic-responses", value_name = "RESPONSE", hide = true)]
+    pub deterministic_responses: Vec<String>,
 }
 
 #[derive(Debug, Args)]
@@ -1180,6 +1411,8 @@ pub enum BenchCmd {
     CommandStats(CommandStatsCmd),
     /// Search every trajectory in a sweep for a regex pattern (zero-cost: reads only on-disk artifacts).
     Grep(GrepCmd),
+    /// Query the structured per-run event log by type, instance, and time window (zero-cost: reads only on-disk artifacts).
+    Events(EventsCmd),
     /// Pareto frontier across multiple sweep runs: ASCII chart + JSON dataset.
     Frontier(FrontierCmd),
     /// Replay a saved sweep from its manifest and report reproducibility.
@@ -1259,6 +1492,73 @@ pub enum BenchCmd {
     Utilization(UtilizationCmd),
     /// Backfill OTLP traces from a completed sweep directory to a collector (zero model cost: reads only on-disk artifacts).
     ExportOtlp(ExportOtlpCmd),
+    /// Classify per-instance flakiness from a rerun sweep (zero cost: reads only on-disk artifacts).
+    Variance(BenchVarianceCmd),
+    /// Combine two or more completed sharded sweep directories into one canonical aggregate (offline; zero model cost).
+    Merge(MergeCmd),
+    /// Deterministically partition a dataset into N disjoint, balanced, provenance-stamped shards (offline; zero model cost).
+    Shard(ShardCmd),
+    /// Report context-window pressure telemetry per sweep (zero-cost: reads only on-disk artifacts).
+    ContextPressure(ContextPressureCmd),
+    /// Roll up cumulative actual spend across runs/sweeps by model, dataset, and day (zero-cost: reads only on-disk artifacts).
+    Ledger(LedgerCmd),
+}
+
+/// `bench merge` — combine completed sharded sweep directories into one canonical aggregate.
+///
+/// Recombines K independent sharded sweeps into a single canonical sweep directory
+/// that is a drop-in for `bench evaluate`, `bench report`, `bench triage`, and `bench audit`.
+/// Runs entirely offline with no model or network calls.
+#[derive(Debug, Args)]
+pub struct MergeCmd {
+    /// A completed sweep directory to merge. Repeat for each shard (2+ required).
+    #[arg(long = "shard", required = true, action = clap::ArgAction::Append)]
+    pub shards: Vec<std::path::PathBuf>,
+
+    /// Destination directory for the merged canonical sweep. Created if absent; must be empty otherwise.
+    #[arg(long)]
+    pub output: std::path::PathBuf,
+
+    /// Collision policy when the same instance_id appears in more than one shard.
+    /// `error` (default): fail with a clear message listing all colliding IDs.
+    /// `first-wins`: keep the occurrence from the earliest --shard.
+    /// `last-wins`: keep the occurrence from the latest --shard.
+    #[arg(long = "on-collision", value_enum, default_value_t = MergeCollisionPolicy::Error)]
+    pub on_collision: MergeCollisionPolicy,
+
+    /// Optional human-readable shard labels, positionally aligned with --shard.
+    /// Defaults to the directory name of each shard.
+    #[arg(long = "label", action = clap::ArgAction::Append)]
+    pub labels: Vec<String>,
+
+    /// Overwrite the output directory if it is non-empty.
+    #[arg(long, default_value_t = false)]
+    pub force: bool,
+
+    /// Output format: `text` (default) or `json`.
+    /// The `json` format emits a machine-readable summary to stdout.
+    #[arg(long, value_enum, default_value_t = MergeFormat::Text)]
+    pub format: MergeFormat,
+}
+
+/// Output format for `bench merge`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum MergeFormat {
+    /// Human-readable text summary (default).
+    Text,
+    /// Machine-readable JSON summary.
+    Json,
+}
+
+/// Collision policy for `bench merge` when the same instance_id appears in multiple shards.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum MergeCollisionPolicy {
+    /// Fail loudly if any instance_id appears in two or more shards (default).
+    Error,
+    /// Keep the occurrence from the earliest --shard; log duplicates in the report.
+    FirstWins,
+    /// Keep the occurrence from the latest --shard; log duplicates in the report.
+    LastWins,
 }
 
 /// `bench export-otlp` — re-export reconstructed sweep + instance spans from a
@@ -1395,6 +1695,79 @@ pub struct SubsetCmd {
     pub output: PathBuf,
 }
 
+/// `bench shard` — deterministically partition a dataset into N balanced, provenance-stamped shards.
+///
+/// Writes `shard-000.jsonl … shard-(N-1).jsonl` plus a per-shard
+/// `shard-NNN.manifest.json` sidecar to `--output`.  Fully offline; zero
+/// model or network calls.  The same `(dataset, N, --seed)` triple produces
+/// byte-identical shard files across runs and hosts.
+#[derive(Debug, Args, Clone)]
+pub struct ShardCmd {
+    /// Local JSONL dataset file.  Mutually exclusive with `--dataset`.
+    #[arg(long)]
+    pub dataset_path: Option<PathBuf>,
+
+    /// Named SWE-bench dataset alias: `full`, `lite`, or `verified`.
+    #[arg(long, value_name = "ALIAS")]
+    pub dataset: Option<String>,
+
+    /// Dataset split for named aliases: `train`, `test`, or `dev`.
+    #[arg(long, default_value = "test", value_name = "SPLIT")]
+    pub split: Option<String>,
+
+    /// Directory for the named-dataset on-disk cache.
+    #[arg(long, value_name = "DIR")]
+    pub dataset_cache_dir: Option<PathBuf>,
+
+    /// Number of output shards.  Must be ≥ 1 and ≤ the dataset instance count.
+    #[arg(long, value_name = "N", value_parser = clap::value_parser!(u64).range(1..))]
+    pub shards: u64,
+
+    /// Destination directory for shard files.  Created if absent; must be empty otherwise.
+    #[arg(long)]
+    pub output: PathBuf,
+
+    /// Determinism seed.  Same `(dataset, N, seed)` always produces byte-identical shards.
+    /// Recorded in each shard's sidecar manifest.
+    #[arg(long, default_value_t = 0)]
+    pub seed: u64,
+
+    /// Stratify partitioning by key.  Only `repo` is currently supported.
+    #[arg(long, value_enum)]
+    pub stratify_by: Option<StratifyByArg>,
+
+    /// Allocation mode used with `--stratify-by` (default: `balanced`).
+    /// For a full partition both modes guarantee max−min ≤ 1; the mode only
+    /// controls which shards receive the `T mod N` leftover instances.
+    #[arg(long, value_enum)]
+    pub stratify_mode: Option<StratifyModeArg>,
+
+    /// Balance instances by a cost/size key.  Reserved for future use;
+    /// not yet implemented.  Use `--stratify-by repo` for repo-spread balancing.
+    #[arg(long, value_name = "KEY")]
+    pub balance_by: Option<String>,
+
+    /// Overwrite the output directory if it is non-empty.
+    #[arg(long, default_value_t = false)]
+    pub force: bool,
+
+    /// Output format: `text` (default) or `json`.
+    /// `json` emits a machine-readable summary with shard count, per-shard
+    /// instance counts, total instances, source `dataset_sha256`, and balance
+    /// spread (max−min instance count).
+    #[arg(long, value_enum, default_value_t = ShardFormat::Text)]
+    pub format: ShardFormat,
+}
+
+/// Output format for `bench shard`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum ShardFormat {
+    /// Human-readable text summary (default).
+    Text,
+    /// Machine-readable JSON summary emitted to stdout.
+    Json,
+}
+
 /// `bench failure-digest` — self-contained failure summary for one sweep instance.
 #[derive(Debug, Args, Clone)]
 pub struct FailureDigestCmd {
@@ -1417,6 +1790,13 @@ pub struct FailureDigestCmd {
     /// Truncation preserves the headline and triage cluster footer.
     #[arg(long, default_value_t = 8000)]
     pub max_chars: usize,
+
+    /// Optional baseline `signature_id` to compare this failure against. When
+    /// supplied, the digest classifies the failure as `recurring` (the computed
+    /// signature matches the baseline) or `new`. The verdict is informational
+    /// and never changes the process exit code.
+    #[arg(long, value_name = "SIGNATURE_ID")]
+    pub baseline_signature: Option<String>,
 }
 
 /// `bench eval-flake` — quantify evaluator-side verdict noise on a completed sweep.
@@ -1844,6 +2224,37 @@ pub struct CacheStatsCmd {
     pub baseline: Option<std::path::PathBuf>,
 }
 
+/// `bench context-pressure` — report context-window pressure telemetry per sweep (zero-cost: reads only on-disk artifacts).
+#[derive(Debug, Args)]
+pub struct ContextPressureCmd {
+    /// Completed sweep directory produced by `bench swebench`.
+    #[arg(long)]
+    pub sweep: std::path::PathBuf,
+
+    /// Output format: `text` (default) or `json`.
+    #[arg(long, default_value = "text", value_name = "FMT")]
+    pub format: String,
+}
+
+/// `bench ledger` — roll up cumulative actual spend across runs/sweeps (zero-cost: reads only on-disk artifacts).
+#[derive(Debug, Args)]
+pub struct LedgerCmd {
+    /// One or more run or sweep directories to aggregate. Trajectories are
+    /// discovered recursively under each directory.
+    #[arg(value_name = "DIR", required = true, num_args = 1..)]
+    pub dirs: Vec<std::path::PathBuf>,
+
+    /// Output format: `text` (default) or `json`.
+    #[arg(long, default_value = "text", value_name = "FMT")]
+    pub format: String,
+
+    /// Budget ceiling in USD. When the grand total meets or exceeds this value
+    /// the report is printed and the process exits with code 49
+    /// (`ledger_budget_exceeded`).
+    #[arg(long, value_name = "USD")]
+    pub budget_usd: Option<f64>,
+}
+
 /// `bench budget-fit` — right-size step, cost, and wallclock caps (zero-cost: reads only on-disk artifacts).
 #[derive(Debug, Args)]
 pub struct BudgetFitCmd {
@@ -1873,6 +2284,30 @@ pub struct BudgetFitCmd {
     /// May be specified multiple times.
     #[arg(long = "filter", value_name = "KEY=VALUE", action = clap::ArgAction::Append)]
     pub filter: Vec<String>,
+}
+
+/// `bench variance` — classify per-instance flakiness from a rerun sweep (zero-cost: reads only on-disk artifacts).
+#[derive(Debug, Args)]
+pub struct BenchVarianceCmd {
+    /// Completed rerun sweep directory produced by `bench swebench --reruns N`.
+    #[arg(long)]
+    pub sweep: std::path::PathBuf,
+
+    /// Output format: `text` (default) or `json`.
+    #[arg(long, default_value = "text", value_name = "FMT")]
+    pub format: String,
+
+    /// Target CI half-width for recommended rerun count (e.g. `0.05` for ±5%).
+    #[arg(long, value_name = "WIDTH")]
+    pub ci_width: Option<f64>,
+
+    /// Instance-id substring filter. May be specified multiple times.
+    #[arg(long = "filter", value_name = "SUBSTRING", action = clap::ArgAction::Append)]
+    pub filter: Vec<String>,
+
+    /// Show only instances of this stability class: `always_resolved`, `always_failed`, or `flaky`.
+    #[arg(long, value_name = "CLASS")]
+    pub class: Option<String>,
 }
 
 /// `bench ladder` — resolved-rate and cost trend across sweeps (zero-cost: reads only on-disk artifacts).
@@ -2597,6 +3032,13 @@ pub struct SwebenchCmd {
     #[arg(long)]
     pub docker_image: Option<String>,
 
+    /// Container network isolation mode (issue #523). Overrides
+    /// `environment.network_mode` in the config file.
+    /// `unrestricted` (default): today's behavior, no `--network` flag.
+    /// `none`: adds `--network none` to `docker run`, disabling all egress.
+    #[arg(long, value_enum)]
+    pub network_mode: Option<NetworkModeArg>,
+
     /// Resume from a previous run: `complete` trajectories are skipped, `partial`
     /// (mid-run checkpoint) trajectories continue from their last completed turn
     /// without re-spending budget, and `absent`/`corrupted` trajectories run from
@@ -2902,9 +3344,15 @@ pub struct EvaluateCmd {
     /// Attribute sweep USD cost to terminal buckets in the evaluation report.
     #[arg(long, value_enum, default_value_t = OnOffArg::On)]
     pub cost_attribution: OnOffArg,
+
+    /// Re-evaluate all instances, ignoring cached verdicts in evaluation.json.
+    /// Without this flag (the default), already-scored instances are reused.
+    #[arg(long, default_value_t = false)]
+    pub force: bool,
 }
 
 #[derive(Debug, Args)]
+#[allow(clippy::struct_excessive_bools)]
 pub struct InspectCmd {
     /// Completed sweep directory produced by `bench swebench`.
     #[arg(long)]
@@ -2930,8 +3378,16 @@ pub struct InspectCmd {
     /// In instance mode, also accepts `markdown`, `html`, `csv`, and `mermaid`
     /// (each maps to the corresponding trajectory exporter; feature-gated
     /// formats require the matching Cargo feature at build time).
+    /// Use `--list-formats` to enumerate all formats compiled into this build
+    /// along with their stability tier (`stable` / `experimental`) and consumer.
     #[arg(long, default_value = "text")]
     pub format: String,
+
+    /// List all trajectory export formats compiled into this build (name, stability
+    /// tier, intended consumer) and exit. Useful for operator discoverability without
+    /// reading source. See `docs/spec-export.md` for the full export-format contract.
+    #[arg(long, default_value_t = false)]
+    pub list_formats: bool,
 
     /// Write output to a file instead of stdout. Supported with `markdown`,
     /// `html`, `csv`, and `mermaid` formats in instance mode.
@@ -3152,6 +3608,60 @@ pub struct GrepCmd {
     /// or `json` (one JSON object per match, newline-delimited).
     #[arg(long, default_value = "text")]
     pub format: String,
+}
+
+/// `bench events` — query the structured per-run event log after a run/sweep.
+///
+/// Read-only and zero-cost: reads only the on-disk JSONL event log(s) defined by
+/// `docs/spec-event-log.md`, never calls a model provider, and never mutates run
+/// artifacts. Filters structured events by type/instance/time; for free-text
+/// search over trajectory prose use `bench grep`, and for live views use
+/// `bench tail` / `bench watch`.
+///
+/// Exit codes: 0 = success; 1 = missing/unreadable event log; 2 = usage error
+/// (unknown `--type`, bad `--format`, invalid `--since`/`--until`).
+#[derive(Debug, Args)]
+pub struct EventsCmd {
+    /// A single-run directory, a sweep directory, or an event-log `.jsonl` file.
+    pub path: PathBuf,
+
+    /// Keep only these event types (repeatable; default: all).
+    /// Example: `--type format_error --type run_ended`
+    #[arg(long = "type", value_name = "TYPE")]
+    pub types: Vec<String>,
+
+    /// Keep only these instance ids (repeatable; default: all).
+    #[arg(long = "instance", value_name = "INSTANCE_ID")]
+    pub instances: Vec<String>,
+
+    /// Inclusive RFC3339 lower bound on event timestamp.
+    #[arg(long, value_name = "RFC3339")]
+    pub since: Option<String>,
+
+    /// Inclusive RFC3339 upper bound on event timestamp.
+    #[arg(long, value_name = "RFC3339")]
+    pub until: Option<String>,
+
+    /// Print per-event-type counts (and per-instance counts over a sweep) instead
+    /// of individual event rows.
+    #[arg(long, default_value_t = false)]
+    pub summary: bool,
+
+    /// Output format: `table` (default, human), `json` (single schema-versioned
+    /// object), or `jsonl` (one event per line, machine-readable).
+    #[arg(long, default_value = "table")]
+    pub format: String,
+
+    /// Optional config file. The event log's payload fields are redacted at write
+    /// time, but the writer injects `instance_id` afterward with the run's raw
+    /// value, so a configured `[redaction].secret_literals`/`custom_patterns` is
+    /// re-applied here to mask a secret-shaped id. Configured `secret_literals`
+    /// are recorded *already-redacted* (sweep manifests and mini trajectories
+    /// alike), so `--config` is the reliable way to mask a literal-shaped id; a
+    /// sweep's recorded `custom_patterns`/`enabled` are recovered best-effort from
+    /// its `manifest.json`/`results.json` without `--config`.
+    #[arg(long)]
+    pub config: Option<PathBuf>,
 }
 
 #[derive(Debug, Args)]
@@ -3622,6 +4132,28 @@ pub struct CatalogCmd {
     /// Output format: `text` or `json`.
     #[arg(long, default_value = "text", value_parser = ["text", "json"])]
     pub format: String,
+}
+
+/// `explain` — offline lookup of an exit code, outcome class, or failure
+/// category to its documented meaning and remediation (issue #535).
+#[derive(Debug, Args, Clone)]
+pub struct ExplainCmd {
+    /// Selector to explain: an exit code (`7`), an outcome class
+    /// (`verification_failure`), or a failure category (`step_limit` /
+    /// `StepLimit`). Omit to list every addressable code/class/category.
+    pub selector: Option<String>,
+
+    /// Output format: `text` or `json`.
+    #[arg(long, default_value = "text", value_parser = ["text", "json"])]
+    pub format: String,
+}
+
+/// `completions` — generate shell completion scripts (issue #541).
+#[derive(Debug, Args, Clone)]
+pub struct CompletionsCmd {
+    /// Target shell for completion script.
+    #[arg(value_name = "SHELL")]
+    pub shell: clap_complete::Shell,
 }
 
 #[cfg(test)]

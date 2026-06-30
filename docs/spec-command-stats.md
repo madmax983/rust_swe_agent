@@ -23,7 +23,7 @@ Options:
 | `--min-invocations <n>` | `1` | Hide command heads with fewer than `n` total invocations. Useful for suppressing long-tail noise. |
 | `--top <n>` | `15` | Number of ranked rows to print per outcome bucket in text mode. |
 | `--compare resolved-vs-unresolved` | unset | Append a delta table sorted by `(resolved_share − unresolved_share)` descending. |
-| `--filter <key>=<value>` | unset | Restrict the input set to instances matching the given filter (same syntax as `bench inspect --filter`). Example: `failure_category=model_parse`. |
+| `--filter <key>=<value>` | unset | Restrict the input set to instances matching the given filter (same syntax as `bench inspect --filter`). Example: `failure_category=model_parse`. See [`docs/failure-categories.md`](failure-categories.md) for valid category strings. |
 | `--format text\|json` | `text` | Text table or full JSON report on stdout. `command-stats.json` is written in both modes. |
 
 Exit behavior:

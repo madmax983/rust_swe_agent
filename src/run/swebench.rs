@@ -406,6 +406,9 @@ pub struct InstanceResult {
     /// Pass/fail value of the most recent recognized pre-submit test command.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_tests_passed: Option<bool>,
+    /// Context pressure telemetry. Present and zero/false when no budget is configured.
+    #[serde(default)]
+    pub context_pressure: crate::trajectory::ContextPressure,
     /// Number of fallback attempts for this instance. `None` means no
     /// fallback telemetry was recorded (single-model run or legacy artifact).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -692,6 +695,33 @@ pub struct ProvenanceManifest {
     /// Points back at the source sweep's manifest for full provenance chain.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reproduced_from: Option<ManifestReproducedFrom>,
+    /// Present only when this sweep was produced by `bench merge`. Records each
+    /// source shard's provenance so the aggregate is fully auditable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub merged_from: Option<Vec<MergeShardProvenance>>,
+}
+
+/// Per-shard provenance record written into a merged sweep's manifest.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MergeShardProvenance {
+    /// Human-readable label (defaults to the shard directory name).
+    pub label: String,
+    /// Canonical path of the shard directory at merge time.
+    pub dir: String,
+    /// Model name from the shard's manifest.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    /// SHA-256 hash of the config's resolved TOML.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub config_sha256: Option<String>,
+    /// Dataset content hash from the shard's manifest.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dataset_sha256: Option<String>,
+    /// Harness git SHA from the shard's manifest.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub git_sha: Option<String>,
+    /// Number of instances in this shard.
+    pub instance_count: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -941,6 +971,158 @@ impl Default for SweepResults {
             span_export_dropped: 0,
         }
     }
+}
+
+/// Recompute all sweep-wide aggregate counters from an instance list.
+///
+/// Returns `base` cloned with every derived aggregate field overwritten from
+/// `instances`. Provenance, manifest, sweep_status, retry_history, and other
+/// run-metadata fields are taken unchanged from `base`. Used by `bench retry`
+/// and `bench merge` to get arithmetically correct aggregates after modifying
+/// the instance list.
+#[must_use]
+#[allow(clippy::too_many_lines)]
+pub(crate) fn recompute_aggregates(
+    base: &SweepResults,
+    instances: Vec<InstanceResult>,
+) -> SweepResults {
+    use crate::trajectory::FailureCategory;
+
+    let total = instances.len();
+    let submitted = instances
+        .iter()
+        .filter(|r| r.outcome.as_deref() == Some("submitted") && r.exit_reason != "skipped_resume")
+        .count();
+    let submitted_with_tests = instances
+        .iter()
+        .filter(|r| {
+            r.outcome.as_deref() == Some("submitted")
+                && r.exit_reason != "skipped_resume"
+                && r.tests_run_before_submit
+        })
+        .count();
+    let skipped = instances
+        .iter()
+        .filter(|r| r.exit_reason == "skipped_resume")
+        .count();
+    let errored = instances
+        .iter()
+        .filter(|r| r.outcome.as_deref() == Some("error"))
+        .count();
+    let budget_halted = instances
+        .iter()
+        .filter(|r| r.exit_reason.starts_with("budget_halt"))
+        .count();
+    let with_patch = instances
+        .iter()
+        .filter(|r| r.non_empty_patch && r.outcome.as_deref() == Some("submitted"))
+        .count();
+    let patch_empty = instances
+        .iter()
+        .filter(|r| r.patch_present && !r.non_empty_patch)
+        .count();
+    let patch_apply_invalid = instances
+        .iter()
+        .filter(|r| r.failure_category == Some(FailureCategory::PatchApplyInvalid))
+        .count();
+    let github_pr_failures = instances
+        .iter()
+        .filter(|r| r.github_pr_error.is_some())
+        .count();
+    let failures_by_category: BTreeMap<FailureCategory, usize> = {
+        let mut map = BTreeMap::new();
+        for r in &instances {
+            if let Some(cat) = r.failure_category {
+                *map.entry(cat).or_insert(0) += 1;
+            }
+        }
+        map
+    };
+    let resolved_any = instances.iter().filter(|r| r.resolved_count > 0).count();
+    #[allow(clippy::cast_precision_loss)]
+    let pass_at_k = if instances.is_empty() {
+        0.0
+    } else {
+        resolved_any as f64 / instances.len() as f64
+    };
+    let total_prompt_tokens: u64 = instances.iter().filter_map(|r| r.prompt_tokens).sum();
+    let total_cache_read_tokens: u64 = instances.iter().filter_map(|r| r.cache_read_tokens).sum();
+    let total_cache_creation_tokens: u64 = instances
+        .iter()
+        .filter_map(|r| r.cache_creation_tokens)
+        .sum();
+    let total_completion_tokens: u64 = instances.iter().filter_map(|r| r.completion_tokens).sum();
+    let estimated_cost_usd: f64 = instances.iter().filter_map(|r| r.cost_usd).sum();
+    let actual_cost_usd: Option<f64> = if instances.iter().all(|r| r.cost_usd.is_some()) {
+        Some(estimated_cost_usd)
+    } else {
+        None
+    };
+    let baseline_cost_usd = estimate_cost_usd(
+        total_prompt_tokens,
+        total_cache_read_tokens,
+        total_cache_creation_tokens,
+        total_completion_tokens,
+        BASELINE_COST_MODEL,
+    );
+    #[allow(clippy::cast_precision_loss)]
+    let cache_hit_rate =
+        if total_prompt_tokens + total_cache_read_tokens + total_cache_creation_tokens > 0 {
+            (total_cache_read_tokens + total_cache_creation_tokens) as f64
+                / (total_prompt_tokens + total_cache_read_tokens + total_cache_creation_tokens)
+                    as f64
+        } else {
+            0.0
+        };
+    let retried_instances = instances
+        .iter()
+        .filter(|r| !r.retry_reasons.is_empty())
+        .count();
+    let retries: u64 = instances.iter().map(|r| r.retry_reasons.len() as u64).sum();
+    let total_fallbacks: u64 = instances
+        .iter()
+        .filter_map(|r| r.fallback_count)
+        .map(u64::from)
+        .sum();
+    let model_mix: BTreeMap<String, usize> = {
+        let mut map = BTreeMap::new();
+        for r in &instances {
+            if let Some(m) = &r.final_model {
+                *map.entry(m.clone()).or_insert(0) += 1;
+            }
+        }
+        map
+    };
+
+    let mut result = base.clone();
+    result.total = total;
+    result.submitted = submitted;
+    result.submitted_with_tests = submitted_with_tests;
+    result.skipped = skipped;
+    result.errored = errored;
+    result.budget_halted = budget_halted;
+    result.with_patch = with_patch;
+    result.patch_empty = patch_empty;
+    result.patch_apply_invalid = patch_apply_invalid;
+    result.github_pr_failures = github_pr_failures;
+    result.failures_by_category = failures_by_category;
+    result.pass_at_k = pass_at_k;
+    result.total_prompt_tokens = total_prompt_tokens;
+    result.total_cache_read_tokens = total_cache_read_tokens;
+    result.total_cache_creation_tokens = total_cache_creation_tokens;
+    result.total_completion_tokens = total_completion_tokens;
+    result.estimated_cost_usd = estimated_cost_usd;
+    result.actual_cost_usd = actual_cost_usd;
+    result.actual_cost_source = actual_cost_usd.map(|_| crate::cost::CostSource::RateCardEstimate);
+    result.baseline_cost_usd = Some(baseline_cost_usd);
+    result.baseline_cost_model = Some(BASELINE_COST_MODEL.to_owned());
+    result.cache_hit_rate = cache_hit_rate;
+    result.retried_instances = retried_instances;
+    result.retries = retries;
+    result.total_fallbacks = total_fallbacks;
+    result.model_mix = model_mix;
+    result.instances = instances;
+    result
 }
 
 impl SweepResults {
@@ -2512,6 +2694,7 @@ pub async fn run(mut args: SwebenchArgs) -> Result<SweepResults, Error> {
                                 retry_id: None,
                                 previous_failure_category: None,
                                 trace_id: None,
+                                context_pressure: Default::default(),
                             },
                         );
                         {
@@ -3499,6 +3682,7 @@ fn build_manifest(
                 manifest_hash: hash.clone(),
                 sweep_dir: dir.clone(),
             }),
+        merged_from: None,
     }
 }
 
@@ -3721,6 +3905,7 @@ fn budget_halt_result(instance_id: &str) -> InstanceResult {
         retry_id: None,
         previous_failure_category: None,
         trace_id: None,
+        context_pressure: Default::default(),
     }
 }
 
@@ -3775,6 +3960,7 @@ fn cancelled_wait_result(ctx: CancelledWaitContext<'_>) -> InstanceResult {
         retry_id: None,
         previous_failure_category: None,
         trace_id: ctx.trace_id.clone(),
+        context_pressure: Default::default(),
     });
     ctx.instance_id.clone_into(&mut result.instance_id);
     result.exit_reason = exit_reason::CANCELLED.into();
@@ -4310,16 +4496,19 @@ fn write_predictions_file(
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct PredictionsMetadata {
-    predictions_file: String,
-    aggregate: bool,
+pub(crate) struct PredictionsMetadata {
+    pub(crate) predictions_file: String,
+    pub(crate) aggregate: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    run_index: Option<u32>,
-    row_count: usize,
-    swebench_evaluator_compatible: bool,
+    pub(crate) run_index: Option<u32>,
+    pub(crate) row_count: usize,
+    pub(crate) swebench_evaluator_compatible: bool,
 }
 
-fn write_predictions_metadata(path: &Path, metadata: &PredictionsMetadata) -> Result<(), Error> {
+pub(crate) fn write_predictions_metadata(
+    path: &Path,
+    metadata: &PredictionsMetadata,
+) -> Result<(), Error> {
     let file = std::fs::File::create(path)?;
     crate::artifact::to_writer_pretty(file, ArtifactKind::SwebenchPredictionsMetadata, metadata)?;
     Ok(())
@@ -4404,6 +4593,7 @@ fn skipped_result_from_info(
             && info.failure_category.is_none(),
         tests_run_before_submit: info.tests_run_before_submit,
         last_tests_passed: info.last_tests_passed,
+        context_pressure: info.context_pressure.clone(),
 
         fallback_count: info.fallback_summary.as_ref().map(|s| s.fallback_count),
         // When all candidates failed no model produced a response — leave None
@@ -4433,6 +4623,7 @@ fn skipped_result_from_prior_result(
     out.non_empty_patch = traj_based.non_empty_patch;
     out.tests_run_before_submit = traj_based.tests_run_before_submit;
     out.last_tests_passed = traj_based.last_tests_passed;
+    out.context_pressure = traj_based.context_pressure.clone();
     out.runs = 1;
     out.resolved_count = u32::from(is_resolved_instance_result(&out));
     out.pass_at_1 = is_resolved_instance_result(&out);
@@ -4778,6 +4969,7 @@ async fn run_one(inst: SweBenchInstance, run_index: u32, params: RunOneParams) -
                         retry_id: None,
                         previous_failure_category: None,
                         trace_id: trace_id.clone(),
+                        context_pressure: Default::default(),
                     };
                 }
             }
@@ -4809,6 +5001,7 @@ async fn run_one(inst: SweBenchInstance, run_index: u32, params: RunOneParams) -
             verification_timeout_secs: 60,
             resume_from: attempt_resume,
             interactive_mode: crate::run::mini::InteractiveMode::Off,
+            no_bell: false,
             trace_id: trace_id.clone(),
             webhook_url: None,
             webhook_headers: vec![],
@@ -4967,6 +5160,10 @@ async fn run_one(inst: SweBenchInstance, run_index: u32, params: RunOneParams) -
             pass_at_1: outcome_str == outcome::SUBMITTED && failure_category.is_none(),
             tests_run_before_submit: info.as_ref().is_some_and(|i| i.tests_run_before_submit),
             last_tests_passed: info.as_ref().and_then(|i| i.last_tests_passed),
+            context_pressure: info
+                .as_ref()
+                .map(|i| i.context_pressure.clone())
+                .unwrap_or_default(),
 
             // Use the accumulated count across all retry attempts, not just
             // the final trajectory's count.
@@ -5384,6 +5581,95 @@ fn stratified_sample_by_repo(
     out
 }
 
+/// Deterministically partition `instances` into `n_shards` disjoint groups
+/// using continuous global round-robin assignment.
+///
+/// Algorithm:
+/// 1. Build a deterministic ordering of all instances (`ordered`):
+///    - `stratify_by == Some(Repo)`: group by `repo` (`BTreeMap` — deterministic
+///      order, `"<unknown>"` fallback), shuffle each group with
+///      `XorShift64::new(seed ^ simple_hash(&format!("{i}")))` (mirroring
+///      `stratified_sample_by_repo` exactly), then flatten in `BTreeMap` order.
+///      Because each repo's instances are contiguous in `ordered`, round-robin
+///      assignment spreads every repo evenly across shards (a repo of size
+///      `q * n_shards` lands exactly `q` per shard).
+///    - `stratify_by == None`: a single global shuffle of all instances with
+///      `XorShift64::new(seed ^ simple_hash("shard-global-shuffle"))`.  Repos are
+///      partitioned uniformly at random rather than deliberately spread.
+/// 2. Assign item `k` of `ordered` to shard `(start + k) % n_shards` with a
+///    **continuous global cursor** that does NOT reset at repo boundaries — the
+///    only property that guarantees max−min ≤ 1 regardless of how repo sizes
+///    divide across shards.
+///
+/// `start`:
+/// - `Balanced` (default): `seed % n_shards` — spreads the `T mod N` leftover
+///   across different shards depending on the seed, and rotates repo start points.
+/// - `Proportional`: `0` — same guarantee, different leftover placement (API
+///   symmetry with `bench subset`; for a *full* partition both modes are balanced).
+///
+/// Returns one `Vec<SweBenchInstance>` per shard (length == `n_shards`).
+pub(crate) fn partition_into_shards(
+    instances: Vec<SweBenchInstance>,
+    n_shards: usize,
+    seed: u64,
+    stratify_by: Option<StratifyBy>,
+    mode: StratifyMode,
+) -> Vec<Vec<SweBenchInstance>> {
+    if n_shards == 0 || instances.is_empty() {
+        return vec![];
+    }
+
+    // 1. Build a deterministic ordering of all instances.
+    let ordered: Vec<SweBenchInstance> = match stratify_by {
+        Some(StratifyBy::Repo) => {
+            // Group by repo in BTreeMap order, shuffle each group (same RNG as
+            // stratified_sample_by_repo), then flatten.  Contiguous per-repo runs
+            // + round-robin => every repo is spread evenly across shards.
+            let mut map: BTreeMap<String, Vec<SweBenchInstance>> = BTreeMap::new();
+            for inst in instances {
+                let key = inst.repo.clone().unwrap_or_else(|| "<unknown>".to_owned());
+                map.entry(key).or_default().push(inst);
+            }
+            let mut ordered: Vec<SweBenchInstance> = Vec::new();
+            for (i, (_, mut group)) in map.into_iter().enumerate() {
+                let mut rng = XorShift64::new(seed ^ simple_hash(&format!("{i}")));
+                for j in (1..group.len()).rev() {
+                    let k = rng.next_usize() % (j + 1);
+                    group.swap(j, k);
+                }
+                ordered.extend(group);
+            }
+            ordered
+        }
+        None => {
+            // No stratification: a single global deterministic shuffle.  Balance
+            // is still guaranteed by round-robin; repos are not deliberately spread.
+            let mut ordered = instances;
+            let mut rng = XorShift64::new(seed ^ simple_hash("shard-global-shuffle"));
+            for j in (1..ordered.len()).rev() {
+                let k = rng.next_usize() % (j + 1);
+                ordered.swap(j, k);
+            }
+            ordered
+        }
+    };
+
+    // 2. Continuous global round-robin assignment.
+    let n_shards_u64 = u64::try_from(n_shards).unwrap_or(u64::MAX);
+    let start = match mode {
+        StratifyMode::Balanced => usize::try_from(seed % n_shards_u64.max(1)).unwrap_or(0),
+        StratifyMode::Proportional => 0,
+    };
+
+    let mut shards: Vec<Vec<SweBenchInstance>> = vec![Vec::new(); n_shards];
+    for (k, inst) in ordered.into_iter().enumerate() {
+        let shard_idx = (start + k) % n_shards;
+        shards[shard_idx].push(inst);
+    }
+
+    shards
+}
+
 fn parse_instance_ids_arg(instance_ids_arg: Option<&str>) -> Result<Option<Vec<String>>, Error> {
     let Some(raw) = instance_ids_arg.map(str::trim).filter(|s| !s.is_empty()) else {
         return Ok(None);
@@ -5510,6 +5796,7 @@ mod tests {
             retry_id: None,
             previous_failure_category: None,
             trace_id: None,
+            context_pressure: Default::default(),
         }
     }
 
@@ -5852,6 +6139,7 @@ mod tests {
             previous_failure_category: None,
 
             trace_id: None,
+            context_pressure: Default::default(),
         };
         let expected = estimate_cost_usd(100_000, 0, 0, 100_000, "openai/gpt-4o-mini");
         assert!(
@@ -5896,6 +6184,7 @@ mod tests {
             previous_failure_category: None,
 
             trace_id: None,
+            context_pressure: Default::default(),
         };
 
         assert_eq!(row.actual_cost_usd(), Some(0.0));
@@ -7361,7 +7650,7 @@ instance = "inst"
         assert_eq!(v["artifact_kind"], "preflight_report");
         assert_eq!(
             v["schema_version"],
-            serde_json::json!({"major": 1, "minor": 10})
+            serde_json::json!({"major": 1, "minor": 12})
         );
         assert!(v.get("mode").is_some());
         assert!(v.get("checks").is_some());

@@ -140,6 +140,7 @@ fn instance(
         retry_id: None,
         previous_failure_category: None,
         trace_id: None,
+        context_pressure: Default::default(),
     }
 }
 
@@ -231,6 +232,7 @@ fn fixture_results_with_model(model_name: Option<&str>) -> SweepResults {
             import_predictions_path: None,
             import_predictions_sha256: None,
             reproduced_from: None,
+            merged_from: None,
         }),
         cost_limit_usd: None,
         instances,
@@ -362,6 +364,7 @@ fn forecast_uses_manifest_model_for_fallback_cost_repricing() {
         retry_id: None,
         previous_failure_category: None,
         trace_id: None,
+        context_pressure: Default::default(),
     }];
     results.total = 1;
     results.submitted = 1;
@@ -829,6 +832,7 @@ async fn calibration_writes_only_inside_forecast_subdirectory_and_marks_manifest
         run_id: None,
         breakdown: BreakdownSelection::none(),
         cost_attribution: true,
+        force: false,
     })
     .unwrap_err();
     assert!(

@@ -17,6 +17,7 @@ use crate::exit_code::ExitCode;
 
 pub mod args;
 pub mod catalog;
+pub mod explain;
 
 #[derive(Debug, Parser)]
 #[command(
@@ -56,6 +57,10 @@ pub enum Command {
     Ui(args::UiCmd),
     /// Self-describing command catalog for operator discoverability.
     Catalog(args::CatalogCmd),
+    /// Explain an exit code, outcome class, or failure category offline.
+    Explain(args::ExplainCmd),
+    /// Generate shell completion scripts.
+    Completions(args::CompletionsCmd),
     /// Reap leftover Maxwell's Daemon containers, including legacy labels.
     Cleanup,
 }
@@ -76,11 +81,11 @@ pub async fn run() -> Result<(), Error> {
     init_logging(&log);
 
     match cli.command {
-        Command::Mini(m) => mini_cmd(*m).await,
+        Command::Mini(m) => Box::pin(mini_cmd(*m)).await,
         Command::HelloWorld(h) => {
-            crate::run::hello_world::main(h.output, h.config.as_deref()).await
+            Box::pin(crate::run::hello_world::main(h.output, h.config.as_deref())).await
         }
-        Command::Replay(r) => replay_cmd(*r).await,
+        Command::Replay(r) => Box::pin(replay_cmd(*r)).await,
         Command::Bench { cmd } => match *cmd {
             args::BenchCmd::Swebench(s) => Box::pin(bench_swebench(*s)).await,
             args::BenchCmd::Rehearsal(mut s) => {
@@ -100,6 +105,7 @@ pub async fn run() -> Result<(), Error> {
             args::BenchCmd::TriageDiff(t) => bench_triage_diff(t),
             args::BenchCmd::CommandStats(c) => bench_command_stats(c),
             args::BenchCmd::Grep(g) => bench_grep(g),
+            args::BenchCmd::Events(e) => bench_events(e),
             args::BenchCmd::Frontier(f) => bench_frontier(f),
             args::BenchCmd::Reproduce(r) => Box::pin(bench_reproduce(r)).await,
             args::BenchCmd::Bundle(b) => bench_bundle(b),
@@ -113,6 +119,7 @@ pub async fn run() -> Result<(), Error> {
             args::BenchCmd::PolicyImpact(p) => bench_policy_impact(p),
             args::BenchCmd::InstanceHistory(h) => bench_instance_history(h),
             args::BenchCmd::CacheStats(c) => bench_cache_stats(c),
+            args::BenchCmd::ContextPressure(c) => bench_context_pressure(c),
             args::BenchCmd::BudgetFit(b) => bench_budget_fit(b),
             args::BenchCmd::ToolAblation(t) => Box::pin(bench_tool_ablation(t)).await,
             args::BenchCmd::Ladder(l) => bench_ladder(l),
@@ -139,6 +146,10 @@ pub async fn run() -> Result<(), Error> {
             args::BenchCmd::EvalParity(p) => bench_eval_parity(p),
             args::BenchCmd::Utilization(u) => bench_utilization(u),
             args::BenchCmd::ExportOtlp(c) => Box::pin(bench_export_otlp(c)).await,
+            args::BenchCmd::Variance(v) => bench_variance(v),
+            args::BenchCmd::Merge(m) => bench_merge(&m),
+            args::BenchCmd::Shard(s) => bench_shard(s),
+            args::BenchCmd::Ledger(l) => bench_ledger(l),
         },
         Command::Agent { cmd } => match *cmd {
             args::AgentCmd::SkillsPreview(s) => agent_skills_preview_cmd(&s),
@@ -157,11 +168,28 @@ pub async fn run() -> Result<(), Error> {
             args::AgentCmd::Apply(a) => agent_apply_cmd(&a),
             args::AgentCmd::BestOf(b) => Box::pin(agent_best_of_cmd(*b)).await,
             args::AgentCmd::Profile(p) => agent_profile_cmd(&p),
+            args::AgentCmd::Runs(r) => agent_runs_cmd(&r),
+            args::AgentCmd::FsAudit(a) => agent_fs_audit_cmd(&a),
+            args::AgentCmd::ArtifactCheck(a) => agent_artifact_check_cmd(&a),
+            args::AgentCmd::Doctor(d) => agent_doctor_cmd(&d),
+            args::AgentCmd::Annotate(a) => agent_annotate_cmd(&a),
         },
         Command::Catalog(c) => catalog::run_catalog(c),
-        Command::Ui(u) => ui_cmd(u).await,
+        Command::Explain(c) => explain::run_explain(&c),
+        Command::Completions(c) => {
+            use clap::CommandFactory;
+            use std::io::Write as _;
+            let mut cmd = Cli::command();
+            let bin_name = cmd.get_name().to_string();
+            let stdout = std::io::stdout();
+            let mut writer = std::io::BufWriter::new(stdout.lock());
+            clap_complete::generate(c.shell, &mut cmd, bin_name, &mut writer);
+            writer.flush()?;
+            Ok(())
+        }
+        Command::Ui(u) => Box::pin(ui_cmd(u)).await,
         #[cfg(feature = "docker")]
-        Command::Cleanup => cleanup_cmd().await,
+        Command::Cleanup => Box::pin(cleanup_cmd()).await,
         #[cfg(not(feature = "docker"))]
         Command::Cleanup => cleanup_cmd(),
     }
@@ -197,6 +225,74 @@ fn agent_env_preview_cmd(p: &args::EnvPreviewCmd) -> Result<(), Error> {
         );
     }
     Ok(())
+}
+
+fn agent_doctor_cmd(d: &args::AgentDoctorCmd) -> Result<(), Error> {
+    use crate::run::agent_doctor::{DoctorOpts, run_doctor};
+
+    let cfg = match &d.config {
+        Some(path) => Config::load(path)?,
+        None => Config::defaults()?,
+    };
+    let model = d
+        .model
+        .clone()
+        .unwrap_or_else(|| cfg.root.model.name.clone());
+    // An explicit `--env` wins; otherwise fall back to the environment kind
+    // resolved from config so a docker-backed config is not silently validated
+    // as local (which would skip the Docker daemon check).
+    let env_kind = match d.env {
+        Some(args::EnvTypeArg::Local) => crate::config::schema::EnvKind::Local,
+        Some(args::EnvTypeArg::Docker) => crate::config::schema::EnvKind::Docker,
+        None => cfg.root.environment.kind,
+    };
+    let opts = DoctorOpts {
+        env_kind,
+        model,
+        output_dir: d.output.clone(),
+        // A `--docker-image` override wins; otherwise fall back to the configured
+        // image, so `agent doctor` preflights the same image the live run would
+        // use (mirrors `max mini --env docker --docker-image …`).
+        docker_image: d.docker_image.clone().or(cfg.root.environment.docker_image),
+    };
+
+    let report = run_doctor(&opts);
+
+    if d.format == args::PreviewFormatArg::Json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&report).map_err(|e| {
+                Error::Config(crate::error::ConfigError::Invalid(e.to_string()))
+            })?
+        );
+    } else {
+        print_doctor_text(&report);
+    }
+
+    if !report.ready {
+        exit_with_outcome(
+            ExitCode::HostNotReady,
+            "host not ready: one or more readiness checks failed",
+        );
+    }
+    Ok(())
+}
+
+fn print_doctor_text(report: &crate::run::agent_doctor::DoctorReport) {
+    use crate::run::agent_doctor::CheckStatus;
+    println!("[agent doctor] host-readiness check (no model call, $0):");
+    for c in &report.checks {
+        let label = match c.status {
+            CheckStatus::Pass => "pass",
+            CheckStatus::Fail => "fail",
+            CheckStatus::Skip => "skip",
+        };
+        // `detail` carries the remediation hint on failures; no secret values
+        // are ever placed in it (credential checks are presence-only).
+        println!("  [{label}] {}: {}", c.check, c.detail);
+    }
+    let verdict = if report.ready { "ready" } else { "NOT ready" };
+    println!("[agent doctor] host is {verdict}.");
 }
 
 fn agent_config_resolve_cmd(r: &args::ConfigResolveCmd) -> Result<(), Error> {
@@ -973,6 +1069,9 @@ async fn mini_cmd(m: args::MiniCmd) -> Result<(), Error> {
     if let Some(img) = m.docker_image.clone() {
         cfg.root.environment.docker_image = Some(img);
     }
+    if let Some(nm) = m.network_mode {
+        cfg.root.environment.network_mode = parse_network_mode(nm.as_str())?;
+    }
     if m.chaos_fail_every > 0 {
         cfg.root.environment.chaos_fail_every = m.chaos_fail_every;
     }
@@ -1032,6 +1131,31 @@ async fn mini_cmd(m: args::MiniCmd) -> Result<(), Error> {
 
     let verification_checks = parse_verify_checks(&m.verify)?;
     let interactive_mode = resolve_interactive_mode(m.interactive, m.yolo, m.ui);
+
+    // Capture state needed for --result-format json before MiniArgs consumes fields.
+    let result_format = m.result_format;
+    reject_json_with_ratatui(result_format, interactive_mode)?;
+    let redactor = crate::redaction::Redactor::from_config_lossy(&cfg.root.redaction);
+    let traj_path = m.output.join(format!("{trajectory_name}.traj.json"));
+    // patch_path is only set when github-pr flags are active (same gating as patch_capture).
+    let patch_path = github_pr.as_ref().map(|o| o.patch_path.clone());
+    // The scripted-model hook only affects the builtin loop; external drivers
+    // shell out to a real agent and ignore it, which would silently make a paid
+    // call despite the documented "bypasses the model API" guarantee.
+    if !m.deterministic_responses.is_empty() && m.driver != crate::run::mini::RunDriver::Builtin {
+        return Err(Error::Config(crate::error::ConfigError::Invalid(
+            "--deterministic-responses is only honored by the builtin driver; \
+             external drivers (--driver codex|claude-code) shell out to a real agent \
+             and ignore scripted responses"
+                .into(),
+        )));
+    }
+    let scripted = if m.deterministic_responses.is_empty() {
+        None
+    } else {
+        Some(m.deterministic_responses.clone())
+    };
+
     let args = crate::run::mini::MiniArgs {
         task,
         extra_context: m.extra_context,
@@ -1041,7 +1165,7 @@ async fn mini_cmd(m: args::MiniCmd) -> Result<(), Error> {
         driver_isolated: m.driver_isolated,
         output_dir: m.output,
         trajectory_name,
-        deterministic_responses: None,
+        deterministic_responses: scripted,
         deterministic_usage_per_call: None,
         task_timeout_secs: m.task_timeout_secs,
         cancellation: None,
@@ -1051,6 +1175,7 @@ async fn mini_cmd(m: args::MiniCmd) -> Result<(), Error> {
         verification_timeout_secs: m.verify_timeout_secs,
         resume_from: None,
         interactive_mode,
+        no_bell: m.no_bell,
         trace_id: None,
         webhook_url: m.webhook_url,
         webhook_headers: m.webhook_headers,
@@ -1066,16 +1191,34 @@ async fn mini_cmd(m: args::MiniCmd) -> Result<(), Error> {
         issue_provenance,
     };
     let run_result = crate::run::mini::run(args).await;
-    // Only publish when the run succeeded or failed at verification — those are
-    // the two cases where the trajectory and patch are guaranteed on disk.
-    // For other errors (env setup, model API, pre-trajectory I/O) propagate
-    // immediately so the real failure isn't masked by a trajectory-read error.
+    // Attempt the GitHub PR publish only when the run succeeded or failed at
+    // verification — those are the two cases where the trajectory and patch are
+    // guaranteed on disk. Capture the result instead of early-returning so the
+    // JSON result object can both always emit AND fold the publish failure into
+    // its effective exit code.
     let is_verification_failure =
         matches!(run_result, Err(crate::error::Error::VerificationFailed(..)));
-    if run_result.is_ok() || is_verification_failure {
-        maybe_publish_mini_github_pr(github_pr).await?;
-    }
+    let publish_result = if run_result.is_ok() || is_verification_failure {
+        maybe_publish_mini_github_pr(
+            github_pr,
+            result_format == crate::run::mini::ResultFormat::Json,
+        )
+        .await
+    } else {
+        Ok(())
+    };
+    emit_mini_result(
+        result_format,
+        &run_result,
+        &publish_result,
+        &traj_path,
+        patch_path.as_deref(),
+        &redactor,
+    )?;
+    // Propagate the run error first (it determines the JSON exit code), then any
+    // publish error. This ordering matches emit_mini_result's exit-code precedence.
     run_result?;
+    publish_result?;
     Ok(())
 }
 
@@ -1456,6 +1599,17 @@ async fn mini_resume_cmd(
         }
     });
 
+    // Capture --result-format state before MiniArgs consumes cfg/output fields.
+    let result_format = m.result_format;
+    reject_json_with_ratatui(result_format, interactive_mode)?;
+    let redactor = crate::redaction::Redactor::from_config_lossy(&cfg.root.redaction);
+    let result_traj_path = traj_output_dir.join(format!("{traj_stem}.traj.json"));
+    let scripted = if m.deterministic_responses.is_empty() {
+        None
+    } else {
+        Some(m.deterministic_responses.clone())
+    };
+
     let args = crate::run::mini::MiniArgs {
         task,
         extra_context: m.extra_context,
@@ -1465,7 +1619,7 @@ async fn mini_resume_cmd(
         driver_isolated: false,
         output_dir: traj_output_dir,
         trajectory_name: traj_stem,
-        deterministic_responses: None,
+        deterministic_responses: scripted,
         deterministic_usage_per_call: None,
         task_timeout_secs: m.task_timeout_secs,
         cancellation: None,
@@ -1475,6 +1629,7 @@ async fn mini_resume_cmd(
         verification_timeout_secs: m.verify_timeout_secs,
         resume_from: Some(traj),
         interactive_mode,
+        no_bell: m.no_bell,
         trace_id: None,
         webhook_url: m.webhook_url,
         webhook_headers: m.webhook_headers,
@@ -1489,7 +1644,18 @@ async fn mini_resume_cmd(
         continue_from: None,
         issue_provenance,
     };
-    crate::run::mini::run(args).await
+    // Resume never captures a patch (patch_capture: None) and never publishes a PR.
+    let run_result = crate::run::mini::run(args).await;
+    let no_publish: Result<(), Error> = Ok(());
+    emit_mini_result(
+        result_format,
+        &run_result,
+        &no_publish,
+        &result_traj_path,
+        None,
+        &redactor,
+    )?;
+    run_result
 }
 
 /// Validate `traj` for `--continue` and exit the process on the first violation.
@@ -1725,6 +1891,17 @@ async fn mini_continue_cmd(
     let verification_checks = parse_verify_checks(&m.verify)?;
     let interactive_mode = resolve_interactive_mode(m.interactive, m.yolo, m.ui);
 
+    // Capture --result-format state before MiniArgs consumes cfg/output fields.
+    let result_format = m.result_format;
+    reject_json_with_ratatui(result_format, interactive_mode)?;
+    let redactor = crate::redaction::Redactor::from_config_lossy(&cfg.root.redaction);
+    let result_traj_path = output_dir.join(format!("{child_traj_name}.traj.json"));
+    let scripted = if m.deterministic_responses.is_empty() {
+        None
+    } else {
+        Some(m.deterministic_responses.clone())
+    };
+
     let args = crate::run::mini::MiniArgs {
         task: follow_up_task,
         extra_context: m.extra_context,
@@ -1734,7 +1911,7 @@ async fn mini_continue_cmd(
         driver_isolated: false,
         output_dir,
         trajectory_name: child_traj_name,
-        deterministic_responses: None,
+        deterministic_responses: scripted,
         deterministic_usage_per_call: None,
         task_timeout_secs: effective_task_timeout,
         cancellation: None,
@@ -1745,6 +1922,7 @@ async fn mini_continue_cmd(
         resume_from: None,
         continue_from: Some(continue_state),
         interactive_mode,
+        no_bell: m.no_bell,
         trace_id: None,
         webhook_url: m.webhook_url,
         webhook_headers: m.webhook_headers,
@@ -1758,7 +1936,18 @@ async fn mini_continue_cmd(
         parent_sweep_run_id: None,
         issue_provenance: None,
     };
-    crate::run::mini::run(args).await
+    // Continue never captures a patch (patch_capture: None) and never publishes a PR.
+    let run_result = crate::run::mini::run(args).await;
+    let no_publish: Result<(), Error> = Ok(());
+    emit_mini_result(
+        result_format,
+        &run_result,
+        &no_publish,
+        &result_traj_path,
+        None,
+        &redactor,
+    )?;
+    run_result
 }
 
 fn apply_read_only_policy(m: &args::MiniCmd, cfg: &Config) -> Result<(), Error> {
@@ -2070,6 +2259,7 @@ pub async fn bench_swebench(s: args::SwebenchCmd) -> Result<(), Error> {
                 run_id: None,
                 breakdown: crate::run::evaluate::BreakdownSelection::default_axes(),
                 cost_attribution: true,
+                force: false,
             };
             let eval = crate::run::evaluate::run(&eval_args)?;
             let loaded_sweep = crate::run::compare::load_sweep(&output_dir)?;
@@ -2373,6 +2563,9 @@ fn swebench_config_from_cmd(s: &args::SwebenchCmd) -> Result<Config, Error> {
     if let Some(img) = s.docker_image.clone() {
         cfg.root.environment.docker_image = Some(img);
     }
+    if let Some(nm) = s.network_mode {
+        cfg.root.environment.network_mode = parse_network_mode(nm.as_str())?;
+    }
     if s.chaos_fail_every > 0 {
         cfg.root.environment.chaos_fail_every = s.chaos_fail_every;
     }
@@ -2428,6 +2621,105 @@ fn validate_observation_head_ratio(value: f64) -> Result<(), Error> {
             "--observation-head-ratio must be a finite value in [0,1], got {value}"
         ))))
     }
+}
+
+/// Reject `--result-format json` combined with the ratatui dashboard UI.
+///
+/// The ratatui dashboard enters the alternate screen and renders to
+/// `std::io::stdout()` (see `agent::confirm_tui`), which would interleave
+/// terminal-control bytes with the JSON result and break the clean-stdout
+/// contract. The two modes are fundamentally incompatible, so reject early.
+fn reject_json_with_ratatui(
+    result_format: crate::run::mini::ResultFormat,
+    interactive_mode: crate::run::mini::InteractiveMode,
+) -> Result<(), Error> {
+    use crate::run::mini::{InteractiveMode, ResultFormat};
+    if result_format == ResultFormat::Json
+        && matches!(
+            interactive_mode,
+            InteractiveMode::Ratatui | InteractiveMode::RatatuiMonitor
+        )
+    {
+        return Err(Error::Config(crate::error::ConfigError::Invalid(
+            "--result-format json cannot be combined with --ui ratatui; the dashboard \
+             renders to stdout and would corrupt the JSON result stream. Use the default \
+             --ui stderr."
+                .into(),
+        )));
+    }
+    Ok(())
+}
+
+/// Lightweight view over a trajectory file that deserializes only the `info`
+/// block. A trajectory carries the full message history and tool outputs
+/// (potentially megabytes) that `emit_mini_result` never reads.
+#[derive(serde::Deserialize)]
+struct TrajectoryInfoOnly {
+    info: crate::trajectory::TrajectoryInfo,
+}
+
+/// Emit a machine-readable run result to stdout when `--result-format json` is active.
+///
+/// Emission scope: only when the trajectory records `outcome == "submitted"`,
+/// covering a clean submit (exit 0) and a submitted-then-verification-failed run
+/// (exit 7). Hard errors before a trajectory exists, and unsubmitted runs (step
+/// limit, budget, stagnation), print no result object.
+///
+/// The reported `exit_code`/`exit_outcome_class` reflect the **effective** final
+/// exit: a run error takes precedence (it is propagated first by the caller),
+/// otherwise a GitHub PR-publish error, otherwise success. This keeps the JSON
+/// honest even when `--open-pr` publishing fails after a successful submit.
+fn emit_mini_result(
+    format: crate::run::mini::ResultFormat,
+    run_result: &Result<(), Error>,
+    publish_result: &Result<(), Error>,
+    traj_path: &std::path::Path,
+    patch_path: Option<&std::path::Path>,
+    redactor: &crate::redaction::Redactor,
+) -> Result<(), Error> {
+    if format != crate::run::mini::ResultFormat::Json {
+        return Ok(());
+    }
+    // Only Ok and VerificationFailed guarantee a trajectory (and patch) on disk.
+    // Any other run error is a hard pre-/mid-trajectory failure → no result object;
+    // the caller's `run_result?` propagates it and `main` prints the outcome class.
+    if !(run_result.is_ok() || matches!(run_result, Err(Error::VerificationFailed(..)))) {
+        return Ok(());
+    }
+    // Effective exit code: run error first (caller propagates it before the publish
+    // error), then a publish error, otherwise success.
+    let exit_code = match (run_result, publish_result) {
+        (Err(e), _) | (Ok(()), Err(e)) => crate::exit_code::ExitCode::from_error(e),
+        (Ok(()), Ok(())) => crate::exit_code::ExitCode::Success,
+    };
+    // Deserialize only the `info` block (see TrajectoryInfoOnly) to avoid
+    // loading the full message history just to read summary fields.
+    let traj_json = std::fs::read_to_string(traj_path).map_err(Error::Io)?;
+    let traj: TrajectoryInfoOnly = serde_json::from_str(&traj_json).map_err(Error::Json)?;
+    // Only emit when the agent actually submitted a patch — the unifying condition
+    // behind both contract cases. Unsubmitted runs (incl. a `--verify` failure on a
+    // step-limit/budget run) are represented only by the trajectory.
+    if traj.info.outcome.as_deref() != Some(crate::trajectory::outcome::SUBMITTED) {
+        return Ok(());
+    }
+    // The spec promises absolute paths. Canonicalize where possible (the files
+    // exist on disk by this point); fall back to the as-given path if the
+    // filesystem call fails so we never panic on an unusual path.
+    let abs_traj_path = traj_path
+        .canonicalize()
+        .unwrap_or_else(|_| traj_path.to_path_buf());
+    let abs_patch_path = patch_path
+        .filter(|p| p.exists())
+        .and_then(|p| p.canonicalize().ok());
+    let result = crate::run::mini_result::MiniResult::from_trajectory_info(
+        &traj.info,
+        exit_code,
+        &abs_traj_path,
+        abs_patch_path.as_deref(),
+    );
+    let json = result.to_redacted_json(redactor).map_err(Error::Json)?;
+    println!("{json}");
+    Ok(())
 }
 
 #[allow(clippy::single_option_map)]
@@ -2533,23 +2825,37 @@ fn trajectory_submitted(path: &std::path::Path) -> Result<bool, Error> {
     Ok(trajectory.info.outcome.as_deref() == Some(crate::trajectory::outcome::SUBMITTED))
 }
 
-async fn publish_github_pr(options: crate::run::github_pr::GithubPrOptions) -> Result<(), Error> {
+async fn publish_github_pr(
+    options: crate::run::github_pr::GithubPrOptions,
+    to_stderr: bool,
+) -> Result<(), Error> {
     let result = crate::run::github_pr::publish(options).await?;
+    // When the run result is being emitted as JSON, this human-facing PR text
+    // must not pollute stdout — stdout has to be exactly one JSON object.
     if let Some(output) = result.dry_run_output {
-        print!("{output}");
+        if to_stderr {
+            eprint!("{output}");
+        } else {
+            print!("{output}");
+        }
     } else if let Some(url) = result.url {
-        println!("github_pr_url: {url}");
+        if to_stderr {
+            eprintln!("github_pr_url: {url}");
+        } else {
+            println!("github_pr_url: {url}");
+        }
     }
     Ok(())
 }
 
 async fn maybe_publish_mini_github_pr(
     github_pr: Option<crate::run::github_pr::GithubPrOptions>,
+    json_result_mode: bool,
 ) -> Result<(), Error> {
     if let Some(options) = github_pr {
         let traj_path = options.trajectory_ref.clone();
         if trajectory_submitted(std::path::Path::new(&traj_path))? {
-            publish_github_pr(options).await?;
+            publish_github_pr(options, json_result_mode).await?;
         } else {
             tracing::info!(trajectory = %traj_path, "github PR skipped because run did not submit");
         }
@@ -3144,6 +3450,7 @@ fn bench_evaluate(e: args::EvaluateCmd) -> Result<(), Error> {
         run_id: e.run_id,
         breakdown,
         cost_attribution: matches!(e.cost_attribution, args::OnOffArg::On),
+        force: e.force,
     };
     let eval = crate::run::evaluate::run(&args)?;
     let loaded_sweep = crate::run::compare::load_sweep(&e.sweep)?;
@@ -3171,6 +3478,12 @@ fn bench_evaluate(e: args::EvaluateCmd) -> Result<(), Error> {
         evaluation_path = %crate::run::evaluate::evaluation_path(&e.sweep).display(),
         "evaluation complete"
     );
+    if let Some(rs) = &eval.reuse_summary {
+        println!(
+            "reuse: {} evaluated, {} reused, {} invalidated",
+            rs.evaluated, rs.reused, rs.invalidated
+        );
+    }
     print!("{}", crate::run::evaluate::render_summary_table(&summary));
     if let Some(latency) = &eval.latency_summary {
         print!("{}", crate::run::evaluate::render_latency_summary(latency));
@@ -3675,6 +3988,14 @@ fn parse_breakdown_selection(
 }
 
 fn bench_inspect(i: args::InspectCmd) -> Result<(), Error> {
+    if i.list_formats {
+        use crate::trajectory::export::registry;
+        for fmt in registry() {
+            println!("{:<12}{:<14}{}", fmt.name, fmt.tier.as_str(), fmt.consumer);
+        }
+        return Ok(());
+    }
+
     if !i.diff.is_empty() {
         if i.instance.is_some() || i.filter.is_some() || i.sweep.is_some() {
             return Err(Error::Config(crate::error::ConfigError::Invalid(
@@ -3703,7 +4024,7 @@ fn bench_inspect(i: args::InspectCmd) -> Result<(), Error> {
         return Ok(());
     }
 
-    if matches!(i.format.as_str(), "markdown" | "html" | "csv" | "mermaid") {
+    if crate::trajectory::export::is_export_format(&i.format) {
         return bench_inspect_export(i);
     }
 
@@ -3775,15 +4096,22 @@ fn bench_inspect_export(i: args::InspectCmd) -> Result<(), Error> {
     let traj: crate::trajectory::Trajectory = serde_json::from_str(&text)
         .map_err(|e| Error::Trajectory(format!("inspect: failed to parse trajectory: {e}")))?;
 
-    let content = match i.format.as_str() {
-        "markdown" => {
-            use crate::trajectory::export::{MarkdownExporter, TrajectoryExporter};
-            MarkdownExporter::export(&traj)
+    let content = {
+        use crate::trajectory::export::{FEATURE_GATED_FORMATS, registry};
+        if let Some(fmt) = registry().into_iter().find(|f| f.name == i.format.as_str()) {
+            (fmt.render)(&traj)
+        } else if let Some((name, feature)) = FEATURE_GATED_FORMATS
+            .iter()
+            .find(|(n, _)| *n == i.format.as_str())
+        {
+            // Known format, but its Cargo feature was not compiled into this build.
+            return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+                "format_unavailable: --format {name} requires the `{feature}` Cargo feature; \
+                 rebuild with `--features {feature}`"
+            ))));
+        } else {
+            unreachable!("dispatch guarded by is_export_format")
         }
-        "html" => inspect_export_html(&traj)?,
-        "csv" => inspect_export_csv(&traj)?,
-        "mermaid" => inspect_export_mermaid(&traj)?,
-        _ => unreachable!("dispatch guarded by caller"),
     };
 
     if let Some(output_path) = i.output {
@@ -3822,54 +4150,6 @@ fn bench_inspect_export(i: args::InspectCmd) -> Result<(), Error> {
         print!("{content}");
     }
     Ok(())
-}
-
-#[cfg(feature = "html-export")]
-#[allow(clippy::unnecessary_wraps)]
-fn inspect_export_html(traj: &crate::trajectory::Trajectory) -> Result<String, Error> {
-    use crate::trajectory::export::{HtmlExporter, TrajectoryExporter};
-    Ok(HtmlExporter::export(traj))
-}
-
-#[cfg(not(feature = "html-export"))]
-fn inspect_export_html(_traj: &crate::trajectory::Trajectory) -> Result<String, Error> {
-    Err(Error::Config(crate::error::ConfigError::Invalid(
-        "format_unavailable: --format html requires the `html-export` Cargo feature; \
-         rebuild with `--features html-export`"
-            .into(),
-    )))
-}
-
-#[cfg(feature = "csv-export")]
-#[allow(clippy::unnecessary_wraps)]
-fn inspect_export_csv(traj: &crate::trajectory::Trajectory) -> Result<String, Error> {
-    use crate::trajectory::export::{CsvExporter, TrajectoryExporter};
-    Ok(CsvExporter::export(traj))
-}
-
-#[cfg(not(feature = "csv-export"))]
-fn inspect_export_csv(_traj: &crate::trajectory::Trajectory) -> Result<String, Error> {
-    Err(Error::Config(crate::error::ConfigError::Invalid(
-        "format_unavailable: --format csv requires the `csv-export` Cargo feature; \
-         rebuild with `--features csv-export`"
-            .into(),
-    )))
-}
-
-#[cfg(feature = "mermaid-export")]
-#[allow(clippy::unnecessary_wraps)]
-fn inspect_export_mermaid(traj: &crate::trajectory::Trajectory) -> Result<String, Error> {
-    use crate::trajectory::export::{MermaidExporter, TrajectoryExporter};
-    Ok(MermaidExporter::export(traj))
-}
-
-#[cfg(not(feature = "mermaid-export"))]
-fn inspect_export_mermaid(_traj: &crate::trajectory::Trajectory) -> Result<String, Error> {
-    Err(Error::Config(crate::error::ConfigError::Invalid(
-        "format_unavailable: --format mermaid requires the `mermaid-export` Cargo feature; \
-         rebuild with `--features mermaid-export`"
-            .into(),
-    )))
 }
 
 fn bench_command_stats(c: args::CommandStatsCmd) -> Result<(), Error> {
@@ -4081,6 +4361,68 @@ fn bench_cache_stats(c: args::CacheStatsCmd) -> Result<(), Error> {
     Ok(())
 }
 
+fn bench_ledger(c: args::LedgerCmd) -> Result<(), Error> {
+    let is_json = match c.format.as_str() {
+        "text" => false,
+        "json" => true,
+        other => {
+            return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+                "ledger: unknown --format `{other}` (expected `text` or `json`)"
+            ))));
+        }
+    };
+    let report = crate::run::ledger::run(&crate::run::ledger::LedgerArgs {
+        dirs: c.dirs,
+        budget_usd: c.budget_usd,
+    })?;
+    if is_json {
+        let json = crate::artifact::to_string_pretty(
+            crate::artifact::ArtifactKind::LedgerReport,
+            &report,
+        )?;
+        println!("{json}");
+    } else {
+        print!("{}", crate::run::ledger::render_text(&report));
+    }
+    if report.over_budget == Some(true) {
+        exit_with_outcome(
+            crate::exit_code::ExitCode::LedgerBudgetExceeded,
+            &format!(
+                "ledger: grand total ${:.6} exceeds budget ${:.6}",
+                report.grand_total_usd,
+                report.budget_usd.unwrap_or(0.0)
+            ),
+        );
+    }
+    Ok(())
+}
+
+fn bench_context_pressure(c: args::ContextPressureCmd) -> Result<(), Error> {
+    let is_json = match c.format.as_str() {
+        "text" => false,
+        "json" => true,
+        other => {
+            return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+                "context-pressure: unknown --format `{other}` (expected `text` or `json`)"
+            ))));
+        }
+    };
+    let report =
+        crate::run::context_pressure::run(&crate::run::context_pressure::ContextPressureArgs {
+            sweep_dir: c.sweep,
+        })?;
+    if is_json {
+        let json = crate::artifact::to_string_pretty(
+            crate::artifact::ArtifactKind::ContextPressureReport,
+            &report,
+        )?;
+        println!("{json}");
+    } else {
+        print!("{}", crate::run::context_pressure::render_text(&report));
+    }
+    Ok(())
+}
+
 fn bench_budget_fit(b: args::BudgetFitCmd) -> Result<(), Error> {
     if !(0.0..=0.5).contains(&b.at_cap_tolerance) {
         return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
@@ -4123,6 +4465,37 @@ fn bench_budget_fit(b: args::BudgetFitCmd) -> Result<(), Error> {
         println!("{}", serde_json::to_string_pretty(&report)?);
     } else {
         print!("{}", crate::run::budget_fit::render_text(&report));
+    }
+    Ok(())
+}
+
+fn bench_variance(v: args::BenchVarianceCmd) -> Result<(), Error> {
+    let is_json = match v.format.as_str() {
+        "text" => false,
+        "json" => true,
+        other => {
+            return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+                "bench variance: unknown --format `{other}` (expected `text` or `json`)"
+            ))));
+        }
+    };
+    let args = crate::run::variance::BenchVarianceArgs {
+        sweep_dir: v.sweep,
+        ci_width: v.ci_width,
+        filter: v.filter,
+        class: v.class,
+    };
+    let report = crate::run::variance::compute_variance(&args)?;
+    if is_json {
+        println!(
+            "{}",
+            crate::artifact::to_string_pretty(
+                crate::artifact::ArtifactKind::BenchVarianceReport,
+                &report,
+            )?
+        );
+    } else {
+        print!("{}", crate::run::variance::render_text(&report));
     }
     Ok(())
 }
@@ -4853,6 +5226,121 @@ fn bench_grep(g: args::GrepCmd) -> Result<(), Error> {
     Ok(())
 }
 
+fn bench_events(e: args::EventsCmd) -> Result<(), Error> {
+    use crate::run::events;
+    let format = match e.format.as_str() {
+        "table" => EventsOutputFormat::Table,
+        "json" => EventsOutputFormat::Json,
+        "jsonl" => EventsOutputFormat::Jsonl,
+        other => {
+            return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+                "unknown --format `{other}` (expected `table`, `json`, or `jsonl`)"
+            ))));
+        }
+    };
+    // Only json/jsonl serialize the raw payload; table prints just the typed
+    // columns, so we skip retaining payloads there to keep memory bounded.
+    let include_payloads = matches!(format, EventsOutputFormat::Json | EventsOutputFormat::Jsonl);
+    // Build the redaction policy applied to event-only fields the writer injects
+    // after the runtime `RedactingSink` — notably the raw `instance_id`. Base it
+    // on `--config` (or defaults), then union the run/sweep's recorded policy
+    // best-effort. Recorded `secret_literals` are stored already-redacted, so
+    // `--config` is the reliable lever for a literal-shaped id; the merge still
+    // recovers a sweep's `custom_patterns`/`enabled` for the no-`--config` case.
+    let mut redaction = match &e.config {
+        Some(p) => Config::load(p)?,
+        None => Config::defaults()?,
+    }
+    .root
+    .redaction;
+    // An explicit `--config` is authoritative for the `enabled` flag. The recorded
+    // sweep policy may add literals/patterns and would otherwise force redaction
+    // back on (that force-enable is intended for `redact-audit`), but here it must
+    // not silently override an operator who set `enabled = false` to inspect raw
+    // ids; capture the requested state and restore it after the merge.
+    let config_enabled = redaction.enabled;
+    // Recover the recorded policy from every governing sweep dir: the path itself
+    // plus the governing dir of each discovered event log. Deriving from the
+    // discovered files (not just `path`) means a parent dir holding several sweeps
+    // — each with its own `manifest.json` in a sibling subdir — still has each
+    // child policy applied. Discovery errors are non-fatal here (`run` reports
+    // them); the merge is best-effort and a manifest-less dir is a no-op.
+    let mut config_dirs = events_recorded_config_dirs(&e.path);
+    for file in events::discover_event_files(&e.path).unwrap_or_default() {
+        config_dirs.extend(events_recorded_config_dirs(&file));
+    }
+    config_dirs.sort();
+    config_dirs.dedup();
+    for dir in &config_dirs {
+        crate::run::redact_audit::merge_recorded_sweep_redaction(dir, &mut redaction);
+    }
+    if e.config.is_some() {
+        redaction.enabled = config_enabled;
+    }
+    let report = events::run(&events::EventsArgs {
+        path: e.path,
+        types: e.types,
+        instances: e.instances,
+        since: e.since,
+        until: e.until,
+        summary: e.summary,
+        include_payloads,
+        redaction,
+    })?;
+    match format {
+        EventsOutputFormat::Table => {
+            if e.summary {
+                print!("{}", events::render_summary_table(&report));
+            } else {
+                print!("{}", events::render_table(&report));
+            }
+        }
+        EventsOutputFormat::Json => {
+            println!("{}", events::render_json(&report)?);
+        }
+        EventsOutputFormat::Jsonl => {
+            let lines = events::render_jsonl(&report)?;
+            if !lines.is_empty() {
+                println!("{lines}");
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Directories whose recorded resolved redaction policy (in `manifest.json` /
+/// `results.json`) applies to the event log at `path`, for
+/// [`merge_recorded_sweep_redaction`](crate::run::redact_audit::merge_recorded_sweep_redaction).
+///
+/// A sweep records its policy at the sweep-dir root, while the event log is
+/// conventionally either inside that dir (`runs/sweep/…`) or its
+/// `{dir}.events.jsonl` sibling (the documented `--output runs/sweep --event-log
+/// runs/sweep.events.jsonl` layout). So probe the path itself when it is a
+/// directory, and for a `*.events.jsonl` file the dir formed by stripping that
+/// suffix plus the file's parent. Non-existent or manifest-less dirs are harmless:
+/// the merge is best-effort and leaves the config unchanged.
+fn events_recorded_config_dirs(path: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let mut dirs = Vec::new();
+    if path.is_dir() {
+        dirs.push(path.to_path_buf());
+        return dirs;
+    }
+    if let (Some(parent), Some(stem)) = (
+        path.parent(),
+        path.file_name()
+            .and_then(|n| n.to_str())
+            .and_then(|n| n.strip_suffix(".events.jsonl")),
+    ) {
+        dirs.push(parent.join(stem));
+    }
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() {
+            dirs.push(parent.to_path_buf());
+        }
+    }
+    dirs
+}
+
 fn bench_triage(t: args::TriageCmd) -> Result<(), Error> {
     let format = match t.format.as_str() {
         "text" => TriageFormat::Text,
@@ -5483,6 +5971,13 @@ enum GrepOutputFormat {
     Json,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EventsOutputFormat {
+    Table,
+    Json,
+    Jsonl,
+}
+
 async fn bench_tail(t: args::TailCmd) -> Result<(), Error> {
     if t.interval_ms == 0 {
         return Err(Error::Config(crate::error::ConfigError::Invalid(
@@ -5548,6 +6043,11 @@ fn parse_env_kind(kind: &str) -> Result<crate::config::EnvKind, Error> {
             "unknown --env `{other}` (expected `local` or `docker`)"
         )))),
     }
+}
+
+fn parse_network_mode(mode: &str) -> Result<crate::config::NetworkMode, Error> {
+    mode.parse()
+        .map_err(|e| Error::Config(crate::error::ConfigError::Invalid(e)))
 }
 
 /// Print a non-fatal skills-preview informational section for `bench doctor`.
@@ -5944,6 +6444,131 @@ fn bench_audit(a: args::AuditCmd) -> Result<(), Error> {
     crate::run::audit::run(&a)
 }
 
+fn bench_merge(m: &args::MergeCmd) -> Result<(), Error> {
+    let is_json = matches!(m.format, args::MergeFormat::Json);
+    let report = crate::run::merge::run(m)?;
+    if is_json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        report.render_text();
+    }
+    Ok(())
+}
+
+#[allow(clippy::needless_pass_by_value)]
+fn bench_shard(s: args::ShardCmd) -> Result<(), Error> {
+    use crate::run::dataset::DatasetSource;
+    use crate::run::shard::{ShardArgs, run_shard};
+
+    // --balance-by is reserved for future use; reject loudly with actionable guidance
+    if let Some(key) = &s.balance_by {
+        return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+            "--balance-by '{key}' is not yet implemented; \
+             reserved for future use — use --stratify-by repo for repo-spread balancing"
+        ))));
+    }
+
+    // Resolve dataset source (same mutual-exclusion logic as bench_subset)
+    let cache_dir = s
+        .dataset_cache_dir
+        .clone()
+        .unwrap_or_else(crate::run::dataset::default_cache_dir);
+
+    let dataset_source = match (&s.dataset_path, &s.dataset) {
+        (Some(_), Some(_)) => {
+            return Err(Error::Config(crate::error::ConfigError::Invalid(
+                "--dataset-path and --dataset are mutually exclusive; provide only one".into(),
+            )));
+        }
+        (None, None) => {
+            return Err(Error::Config(crate::error::ConfigError::Invalid(
+                "one of --dataset-path or --dataset is required".into(),
+            )));
+        }
+        (Some(path), None) => DatasetSource::LocalPath(path.clone()),
+        (None, Some(alias_str)) => {
+            let alias = alias_str
+                .parse::<crate::run::dataset::SwebenchAlias>()
+                .map_err(|e| Error::Config(crate::error::ConfigError::Invalid(e)))?;
+            let split_str = s.split.as_deref().unwrap_or("test");
+            let split = split_str
+                .parse::<crate::run::dataset::SwebenchSplit>()
+                .map_err(|e| Error::Config(crate::error::ConfigError::Invalid(e)))?;
+            DatasetSource::Named { alias, split }
+        }
+    };
+
+    let (dataset_bytes, meta) = crate::run::dataset::resolve_dataset(&dataset_source, &cache_dir)?;
+    let instances = crate::run::swebench::load_dataset_from_bytes_pub(&dataset_bytes)?;
+
+    // Guard against destroying the input dataset: `--force` clears the whole
+    // output directory, so if the source JSONL lives inside `--output` the
+    // command would delete the operator's dataset (or named-dataset cache)
+    // while still succeeding from the in-memory copy. `meta.path` is the actual
+    // on-disk file the bytes were read from — for both local paths and named
+    // cache hits — so guarding on it covers both sources. Refuse before any
+    // deletion happens.
+    if s.output.exists() {
+        if let (Ok(ds_canon), Ok(out_canon)) = (
+            std::fs::canonicalize(&meta.path),
+            std::fs::canonicalize(&s.output),
+        ) {
+            if ds_canon.starts_with(&out_canon) {
+                return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+                    "--output directory '{}' contains the input dataset '{}'; \
+                     refusing to overwrite it (choose a different --output)",
+                    s.output.display(),
+                    meta.path.display()
+                ))));
+            }
+        }
+    }
+
+    let stratify_by = s.stratify_by.map(|v| match v {
+        args::StratifyByArg::Repo => crate::run::swebench::StratifyBy::Repo,
+    });
+    let stratify_mode = match s.stratify_mode.unwrap_or(args::StratifyModeArg::Balanced) {
+        args::StratifyModeArg::Proportional => crate::run::swebench::StratifyMode::Proportional,
+        args::StratifyModeArg::Balanced => crate::run::swebench::StratifyMode::Balanced,
+    };
+
+    let alias_str = match &dataset_source {
+        DatasetSource::Named { alias, .. } => Some(alias.to_string()),
+        DatasetSource::LocalPath(_) => None,
+    };
+    let split_str = match &dataset_source {
+        DatasetSource::Named { split, .. } => Some(split.to_string()),
+        DatasetSource::LocalPath(_) => None,
+    };
+
+    // Clap guarantees `shards >= 1`; clamp the u64→usize conversion for safety.
+    let n_shards = usize::try_from(s.shards).unwrap_or(usize::MAX);
+
+    let report = run_shard(ShardArgs {
+        instances,
+        source_sha256: meta.sha256,
+        n_shards,
+        seed: s.seed,
+        stratify_by,
+        stratify_mode,
+        output: &s.output,
+        force: s.force,
+        alias: alias_str.as_deref(),
+        split: split_str.as_deref(),
+    })?;
+
+    match s.format {
+        args::ShardFormat::Json => {
+            println!("{}", serde_json::to_string_pretty(&report)?);
+        }
+        args::ShardFormat::Text => {
+            report.render_text();
+        }
+    }
+
+    Ok(())
+}
+
 fn bench_failure_digest(f: args::FailureDigestCmd) -> Result<(), Error> {
     let format = match f.format.as_str() {
         "markdown" => crate::run::failure_digest::DigestFormat::Markdown,
@@ -5960,6 +6585,7 @@ fn bench_failure_digest(f: args::FailureDigestCmd) -> Result<(), Error> {
         instance: f.instance,
         format,
         max_chars,
+        baseline_signature: f.baseline_signature,
     })?;
     match format {
         crate::run::failure_digest::DigestFormat::Markdown => {
@@ -6717,6 +7343,262 @@ fn agent_profile_cmd(p: &args::AgentProfileCmd) -> Result<(), Error> {
     Ok(())
 }
 
+fn agent_annotate_cmd(a: &args::AgentAnnotateCmd) -> Result<(), Error> {
+    use crate::run::agent_annotate::{
+        AnnotateFormat, AnnotateOpts, ShowOpts, StepNoteInput, Verdict, instance_id_from_path,
+        render_show_text, render_write_text, run_annotate, run_show, sidecar_path,
+    };
+
+    let format = match a.format.as_str() {
+        "json" => AnnotateFormat::Json,
+        "text" | "" => AnnotateFormat::Text,
+        other => {
+            return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+                "--format '{other}' is not valid; use 'text' or 'json'"
+            ))));
+        }
+    };
+
+    if a.show {
+        let opts = ShowOpts {
+            trajectory_path: a.trajectory.clone(),
+            format,
+        };
+        let ann = run_show(&opts)?;
+        match format {
+            AnnotateFormat::Json => {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&ann).map_err(Error::Json)?
+                );
+            }
+            AnnotateFormat::Text => {
+                print!("{}", render_show_text(&ann));
+            }
+        }
+        return Ok(());
+    }
+
+    // Write mode: --verdict is required.
+    let verdict_str = a.verdict.as_deref().ok_or_else(|| {
+        Error::Config(crate::error::ConfigError::Invalid(
+            "agent annotate: --verdict is required in write mode \
+             (use: correct, incorrect, partial, unsure)"
+                .into(),
+        ))
+    })?;
+
+    let verdict = Verdict::parse(verdict_str).ok_or_else(|| {
+        Error::Config(crate::error::ConfigError::Invalid(format!(
+            "agent annotate: unknown --verdict `{verdict_str}`; \
+             expected one of: correct, incorrect, partial, unsure"
+        )))
+    })?;
+
+    // Parse --step-note <INDEX>=<TEXT> entries.
+    let mut step_notes = Vec::new();
+    for raw in &a.step_notes {
+        let (idx_str, note_text) = raw.split_once('=').ok_or_else(|| {
+            Error::Config(crate::error::ConfigError::Invalid(format!(
+                "agent annotate: --step-note must be in the form INDEX=TEXT, got `{raw}`"
+            )))
+        })?;
+        let step: usize = idx_str.trim().parse().map_err(|_| {
+            Error::Config(crate::error::ConfigError::Invalid(format!(
+                "agent annotate: --step-note index `{idx_str}` is not a valid integer"
+            )))
+        })?;
+        step_notes.push(StepNoteInput {
+            step,
+            note: note_text.to_owned(),
+        });
+    }
+
+    let opts = AnnotateOpts {
+        trajectory_path: a.trajectory.clone(),
+        verdict,
+        failure_category: a.failure_category.clone(),
+        note: a.note.clone(),
+        step_notes,
+        force: a.force,
+    };
+
+    run_annotate(&opts)?;
+
+    let sidecar = sidecar_path(&a.trajectory);
+    match format {
+        AnnotateFormat::Json => {
+            let msg = serde_json::json!({
+                "status": "written",
+                "verdict": verdict.as_str(),
+                "instance_id": instance_id_from_path(&a.trajectory),
+                "sidecar": sidecar.display().to_string(),
+            });
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&msg).map_err(Error::Json)?
+            );
+        }
+        AnnotateFormat::Text => {
+            print!("{}", render_write_text(&a.trajectory, verdict, &sidecar));
+        }
+    }
+
+    Ok(())
+}
+
+fn agent_runs_cmd(r: &args::AgentRunsCmd) -> Result<(), Error> {
+    use crate::run::agent_runs::{
+        AgentRunsOpts, RunsFilter, RunsFormat, RunsSort, format_text, run_agent_runs,
+    };
+
+    let format = match r.format.as_str() {
+        "json" => RunsFormat::Json,
+        "text" | "" => RunsFormat::Text,
+        other => {
+            return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+                "--format '{other}' is not valid; use 'text' or 'json'"
+            ))));
+        }
+    };
+
+    let mut filters = Vec::new();
+    for raw in &r.filters {
+        filters.push(RunsFilter::parse(raw)?);
+    }
+
+    let sort = RunsSort::parse(&r.sort)?;
+
+    let opts = AgentRunsOpts {
+        dir: r.dir.clone(),
+        recursive: r.recursive,
+        format,
+        filters,
+        sort,
+    };
+
+    let report = run_agent_runs(&opts)?;
+
+    match format {
+        RunsFormat::Json => {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&report).map_err(Error::Json)?
+            );
+        }
+        RunsFormat::Text => {
+            print!("{}", format_text(&report));
+        }
+    }
+
+    Ok(())
+}
+
+fn agent_fs_audit_cmd(a: &args::FsAuditCmd) -> Result<(), Error> {
+    use crate::run::fs_audit::{
+        FsAuditFormat, FsAuditOpts, FsAuditSource, format_json, format_text, parse_format,
+        run_fs_audit,
+    };
+
+    // Exactly one of --trajectory / --sweep is required (clap group enforces this,
+    // but guard here for a helpful error message).
+    let source = match (&a.trajectory, &a.sweep) {
+        (Some(p), None) => FsAuditSource::Trajectory(p.clone()),
+        (None, Some(d)) => FsAuditSource::Sweep(d.clone()),
+        (None, None) => {
+            return Err(Error::Config(crate::error::ConfigError::Invalid(
+                "one of --trajectory or --sweep is required".to_owned(),
+            )));
+        }
+        (Some(_), Some(_)) => {
+            return Err(Error::Config(crate::error::ConfigError::Invalid(
+                "--trajectory and --sweep are mutually exclusive".to_owned(),
+            )));
+        }
+    };
+
+    let format = parse_format(a.format.as_str()).map_err(Error::Config)?;
+
+    let opts = FsAuditOpts {
+        source,
+        workdir_override: a.workdir.clone(),
+        allow: a.allow.clone(),
+        format,
+    };
+
+    let report = match run_fs_audit(&opts) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("fs-audit: {e}");
+            let code = if matches!(e, Error::Config(_)) {
+                ExitCode::UsageError
+            } else {
+                ExitCode::FsAuditScanError
+            };
+            exit_with_outcome(code, code.outcome_class());
+        }
+    };
+
+    let exit_code = report.exit_code();
+
+    let report_content = match format {
+        FsAuditFormat::Json => {
+            let json = format_json(&report).map_err(Error::Json)?;
+            serde_json::to_string_pretty(&json).map_err(Error::Json)?
+        }
+        FsAuditFormat::Text => format_text(&report),
+    };
+
+    println!("{report_content}");
+
+    if exit_code != ExitCode::Success {
+        exit_with_outcome(exit_code, exit_code.outcome_class());
+    }
+    Ok(())
+}
+
+fn agent_artifact_check_cmd(a: &args::ArtifactCheckCmd) -> Result<(), Error> {
+    use crate::error::ConfigError;
+    use crate::run::artifact_check::{
+        ArtifactCheckOpts, ArtifactCheckSource, format_json, format_text, run_artifact_check,
+    };
+
+    if a.format != "text" && a.format != "json" {
+        return Err(Error::Config(ConfigError::Usage(format!(
+            "unknown --format value {:?}; expected 'text' or 'json'",
+            a.format
+        ))));
+    }
+
+    let opts = ArtifactCheckOpts {
+        source: ArtifactCheckSource::Paths(a.paths.clone()),
+        strict: a.strict,
+    };
+
+    let output = run_artifact_check(&opts).map_err(|e| {
+        eprintln!("artifact-check: {e}");
+        e
+    })?;
+
+    let content = if a.format == "json" {
+        let json = format_json(&output).map_err(Error::Json)?;
+        serde_json::to_string_pretty(&json).map_err(Error::Json)?
+    } else {
+        format_text(&output)
+    };
+
+    println!("{content}");
+
+    if output.has_failures() {
+        exit_with_outcome(
+            ExitCode::ArtifactCheckFailure,
+            ExitCode::ArtifactCheckFailure.outcome_class(),
+        );
+    }
+
+    Ok(())
+}
+
 async fn agent_suite_cmd(s: args::SuiteCmd) -> Result<(), Error> {
     let mut cfg = match &s.config {
         Some(p) => Config::load(p)?,
@@ -7000,6 +7882,23 @@ mod tests {
         assert_eq!(cmd.mcp_servers, vec!["diagnostic-mcp"]);
     }
 
+    #[test]
+    fn mini_cli_no_bell_flag_defaults_false_and_parses() {
+        // Default: flag absent.
+        let cli = Cli::parse_from(["max", "mini", "--task", "t"]);
+        let crate::cli::Command::Mini(cmd) = cli.command else {
+            panic!("expected mini command");
+        };
+        assert!(!cmd.no_bell, "no_bell defaults to false");
+
+        // Present: --no-bell sets it true.
+        let cli = Cli::parse_from(["max", "mini", "--task", "t", "--no-bell"]);
+        let crate::cli::Command::Mini(cmd) = cli.command else {
+            panic!("expected mini command");
+        };
+        assert!(cmd.no_bell, "--no-bell parses to true");
+    }
+
     #[tokio::test]
     async fn mini_github_pr_publish_helper_respects_submission_state() {
         let work = tempfile::tempdir().unwrap();
@@ -7008,34 +7907,40 @@ mod tests {
         let patch = work.path().join("submitted.patch");
         std::fs::write(&patch, sample_patch()).unwrap();
 
-        maybe_publish_mini_github_pr(Some(crate::run::github_pr::GithubPrOptions {
-            target_repo: "madmax983/maxwells-daemon".into(),
-            target_branch: "trunk".into(),
-            task_id: "submitted".into(),
-            trajectory_ref: submitted.display().to_string(),
-            patch_path: patch,
-            branch_prefix: "max".into(),
-            token_env: "GITHUB_TOKEN".into(),
-            mode: PublishMode::DryRun,
-            timeout_secs: 30,
-            max_retries: 2,
-            backoff_base_ms: 250,
-            redaction: crate::config::RedactionCfg::default(),
-        }))
+        maybe_publish_mini_github_pr(
+            Some(crate::run::github_pr::GithubPrOptions {
+                target_repo: "madmax983/maxwells-daemon".into(),
+                target_branch: "trunk".into(),
+                task_id: "submitted".into(),
+                trajectory_ref: submitted.display().to_string(),
+                patch_path: patch,
+                branch_prefix: "max".into(),
+                token_env: "GITHUB_TOKEN".into(),
+                mode: PublishMode::DryRun,
+                timeout_secs: 30,
+                max_retries: 2,
+                backoff_base_ms: 250,
+                redaction: crate::config::RedactionCfg::default(),
+            }),
+            false,
+        )
         .await
         .unwrap();
 
         let errored = work.path().join("errored.traj.json");
         write_trajectory(&errored, Some(outcome::ERROR));
-        maybe_publish_mini_github_pr(Some(crate::run::github_pr::GithubPrOptions {
-            trajectory_ref: errored.display().to_string(),
-            patch_path: work.path().join("missing.patch"),
-            mode: PublishMode::DryRun,
-            ..github_options_for_cli_test()
-        }))
+        maybe_publish_mini_github_pr(
+            Some(crate::run::github_pr::GithubPrOptions {
+                trajectory_ref: errored.display().to_string(),
+                patch_path: work.path().join("missing.patch"),
+                mode: PublishMode::DryRun,
+                ..github_options_for_cli_test()
+            }),
+            false,
+        )
         .await
         .unwrap();
-        maybe_publish_mini_github_pr(None).await.unwrap();
+        maybe_publish_mini_github_pr(None, false).await.unwrap();
     }
 
     #[test]
@@ -7126,6 +8031,7 @@ mod tests {
             workdir: None,
             env: None,
             docker_image: None,
+            network_mode: None,
             output: PathBuf::from("runs"),
             trajectory_name: None,
             stream: None,
@@ -7149,10 +8055,13 @@ mod tests {
             interactive: false,
             yolo: false,
             ui: args::UiKind::Stderr,
+            no_bell: false,
             webhook_url: None,
             webhook_headers: vec![],
             no_step_persist: false,
             chaos_fail_every: 0,
+            result_format: crate::run::mini::ResultFormat::Text,
+            deterministic_responses: vec![],
         }
     }
 

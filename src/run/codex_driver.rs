@@ -434,8 +434,20 @@ fn handle_local_shell_call(
         .record_with_extra(&Message::assistant(String::new()), extra);
     agent.stream.emit(StreamEvent::AssistantMessage {
         step: parsed.steps,
-        content: action_label,
+        content: action_label.clone(),
         cost_usd: None,
+        timestamp: ts.clone(),
+    });
+    // Surface the shell call as a generic tool-activity event. The driver
+    // otherwise emits only AssistantMessage/Observation, so a dashboard that
+    // infers liveness (issue #649) would render a long external command as a
+    // static idle footer; the matching ToolEnd is emitted from the call-output
+    // handler. ToolStart is not bash-command telemetry, so consumers that audit
+    // shell commands ignore it. Reuse the already-redacted `action_label` since
+    // the driver stream is not wrapped in RedactingSink.
+    agent.stream.emit(StreamEvent::ToolStart {
+        step: parsed.steps,
+        label: action_label,
         timestamp: ts,
     });
 }
@@ -506,6 +518,13 @@ fn handle_local_shell_call_output(agent: &mut DefaultAgent, parsed: &mut Parsed,
     agent
         .trajectory
         .record_with_extra(&Message::user(redacted.clone()), extra);
+    // Close the tool-activity span opened in `handle_local_shell_call` so the
+    // dashboard (issue #649) leaves the running state before the observation
+    // reopens the thinking window.
+    agent.stream.emit(StreamEvent::ToolEnd {
+        step: parsed.steps,
+        timestamp: ts.clone(),
+    });
     agent.stream.emit(StreamEvent::Observation {
         step: parsed.steps,
         content: redacted,

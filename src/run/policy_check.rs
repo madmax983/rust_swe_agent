@@ -14,8 +14,10 @@ use crate::config::Config;
 use crate::error::{ConfigError, Error};
 use crate::policy::{PolicyEngine, PolicyEvaluation};
 
-/// Schema version for the `policy-check` JSON artifact.
-const POLICY_CHECK_SCHEMA_VERSION: ArtifactSchemaVersion = ArtifactSchemaVersion::new(1, 0);
+/// Schema version for the `policy-check` JSON artifact, kept in sync with the
+/// global current artifact contract version so that saved reports pass
+/// `agent artifact-check --strict`.
+const POLICY_CHECK_SCHEMA_VERSION: ArtifactSchemaVersion = ArtifactSchemaVersion::CURRENT;
 
 // ── Input source ──────────────────────────────────────────────────────────────
 
@@ -357,7 +359,7 @@ pub fn format_json(output: &PolicyCheckOutput) -> Result<serde_json::Value, serd
 
     Ok(serde_json::json!({
         "artifact_kind": "policy_check",
-        "schema_version": POLICY_CHECK_SCHEMA_VERSION.to_string(),
+        "schema_version": POLICY_CHECK_SCHEMA_VERSION,
         "profile": output.profile,
         "verdicts": verdicts,
         "mismatches": mismatches,

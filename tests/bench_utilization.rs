@@ -58,6 +58,7 @@ fn instance(id: &str, duration_secs: Option<f64>, attempts: u32, runs: u32) -> I
         retry_id: None,
         previous_failure_category: None,
         trace_id: None,
+        context_pressure: Default::default(),
     }
 }
 
@@ -174,6 +175,7 @@ fn write_sweep(dir: &Path, spec: &SweepSpec) {
         import_predictions_path: None,
         import_predictions_sha256: None,
         reproduced_from: None,
+        merged_from: None,
     };
 
     let results = SweepResults {

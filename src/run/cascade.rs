@@ -169,11 +169,93 @@ pub struct CascadeSummary {
     pub savings_vs_top_tier_only_usd: f64,
 }
 
+// ── extra_args parsing ────────────────────────────────────────────────────────
+
+/// Typed overrides derived from a tier's `extra_args` list.
+struct ExtraArgOverrides {
+    skip_patch_validation: bool,
+    max_rpm: Option<u32>,
+    max_input_tpm: Option<u64>,
+}
+
+/// Parse per-tier `extra_args` into typed overrides.
+///
+/// Fails with a usage error naming the offending tier and arg for any
+/// unrecognized or malformed entry.
+fn parse_extra_args(tier_name: &str, args: &[String]) -> Result<ExtraArgOverrides, Error> {
+    let mut overrides = ExtraArgOverrides {
+        skip_patch_validation: false,
+        max_rpm: None,
+        max_input_tpm: None,
+    };
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--skip-patch-validation" => {
+                overrides.skip_patch_validation = true;
+                i += 1;
+            }
+            "--max-rpm" => {
+                let val_str = args.get(i + 1).ok_or_else(|| {
+                    Error::Config(ConfigError::Invalid(format!(
+                        "cascade tier {tier_name:?}: extra_arg `--max-rpm` requires a value"
+                    )))
+                })?;
+                let val: u32 = val_str.parse().map_err(|_| {
+                    Error::Config(ConfigError::Invalid(format!(
+                        "cascade tier {tier_name:?}: extra_arg `--max-rpm` value {val_str:?} is not a valid u32"
+                    )))
+                })?;
+                overrides.max_rpm = Some(val);
+                i += 2;
+            }
+            "--max-input-tpm" => {
+                let val_str = args.get(i + 1).ok_or_else(|| {
+                    Error::Config(ConfigError::Invalid(format!(
+                        "cascade tier {tier_name:?}: extra_arg `--max-input-tpm` requires a value"
+                    )))
+                })?;
+                let val: u64 = val_str.parse().map_err(|_| {
+                    Error::Config(ConfigError::Invalid(format!(
+                        "cascade tier {tier_name:?}: extra_arg `--max-input-tpm` value {val_str:?} is not a valid u64"
+                    )))
+                })?;
+                overrides.max_input_tpm = Some(val);
+                i += 2;
+            }
+            unknown => {
+                return Err(Error::Config(ConfigError::Invalid(format!(
+                    "cascade tier {tier_name:?}: unrecognized extra_arg {unknown:?}; \
+                     recognized args: --skip-patch-validation, \
+                     --max-rpm <n>, --max-input-tpm <n>"
+                ))));
+            }
+        }
+    }
+    Ok(overrides)
+}
+
+/// Apply parsed extra-arg overrides to a sweep-args struct.
+fn apply_extra_arg_overrides(
+    overrides: &ExtraArgOverrides,
+    tier_args: &mut crate::run::swebench::SwebenchArgs,
+) {
+    if overrides.skip_patch_validation {
+        tier_args.skip_patch_validation = true;
+    }
+    // extra_args take precedence; fall back to config-file rate limits (e.g. from prompt_file)
+    tier_args.max_rpm = overrides.max_rpm.or(tier_args.config.root.sweep.max_rpm);
+    tier_args.max_input_tpm = overrides
+        .max_input_tpm
+        .or(tier_args.config.root.sweep.max_input_tpm);
+}
+
 // ── Validation ────────────────────────────────────────────────────────────────
 
 /// Validate tier definitions before running.
 ///
-/// Rules: at least one tier, all names non-empty, no path separators, unique.
+/// Rules: at least one tier, all names non-empty, no path separators, unique,
+/// and all `extra_args` entries recognized.
 pub fn validate_tiers(tiers: &[TierDef]) -> Result<(), Error> {
     if tiers.is_empty() {
         return Err(Error::Config(ConfigError::Invalid(
@@ -203,6 +285,12 @@ pub fn validate_tiers(tiers: &[TierDef]) -> Result<(), Error> {
                 tier.name
             ))));
         }
+    }
+
+    // Fail fast on any unrecognized or malformed extra_args before any model
+    // budget is spent.
+    for tier in tiers {
+        parse_extra_args(&tier.name, &tier.extra_args)?;
     }
 
     Ok(())
@@ -606,6 +694,7 @@ pub async fn run(args: CascadeArgs) -> Result<CascadeSummary, Error> {
                 run_id: None,
                 breakdown: BreakdownSelection::none(),
                 cost_attribution: false,
+                force: false,
             };
             tokio::task::spawn_blocking(move || crate::run::evaluate::run(&eval_args))
                 .await
@@ -755,15 +844,11 @@ async fn run_tier(
     if let Some(budget) = tier.per_task_budget_usd {
         cfg.root.agent.per_task_budget_usd = Some(budget);
     }
-    if !tier.extra_args.is_empty() {
-        tracing::warn!(
-            tier = %tier.name,
-            extra_args = ?tier.extra_args,
-            "cascade: extra_args are not yet applied to tier runs"
-        );
-    }
 
-    let tier_args = crate::run::swebench::SwebenchArgs {
+    // extra_args were already validated in validate_tiers; parse returns Ok here.
+    let extra_overrides = parse_extra_args(&tier.name, &tier.extra_args)?;
+
+    let mut tier_args = crate::run::swebench::SwebenchArgs {
         dataset_source: ctx.dataset_source,
         dataset_cache_dir: ctx.dataset_cache_dir,
         output_dir: tier_sweep_dir,
@@ -820,6 +905,8 @@ async fn run_tier(
         notify_webhook_url: None,
         notify_webhook_headers: vec![],
     };
+
+    apply_extra_arg_overrides(&extra_overrides, &mut tier_args);
 
     crate::run::swebench::run(tier_args).await
 }

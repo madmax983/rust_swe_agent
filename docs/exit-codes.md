@@ -26,6 +26,9 @@ parsing human-oriented output.
 | 15   | `resume_already_terminal` | `mini --resume` target trajectory already has a terminal outcome (`submitted`, `error`, `step_limit_reached`, `budget_exhausted`, `cancelled`, `wallclock_timeout`). Cannot continue a run that already completed. |
 | 16   | `resume_manifest_missing` | `mini --resume` target trajectory is missing required fields (`task` and/or `model_name`). The file may pre-date the run-manifest schema; create a fresh run instead. |
 | 17   | `resume_invalid_prefix` | `mini --resume` target trajectory is structurally invalid for resume: message sequence is empty, too short (fewer than 2 messages), or ends in a partial assistant turn. |
+| 18   | `bisect_budget_exhausted` | `bench bisect` exhausted its budget before identifying the regressing commit. |
+| 19   | `bisect_schema_break` | `bench bisect` found only trajectory-schema breaks in the remaining search space. |
+| 20   | `audit_failure` | `bench audit` detected a divergence exceeding tolerance or a bijection/evaluator contradiction. |
 | 21   | `eval_gaming_gate_failure` | `bench compare --max-test-only-resolved-rate` threshold was exceeded by the candidate sweep. |
 | 22   | `artifact_integrity_violation` | `bench export-ci` detected that JUnit XML aggregate attributes do not match `results.json` counts. The export wrote whatever it had; the mismatch signals a corrupt or incomplete sweep artifact. |
 | 23   | `scriptability_check_failure` | `bench scriptability-check` found at least one misconfigured MCP server or hook. Zero model calls were made; this is a wiring preflight. Distinct from `preflight_failure` (3) so CI can route scriptability misconfig separately from infrastructure failures. |
@@ -50,6 +53,11 @@ parsing human-oriented output.
 | 42   | `config_override_warning` | `agent config resolve` detected at least one clap-default override hazard: a `--config` file sets a field (`model.name` or `agent.step_limit`) that a clap default in `mini` or `bench swebench` will silently overwrite unless the corresponding flag is also passed explicitly. The resolved config was printed; exit 0 when no hazards are detected. See `docs/spec-config-resolve.md`. |
 | 43   | `eval_parity_gate_failure` | `bench eval-parity --min-agreement <F>` measured an offline-vs-canonical agreement rate below the declared threshold. The report was written; the non-zero exit gates CI on evaluator parity. Distinct from `slo_rule_failure` (27). |
 | 44   | `utilization_gate_failure` | `bench utilization --min-utilization <PCT>` measured a concurrency utilization below the declared floor. The report was printed; the non-zero exit gates CI on sweep concurrency efficiency. Distinct from `slo_rule_failure` (27) so automation can route "concurrency under-utilized" separately from generic SLO failures. See `docs/spec-utilization.md`. |
+| 45   | `fs_audit_findings`      | `agent fs-audit` found at least one bash command that accessed a path outside the configured workdir (absolute path, `..` traversal, `$HOME`/`~/` reference, or known system directory). The audit completed and the report was printed; use as a publish gate. Distinct from `internal_error` (1) so CI can route "filesystem boundary violated" separately from a crash. See `docs/spec-fs-audit.md`. |
+| 46   | `fs_audit_scan_error`    | `agent fs-audit` could not read or parse one or more trajectory files (missing path, unreadable file, invalid JSON, missing sweep directory). The scan is incomplete, so a "clean" verdict cannot be trusted. Findings take precedence: exit 45 is returned when both findings and scan errors are present. |
+| 47   | `artifact_check_failure` | `agent artifact-check` found at least one artifact that is `invalid` or `unsupported_major`. With `--strict`, also triggers on `legacy_unversioned` and `valid_with_warnings`. Zero model calls are made; the check is purely a structural conformance gate. Distinct from `internal_error` (1) so CI can route "artifact does not conform to contract" separately from an unexpected infrastructure failure. See `docs/spec-artifact-check.md`. |
+| 48   | `host_not_ready`         | `agent doctor` found at least one failing host-readiness check: `git` missing from PATH, the provider credential env var absent, the Docker daemon unreachable when `--env docker` is selected, the runs/output dir not writable, or the active toolchain below the crate `rust-version`. Zero model calls and no provider network probe are made; the check is a pure host preflight. Skipped checks never trigger this. Distinct from `preflight_failure` (3) so CI can route "host not ready before any run" separately from sweep-time dependency failures. See `docs/spec-agent-doctor.md`. |
+| 49   | `ledger_budget_exceeded` | `bench ledger --budget-usd <N>` found that the grand total actual spend across discovered trajectories meets or exceeds N. The report is printed before exit; the non-zero exit allows CI to gate on budget exhaustion. Distinct from `budget_halt` (5) which is a forecast/sweep cap, not a post-hoc accounting check. |
 | 130  | `interrupted`            | Graceful SIGINT / Ctrl-C cancellation (POSIX convention: 128 + SIGINT(2)). |
 | 137  | `killed`                 | SIGKILL escalation after the graceful-cancel deadline expired (128 + SIGKILL(9)). |
 
@@ -78,7 +86,9 @@ line without inspecting the integer exit code.
 
 For sweep commands the per-instance `failure_category` field in trajectory
 JSON files carries fine-grained information; the process exit code gives the
-coarse sweep-level result.
+coarse sweep-level result.  See [`docs/failure-categories.md`](failure-categories.md)
+for the complete reference of every `failure_category` value, its definition,
+and the recommended triage action.
 
 ## Per-Command Outcome Class Table
 
@@ -104,13 +114,16 @@ coarse sweep-level result.
 | `agent redact-audit`            | `success`, `usage_error`, `redact_audit_findings`, `redact_audit_scan_error`, `internal_error` |
 | `bench assert`                  | `success`, `usage_error`, `slo_rule_failure`, `internal_error` |
 | `agent apply`                   | `success`, `usage_error`, `apply_check_failed`, `apply_redacted_refused`, `apply_dirty_tree_refused`, `internal_error` |
+| `agent artifact-check`          | `success`, `usage_error`, `artifact_check_failure`, `internal_error` |
+| `agent doctor`                  | `success`, `host_not_ready`, `usage_error`, `internal_error` |
+| `bench ledger`                  | `success`, `usage_error`, `ledger_budget_exceeded`, `internal_error` |
 | `bench export-otlp`             | `success`, `usage_error`, `preflight_failure`, `internal_error` (see `docs/spec-export-otlp.md`) |
 
 > **Note:** `hello-world` does not produce distinct outcome classes beyond
 > `success` / `internal_error`; it is an interactive debugging surface.
 >
-> **Future surfaces:** `doctor` (standalone) and verification surfaces must
-> extend this table before merging.
+> **Future surfaces:** verification surfaces must extend this table before
+> merging.
 
 ## Shell Examples
 

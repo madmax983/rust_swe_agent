@@ -58,6 +58,7 @@ fn make_instance(id: &str, out: &str, cat: Option<FailureCategory>) -> InstanceR
         retry_id: None,
         previous_failure_category: None,
         trace_id: None,
+        context_pressure: Default::default(),
     }
 }
 
@@ -446,11 +447,11 @@ fn merge_preserves_prior_retry_history_entries() {
 // ─── Schema tests ─────────────────────────────────────────────────────────────
 
 #[test]
-fn schema_version_is_1_10() {
+fn schema_version_is_1_12() {
     assert_eq!(
         maxwells_daemon::artifact::ArtifactSchemaVersion::CURRENT,
-        maxwells_daemon::artifact::ArtifactSchemaVersion::new(1, 10),
-        "schema bumped to 1.10 for local_workdir in RenderOnlyReport (issue #341)"
+        maxwells_daemon::artifact::ArtifactSchemaVersion::new(1, 12),
+        "schema bumped to 1.12 for reuse_summary/submission_fingerprint (issue #530)"
     );
 }
 
@@ -747,6 +748,7 @@ fn make_manifest_with_sha(sha: &str) -> ProvenanceManifest {
         import_predictions_path: None,
         import_predictions_sha256: None,
         reproduced_from: None,
+        merged_from: None,
     }
 }
 

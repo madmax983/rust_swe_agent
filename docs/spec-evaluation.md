@@ -127,7 +127,8 @@ Rows missing from backend output are synthesized as:
 - `cost_attribution` (default `on`): a deterministic table that attributes
   per-trajectory `cost_usd` into terminal buckets. Resolved rows always land
   in `resolved` even if a legacy `failure_category` is also present. Rows with
-  no `failure_category` and not resolved land in `uncategorized`. Missing
+  no `failure_category` and not resolved land in `uncategorized` (see
+  [`docs/failure-categories.md`](failure-categories.md) for all `failure_category` values). Missing
   `cost_usd` contributes `n` but is summed as `$0.00`; the CLI prints a
   warning line so operators know spend is understated.
 

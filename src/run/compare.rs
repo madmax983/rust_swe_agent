@@ -1391,6 +1391,7 @@ fn instance_result_from_trajectory(
         retry_id: None,
         previous_failure_category: None,
         trace_id: info.trace_id,
+        context_pressure: Default::default(),
     }))
 }
 
@@ -3378,6 +3379,7 @@ mod tests {
             retry_id: None,
             previous_failure_category: None,
             trace_id: None,
+            context_pressure: Default::default(),
         }
     }
 
@@ -3413,6 +3415,7 @@ mod tests {
             previous_failure_category: None,
 
             trace_id: None,
+            context_pressure: Default::default(),
         }
     }
 
@@ -3450,6 +3453,7 @@ mod tests {
             previous_failure_category: None,
 
             trace_id: None,
+            context_pressure: Default::default(),
         }
     }
 
@@ -3750,6 +3754,7 @@ mod tests {
             previous_failure_category: None,
 
             trace_id: None,
+            context_pressure: Default::default(),
         }]);
         let candidate = map_of([InstanceResult {
             instance_id: "cached".into(),
@@ -3782,6 +3787,7 @@ mod tests {
             previous_failure_category: None,
 
             trace_id: None,
+            context_pressure: Default::default(),
         }]);
         let r = diff(Path::new("/b"), Path::new("/c"), &baseline, &candidate);
         let t = r.human_table();
@@ -3868,6 +3874,7 @@ mod tests {
             import_predictions_path: None,
             import_predictions_sha256: None,
             reproduced_from: None,
+            merged_from: None,
         };
         let mut candidate = baseline.clone();
         candidate.prompt_template.sha256 = "p2".into();
@@ -4077,6 +4084,7 @@ mod tests {
                 eval_log_path: None,
                 patch_stats: None,
                 patch_error_log: None,
+                submission_fingerprint: None,
             }],
             ..Default::default()
         };
@@ -4093,6 +4101,7 @@ mod tests {
                 eval_log_path: None,
                 patch_stats: None,
                 patch_error_log: None,
+                submission_fingerprint: None,
             }],
             ..Default::default()
         };
@@ -4149,6 +4158,7 @@ mod tests {
                 eval_log_path: None,
                 patch_stats: None,
                 patch_error_log: None,
+                submission_fingerprint: None,
             }],
             ..Default::default()
         };
@@ -4330,6 +4340,7 @@ mod tests {
                 },
                 cli: crate::run::swebench::CliManifest { argv: Vec::new() },
                 reproduced_from: None,
+                merged_from: None,
                 chaos_fail_every: 0,
                 circuit_breaker: None,
                 source: None,
@@ -4528,6 +4539,7 @@ mod tests {
                 },
                 cli: crate::run::swebench::CliManifest { argv: Vec::new() },
                 reproduced_from: None,
+                merged_from: None,
                 chaos_fail_every: 0,
                 circuit_breaker: None,
                 source: None,
@@ -4652,6 +4664,7 @@ mod tests {
                     argv: vec!["max".into()],
                 },
                 reproduced_from: None,
+                merged_from: None,
                 chaos_fail_every: 0,
                 circuit_breaker: None,
                 source: None,

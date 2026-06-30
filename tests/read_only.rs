@@ -68,6 +68,7 @@ async fn read_only_blocks_bash_and_preserves_git_status() {
         verification_timeout_secs: 60,
         resume_from: None,
         interactive_mode: InteractiveMode::Off,
+        no_bell: false,
         trace_id: None,
         webhook_url: None,
         webhook_headers: vec![],

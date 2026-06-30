@@ -50,6 +50,7 @@ fn minimal_instance_result(id: &str) -> InstanceResult {
         retry_id: None,
         previous_failure_category: None,
         trace_id: None,
+        context_pressure: Default::default(),
     }
 }
 
@@ -71,6 +72,7 @@ fn minimal_evaluation_results(resolved: bool) -> EvaluationResults {
             eval_log_path: None,
             patch_stats: None,
             patch_error_log: None,
+            submission_fingerprint: None,
         }],
         ..Default::default()
     }
@@ -1530,6 +1532,7 @@ fn evaluate_custom_dataset_override_stamps_its_hash_and_count() {
         run_id: None,
         breakdown: maxwells_daemon::run::evaluate::BreakdownSelection::none(),
         cost_attribution: false,
+        force: false,
     })
     .unwrap();
 

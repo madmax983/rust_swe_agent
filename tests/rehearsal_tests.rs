@@ -223,6 +223,7 @@ async fn test_rehearsal_evaluator_scores_one() {
         run_id: None,
         breakdown: maxwells_daemon::run::evaluate::BreakdownSelection::default_axes(),
         cost_attribution: true,
+        force: false,
     };
 
     let eval_results = maxwells_daemon::run::evaluate::run(&eval_args).unwrap();
@@ -411,6 +412,7 @@ async fn test_rehearsal_empty_patch_and_missing_eval_comparisons() {
         run_id: None,
         breakdown: maxwells_daemon::run::evaluate::BreakdownSelection::default_axes(),
         cost_attribution: true,
+        force: false,
     };
 
     let eval_results = maxwells_daemon::run::evaluate::run(&eval_args).unwrap();
@@ -490,6 +492,7 @@ async fn test_rehearsal_empty_patch_and_missing_eval_comparisons() {
             retry_id: None,
             previous_failure_category: None,
             trace_id: None,
+            context_pressure: Default::default(),
         }],
         rate_limit_events: None,
         total_fallbacks: 0,
@@ -514,6 +517,7 @@ async fn test_rehearsal_empty_patch_and_missing_eval_comparisons() {
             eval_log_path: None,
             patch_stats: None,
             patch_error_log: None,
+            submission_fingerprint: None,
         }],
         ..Default::default()
     };
@@ -643,6 +647,7 @@ async fn test_rehearsal_drift_resolved_count_and_pass_at_1() {
             retry_id: None,
             previous_failure_category: None,
             trace_id: None,
+            context_pressure: Default::default(),
         }],
         rate_limit_events: None,
         total_fallbacks: 0,
@@ -667,6 +672,7 @@ async fn test_rehearsal_drift_resolved_count_and_pass_at_1() {
             eval_log_path: None,
             patch_stats: None,
             patch_error_log: None,
+            submission_fingerprint: None,
         }],
         ..Default::default()
     };
@@ -686,6 +692,7 @@ async fn test_rehearsal_drift_resolved_count_and_pass_at_1() {
             eval_log_path: None,
             patch_stats: None,
             patch_error_log: None,
+            submission_fingerprint: None,
         }],
         ..Default::default()
     };
@@ -779,6 +786,7 @@ async fn test_rehearsal_fails_on_corrupted_trajectory() {
         run_id: None,
         breakdown: maxwells_daemon::run::evaluate::BreakdownSelection::default_axes(),
         cost_attribution: true,
+        force: false,
     };
 
     let eval_res = maxwells_daemon::run::evaluate::run(&eval_args);
@@ -893,6 +901,7 @@ async fn test_rehearsal_fails_on_missing_trajectory() {
         run_id: None,
         breakdown: maxwells_daemon::run::evaluate::BreakdownSelection::default_axes(),
         cost_attribution: true,
+        force: false,
     };
 
     let eval_res = maxwells_daemon::run::evaluate::run(&eval_args);
@@ -1010,6 +1019,7 @@ async fn test_rehearsal_fails_on_malformed_trajectory_schema() {
         run_id: None,
         breakdown: maxwells_daemon::run::evaluate::BreakdownSelection::default_axes(),
         cost_attribution: true,
+        force: false,
     };
 
     let eval_res = maxwells_daemon::run::evaluate::run(&eval_args);
@@ -1101,6 +1111,7 @@ async fn test_rehearsal_fails_on_missing_trajectory_outcome() {
         run_id: None,
         breakdown: maxwells_daemon::run::evaluate::BreakdownSelection::default_axes(),
         cost_attribution: true,
+        force: false,
     };
 
     let eval_res = maxwells_daemon::run::evaluate::run(&eval_args);

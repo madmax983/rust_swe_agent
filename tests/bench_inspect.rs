@@ -1980,6 +1980,7 @@ fn patch_error_log_round_trips_through_evaluation_json() {
         eval_log_path: None,
         patch_stats: None,
         patch_error_log: Some(log_text.to_owned()),
+        submission_fingerprint: None,
     };
     let json = serde_json::to_string(&inst).unwrap();
     let back: maxwells_daemon::run::evaluate::InstanceEvaluation =
@@ -2001,6 +2002,7 @@ fn patch_error_log_is_null_for_non_patch_apply_failed_in_schema() {
         eval_log_path: None,
         patch_stats: None,
         patch_error_log: None,
+        submission_fingerprint: None,
     };
     let json = serde_json::to_string(&inst).unwrap();
     let v: serde_json::Value = serde_json::from_str(&json).unwrap();
@@ -2464,6 +2466,7 @@ fn inspect_displays_submission_class_and_warning_for_test_only_patches() {
             retry_id: None,
             previous_failure_category: None,
             trace_id: None,
+            context_pressure: Default::default(),
         }],
         rate_limit_events: None,
         total_fallbacks: 0,
@@ -2520,5 +2523,30 @@ fn inspect_displays_submission_class_and_warning_for_test_only_patches() {
     assert!(
         stdout.contains("warning: patch touches only test files (may indicate eval gaming)"),
         "expected stdout to contain eval gaming warning; got:\n{stdout}"
+    );
+}
+
+#[test]
+fn list_formats_enumerates_compiled_in_formats_with_tier() {
+    // The discoverability affordance from docs/spec-export.md: operators can list every
+    // export format compiled into the build with its stability tier and consumer, without
+    // reading source. `markdown` is always compiled in, so this is feature-independent.
+    let out = Command::new(binary_path())
+        .args(["bench", "inspect", "--list-formats"])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "--list-formats should exit 0; stderr:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("markdown"),
+        "expected `markdown` in --list-formats output; got:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("stable"),
+        "expected a stability tier in --list-formats output; got:\n{stdout}"
     );
 }

@@ -121,7 +121,7 @@ without spending model credits or requiring the original dataset.
 | `matched` | Both original and replay resolved. |
 | `flipped_to_resolved` | Original unresolved; replay resolved. |
 | `flipped_to_unresolved` | Original resolved; replay unresolved. |
-| `both_unresolved_same_category` | Both unresolved with the same `failure_category`. |
+| `both_unresolved_same_category` | Both unresolved with the same `failure_category` (see [`docs/failure-categories.md`](failure-categories.md)). |
 | `both_unresolved_different_category` | Both unresolved but different categories. |
 | `errored` | Instance in original not found in replay output (or vice versa). |
 

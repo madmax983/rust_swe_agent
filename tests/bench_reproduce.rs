@@ -76,6 +76,7 @@ fn minimal_manifest(model_name: &str, git_sha: Option<&str>) -> ProvenanceManife
         import_predictions_path: None,
         import_predictions_sha256: None,
         reproduced_from: None,
+        merged_from: None,
     }
 }
 
@@ -123,6 +124,7 @@ fn instance_result(id: &str, resolved: bool) -> InstanceResult {
         retry_id: None,
         previous_failure_category: None,
         trace_id: None,
+        context_pressure: Default::default(),
     }
 }
 

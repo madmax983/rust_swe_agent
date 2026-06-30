@@ -401,3 +401,130 @@ async fn both_flags_compose_taking_more_aggressive() {
          expected elision_count > {keep_last_only_elision}, got {elision_count}"
     );
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Test 7 (RED): telemetry records context pressure on elision.
+// ─────────────────────────────────────────────────────────────────────────────
+#[tokio::test]
+async fn telemetry_records_context_pressure_on_elision() {
+    const N_BASH: usize = 3;
+    const KEEP: usize = 1;
+    const OBS_SIZE: usize = 500;
+
+    let mut cfg = Config::defaults().unwrap();
+    cfg.root.agent.step_limit = 20;
+    cfg.root.agent.history_keep_last_observations = Some(KEEP);
+    cfg.root.agent.observation_max_bytes = 64 * 1024;
+
+    let model = Arc::new(DeterministicModel::new(make_responses(N_BASH)));
+    let env: Box<dyn Environment> = Box::new(SyntheticEnv::new_with_size(OBS_SIZE));
+    let mut agent = DefaultAgentBuilder {
+        config: cfg,
+        model,
+        env,
+        task: "test".into(),
+        extra_context: None,
+        renderer: None,
+        stream: None,
+        resume_from: None,
+        read_only: false,
+    }
+    .build()
+    .unwrap();
+
+    agent.run().await.unwrap();
+
+    let pressure = &agent.trajectory.info.context_pressure;
+    assert!(
+        pressure.elision_trigger_count > 0,
+        "expected elision trigger count > 0"
+    );
+    assert!(
+        pressure.observations_elided > 0,
+        "expected observations elided > 0"
+    );
+    assert!(pressure.bytes_elided > 0, "expected bytes elided > 0");
+    assert!(pressure.bytes_elided >= u64::from(pressure.observations_elided) * (OBS_SIZE as u64));
+    assert!(
+        pressure.peak_projected_tokens > 0,
+        "expected peak projected tokens > 0"
+    );
+    assert_eq!(
+        pressure.token_ceiling, 0,
+        "no token limit ceiling was configured"
+    );
+    assert!(
+        !pressure.compaction_failed,
+        "compaction should not have failed"
+    );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Test 8 (RED): telemetry zero when no context budget is configured.
+// ─────────────────────────────────────────────────────────────────────────────
+#[tokio::test]
+async fn telemetry_zero_when_no_context_budget_configured() {
+    let mut cfg = Config::defaults().unwrap();
+    cfg.root.agent.step_limit = 20;
+
+    let model = Arc::new(DeterministicModel::new(make_responses(2)));
+    let env: Box<dyn Environment> = Box::new(SyntheticEnv::new_with_size(500));
+    let mut agent = DefaultAgentBuilder {
+        config: cfg,
+        model,
+        env,
+        task: "test".into(),
+        extra_context: None,
+        renderer: None,
+        stream: None,
+        resume_from: None,
+        read_only: false,
+    }
+    .build()
+    .unwrap();
+
+    agent.run().await.unwrap();
+
+    let pressure = &agent.trajectory.info.context_pressure;
+    assert_eq!(pressure.elision_trigger_count, 0);
+    assert_eq!(pressure.observations_elided, 0);
+    assert_eq!(pressure.bytes_elided, 0);
+    assert_eq!(pressure.peak_projected_tokens, 0);
+    assert_eq!(pressure.token_ceiling, 0);
+    assert!(!pressure.compaction_failed);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Test 9 (RED): telemetry records compaction failure.
+// ─────────────────────────────────────────────────────────────────────────────
+#[tokio::test]
+async fn telemetry_records_compaction_failure() {
+    let mut cfg = Config::defaults().unwrap();
+    cfg.root.agent.step_limit = 20;
+    cfg.root.agent.history_max_input_tokens = Some(10); // Very tiny cap
+
+    let model = Arc::new(DeterministicModel::new(make_responses(2)));
+    let env: Box<dyn Environment> = Box::new(SyntheticEnv::new_with_size(500));
+    let mut agent = DefaultAgentBuilder {
+        config: cfg,
+        model,
+        env,
+        task: "test".into(),
+        extra_context: None,
+        renderer: None,
+        stream: None,
+        resume_from: None,
+        read_only: false,
+    }
+    .build()
+    .unwrap();
+
+    agent.run().await.unwrap();
+
+    let pressure = &agent.trajectory.info.context_pressure;
+    assert!(
+        pressure.compaction_failed,
+        "expected compaction failed to be true"
+    );
+    assert_eq!(pressure.token_ceiling, 10);
+}

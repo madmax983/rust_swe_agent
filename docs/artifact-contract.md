@@ -15,7 +15,8 @@ Run artifacts use explicit top-level metadata:
 
 | Kind | File(s) | Required fields | Optional/additive fields |
 | --- | --- | --- | --- |
-| `trajectory` | `*.traj.json`, `<instance>/run-k.traj.json` | `trajectory_format`, `artifact_kind`, `schema_version`, `info`, `messages` | `actual_cost_usd`, `actual_cost_source`, `baseline_cost_usd`, `baseline_cost_model`, active `toolset`, `verification_status` (`verified`/`unverified`/`verification_failed`), `verification_results` (array of per-check evidence), `info.manifest` (provenance manifest — see `docs/spec-trajectory.md`), extra `info` fields, message `extra` fields |
+| `trajectory` | `*.traj.json`, `<instance>/run-k.traj.json` | `trajectory_format`, `artifact_kind`, `schema_version`, `info`, `messages` | `actual_cost_usd`, `actual_cost_source`, `baseline_cost_usd`, `baseline_cost_model`, active `toolset`, `verification_status` (`verified`/`unverified`/`verification_failed`), `verification_results` (array of per-check evidence), `info.manifest` (provenance manifest — see `docs/spec-trajectory.md`), extra `info` fields, message `extra` fields. Each trajectory may have a companion `trajectory_annotation` sidecar (see below). |
+| `trajectory_annotation` | `*.annotation.json` (sidecar next to the trajectory) | `artifact_kind`, `schema_version`, `instance_id`, `trajectory_path`, `trajectory_sha256`, `verdict`, `annotated_at` | `failure_category`, `note`, `step_notes`. Written by `agent annotate`; never mutates the trajectory. See [`docs/spec-agent-annotate.md`](spec-agent-annotate.md). |
 | `sweep_results` | `results.json` | `artifact_kind`, `schema_version`, `total`, `submitted`, `skipped`, `errored`, `failures_by_category`, `instances` | `actual_cost_usd`, `actual_cost_source`, `baseline_cost_usd`, `baseline_cost_model`, manifest, filter spec, token, retry, rate-limit, cancellation fields |
 | `evaluation_results` | `evaluation.json` | `artifact_kind`, `schema_version`, `instances` | behavioral metrics, breakdown rows, cost attribution |
 | `forecast_report` | `bench forecast --format json` | `artifact_kind`, `schema_version`, `calibration`, `per_instance`, `forecast`, `resolution_rate`, `threshold` | `forecast.target_instance_ids` for exact calibration comparability, additional forecast diagnostics |
@@ -33,6 +34,13 @@ Cost fields are split deliberately:
 - `actual_cost_source` is typed as `provider_reported`, `rate_card_estimate`, `free_tier_inferred`, or `unknown`.
 - `baseline_cost_usd` is a counterfactual estimate for the same token usage using `baseline_cost_model`.
 - Legacy `total_cost_usd` remains present for compatibility and should be treated as historical/summary cost, not as the only cost signal.
+
+## Conformance Validation
+
+Use `agent artifact-check` to validate one or more artifact files against this
+contract on demand — zero model calls, zero network I/O. See
+[`docs/spec-artifact-check.md`](spec-artifact-check.md) for the full command
+reference, verdict taxonomy, and per-kind required-field table.
 
 ## Reader Policy
 
@@ -55,21 +63,9 @@ Any future schema change needs either a documented no-bump rationale in the rele
 ## Trajectory `failure_category` values
 
 The `info.failure_category` field in a trajectory artifact uses a stable string
-taxonomy.  Readers should treat unrecognised values as `unknown`.
-
-| Value              | Meaning                                                                 |
-|--------------------|-------------------------------------------------------------------------|
-| `step_limit`       | Agent exhausted the configured step budget.                             |
-| `patch_empty`      | Agent submitted but the patch was empty or only whitespace.             |
-| `patch_invalid`    | Captured patch failed `git apply --check` validation.                   |
-| `env_setup`        | Environment setup failed (Docker, container, tooling).                  |
-| `model_api`        | Persistent model API error (auth, quota, wrong model name).             |
-| `model_parse`      | Model response could not be parsed.                                     |
-| `wallclock_timeout`| Run exceeded the per-task wallclock timeout.                            |
-| `budget_halt`      | Run was skipped / halted due to a cost cap.                             |
-| `cancelled`        | Run was cancelled by operator (SIGINT / `--cancel-deadline`).           |
-| `agent_stagnation` | Stagnation detector tripped: same action repeated K times in W steps.   |
-| `unknown`          | Catch-all for unclassified failures.                                    |
+taxonomy.  Readers should treat unrecognised values as `unknown`.  The
+**canonical reference** for all values, their definitions, triage actions, and
+compatibility policy is [`docs/failure-categories.md`](failure-categories.md).
 
 ### `agent_stagnation` diagnostics
 

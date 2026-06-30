@@ -26,7 +26,7 @@ unsafe_allow_secret_leaks = false
 
 Disabling redaction is a run-time decision (`enabled = false` in the run config). `bench inspect` has no flag to print raw secrets from stored artifacts.
 
-If a submitted patch or prediction artifact contains a configured literal or structured secret shape, the run is downgraded to `failure_category = "secret_leak_detected"` unless `unsafe_allow_secret_leaks = true`.
+If a submitted patch or prediction artifact contains a configured literal or structured secret shape, the run is downgraded to `failure_category = "secret_leak_detected"` unless `unsafe_allow_secret_leaks = true`.  See [`docs/failure-categories.md`](failure-categories.md) for the full `secret_leak_detected` runbook.
 
 ## Verification Check Output
 

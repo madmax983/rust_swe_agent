@@ -19,6 +19,11 @@ more machinery.
   LiteLLM-style routing, such as `ANTHROPIC_API_KEY` for `claude*` models or
   `OPENAI_API_KEY` for OpenAI-routed models.
 
+Run `max agent doctor` to verify all of the above at **$0 with no model call**
+before your first live run; add `--format json` for a machine-readable
+checklist suitable for CI gating (exit `48` = host not ready). See
+[`docs/spec-agent-doctor.md`](docs/spec-agent-doctor.md).
+
 ### 1. Run The No-Key Smoke Path
 
 This path costs $0 and performs no network model call. The `hello-world`
@@ -330,6 +335,13 @@ otherwise covers. See [`docs/spec-interactive-mode.md`](docs/spec-interactive-mo
 for the full contract; use `--interactive --ui ratatui` for a full-screen
 dashboard, or `--yolo` to run unattended with a per-step status line.
 
+When you run `--interactive --ui ratatui` and tab away, the dashboard rings the
+terminal bell (BEL) once when a confirm modal is raised and once when the run
+ends, so you get an out-of-band nudge instead of a silent block (issue #648).
+Pass `--no-bell` (or set the `NO_BELL` environment variable to any non-empty
+value) to mute it; bells are also suppressed automatically when stdout is not a
+TTY, so piped/CI runs stay byte-clean.
+
 PowerShell:
 
 ```powershell
@@ -427,6 +439,47 @@ early if the first N instances all fail with the same operator-actionable cause
 (bad API key, broken Docker daemon), so a misconfigured run costs cents to abort
 instead of dollars to ride out. Tiny mercy.
 
+## Shell Completions
+
+`max` supports generating shell completion scripts for `bash`, `zsh`, `fish`, `powershell`, and `elvish` from its command definitions. Use `max completions <shell>` to output the script to stdout.
+
+### Installation
+
+#### Bash
+```bash
+max completions bash > /usr/share/bash-completion/completions/max
+# Or to local config:
+max completions bash > ~/.local/share/bash-completion/completions/max
+```
+
+#### Zsh
+```zsh
+max completions zsh > ~/.zsh/completion/_max
+# Add the directory to your fpath in ~/.zshrc:
+# fpath=(~/.zsh/completion $fpath)
+# autoload -U compinit && compinit
+```
+
+#### Fish
+```fish
+max completions fish > ~/.config/fish/completions/max.fish
+```
+
+#### PowerShell
+```powershell
+# Append to your profile (use >> to avoid overwriting your existing profile):
+max completions powershell >> $PROFILE.CurrentUserAllHosts
+
+# Or save to a separate file and dot-source it in your profile:
+max completions powershell > ~/max-completion.ps1
+# Add `. ~/max-completion.ps1` to your profile file
+```
+
+#### Elvish
+```elvish
+max completions elvish > ~/.config/elvish/lib/max.elv
+```
+
 ## Troubleshooting
 
 | Symptom | Likely Cause | Fix |
@@ -437,12 +490,19 @@ instead of dollars to ride out. Tiny mercy.
 | Docker run fails before the agent starts | Docker is unavailable or the binary lacks the `docker` feature | Start Docker, or use `--env local`; build with the Docker feature before selecting `--env docker` |
 | Smoke run cannot write artifacts | Output directory is unwritable | Choose a writable `--output` path, for example `runs/quickstart` inside the repo |
 | `bench doctor` reports dataset read/parse errors | The `--dataset-path` value is missing, points at a directory, or is not JSONL | Pass a readable SWE-bench JSONL file and rerun `bench doctor --skip-model-probe` |
+| `bench inspect` shows an unfamiliar `failure_category` string | Trajectory from a newer harness version, or an unclassified failure | See [`docs/failure-categories.md`](docs/failure-categories.md) for the full reference and triage runbook |
+| Not sure whether the host is set up for a live run | Prerequisites unverified before first run | Run `max agent doctor` (or `--format json` for CI; exit `48` = not ready) — it checks git, the provider credential, Docker, output-dir writability, and the toolchain at $0 with no model call. See [`docs/spec-agent-doctor.md`](docs/spec-agent-doctor.md) |
 
 ## Advanced Specs
 
 Start with the first-run path above, then use these deeper specs once you have
 a valid trajectory in hand:
 
+- [`failure-category reference`](docs/failure-categories.md): every
+  `failure_category` string, its definition, typical triggers, recommended
+  operator action, systemic-halt status, and a worked triage example. The
+  canonical vocabulary index for `bench triage`, `bench inspect`, `bench tail`,
+  and the circuit breaker.
 - [`mini --resume`](docs/spec-mini-resume.md): continue an interrupted
   single-task run from its persisted checkpoint — no token replay, prefix
   trusted verbatim, resume history recorded in the trajectory manifest.
@@ -474,6 +534,18 @@ a valid trajectory in hand:
 - [`bench grep`](docs/spec-grep.md): regex search across all trajectory messages
   in a sweep — filter by role, instance, or outcome; redaction-safe; zero-cost
   (reads only on-disk artifacts).
+- [`bench shard`](docs/spec-shard.md): deterministically partition a source
+  dataset into N disjoint, balanced, provenance-stamped shard files
+  (`shard-000.jsonl` … `shard-(N-1).jsonl`) with per-shard `shard-NNN.manifest.json`
+  sidecars (`shard-manifest-v1`).  Offline, zero model cost, byte-identical
+  output for the same `(dataset, N, seed)` triple.  The producer that feeds
+  `bench merge`; see [spec-shard.md](docs/spec-shard.md) for a worked
+  split → run → merge example.
+- [`bench merge`](docs/spec-merge.md): combine K completed sharded sweep
+  directories into one canonical aggregate — arithmetically correct cost/token/
+  pass@k recomputation, collision policies (`error`/`first-wins`/`last-wins`),
+  `merged_from` provenance manifest, and full `bench audit`/`report`/`triage`
+  compatibility. Enables horizontal scaling without sacrificing reproducibility.
 - [`bench matrix`](docs/spec-matrix.md): multi-arm experiment runner — compare
   models or configs against the same instance set, shared budget enforcement,
   `matrix.json` state, ranked `matrix-summary.json`, and `--resume` support.

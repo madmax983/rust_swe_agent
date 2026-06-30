@@ -125,6 +125,7 @@ fn base_args(repo: &Path, out: &Path, name: &str) -> MiniArgs {
         verification_checks: vec![],
         verification_timeout_secs: 10,
         interactive_mode: InteractiveMode::Off,
+        no_bell: false,
         resume_from: None,
         trace_id: None,
         webhook_url: None,
@@ -231,6 +232,71 @@ async fn claude_driver_produces_valid_trajectory() {
     // The driver ran `claude` in the repo, so the real edit landed.
     let contents = std::fs::read_to_string(repo.path().join("a.txt")).unwrap();
     assert_eq!(contents, "line one\nline two\n");
+}
+
+/// The claude-code driver surfaces tool calls as ToolStart/ToolEnd activity
+/// events so activity-inferring consumers (the ratatui dashboard, issue #649)
+/// see the in-flight tool instead of a static idle footer; the driver otherwise
+/// emits only AssistantMessage/Observation. These are generic liveness events,
+/// not bash-command telemetry, so non-Bash tools (Edit/Write/WebSearch) do not
+/// get miscounted as shell commands.
+#[tokio::test]
+#[cfg(unix)]
+async fn claude_driver_emits_tool_activity_events() {
+    let repo = tempfile::tempdir().unwrap();
+    let out = tempfile::tempdir().unwrap();
+    init_repo(repo.path());
+    ensure_fake_claude();
+
+    let log = out.path().join("events.jsonl");
+    let mut args = base_args(repo.path(), out.path(), "cc-events");
+    args.event_log = Some(log.clone());
+    args.event_log_instance_id = Some("cc".into());
+
+    run(args).await.expect("claude driver run should succeed");
+
+    let events: Vec<serde_json::Value> = std::fs::read_to_string(&log)
+        .unwrap()
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    let types: Vec<&str> = events
+        .iter()
+        .map(|e| e["event_type"].as_str().unwrap())
+        .collect();
+
+    // Two single-Bash tool_use turns in the fixture (pytest + echo), each paired
+    // with a tool_result → one ToolStart/ToolEnd span per turn.
+    assert_eq!(
+        types.iter().filter(|t| **t == "tool_start").count(),
+        2,
+        "expected a tool_start per tool turn: {types:?}"
+    );
+    assert_eq!(
+        types.iter().filter(|t| **t == "tool_end").count(),
+        2,
+        "expected a tool_end per tool turn: {types:?}"
+    );
+    // Tool calls are never mislabeled as bash-command telemetry.
+    assert!(
+        !types
+            .iter()
+            .any(|t| *t == "bash_start" || *t == "bash_result"),
+        "driver must not emit bash telemetry: {types:?}"
+    );
+
+    // The tool label rides on ToolStart so the dashboard can label the footer,
+    // and each ToolStart precedes its ToolEnd.
+    let start = events
+        .iter()
+        .position(|e| e["event_type"] == "tool_start" && e["label"] == "echo 'line two' >> a.txt")
+        .expect("tool_start for the echo command");
+    let end = events
+        .iter()
+        .skip(start)
+        .position(|e| e["event_type"] == "tool_end")
+        .expect("a tool_end after the echo tool_start");
+    assert!(end > 0, "tool_end should follow its tool_start");
 }
 
 /// `--driver claude-code` is rejected with `--env docker` (the CLI edits the
