@@ -165,7 +165,7 @@ fn proc_self_stat_cpu() -> Option<f64> {
     let child_ticks: u64 = fields
         .get(13)
         .and_then(|s| s.parse().ok())
-        .unwrap_or(0)
+        .unwrap_or(0_u64)
         .saturating_add(fields.get(14).and_then(|s| s.parse().ok()).unwrap_or(0));
     let total_ticks = utime.saturating_add(stime).saturating_add(child_ticks);
     // Linux standard: 100 clock ticks per second (USER_HZ = 100).
