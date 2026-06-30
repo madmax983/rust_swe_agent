@@ -107,13 +107,16 @@ fn cpu_seconds() -> Option<f64> {
     None
 }
 
+// CPU values (microseconds / clock ticks) are well within f64's exact-integer
+// range (<< 2^53) for any practical run duration, so precision loss is not
+// a real concern here.
 #[cfg(target_os = "linux")]
+#[allow(clippy::cast_precision_loss)]
 fn read_cgroup_cpu_usage_usec() -> Option<f64> {
     let s = std::fs::read_to_string("/sys/fs/cgroup/cpu.stat").ok()?;
     for line in s.lines() {
         if let Some(rest) = line.strip_prefix("usage_usec ") {
             let usec: u64 = rest.trim().parse().ok()?;
-            #[allow(clippy::cast_precision_loss)]
             return (usec > 0).then_some(usec as f64 / 1_000_000.0);
         }
     }
@@ -121,6 +124,7 @@ fn read_cgroup_cpu_usage_usec() -> Option<f64> {
 }
 
 #[cfg(target_os = "linux")]
+#[allow(clippy::cast_precision_loss)]
 fn proc_self_stat_cpu() -> Option<f64> {
     let s = std::fs::read_to_string("/proc/self/stat").ok()?;
     // Format: "pid (comm) state ppid pgroup session tty_nr tpgid flags minflt
@@ -138,9 +142,7 @@ fn proc_self_stat_cpu() -> Option<f64> {
     let stime: u64 = fields.get(12)?.parse().ok()?;
     let total_ticks = utime.saturating_add(stime);
     // Linux standard: 100 clock ticks per second (USER_HZ = 100).
-    #[allow(clippy::cast_precision_loss)]
-    let secs = total_ticks as f64 / 100.0;
-    (total_ticks > 0).then_some(secs)
+    (total_ticks > 0).then_some(total_ticks as f64 / 100.0)
 }
 
 #[cfg(test)]
