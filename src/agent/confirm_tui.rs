@@ -1689,6 +1689,11 @@ fn handle_paste(dash: &Arc<RatatuiDashboard>, text: &str) {
         .state
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
+    // While the stop confirmation is pending the UI only accepts y/n/Esc;
+    // drop pastes so they cannot silently accumulate in a hidden input buffer.
+    if s.stop_pending {
+        return;
+    }
     match active_input_target(&s) {
         InputTarget::Feedback => {
             if let Some(buffer) = s.feedback_input.as_mut() {
@@ -5981,6 +5986,35 @@ mod tests {
         assert!(
             !snap(&d).stop_pending,
             "stop_pending must be auto-cleared when finished is set"
+        );
+    }
+
+    /// Bracketed paste must be silently ignored while the stop confirmation
+    /// is pending so pasted text cannot accumulate in a hidden input buffer
+    /// and reappear when the operator later cancels the stop prompt.
+    #[test]
+    fn paste_ignored_while_stop_pending() {
+        let d = make_dashboard();
+        let _rx = make_pending(&d);
+
+        // Enter reject-feedback mode so there is an active feedback buffer.
+        handle_key(&d, KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE));
+        assert_eq!(
+            snap(&d).feedback_input.as_deref(),
+            Some(""),
+            "feedback buffer must be active"
+        );
+
+        // Activate the stop confirmation.
+        handle_key(&d, ctrl_q());
+        assert!(snap(&d).stop_pending, "stop_pending must be set");
+
+        // A paste while stop_pending must not append to the feedback buffer.
+        handle_paste(&d, "malicious paste");
+        assert_eq!(
+            snap(&d).feedback_input.as_deref(),
+            Some(""),
+            "paste must not modify the feedback buffer while stop_pending"
         );
     }
 }
