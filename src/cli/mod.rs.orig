@@ -68,10 +68,11 @@ pub async fn run() -> Result<(), Error> {
     let cli = Cli::try_parse().unwrap_or_else(|e| {
         // Print clap's formatted error or help text, then add the outcome label
         // for non-zero exits (exit 0 means --help / --version, not an error).
+        let _ = e.print();
         if e.exit_code() != 0 {
             eprintln!("outcome_class: {}", ExitCode::UsageError.outcome_class());
+            eprintln!("error: {e}");
         }
-        let _ = e.print();
         std::process::exit(e.exit_code());
     });
     let log = effective_log_level(cli.log.as_deref());
