@@ -1342,30 +1342,38 @@ fn handle_key(dash: &Arc<RatatuiDashboard>, key: KeyEvent) {
     // When a stop confirmation is waiting, y/Y and Ctrl-C immediately abort;
     // n/N/Esc cancel; everything else is swallowed so a stray keypress cannot
     // accidentally approve a pending modal or navigate the feed.
+    //
+    // Edge case: if the run ends naturally (RunEnded sets `finished`) while
+    // stop_pending is true and the operator has not yet answered, the stale
+    // confirmation must be dismissed automatically so the finished-close
+    // path (q/Esc → should_exit) becomes reachable again (#638).
     if s.stop_pending {
-        let confirm_abort = ctrl_c || matches!(key.code, KeyCode::Char('y' | 'Y'));
-        if confirm_abort {
+        if s.finished.is_some() {
             s.stop_pending = false;
-            if let Some(pending) = s.pending.take() {
-                s.feedback_input = None;
-                s.edit_input = None;
-                drop(s);
-                let _ = pending.responder.send(ConfirmDecision::Abort);
-            } else if s.finished.is_none() {
-                if let Some(ref tx) = dash.cancel_tx {
-                    let _ = tx.send(true);
+            // fall through to normal finished-close handling below
+        } else {
+            let confirm_abort = ctrl_c || matches!(key.code, KeyCode::Char('y' | 'Y'));
+            if confirm_abort {
+                s.stop_pending = false;
+                if let Some(pending) = s.pending.take() {
+                    s.feedback_input = None;
+                    s.edit_input = None;
+                    drop(s);
+                    let _ = pending.responder.send(ConfirmDecision::Abort);
+                } else {
+                    if let Some(ref tx) = dash.cancel_tx {
+                        let _ = tx.send(true);
+                    }
+                    drop(s);
                 }
+                dash.notify.notify_waiters();
+            } else if matches!(key.code, KeyCode::Char('n' | 'N') | KeyCode::Esc) {
+                s.stop_pending = false;
                 drop(s);
-            } else {
-                drop(s);
+                dash.notify.notify_waiters();
             }
-            dash.notify.notify_waiters();
-        } else if matches!(key.code, KeyCode::Char('n' | 'N') | KeyCode::Esc) {
-            s.stop_pending = false;
-            drop(s);
-            dash.notify.notify_waiters();
+            return;
         }
-        return;
     }
 
     // Activate the stop confirmation when the run is still live.
@@ -5946,6 +5954,33 @@ mod tests {
         assert!(
             text.contains("stop run"),
             "stop confirmation must be visible; got:\n{text}"
+        );
+    }
+
+    /// If the run ends naturally while stop_pending is true (race condition),
+    /// the next keypress must auto-clear stop_pending so the finished-close
+    /// path (q/Esc → should_exit) becomes reachable again.
+    #[test]
+    fn stop_pending_clears_when_run_finishes() {
+        let d = make_dashboard();
+        // Activate the stop confirmation.
+        handle_key(&d, ctrl_q());
+        assert!(
+            snap(&d).stop_pending,
+            "stop_pending must be set after Ctrl-Q"
+        );
+
+        // Simulate RunEnded arriving while the operator hasn't answered yet.
+        {
+            let mut s = d.state.lock().unwrap();
+            s.finished = Some("done".into());
+        }
+
+        // Any subsequent key should auto-dismiss stop_pending without aborting.
+        handle_key(&d, KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
+        assert!(
+            !snap(&d).stop_pending,
+            "stop_pending must be auto-cleared when finished is set"
         );
     }
 }
