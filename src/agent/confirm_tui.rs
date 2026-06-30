@@ -1339,34 +1339,31 @@ fn handle_key(dash: &Arc<RatatuiDashboard>, key: KeyEvent) {
     let ctrl_q = key.modifiers.contains(KeyModifiers::CONTROL)
         && matches!(key.code, KeyCode::Char('q' | 'Q'));
 
-    // When a stop confirmation is waiting, only y/n/Esc are meaningful; swallow
-    // everything else so a stray keypress cannot accidentally approve a pending
-    // modal or navigate the feed while the operator is deciding.
+    // When a stop confirmation is waiting, y/Y and Ctrl-C immediately abort;
+    // n/N/Esc cancel; everything else is swallowed so a stray keypress cannot
+    // accidentally approve a pending modal or navigate the feed.
     if s.stop_pending {
-        match key.code {
-            KeyCode::Char('y' | 'Y') => {
-                s.stop_pending = false;
-                if let Some(pending) = s.pending.take() {
-                    s.feedback_input = None;
-                    s.edit_input = None;
-                    drop(s);
-                    let _ = pending.responder.send(ConfirmDecision::Abort);
-                } else if s.finished.is_none() {
-                    if let Some(ref tx) = dash.cancel_tx {
-                        let _ = tx.send(true);
-                    }
-                    drop(s);
-                } else {
-                    drop(s);
-                }
-                dash.notify.notify_waiters();
-            }
-            KeyCode::Char('n' | 'N') | KeyCode::Esc => {
-                s.stop_pending = false;
+        let confirm_abort = ctrl_c || matches!(key.code, KeyCode::Char('y' | 'Y'));
+        if confirm_abort {
+            s.stop_pending = false;
+            if let Some(pending) = s.pending.take() {
+                s.feedback_input = None;
+                s.edit_input = None;
                 drop(s);
-                dash.notify.notify_waiters();
+                let _ = pending.responder.send(ConfirmDecision::Abort);
+            } else if s.finished.is_none() {
+                if let Some(ref tx) = dash.cancel_tx {
+                    let _ = tx.send(true);
+                }
+                drop(s);
+            } else {
+                drop(s);
             }
-            _ => {}
+            dash.notify.notify_waiters();
+        } else if matches!(key.code, KeyCode::Char('n' | 'N') | KeyCode::Esc) {
+            s.stop_pending = false;
+            drop(s);
+            dash.notify.notify_waiters();
         }
         return;
     }
@@ -1809,6 +1806,7 @@ fn draw_frame(
     Ok(())
 }
 
+#[allow(clippy::struct_excessive_bools)]
 struct DashboardSnapshot {
     task: Option<String>,
     model: Option<String>,
@@ -2080,17 +2078,15 @@ fn log_paragraph(snap: &DashboardSnapshot, visible_lines: usize) -> Paragraph<'_
 
 fn footer_paragraph(snap: &DashboardSnapshot) -> Paragraph<'_> {
     let bold = Style::default().add_modifier(Modifier::BOLD);
-    // detail_open, stop_pending, search, finished, edit, pending, and idle
-    // activity all take precedence in this order.
-    let span = if snap.detail_open {
+    // stop_pending takes top priority so the confirmation prompt is always
+    // visible even when the detail inspector is open (detail_open). The
+    // remaining branches follow: search, finished, edit, pending, activity.
+    let span = if snap.stop_pending {
+        Span::styled("stop run? [y] yes   [n/Esc] cancel", bold.fg(Color::Red))
+    } else if snap.detail_open {
         Span::styled(
             "[Esc/q] close   [Up/Down/j/k] scroll   [PgUp/PgDn] page   [Home/End] bounds",
             bold,
-        )
-    } else if snap.stop_pending {
-        Span::styled(
-            "stop run? [y] yes   [n/Esc] cancel",
-            bold.fg(Color::Red),
         )
     } else if let Some(search) = &snap.search {
         let max_lines = snap.log.len().min(MAX_LOG_LINES);
@@ -5714,7 +5710,10 @@ mod tests {
             s.is_monitor = true;
         }
         handle_key(&d, ctrl_q());
-        assert!(snap(&d).stop_pending, "Ctrl-Q must work in monitor/yolo mode");
+        assert!(
+            snap(&d).stop_pending,
+            "Ctrl-Q must work in monitor/yolo mode"
+        );
     }
 
     #[test]
@@ -5780,7 +5779,10 @@ mod tests {
         assert!(snap(&d).stop_pending);
         // Any key other than y/n/Esc should NOT trigger cancel or clear stop_pending
         handle_key(&d, KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
-        assert!(snap(&d).stop_pending, "other keys must leave stop_pending set");
+        assert!(
+            snap(&d).stop_pending,
+            "other keys must leave stop_pending set"
+        );
         assert!(!*rx.borrow(), "other keys must not fire cancel");
     }
 
@@ -5789,7 +5791,10 @@ mod tests {
         let (d, rx) = make_dashboard_with_cancel();
         handle_key(&d, ctrl_q());
         // After one Ctrl-Q, cancel must NOT have fired yet (confirmation step)
-        assert!(!*rx.borrow(), "single Ctrl-Q must not abort without confirmation");
+        assert!(
+            !*rx.borrow(),
+            "single Ctrl-Q must not abort without confirmation"
+        );
     }
 
     #[test]
@@ -5875,6 +5880,37 @@ mod tests {
         assert!(
             text.contains("run complete"),
             "finished footer should show run-complete message; got:\n{text}"
+        );
+    }
+
+    #[test]
+    fn stop_pending_ctrl_c_immediately_aborts() {
+        let (d, rx) = make_dashboard_with_cancel();
+        handle_key(&d, ctrl_q());
+        assert!(snap(&d).stop_pending);
+        handle_key(&d, KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
+        assert!(!snap(&d).stop_pending, "Ctrl-C must clear stop_pending");
+        assert!(*rx.borrow(), "Ctrl-C must fire cancel_tx immediately");
+    }
+
+    #[test]
+    fn footer_shows_stop_confirmation_even_when_detail_open() {
+        let d = make_dashboard();
+        {
+            let mut s = d.state.lock().unwrap();
+            s.stop_pending = true;
+            s.detail_open = true;
+        }
+        let s = snap(&d);
+        let buf = render_to_buffer(&s, 100, 6);
+        let text = buffer_text(&buf);
+        assert!(
+            text.contains("[y]") || text.contains("yes"),
+            "stop confirmation must show even with detail_open; got:\n{text}"
+        );
+        assert!(
+            !text.contains("[Esc/q] close"),
+            "detail hint must not override stop_pending in footer; got:\n{text}"
         );
     }
 }
