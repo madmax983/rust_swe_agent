@@ -6,12 +6,12 @@
 //! # Measurement sources (in priority order)
 //!
 //! **Peak memory bytes**:
-//! 1. `/sys/fs/cgroup/memory.peak` — cgroupv2, present in Docker containers
+//! 1. `<cgroup_dir>/memory.peak` — cgroupv2; cgroup resolved via `/proc/self/cgroup`
 //! 2. `/proc/self/status` `VmHWM` — Linux high-water RSS, kB × 1 024
 //! 3. `None` — non-Linux or all sources failed / returned 0
 //!
 //! **CPU seconds** (user + system):
-//! 1. `/sys/fs/cgroup/cpu.stat` `usage_usec` — cgroupv2, Docker containers
+//! 1. `<cgroup_dir>/cpu.stat` `usage_usec` — cgroupv2; cgroup resolved via `/proc/self/cgroup`
 //! 2. `/proc/self/stat` fields 14+15 (utime + stime) at 100 Hz
 //! 3. `None` — non-Linux or all sources failed
 
@@ -63,8 +63,28 @@ fn peak_memory_bytes() -> Option<u64> {
 }
 
 #[cfg(target_os = "linux")]
+fn cgroup_v2_dir() -> Option<std::path::PathBuf> {
+    // Resolve the process's own cgroup v2 directory from /proc/self/cgroup.
+    // The file has lines like "0::<path>"; hierarchy 0 is the unified v2 hierarchy.
+    // Without this, hard-coding /sys/fs/cgroup reads the root cgroup on hosts
+    // where the process lives under a user/system slice.
+    let s = std::fs::read_to_string("/proc/self/cgroup").ok()?;
+    for line in s.lines() {
+        if let Some(rel) = line.strip_prefix("0::") {
+            let rel = rel.trim().trim_start_matches('/');
+            if rel.is_empty() {
+                return Some(std::path::PathBuf::from("/sys/fs/cgroup"));
+            }
+            return Some(std::path::PathBuf::from("/sys/fs/cgroup").join(rel));
+        }
+    }
+    None
+}
+
+#[cfg(target_os = "linux")]
 fn read_cgroup_memory_peak() -> Option<u64> {
-    let s = std::fs::read_to_string("/sys/fs/cgroup/memory.peak").ok()?;
+    let dir = cgroup_v2_dir()?;
+    let s = std::fs::read_to_string(dir.join("memory.peak")).ok()?;
     let n: u64 = s.trim().parse().ok()?;
     // 0 means the cgroup file exists but no peak has been recorded yet —
     // treat as unavailable so we never emit a fabricated 0.
@@ -113,7 +133,8 @@ fn cpu_seconds() -> Option<f64> {
 #[cfg(target_os = "linux")]
 #[allow(clippy::cast_precision_loss)]
 fn read_cgroup_cpu_usage_usec() -> Option<f64> {
-    let s = std::fs::read_to_string("/sys/fs/cgroup/cpu.stat").ok()?;
+    let dir = cgroup_v2_dir()?;
+    let s = std::fs::read_to_string(dir.join("cpu.stat")).ok()?;
     for line in s.lines() {
         if let Some(rest) = line.strip_prefix("usage_usec ") {
             let usec: u64 = rest.trim().parse().ok()?;
