@@ -678,4 +678,14 @@ mod tests {
             assert!(seen.insert(e.outcome_class), "dup: {}", e.outcome_class);
         }
     }
+
+    #[test]
+    fn no_duplicate_exit_codes() {
+        let mut seen = std::collections::HashSet::new();
+        for e in entries() {
+            if let Some(code) = e.code {
+                assert!(seen.insert(code), "dup code: {code}");
+            }
+        }
+    }
 }

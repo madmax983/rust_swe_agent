@@ -608,6 +608,90 @@ mod tests {
     }
 
     #[test]
+    fn preflight_failure_exit_code_is_1() {
+        assert_eq!(ExitCode::PreflightFailure.as_i32(), 1);
+        assert_eq!(
+            ExitCode::PreflightFailure.outcome_class(),
+            "preflight_failure"
+        );
+    }
+
+    #[test]
+    fn usage_error_exit_code_is_2() {
+        assert_eq!(ExitCode::UsageError.as_i32(), 2);
+        assert_eq!(ExitCode::UsageError.outcome_class(), "usage_error");
+    }
+
+    #[test]
+    fn task_unsuccessful_exit_code_is_3() {
+        assert_eq!(ExitCode::TaskUnsuccessful.as_i32(), 3);
+        assert_eq!(
+            ExitCode::TaskUnsuccessful.outcome_class(),
+            "task_unsuccessful"
+        );
+    }
+
+    #[test]
+    fn internal_error_exit_code_is_4() {
+        assert_eq!(ExitCode::InternalError.as_i32(), 4);
+        assert_eq!(ExitCode::InternalError.outcome_class(), "internal_error");
+    }
+
+    #[test]
+    fn verification_failure_exit_code_is_7() {
+        assert_eq!(ExitCode::VerificationFailure.as_i32(), 7);
+        assert_eq!(
+            ExitCode::VerificationFailure.outcome_class(),
+            "verification_failure"
+        );
+    }
+
+    #[test]
+    fn replay_prompt_drift_exit_code_is_9() {
+        assert_eq!(ExitCode::ReplayPromptDrift.as_i32(), 9);
+        assert_eq!(
+            ExitCode::ReplayPromptDrift.outcome_class(),
+            "replay_prompt_drift"
+        );
+    }
+
+    #[test]
+    fn replay_response_exhausted_exit_code_is_10() {
+        assert_eq!(ExitCode::ReplayResponseExhausted.as_i32(), 10);
+        assert_eq!(
+            ExitCode::ReplayResponseExhausted.outcome_class(),
+            "replay_response_exhausted"
+        );
+    }
+
+    #[test]
+    fn github_issue_missing_token_exit_code_is_34() {
+        assert_eq!(ExitCode::GithubIssueMissingToken.as_i32(), 34);
+        assert_eq!(
+            ExitCode::GithubIssueMissingToken.outcome_class(),
+            "github_issue_missing_token"
+        );
+    }
+
+    #[test]
+    fn github_issue_not_found_exit_code_is_35() {
+        assert_eq!(ExitCode::GithubIssueNotFound.as_i32(), 35);
+        assert_eq!(
+            ExitCode::GithubIssueNotFound.outcome_class(),
+            "github_issue_not_found"
+        );
+    }
+
+    #[test]
+    fn github_issue_rate_limited_exit_code_is_36() {
+        assert_eq!(ExitCode::GithubIssueRateLimited.as_i32(), 36);
+        assert_eq!(
+            ExitCode::GithubIssueRateLimited.outcome_class(),
+            "github_issue_rate_limited"
+        );
+    }
+
+    #[test]
     fn ledger_budget_exceeded_exit_code_is_49() {
         assert_eq!(ExitCode::LedgerBudgetExceeded.as_i32(), 49);
         assert_eq!(
