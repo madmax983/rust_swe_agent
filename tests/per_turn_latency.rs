@@ -72,7 +72,7 @@ fn legacy_trajectory_without_latency_fields_parses_cleanly() {
 fn artifact_schema_minor_bumped_for_latency_attribution() {
     assert_eq!(
         ArtifactSchemaVersion::CURRENT,
-        ArtifactSchemaVersion::new(1, 12),
+        ArtifactSchemaVersion::new(1, 13),
     );
 }
 

@@ -455,8 +455,8 @@ fn merge_preserves_prior_retry_history_entries() {
 fn schema_version_is_1_12() {
     assert_eq!(
         maxwells_daemon::artifact::ArtifactSchemaVersion::CURRENT,
-        maxwells_daemon::artifact::ArtifactSchemaVersion::new(1, 12),
-        "schema bumped to 1.12 for reuse_summary/submission_fingerprint (issue #530)"
+        maxwells_daemon::artifact::ArtifactSchemaVersion::new(1, 13),
+        "schema bumped to 1.13 for resource telemetry (issue #546)"
     );
 }
 
