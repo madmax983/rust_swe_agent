@@ -1003,6 +1003,8 @@ async fn resume_uses_prior_results_token_totals_for_budget_accounting() {
             previous_failure_category: None,
             trace_id: None,
             context_pressure: Default::default(),
+        peak_memory_bytes: None,
+        cpu_seconds: None,
         }],
         rate_limit_events: None,
 
@@ -1013,6 +1015,9 @@ async fn resume_uses_prior_results_token_totals_for_budget_accounting() {
         retry_history: vec![],
         partial: 0,
         span_export_dropped: 0,
+        max_peak_memory_bytes: None,
+        median_peak_memory_bytes: None,
+        total_cpu_seconds: None,
     };
     std::fs::write(
         output.join("results.json"),
@@ -1196,6 +1201,8 @@ async fn retry_on_resume_instances_are_precharged_before_rerun() {
             previous_failure_category: None,
             trace_id: None,
             context_pressure: Default::default(),
+        peak_memory_bytes: None,
+        cpu_seconds: None,
         }],
         rate_limit_events: None,
 
@@ -1206,6 +1213,9 @@ async fn retry_on_resume_instances_are_precharged_before_rerun() {
         retry_history: vec![],
         partial: 0,
         span_export_dropped: 0,
+        max_peak_memory_bytes: None,
+        median_peak_memory_bytes: None,
+        total_cpu_seconds: None,
     };
     std::fs::write(
         output.join("results.json"),
@@ -1359,6 +1369,8 @@ async fn stale_results_json_is_not_trusted_over_newer_trajectory() {
             previous_failure_category: None,
             trace_id: None,
             context_pressure: Default::default(),
+        peak_memory_bytes: None,
+        cpu_seconds: None,
         }],
         rate_limit_events: None,
 
@@ -1369,6 +1381,9 @@ async fn stale_results_json_is_not_trusted_over_newer_trajectory() {
         retry_history: vec![],
         partial: 0,
         span_export_dropped: 0,
+        max_peak_memory_bytes: None,
+        median_peak_memory_bytes: None,
+        total_cpu_seconds: None,
     };
     std::fs::write(
         output.join("results.json"),

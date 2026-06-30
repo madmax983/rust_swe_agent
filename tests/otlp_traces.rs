@@ -190,6 +190,8 @@ fn instance_result_has_trace_id() {
         previous_failure_category: None,
         trace_id: Some("deadbeef00000000deadbeef00000000".into()),
         context_pressure: Default::default(),
+        peak_memory_bytes: None,
+        cpu_seconds: None,
     };
     assert_eq!(
         ir.trace_id.as_deref(),

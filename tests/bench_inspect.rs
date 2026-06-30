@@ -2467,6 +2467,8 @@ fn inspect_displays_submission_class_and_warning_for_test_only_patches() {
             previous_failure_category: None,
             trace_id: None,
             context_pressure: Default::default(),
+        peak_memory_bytes: None,
+        cpu_seconds: None,
         }],
         rate_limit_events: None,
         total_fallbacks: 0,
@@ -2476,6 +2478,9 @@ fn inspect_displays_submission_class_and_warning_for_test_only_patches() {
         retry_history: vec![],
         partial: 0,
         span_export_dropped: 0,
+        max_peak_memory_bytes: None,
+        median_peak_memory_bytes: None,
+        total_cpu_seconds: None,
     };
     std::fs::write(
         sweep_dir.path().join("results.json"),

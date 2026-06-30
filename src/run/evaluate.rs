@@ -3459,7 +3459,12 @@ mod tests {
             previous_failure_category: None,
             trace_id: None,
             context_pressure: Default::default(),
-        }
+
+            peak_memory_bytes: None,
+
+            cpu_seconds: None,
+
+                }
     }
 
     fn errored(id: &str) -> InstanceResult {
@@ -3495,7 +3500,12 @@ mod tests {
 
             trace_id: None,
             context_pressure: Default::default(),
-        }
+
+            peak_memory_bytes: None,
+
+            cpu_seconds: None,
+
+                }
     }
 
     fn eval_row(id: &str, resolved: bool) -> InstanceEvaluation {
@@ -4422,7 +4432,12 @@ mod tests {
 
             trace_id: None,
             context_pressure: Default::default(),
-        };
+
+            peak_memory_bytes: None,
+
+            cpu_seconds: None,
+
+                };
         let run_slots = vec![
             crate::run::compare::LoadedRunSlot {
                 instance_id: "inst-a".to_owned(),

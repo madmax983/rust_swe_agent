@@ -396,6 +396,8 @@ pub fn run(args: &ImportArgs) -> Result<ImportSummary, Error> {
             previous_failure_category: None,
             trace_id: None,
             context_pressure: Default::default(),
+            peak_memory_bytes: None,
+            cpu_seconds: None,
         });
     }
 
@@ -524,6 +526,9 @@ pub fn run(args: &ImportArgs) -> Result<ImportSummary, Error> {
         retry_history: Vec::new(),
         partial: 0,
         span_export_dropped: 0,
+        max_peak_memory_bytes: None,
+        median_peak_memory_bytes: None,
+        total_cpu_seconds: None,
     };
 
     // 9. Write results.json atomically.

@@ -2028,6 +2028,9 @@ impl DefaultAgent {
             completion_tokens: self.completion_tokens,
         });
         self.trajectory.info.duration_secs = Some(self.started_at_instant.elapsed().as_secs_f64());
+        let resource_usage = crate::resource::measure();
+        self.trajectory.info.peak_memory_bytes = resource_usage.peak_memory_bytes;
+        self.trajectory.info.cpu_seconds = resource_usage.cpu_seconds;
         self.trajectory.info.redaction = Some(self.redactor.summary());
         self.refresh_test_metadata();
         // Populate fallback summary only when fallback was configured and used.

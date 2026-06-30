@@ -50,6 +50,8 @@ fn submitted(id: &str) -> InstanceResult {
         previous_failure_category: None,
         trace_id: None,
         context_pressure: Default::default(),
+        peak_memory_bytes: None,
+        cpu_seconds: None,
     }
 }
 
@@ -83,6 +85,8 @@ fn errored(id: &str) -> InstanceResult {
         previous_failure_category: None,
         trace_id: None,
         context_pressure: Default::default(),
+        peak_memory_bytes: None,
+        cpu_seconds: None,
     }
 }
 
@@ -185,6 +189,9 @@ fn write_sweep(dir: &Path, instances: Vec<InstanceResult>, finished_at: &str) {
         retry_history: vec![],
         partial: 0,
         span_export_dropped: 0,
+        max_peak_memory_bytes: None,
+        median_peak_memory_bytes: None,
+        total_cpu_seconds: None,
     };
     std::fs::create_dir_all(dir).unwrap();
     std::fs::write(

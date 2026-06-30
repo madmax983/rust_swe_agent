@@ -8111,6 +8111,12 @@ mod tests {
             retry_history: vec![],
             partial: 0,
             span_export_dropped: 0,
+
+            max_peak_memory_bytes: None,
+
+            median_peak_memory_bytes: None,
+
+            total_cpu_seconds: None,
         }
     }
 

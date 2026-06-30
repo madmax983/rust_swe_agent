@@ -38,7 +38,7 @@ fn check_bytes_strict(json: &str) -> maxwells_daemon::run::artifact_check::Artif
 fn valid_trajectory_returns_valid_verdict() {
     let json = serde_json::json!({
         "artifact_kind": "trajectory",
-        "schema_version": { "major": 1, "minor": 12 },
+        "schema_version": { "major": 1, "minor": 13 },
         "trajectory_format": "mini-swe-agent-1.2",
         "info": { "task": "fix the bug" },
         "messages": []
@@ -51,7 +51,7 @@ fn valid_trajectory_returns_valid_verdict() {
         output.results[0].artifact_kind.as_deref(),
         Some("trajectory")
     );
-    assert_eq!(output.results[0].schema_version.as_deref(), Some("1.12"));
+    assert_eq!(output.results[0].schema_version.as_deref(), Some("1.13"));
 }
 
 #[test]
@@ -121,7 +121,7 @@ fn trajectory_missing_messages_reports_it_as_missing() {
 fn trajectory_unknown_additive_field_does_not_fail_major_one() {
     let json = serde_json::json!({
         "artifact_kind": "trajectory",
-        "schema_version": { "major": 1, "minor": 12 },
+        "schema_version": { "major": 1, "minor": 13 },
         "trajectory_format": "mini-swe-agent-1.2",
         "info": {},
         "messages": [],
@@ -249,7 +249,7 @@ fn sweep_results_checks_required_fields() {
 fn valid_sweep_results_returns_valid() {
     let json = serde_json::json!({
         "artifact_kind": "sweep_results",
-        "schema_version": { "major": 1, "minor": 12 },
+        "schema_version": { "major": 1, "minor": 13 },
         "total": 10,
         "submitted": 8,
         "skipped": 1,
@@ -621,7 +621,7 @@ fn directory_scan_finds_json_files_recursively() {
 fn multiple_paths_all_validated() {
     let json1 = serde_json::json!({
         "artifact_kind": "trajectory",
-        "schema_version": { "major": 1, "minor": 12 },
+        "schema_version": { "major": 1, "minor": 13 },
         "trajectory_format": "mini-swe-agent-1.2",
         "info": {},
         "messages": []
@@ -629,7 +629,7 @@ fn multiple_paths_all_validated() {
     .to_string();
     let json2 = serde_json::json!({
         "artifact_kind": "sweep_results",
-        "schema_version": { "major": 1, "minor": 12 },
+        "schema_version": { "major": 1, "minor": 13 },
         "total": 1, "submitted": 1, "skipped": 0, "errored": 0,
         "failures_by_category": {}, "instances": []
     })
@@ -673,8 +673,8 @@ fn json_format_schema_version_matches_current() {
         .and_then(serde_json::Value::as_u64);
     assert_eq!(
         minor,
-        Some(12),
-        "validation_report schema_version.minor must match CURRENT (12) so --strict re-checks pass"
+        Some(13),
+        "validation_report schema_version.minor must match CURRENT (13) so --strict re-checks pass"
     );
 }
 

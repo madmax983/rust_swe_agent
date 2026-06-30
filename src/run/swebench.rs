@@ -430,6 +430,14 @@ pub struct InstanceResult {
     /// (or `OTEL_EXPORTER_OTLP_ENDPOINT` is set). `None` otherwise.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub trace_id: Option<String>,
+    /// Peak resident set size in bytes recorded at the end of this run
+    /// (schema 1.13+). `None` when measurement was unavailable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub peak_memory_bytes: Option<u64>,
+    /// Cumulative CPU time (user + system) in seconds for this run
+    /// (schema 1.13+). `None` when measurement was unavailable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cpu_seconds: Option<f64>,
 }
 
 /// Selection criteria recorded in a retry history entry.
@@ -613,6 +621,19 @@ pub struct SweepResults {
     /// collector.
     #[serde(default, skip_serializing_if = "is_zero_u64")]
     pub span_export_dropped: u64,
+    /// Maximum `peak_memory_bytes` across all instances in this sweep
+    /// (schema 1.13+). `None` when no instance recorded a non-null measurement.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_peak_memory_bytes: Option<u64>,
+    /// Median `peak_memory_bytes` across all instances with non-null measurements
+    /// (schema 1.13+). Uses lower-median for even-count sets.
+    /// `None` when no instance recorded a non-null measurement.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub median_peak_memory_bytes: Option<u64>,
+    /// Sum of `cpu_seconds` across all instances in this sweep (schema 1.13+).
+    /// `None` when no instance recorded a non-null measurement.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub total_cpu_seconds: Option<f64>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -969,6 +990,9 @@ impl Default for SweepResults {
             retry_history: Vec::new(),
             partial: 0,
             span_export_dropped: 0,
+            max_peak_memory_bytes: None,
+            median_peak_memory_bytes: None,
+            total_cpu_seconds: None,
         }
     }
 }
@@ -1094,6 +1118,8 @@ pub(crate) fn recompute_aggregates(
         map
     };
 
+    let resource_rollup = compute_resource_rollup(&instances);
+
     let mut result = base.clone();
     result.total = total;
     result.submitted = submitted;
@@ -1121,6 +1147,9 @@ pub(crate) fn recompute_aggregates(
     result.retries = retries;
     result.total_fallbacks = total_fallbacks;
     result.model_mix = model_mix;
+    result.max_peak_memory_bytes = resource_rollup.max_peak_memory_bytes;
+    result.median_peak_memory_bytes = resource_rollup.median_peak_memory_bytes;
+    result.total_cpu_seconds = resource_rollup.total_cpu_seconds;
     result.instances = instances;
     result
 }
@@ -1901,6 +1930,9 @@ pub async fn run(mut args: SwebenchArgs) -> Result<SweepResults, Error> {
             retry_history: vec![],
             partial: 0,
             span_export_dropped: 0,
+            max_peak_memory_bytes: None,
+            median_peak_memory_bytes: None,
+            total_cpu_seconds: None,
         });
     }
     std::fs::create_dir_all(&args.output_dir)?;
@@ -2007,6 +2039,9 @@ pub async fn run(mut args: SwebenchArgs) -> Result<SweepResults, Error> {
         retry_history: vec![],
         partial: 0,
         span_export_dropped: 0,
+        max_peak_memory_bytes: None,
+        median_peak_memory_bytes: None,
+        total_cpu_seconds: None,
     };
     write_sweep_results_atomic(&summary_path, &initial)?;
     #[cfg(test)]
@@ -2695,6 +2730,8 @@ pub async fn run(mut args: SwebenchArgs) -> Result<SweepResults, Error> {
                                 previous_failure_category: None,
                                 trace_id: None,
                                 context_pressure: Default::default(),
+                                peak_memory_bytes: None,
+                                cpu_seconds: None,
                             },
                         );
                         {
@@ -2960,7 +2997,16 @@ pub async fn run(mut args: SwebenchArgs) -> Result<SweepResults, Error> {
         retry_history: vec![],
         partial: partial_resumed,
         span_export_dropped: 0, // filled in after OTLP export below
+        max_peak_memory_bytes: None, // filled in by compute_resource_rollup below
+        median_peak_memory_bytes: None,
+        total_cpu_seconds: None,
     };
+    {
+        let rollup = compute_resource_rollup(&sweep.instances);
+        sweep.max_peak_memory_bytes = rollup.max_peak_memory_bytes;
+        sweep.median_peak_memory_bytes = rollup.median_peak_memory_bytes;
+        sweep.total_cpu_seconds = rollup.total_cpu_seconds;
+    }
     // Export OTLP spans now that all instances have completed.
     if let Some(tracer) = &tracer_arc {
         let manifest_ref = sweep.manifest.as_ref();
@@ -3906,6 +3952,8 @@ fn budget_halt_result(instance_id: &str) -> InstanceResult {
         previous_failure_category: None,
         trace_id: None,
         context_pressure: Default::default(),
+        peak_memory_bytes: None,
+        cpu_seconds: None,
     }
 }
 
@@ -3961,6 +4009,8 @@ fn cancelled_wait_result(ctx: CancelledWaitContext<'_>) -> InstanceResult {
         previous_failure_category: None,
         trace_id: ctx.trace_id.clone(),
         context_pressure: Default::default(),
+        peak_memory_bytes: None,
+        cpu_seconds: None,
     });
     ctx.instance_id.clone_into(&mut result.instance_id);
     result.exit_reason = exit_reason::CANCELLED.into();
@@ -4308,6 +4358,10 @@ fn aggregate_run_results(results: &[RunSlotResult], requested_runs: u32) -> Vec<
             .fold(0u32, u32::saturating_add);
         aggregate.fallback_count = if fb_total > 0 { Some(fb_total) } else { None };
         aggregate.final_model.clone_from(&first.final_model);
+        // For multi-run sweeps: take the max peak_memory_bytes and sum cpu_seconds
+        // across all runs so operators see the worst-case memory and total CPU spend.
+        aggregate.peak_memory_bytes = rows.iter().filter_map(|r| r.result.peak_memory_bytes).max();
+        aggregate.cpu_seconds = sum_f64(rows.iter().filter_map(|r| r.result.cpu_seconds));
         out.push(aggregate);
     }
     out
@@ -4321,6 +4375,42 @@ fn sum_f64(values: impl Iterator<Item = f64>) -> Option<f64> {
         total += value;
     }
     seen.then_some(total)
+}
+
+/// Sweep-level resource usage rollup computed from per-instance measurements.
+#[derive(Debug, Default)]
+struct ResourceRollup {
+    max_peak_memory_bytes: Option<u64>,
+    median_peak_memory_bytes: Option<u64>,
+    total_cpu_seconds: Option<f64>,
+}
+
+/// Compute resource rollup across all instances.
+///
+/// Only considers instances with non-null measurements. Returns `None` for
+/// each field when no instance has a non-null value.
+fn compute_resource_rollup(instances: &[InstanceResult]) -> ResourceRollup {
+    let mut memory_values: Vec<u64> = instances
+        .iter()
+        .filter_map(|r| r.peak_memory_bytes)
+        .collect();
+    memory_values.sort_unstable();
+
+    let max_peak_memory_bytes = memory_values.last().copied();
+    let median_peak_memory_bytes = if memory_values.is_empty() {
+        None
+    } else {
+        // Lower-median for even-count sets.
+        Some(memory_values[(memory_values.len() - 1) / 2])
+    };
+
+    let total_cpu_seconds = sum_f64(instances.iter().filter_map(|r| r.cpu_seconds));
+
+    ResourceRollup {
+        max_peak_memory_bytes,
+        median_peak_memory_bytes,
+        total_cpu_seconds,
+    }
 }
 
 pub(crate) fn budget_accounting_cost_usd(row: &InstanceResult, model_name: &str) -> f64 {
@@ -4608,6 +4698,8 @@ fn skipped_result_from_info(
         retry_id: None,
         previous_failure_category: None,
         trace_id: info.trace_id.clone(),
+        peak_memory_bytes: info.peak_memory_bytes,
+        cpu_seconds: info.cpu_seconds,
     }
 }
 
@@ -4970,6 +5062,8 @@ async fn run_one(inst: SweBenchInstance, run_index: u32, params: RunOneParams) -
                         previous_failure_category: None,
                         trace_id: trace_id.clone(),
                         context_pressure: Default::default(),
+                        peak_memory_bytes: None,
+                        cpu_seconds: None,
                     };
                 }
             }
@@ -5185,6 +5279,8 @@ async fn run_one(inst: SweBenchInstance, run_index: u32, params: RunOneParams) -
             retry_id: None,
             previous_failure_category: None,
             trace_id: trace_id.clone(),
+            peak_memory_bytes: info.as_ref().and_then(|i| i.peak_memory_bytes),
+            cpu_seconds: info.as_ref().and_then(|i| i.cpu_seconds),
         };
         let current = publish_github_pr_for_result(
             current,
@@ -5797,7 +5893,12 @@ mod tests {
             previous_failure_category: None,
             trace_id: None,
             context_pressure: Default::default(),
-        }
+
+            peak_memory_bytes: None,
+
+            cpu_seconds: None,
+
+                }
     }
 
     fn init_test_repo(dir: &Path) {
@@ -6140,7 +6241,12 @@ mod tests {
 
             trace_id: None,
             context_pressure: Default::default(),
-        };
+
+            peak_memory_bytes: None,
+
+            cpu_seconds: None,
+
+                };
         let expected = estimate_cost_usd(100_000, 0, 0, 100_000, "openai/gpt-4o-mini");
         assert!(
             (row.effective_cost_usd(Some("openai/gpt-4o-mini"))
@@ -6185,7 +6291,12 @@ mod tests {
 
             trace_id: None,
             context_pressure: Default::default(),
-        };
+
+            peak_memory_bytes: None,
+
+            cpu_seconds: None,
+
+                };
 
         assert_eq!(row.actual_cost_usd(), Some(0.0));
         assert!(
@@ -6254,6 +6365,12 @@ mod tests {
             retry_history: vec![],
             partial: 0,
             span_export_dropped: 0,
+
+            max_peak_memory_bytes: None,
+
+            median_peak_memory_bytes: None,
+
+            total_cpu_seconds: None,
         };
         let t = s.summary_table();
         assert!(t.contains("Total tasks:        10"));
@@ -6338,6 +6455,12 @@ mod tests {
             retry_history: vec![],
             partial: 0,
             span_export_dropped: 0,
+
+            max_peak_memory_bytes: None,
+
+            median_peak_memory_bytes: None,
+
+            total_cpu_seconds: None,
         };
 
         let t = s.summary_table();
@@ -6399,6 +6522,12 @@ mod tests {
             retry_history: vec![],
             partial: 0,
             span_export_dropped: 0,
+
+            max_peak_memory_bytes: None,
+
+            median_peak_memory_bytes: None,
+
+            total_cpu_seconds: None,
         };
 
         let t = s.summary_table();
@@ -6481,6 +6610,12 @@ mod tests {
             retry_history: vec![],
             partial: 0,
             span_export_dropped: 0,
+
+            max_peak_memory_bytes: None,
+
+            median_peak_memory_bytes: None,
+
+            total_cpu_seconds: None,
         };
         let t = s.summary_table();
         assert!(
@@ -6550,6 +6685,12 @@ mod tests {
             retry_history: vec![],
             partial: 0,
             span_export_dropped: 0,
+
+            max_peak_memory_bytes: None,
+
+            median_peak_memory_bytes: None,
+
+            total_cpu_seconds: None,
         };
 
         let t = s.summary_table();
@@ -6626,6 +6767,12 @@ mod tests {
             retry_history: vec![],
             partial: 0,
             span_export_dropped: 0,
+
+            max_peak_memory_bytes: None,
+
+            median_peak_memory_bytes: None,
+
+            total_cpu_seconds: None,
         };
 
         let t = s.summary_table();
@@ -6690,6 +6837,12 @@ mod tests {
             retry_history: vec![],
             partial: 0,
             span_export_dropped: 0,
+
+            max_peak_memory_bytes: None,
+
+            median_peak_memory_bytes: None,
+
+            total_cpu_seconds: None,
         };
         let t = s.summary_table();
         assert!(t.contains("Sweep cost limit:   $1.0000"), "got: {t}");
@@ -7650,7 +7803,7 @@ instance = "inst"
         assert_eq!(v["artifact_kind"], "preflight_report");
         assert_eq!(
             v["schema_version"],
-            serde_json::json!({"major": 1, "minor": 12})
+            serde_json::json!({"major": 1, "minor": 13})
         );
         assert!(v.get("mode").is_some());
         assert!(v.get("checks").is_some());
@@ -7780,6 +7933,12 @@ instance = "inst"
             retry_history: vec![],
             partial: 0,
             span_export_dropped: 0,
+
+            max_peak_memory_bytes: None,
+
+            median_peak_memory_bytes: None,
+
+            total_cpu_seconds: None,
         };
         let json = serde_json::to_string(&s).unwrap();
         let v: serde_json::Value = serde_json::from_str(&json).unwrap();
@@ -8129,6 +8288,12 @@ instance = "inst"
             retry_history: vec![],
             partial: 0,
             span_export_dropped: 0,
+
+            max_peak_memory_bytes: None,
+
+            median_peak_memory_bytes: None,
+
+            total_cpu_seconds: None,
         };
         let t = s.summary_table();
         assert!(
@@ -8204,6 +8369,12 @@ instance = "inst"
             retry_history: vec![],
             partial: 0,
             span_export_dropped: 0,
+
+            max_peak_memory_bytes: None,
+
+            median_peak_memory_bytes: None,
+
+            total_cpu_seconds: None,
         };
         let t = s.summary_table();
         assert!(

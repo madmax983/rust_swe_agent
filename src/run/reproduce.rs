@@ -649,6 +649,11 @@ mod tests {
             previous_failure_category: None,
             trace_id: None,
             context_pressure: Default::default(),
-        }
+
+            peak_memory_bytes: None,
+
+            cpu_seconds: None,
+
+                }
     }
 }

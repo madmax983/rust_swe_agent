@@ -141,6 +141,8 @@ fn instance(
         previous_failure_category: None,
         trace_id: None,
         context_pressure: Default::default(),
+        peak_memory_bytes: None,
+        cpu_seconds: None,
     }
 }
 
@@ -245,6 +247,9 @@ fn fixture_results_with_model(model_name: Option<&str>) -> SweepResults {
         retry_history: vec![],
         partial: 0,
         span_export_dropped: 0,
+        max_peak_memory_bytes: None,
+        median_peak_memory_bytes: None,
+        total_cpu_seconds: None,
     }
 }
 
@@ -365,6 +370,8 @@ fn forecast_uses_manifest_model_for_fallback_cost_repricing() {
         previous_failure_category: None,
         trace_id: None,
         context_pressure: Default::default(),
+        peak_memory_bytes: None,
+        cpu_seconds: None,
     }];
     results.total = 1;
     results.submitted = 1;

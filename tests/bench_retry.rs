@@ -59,6 +59,8 @@ fn make_instance(id: &str, out: &str, cat: Option<FailureCategory>) -> InstanceR
         previous_failure_category: None,
         trace_id: None,
         context_pressure: Default::default(),
+        peak_memory_bytes: None,
+        cpu_seconds: None,
     }
 }
 
@@ -114,6 +116,9 @@ fn base_sweep(instances: Vec<InstanceResult>) -> SweepResults {
         retry_history: vec![],
         partial: 0,
         span_export_dropped: 0,
+        max_peak_memory_bytes: None,
+        median_peak_memory_bytes: None,
+        total_cpu_seconds: None,
     }
 }
 

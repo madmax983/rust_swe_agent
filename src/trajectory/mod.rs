@@ -706,6 +706,21 @@ pub struct TrajectoryInfo {
     /// started with `mini --continue`. Absent on non-continuation trajectories.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_trajectory: Option<ParentTrajectoryLink>,
+    /// Peak resident set size (high-water RSS) in bytes at run end (schema 1.13+).
+    ///
+    /// Read from cgroupv2 `memory.peak` in Docker environments, falling back to
+    /// `/proc/self/status` `VmHWM` on general Linux. `None` when measurement is
+    /// unavailable (non-Docker local env, non-Linux, or any read/parse error).
+    /// Never a fabricated `0`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub peak_memory_bytes: Option<u64>,
+    /// Cumulative CPU time (user + system) in seconds consumed by this run
+    /// (schema 1.13+).
+    ///
+    /// Read from cgroupv2 `cpu.stat` `usage_usec` in Docker environments,
+    /// falling back to `/proc/self/stat` at 100 Hz. `None` when unavailable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cpu_seconds: Option<f64>,
     #[serde(flatten, default)]
     /// Any other arbitrary metadata associated with the run.
     pub other: std::collections::BTreeMap<String, serde_json::Value>,
