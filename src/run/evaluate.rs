@@ -3463,8 +3463,7 @@ mod tests {
             peak_memory_bytes: None,
 
             cpu_seconds: None,
-
-                }
+        }
     }
 
     fn errored(id: &str) -> InstanceResult {
@@ -3504,8 +3503,7 @@ mod tests {
             peak_memory_bytes: None,
 
             cpu_seconds: None,
-
-                }
+        }
     }
 
     fn eval_row(id: &str, resolved: bool) -> InstanceEvaluation {
@@ -4436,8 +4434,7 @@ mod tests {
             peak_memory_bytes: None,
 
             cpu_seconds: None,
-
-                };
+        };
         let run_slots = vec![
             crate::run::compare::LoadedRunSlot {
                 instance_id: "inst-a".to_owned(),

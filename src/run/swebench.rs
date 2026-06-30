@@ -2996,7 +2996,7 @@ pub async fn run(mut args: SwebenchArgs) -> Result<SweepResults, Error> {
         systemic_halt_category,
         retry_history: vec![],
         partial: partial_resumed,
-        span_export_dropped: 0, // filled in after OTLP export below
+        span_export_dropped: 0,      // filled in after OTLP export below
         max_peak_memory_bytes: None, // filled in by compute_resource_rollup below
         median_peak_memory_bytes: None,
         total_cpu_seconds: None,
@@ -5897,8 +5897,7 @@ mod tests {
             peak_memory_bytes: None,
 
             cpu_seconds: None,
-
-                }
+        }
     }
 
     fn init_test_repo(dir: &Path) {
@@ -6245,8 +6244,7 @@ mod tests {
             peak_memory_bytes: None,
 
             cpu_seconds: None,
-
-                };
+        };
         let expected = estimate_cost_usd(100_000, 0, 0, 100_000, "openai/gpt-4o-mini");
         assert!(
             (row.effective_cost_usd(Some("openai/gpt-4o-mini"))
@@ -6295,8 +6293,7 @@ mod tests {
             peak_memory_bytes: None,
 
             cpu_seconds: None,
-
-                };
+        };
 
         assert_eq!(row.actual_cost_usd(), Some(0.0));
         assert!(

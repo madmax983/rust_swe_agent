@@ -653,7 +653,6 @@ mod tests {
             peak_memory_bytes: None,
 
             cpu_seconds: None,
-
-                }
+        }
     }
 }

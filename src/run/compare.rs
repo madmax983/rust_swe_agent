@@ -3386,8 +3386,7 @@ mod tests {
             peak_memory_bytes: None,
 
             cpu_seconds: None,
-
-                }
+        }
     }
 
     fn errored(id: &str, cat: FailureCategory) -> InstanceResult {
@@ -3427,8 +3426,7 @@ mod tests {
             peak_memory_bytes: None,
 
             cpu_seconds: None,
-
-                }
+        }
     }
 
     fn legacy_unknown(id: &str) -> InstanceResult {
@@ -3470,8 +3468,7 @@ mod tests {
             peak_memory_bytes: None,
 
             cpu_seconds: None,
-
-                }
+        }
     }
 
     fn map_of<I: IntoIterator<Item = InstanceResult>>(it: I) -> HashMap<String, InstanceResult> {
@@ -3692,12 +3689,9 @@ mod tests {
 
             span_export_dropped: 0,
 
-
             max_peak_memory_bytes: None,
 
-
             median_peak_memory_bytes: None,
-
 
             total_cpu_seconds: None,
         };
@@ -3791,8 +3785,7 @@ mod tests {
             peak_memory_bytes: None,
 
             cpu_seconds: None,
-
-                }]);
+        }]);
         let candidate = map_of([InstanceResult {
             instance_id: "cached".into(),
             exit_reason: "submitted".into(),
@@ -3829,8 +3822,7 @@ mod tests {
             peak_memory_bytes: None,
 
             cpu_seconds: None,
-
-                }]);
+        }]);
         let r = diff(Path::new("/b"), Path::new("/c"), &baseline, &candidate);
         let t = r.human_table();
         assert!(
@@ -4101,12 +4093,9 @@ mod tests {
 
             span_export_dropped: 0,
 
-
             max_peak_memory_bytes: None,
 
-
             median_peak_memory_bytes: None,
-
 
             total_cpu_seconds: None,
         };
@@ -4411,12 +4400,9 @@ mod tests {
 
             span_export_dropped: 0,
 
-
             max_peak_memory_bytes: None,
 
-
             median_peak_memory_bytes: None,
-
 
             total_cpu_seconds: None,
         };
@@ -4494,12 +4480,9 @@ mod tests {
 
             span_export_dropped: 0,
 
-
             max_peak_memory_bytes: None,
 
-
             median_peak_memory_bytes: None,
-
 
             total_cpu_seconds: None,
         };
@@ -4628,12 +4611,9 @@ mod tests {
 
             span_export_dropped: 0,
 
-
             max_peak_memory_bytes: None,
 
-
             median_peak_memory_bytes: None,
-
 
             total_cpu_seconds: None,
         };
@@ -4762,12 +4742,9 @@ mod tests {
 
             span_export_dropped: 0,
 
-
             max_peak_memory_bytes: None,
 
-
             median_peak_memory_bytes: None,
-
 
             total_cpu_seconds: None,
         };
@@ -4912,12 +4889,9 @@ mod tests {
 
             span_export_dropped: 0,
 
-
             max_peak_memory_bytes: None,
 
-
             median_peak_memory_bytes: None,
-
 
             total_cpu_seconds: None,
         };

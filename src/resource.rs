@@ -80,7 +80,7 @@ fn proc_status_vm_hwm() -> Option<u64> {
             let kb: u64 = rest
                 .trim()
                 .strip_suffix("kB")
-                .unwrap_or(rest.trim())
+                .unwrap_or_else(|| rest.trim())
                 .trim()
                 .parse()
                 .ok()?;
@@ -113,6 +113,7 @@ fn read_cgroup_cpu_usage_usec() -> Option<f64> {
     for line in s.lines() {
         if let Some(rest) = line.strip_prefix("usage_usec ") {
             let usec: u64 = rest.trim().parse().ok()?;
+            #[allow(clippy::cast_precision_loss)]
             return (usec > 0).then_some(usec as f64 / 1_000_000.0);
         }
     }
@@ -137,7 +138,9 @@ fn proc_self_stat_cpu() -> Option<f64> {
     let stime: u64 = fields.get(12)?.parse().ok()?;
     let total_ticks = utime.saturating_add(stime);
     // Linux standard: 100 clock ticks per second (USER_HZ = 100).
-    (total_ticks > 0).then_some(total_ticks as f64 / 100.0)
+    #[allow(clippy::cast_precision_loss)]
+    let secs = total_ticks as f64 / 100.0;
+    (total_ticks > 0).then_some(secs)
 }
 
 #[cfg(test)]
@@ -167,7 +170,7 @@ mod tests {
             "/proc/self/status VmHWM must be readable in the test process"
         );
         assert!(
-            result.unwrap() > 0,
+            result.is_some_and(|v| v > 0),
             "VmHWM must be > 0 for a live test process"
         );
     }

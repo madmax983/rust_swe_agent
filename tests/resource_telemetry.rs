@@ -55,9 +55,11 @@ fn trajectory_info_omits_null_resource_fields_from_json() {
 
 #[test]
 fn trajectory_info_serializes_resource_fields_when_present() {
-    let mut info = TrajectoryInfo::default();
-    info.peak_memory_bytes = Some(268_435_456);
-    info.cpu_seconds = Some(2.5);
+    let info = TrajectoryInfo {
+        peak_memory_bytes: Some(268_435_456),
+        cpu_seconds: Some(2.5),
+        ..Default::default()
+    };
 
     let json = serde_json::to_string(&info).unwrap();
     assert!(
