@@ -36,6 +36,12 @@ pub fn entries() -> &'static [CatalogEntry] {
             stage: "inspect",
         },
         CatalogEntry {
+            path: "completions",
+            summary: "Generate shell completion scripts",
+            cost_tier: "free",
+            stage: "preflight",
+        },
+        CatalogEntry {
             path: "cleanup",
             summary: "Reap leftover Maxwell's Daemon containers, including legacy labels",
             cost_tier: "free",

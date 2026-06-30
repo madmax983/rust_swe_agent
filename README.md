@@ -439,6 +439,47 @@ early if the first N instances all fail with the same operator-actionable cause
 (bad API key, broken Docker daemon), so a misconfigured run costs cents to abort
 instead of dollars to ride out. Tiny mercy.
 
+## Shell Completions
+
+`max` supports generating shell completion scripts for `bash`, `zsh`, `fish`, `powershell`, and `elvish` from its command definitions. Use `max completions <shell>` to output the script to stdout.
+
+### Installation
+
+#### Bash
+```bash
+max completions bash > /usr/share/bash-completion/completions/max
+# Or to local config:
+max completions bash > ~/.local/share/bash-completion/completions/max
+```
+
+#### Zsh
+```zsh
+max completions zsh > ~/.zsh/completion/_max
+# Add the directory to your fpath in ~/.zshrc:
+# fpath=(~/.zsh/completion $fpath)
+# autoload -U compinit && compinit
+```
+
+#### Fish
+```fish
+max completions fish > ~/.config/fish/completions/max.fish
+```
+
+#### PowerShell
+```powershell
+# Append to your profile (use >> to avoid overwriting your existing profile):
+max completions powershell >> $PROFILE.CurrentUserAllHosts
+
+# Or save to a separate file and dot-source it in your profile:
+max completions powershell > ~/max-completion.ps1
+# Add `. ~/max-completion.ps1` to your profile file
+```
+
+#### Elvish
+```elvish
+max completions elvish > ~/.config/elvish/lib/max.elv
+```
+
 ## Troubleshooting
 
 | Symptom | Likely Cause | Fix |
