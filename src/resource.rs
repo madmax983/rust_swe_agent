@@ -157,11 +157,17 @@ fn proc_self_stat_cpu() -> Option<f64> {
     // Remaining fields (0-indexed from after ')'):
     //  0: state  1: ppid  2: pgroup  3: session  4: tty_nr  5: tpgid
     //  6: flags  7: minflt  8: cminflt  9: majflt  10: cmajflt
-    // 11: utime  12: stime
+    // 11: utime  12: stime  13: cutime  14: cstime
     let fields: Vec<&str> = rest.split_ascii_whitespace().collect();
     let utime: u64 = fields.get(11)?.parse().ok()?;
     let stime: u64 = fields.get(12)?.parse().ok()?;
-    let total_ticks = utime.saturating_add(stime);
+    // cutime/cstime accumulate CPU of waited-for children (bash tool subprocesses).
+    let cutime: u64 = fields.get(13).and_then(|s| s.parse().ok()).unwrap_or(0);
+    let cstime: u64 = fields.get(14).and_then(|s| s.parse().ok()).unwrap_or(0);
+    let total_ticks = utime
+        .saturating_add(stime)
+        .saturating_add(cutime)
+        .saturating_add(cstime);
     // Linux standard: 100 clock ticks per second (USER_HZ = 100).
     (total_ticks > 0).then_some(total_ticks as f64 / 100.0)
 }
