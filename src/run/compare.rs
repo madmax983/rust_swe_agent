@@ -1392,6 +1392,8 @@ fn instance_result_from_trajectory(
         previous_failure_category: None,
         trace_id: info.trace_id,
         context_pressure: Default::default(),
+        peak_memory_bytes: info.peak_memory_bytes,
+        cpu_seconds: info.cpu_seconds,
     }))
 }
 
@@ -3380,6 +3382,10 @@ mod tests {
             previous_failure_category: None,
             trace_id: None,
             context_pressure: Default::default(),
+
+            peak_memory_bytes: None,
+
+            cpu_seconds: None,
         }
     }
 
@@ -3416,6 +3422,10 @@ mod tests {
 
             trace_id: None,
             context_pressure: Default::default(),
+
+            peak_memory_bytes: None,
+
+            cpu_seconds: None,
         }
     }
 
@@ -3454,6 +3464,10 @@ mod tests {
 
             trace_id: None,
             context_pressure: Default::default(),
+
+            peak_memory_bytes: None,
+
+            cpu_seconds: None,
         }
     }
 
@@ -3518,6 +3532,12 @@ mod tests {
             retry_history: vec![],
             partial: 0,
             span_export_dropped: 0,
+
+            max_peak_memory_bytes: None,
+
+            median_peak_memory_bytes: None,
+
+            total_cpu_seconds: None,
         };
         std::fs::write(
             dir.join("results.json"),
@@ -3668,6 +3688,12 @@ mod tests {
             partial: 0,
 
             span_export_dropped: 0,
+
+            max_peak_memory_bytes: None,
+
+            median_peak_memory_bytes: None,
+
+            total_cpu_seconds: None,
         };
         let candidate_sweep = SweepResults {
             instances: vec![errored("a", FailureCategory::StepLimit), submitted("b")],
@@ -3755,6 +3781,10 @@ mod tests {
 
             trace_id: None,
             context_pressure: Default::default(),
+
+            peak_memory_bytes: None,
+
+            cpu_seconds: None,
         }]);
         let candidate = map_of([InstanceResult {
             instance_id: "cached".into(),
@@ -3788,6 +3818,10 @@ mod tests {
 
             trace_id: None,
             context_pressure: Default::default(),
+
+            peak_memory_bytes: None,
+
+            cpu_seconds: None,
         }]);
         let r = diff(Path::new("/b"), Path::new("/c"), &baseline, &candidate);
         let t = r.human_table();
@@ -4058,6 +4092,12 @@ mod tests {
             partial: 0,
 
             span_export_dropped: 0,
+
+            max_peak_memory_bytes: None,
+
+            median_peak_memory_bytes: None,
+
+            total_cpu_seconds: None,
         };
         let candidate_sweep = baseline_sweep.clone();
         std::fs::write(
@@ -4359,6 +4399,12 @@ mod tests {
             partial: 0,
 
             span_export_dropped: 0,
+
+            max_peak_memory_bytes: None,
+
+            median_peak_memory_bytes: None,
+
+            total_cpu_seconds: None,
         };
         std::fs::write(
             dir.path().join("results.json"),
@@ -4433,6 +4479,12 @@ mod tests {
             partial: 0,
 
             span_export_dropped: 0,
+
+            max_peak_memory_bytes: None,
+
+            median_peak_memory_bytes: None,
+
+            total_cpu_seconds: None,
         };
         let mut value = serde_json::to_value(&sweep).unwrap();
         value.as_object_mut().unwrap().remove("filter_spec");
@@ -4558,6 +4610,12 @@ mod tests {
             partial: 0,
 
             span_export_dropped: 0,
+
+            max_peak_memory_bytes: None,
+
+            median_peak_memory_bytes: None,
+
+            total_cpu_seconds: None,
         };
         std::fs::write(
             dir.path().join("results.json"),
@@ -4683,6 +4741,12 @@ mod tests {
             partial: 0,
 
             span_export_dropped: 0,
+
+            max_peak_memory_bytes: None,
+
+            median_peak_memory_bytes: None,
+
+            total_cpu_seconds: None,
         };
         std::fs::write(
             dir.path().join("results.json"),
@@ -4824,6 +4888,12 @@ mod tests {
             partial: 0,
 
             span_export_dropped: 0,
+
+            max_peak_memory_bytes: None,
+
+            median_peak_memory_bytes: None,
+
+            total_cpu_seconds: None,
         };
         std::fs::write(
             dir.path().join("results.json"),

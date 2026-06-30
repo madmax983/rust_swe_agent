@@ -493,6 +493,8 @@ async fn test_rehearsal_empty_patch_and_missing_eval_comparisons() {
             previous_failure_category: None,
             trace_id: None,
             context_pressure: Default::default(),
+            peak_memory_bytes: None,
+            cpu_seconds: None,
         }],
         rate_limit_events: None,
         total_fallbacks: 0,
@@ -501,6 +503,9 @@ async fn test_rehearsal_empty_patch_and_missing_eval_comparisons() {
         retry_history: vec![],
         partial: 0,
         span_export_dropped: 0,
+        max_peak_memory_bytes: None,
+        median_peak_memory_bytes: None,
+        total_cpu_seconds: None,
     };
     let results_json = serde_json::to_string(&sweep_results).unwrap();
 
@@ -648,6 +653,8 @@ async fn test_rehearsal_drift_resolved_count_and_pass_at_1() {
             previous_failure_category: None,
             trace_id: None,
             context_pressure: Default::default(),
+            peak_memory_bytes: None,
+            cpu_seconds: None,
         }],
         rate_limit_events: None,
         total_fallbacks: 0,
@@ -656,6 +663,9 @@ async fn test_rehearsal_drift_resolved_count_and_pass_at_1() {
         retry_history: vec![],
         partial: 0,
         span_export_dropped: 0,
+        max_peak_memory_bytes: None,
+        median_peak_memory_bytes: None,
+        total_cpu_seconds: None,
     };
     let results_json = serde_json::to_string(&sweep_results).unwrap();
 

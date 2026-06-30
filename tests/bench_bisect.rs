@@ -24,7 +24,7 @@ fn create_mock_sweep_results(dir: &std::path::Path, git_sha: &str) {
         "artifact_kind": "sweep_results",
         "schema_version": {
             "major": 1,
-            "minor": 12
+            "minor": 13
         },
         "total": 5,
         "sweep_status": "completed",

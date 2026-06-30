@@ -21,6 +21,7 @@ pub mod model;
 pub mod policy;
 pub mod prompt_guard;
 pub mod redaction;
+pub mod resource;
 pub mod run;
 pub mod skills;
 pub mod stagnation;

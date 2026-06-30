@@ -114,6 +114,8 @@ fn write_sweep_results(dir: &Path, instances: &[&str], passed: bool) {
             previous_failure_category: None,
             trace_id: None,
             context_pressure: Default::default(),
+            peak_memory_bytes: None,
+            cpu_seconds: None,
         })
         .collect();
     let submitted_count = instance_results.iter().filter(|r| r.pass_at_1).count();

@@ -59,6 +59,8 @@ fn make_instance(id: &str, out: &str, cat: Option<FailureCategory>) -> InstanceR
         previous_failure_category: None,
         trace_id: None,
         context_pressure: Default::default(),
+        peak_memory_bytes: None,
+        cpu_seconds: None,
     }
 }
 
@@ -114,6 +116,9 @@ fn base_sweep(instances: Vec<InstanceResult>) -> SweepResults {
         retry_history: vec![],
         partial: 0,
         span_export_dropped: 0,
+        max_peak_memory_bytes: None,
+        median_peak_memory_bytes: None,
+        total_cpu_seconds: None,
     }
 }
 
@@ -450,8 +455,8 @@ fn merge_preserves_prior_retry_history_entries() {
 fn schema_version_is_1_12() {
     assert_eq!(
         maxwells_daemon::artifact::ArtifactSchemaVersion::CURRENT,
-        maxwells_daemon::artifact::ArtifactSchemaVersion::new(1, 12),
-        "schema bumped to 1.12 for reuse_summary/submission_fingerprint (issue #530)"
+        maxwells_daemon::artifact::ArtifactSchemaVersion::new(1, 13),
+        "schema bumped to 1.13 for resource telemetry (issue #546)"
     );
 }
 

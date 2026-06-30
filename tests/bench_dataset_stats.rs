@@ -296,6 +296,8 @@ fn test_historical_resolved_rates_legacy_and_hash_handling() {
             previous_failure_category: None,
             trace_id: None,
             context_pressure: Default::default(),
+            peak_memory_bytes: None,
+            cpu_seconds: None,
         }],
         rate_limit_events: None,
         total_fallbacks: 0,
@@ -304,6 +306,9 @@ fn test_historical_resolved_rates_legacy_and_hash_handling() {
         retry_history: vec![],
         partial: 0,
         span_export_dropped: 0,
+        max_peak_memory_bytes: None,
+        median_peak_memory_bytes: None,
+        total_cpu_seconds: None,
     };
     let legacy_dir = runs_dir.join("legacy");
     create_dir_all(&legacy_dir).unwrap();

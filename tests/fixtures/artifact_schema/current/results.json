@@ -2,7 +2,7 @@
   "artifact_kind": "sweep_results",
   "schema_version": {
     "major": 1,
-    "minor": 12
+    "minor": 13
   },
   "total": 1,
   "sweep_status": "completed",
@@ -33,6 +33,9 @@
   "retried_instances": 0,
   "total_fallbacks": 0,
   "pass_at_k": 1.0,
+  "max_peak_memory_bytes": 1,
+  "median_peak_memory_bytes": 1,
+  "total_cpu_seconds": 0.001,
   "filter_spec": {
     "original_count": 1,
     "selected_count": 1
@@ -109,6 +112,8 @@
       "resolved_count": 1,
       "pass_at_1": true,
       "tests_run_before_submit": false,
+      "peak_memory_bytes": 1,
+      "cpu_seconds": 0.001,
       "context_pressure": {
         "elision_trigger_count": 0,
         "observations_elided": 0,

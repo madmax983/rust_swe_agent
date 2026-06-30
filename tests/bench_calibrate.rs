@@ -892,6 +892,9 @@ fn sweep_results(
         retry_history: vec![],
         partial: 0,
         span_export_dropped: 0,
+        max_peak_memory_bytes: None,
+        median_peak_memory_bytes: None,
+        total_cpu_seconds: None,
     }
 }
 
@@ -929,6 +932,8 @@ fn instance(id: &str, submitted: bool, cost_usd: f64, duration_secs: f64) -> Ins
         previous_failure_category: None,
         trace_id: None,
         context_pressure: Default::default(),
+        peak_memory_bytes: None,
+        cpu_seconds: None,
     }
 }
 

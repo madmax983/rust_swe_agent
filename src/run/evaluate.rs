@@ -3459,6 +3459,10 @@ mod tests {
             previous_failure_category: None,
             trace_id: None,
             context_pressure: Default::default(),
+
+            peak_memory_bytes: None,
+
+            cpu_seconds: None,
         }
     }
 
@@ -3495,6 +3499,10 @@ mod tests {
 
             trace_id: None,
             context_pressure: Default::default(),
+
+            peak_memory_bytes: None,
+
+            cpu_seconds: None,
         }
     }
 
@@ -4422,6 +4430,10 @@ mod tests {
 
             trace_id: None,
             context_pressure: Default::default(),
+
+            peak_memory_bytes: None,
+
+            cpu_seconds: None,
         };
         let run_slots = vec![
             crate::run::compare::LoadedRunSlot {

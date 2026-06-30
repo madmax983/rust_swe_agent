@@ -125,6 +125,8 @@ fn instance_result(id: &str, resolved: bool) -> InstanceResult {
         previous_failure_category: None,
         trace_id: None,
         context_pressure: Default::default(),
+        peak_memory_bytes: None,
+        cpu_seconds: None,
     }
 }
 
@@ -172,6 +174,9 @@ fn minimal_sweep_results(manifest: Option<ProvenanceManifest>) -> SweepResults {
         retry_history: vec![],
         partial: 0,
         span_export_dropped: 0,
+        max_peak_memory_bytes: None,
+        median_peak_memory_bytes: None,
+        total_cpu_seconds: None,
     }
 }
 
