@@ -33,6 +33,7 @@ use super::confirm::{ConfirmCallback, ConfirmContext, ConfirmDecision};
 use crate::stream::{StreamEvent, StreamSink};
 
 const MAX_LOG_LINES: usize = 400;
+const MAX_RETAINED_ENTRY_BYTES: usize = 100 * 1024; // 100 KB cap per entry
 
 /// Max logical input lines rendered in the modal controls region (issue #745
 /// review). A large multi-line paste must not push the command/rationale/submit
@@ -116,6 +117,19 @@ pub fn bell_enabled(
     !no_bell_flag && !env_suppresses && stdout_is_tty
 }
 
+fn truncate_to_cap(mut s: String) -> String {
+    if s.len() > MAX_RETAINED_ENTRY_BYTES {
+        let mut cut = MAX_RETAINED_ENTRY_BYTES;
+        while !s.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        s.truncate(cut);
+        s.push_str("\n... [truncated due to entry size cap] ...");
+    }
+    s
+}
+
+#[allow(clippy::struct_excessive_bools)]
 struct DashboardState {
     task: Option<String>,
     model: Option<String>,
@@ -129,6 +143,13 @@ struct DashboardState {
     feedback_input: Option<String>,
     edit_input: Option<String>,
     active_rules: Vec<String>,
+    selected_index: Option<usize>,
+    feed_scroll_top: usize,
+    viewport_height: u16,
+    detail_open: bool,
+    detail_scroll_top: usize,
+    detail_viewport_height: u16,
+    detail_viewport_width: u16,
     scroll_offset: usize,
     auto_follow: bool,
     last_log_width: usize,
@@ -168,6 +189,13 @@ impl Default for DashboardState {
             feedback_input: None,
             edit_input: None,
             active_rules: Vec::new(),
+            selected_index: None,
+            feed_scroll_top: 0,
+            viewport_height: 20,
+            detail_open: false,
+            detail_scroll_top: 0,
+            detail_viewport_height: 10,
+            detail_viewport_width: 80,
             scroll_offset: 0,
             auto_follow: true,
             last_log_width: 80,
@@ -211,6 +239,7 @@ impl SearchState {
 struct LogLine {
     kind: LineKind,
     text: String,
+    full_text: Option<Arc<str>>,
 }
 
 #[derive(Clone, Copy)]
@@ -441,18 +470,44 @@ impl RatatuiDashboard {
         })
     }
 
-    fn append(&self, kind: LineKind, text: impl Into<String>) {
+    fn append(&self, kind: LineKind, text: impl Into<String>, full_text: Option<String>) {
         let mut s = self
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if s.log.len() >= MAX_LOG_LINES {
+        let old_len = s.log.len();
+        let was_at_end =
+            s.selected_index.is_none() || (old_len > 0 && s.selected_index == Some(old_len - 1));
+
+        let popped = if s.log.len() >= MAX_LOG_LINES {
             s.log.pop_front();
-        }
+            true
+        } else {
+            false
+        };
         s.log.push_back(LogLine {
             kind,
             text: text.into(),
+            full_text: full_text.map(|t| Arc::from(truncate_to_cap(t))),
         });
+
+        // Don't advance the feed while a search is active: scroll_to_line
+        // already positioned the viewport at the match, and moving selected_index
+        // forward on each new append would scroll away from it.
+        let auto_follow_selection =
+            was_at_end && !s.detail_open && s.search.is_none() && (!s.is_monitor || s.auto_follow);
+        if auto_follow_selection {
+            s.selected_index = Some(s.log.len() - 1);
+            let visible_height = s.viewport_height as usize;
+            if visible_height > 0 && s.log.len() >= visible_height {
+                s.feed_scroll_top = s.log.len() - visible_height;
+            }
+        } else if popped {
+            if let Some(idx) = s.selected_index {
+                s.selected_index = Some(idx.saturating_sub(1));
+            }
+            s.feed_scroll_top = s.feed_scroll_top.saturating_sub(1);
+        }
         drop(s);
         self.notify.notify_waiters();
     }
@@ -493,7 +548,11 @@ impl StreamSink for RatatuiDashboard {
                         since: Instant::now(),
                     };
                 }
-                self.append(LineKind::Info, format!("run started: {model} :: {task}"));
+                self.append(
+                    LineKind::Info,
+                    format!("run started: {model} :: {task}"),
+                    None,
+                );
             }
             StreamEvent::AssistantMessage {
                 step,
@@ -519,6 +578,7 @@ impl StreamSink for RatatuiDashboard {
                 self.append(
                     LineKind::AssistantMsg,
                     format!("step {step} assistant: {preview}"),
+                    Some(content),
                 );
             }
             StreamEvent::BashStart { step, command, .. } => {
@@ -532,7 +592,12 @@ impl StreamSink for RatatuiDashboard {
                         command: command.clone(),
                     };
                 }
-                self.append(LineKind::BashRun, format!("step {step} bash: {command}"));
+                let preview = first_lines(&command, 4);
+                self.append(
+                    LineKind::BashRun,
+                    format!("step {step} bash: {preview}"),
+                    Some(command),
+                );
             }
             StreamEvent::BashResult {
                 step,
@@ -561,7 +626,18 @@ impl StreamSink for RatatuiDashboard {
                     if timed_out { " timed_out" } else { "" },
                     summarize_stream(&stdout, &stderr),
                 );
-                self.append(kind, summary);
+                let full_content = if stdout.is_empty() && stderr.is_empty() {
+                    None
+                } else if stderr.is_empty() {
+                    Some(stdout)
+                } else if stdout.is_empty() {
+                    Some(stderr)
+                } else {
+                    Some(truncate_to_cap(format!(
+                        "{stdout}\n--- stderr ---\n{stderr}"
+                    )))
+                };
+                self.append(kind, summary, full_content);
             }
             StreamEvent::ToolStart { step, label, .. } => {
                 {
@@ -577,7 +653,11 @@ impl StreamSink for RatatuiDashboard {
                         command: label.clone(),
                     };
                 }
-                self.append(LineKind::BashRun, format!("step {step} tool: {label}"));
+                self.append(
+                    LineKind::BashRun,
+                    format!("step {step} tool: {label}"),
+                    None,
+                );
             }
             StreamEvent::ToolEnd { .. } => {
                 {
@@ -610,6 +690,7 @@ impl StreamSink for RatatuiDashboard {
                 self.append(
                     LineKind::Observation,
                     format!("step {step} observation: {preview}"),
+                    Some(content),
                 );
             }
             StreamEvent::FormatError { step, content, .. } => {
@@ -628,6 +709,7 @@ impl StreamSink for RatatuiDashboard {
                 self.append(
                     LineKind::Warn,
                     format!("step {step} format error: {preview}"),
+                    Some(content),
                 );
             }
             StreamEvent::RunEnded {
@@ -657,6 +739,7 @@ impl StreamSink for RatatuiDashboard {
                 self.append(
                     LineKind::Info,
                     format!("run ended: {exit_reason} (steps={steps} cost=${total_cost_usd:.4})"),
+                    None,
                 );
             }
             StreamEvent::AutoApproveRuleCreated { scope } => {
@@ -672,6 +755,7 @@ impl StreamSink for RatatuiDashboard {
                 self.append(
                     LineKind::Info,
                     format!("auto-approve rule created for: {scope}"),
+                    None,
                 );
             }
         }
@@ -696,6 +780,7 @@ impl ConfirmCallback for RatatuiDashboard {
             s.step_limit = ctx.step_limit;
             s.cost_usd = ctx.cost_usd;
             s.rationale_scroll = 0;
+            s.detail_open = false;
             s.pending = Some(PendingPrompt {
                 ctx: ctx.clone(),
                 responder: tx,
@@ -907,6 +992,21 @@ fn scroll_to_line(s: &mut DashboardState, line_idx: usize) {
 
     s.scroll_offset = new_top.min(max_scroll);
     s.auto_follow = false;
+
+    // In interactive mode the feed is sliced by feed_scroll_top (entry-based),
+    // not by scroll_offset. Bring the matched entry into the visible window.
+    if !s.is_monitor {
+        let take_from = s.log.len().saturating_sub(MAX_LOG_LINES.min(s.log.len()));
+        let abs_idx = take_from + line_idx;
+        let viewport = s.viewport_height as usize;
+        if viewport > 0 {
+            if abs_idx < s.feed_scroll_top {
+                s.feed_scroll_top = abs_idx;
+            } else if abs_idx >= s.feed_scroll_top + viewport {
+                s.feed_scroll_top = abs_idx + 1 - viewport;
+            }
+        }
+    }
 }
 
 /// Handle a keystroke while the `/`-search sub-mode is active. Implements the
@@ -1177,6 +1277,47 @@ fn handle_key_normal(
     }
 }
 
+fn move_cursor_up(s: &mut DashboardState) {
+    if s.log.is_empty() {
+        return;
+    }
+    let current = s.selected_index.unwrap_or(s.log.len() - 1);
+    let new_selected = current.saturating_sub(1);
+    s.selected_index = Some(new_selected);
+
+    if new_selected < s.feed_scroll_top {
+        s.feed_scroll_top = new_selected;
+    }
+}
+
+fn move_cursor_down(s: &mut DashboardState) {
+    if s.log.is_empty() {
+        return;
+    }
+    let current = s.selected_index.unwrap_or(s.log.len() - 1);
+    let new_selected = (current + 1).min(s.log.len() - 1);
+    s.selected_index = Some(new_selected);
+
+    let visible_height = s.viewport_height as usize;
+    if visible_height > 0 && new_selected >= s.feed_scroll_top + visible_height {
+        s.feed_scroll_top = new_selected + 1 - visible_height;
+    }
+}
+
+fn get_max_detail_scroll(s: &DashboardState) -> usize {
+    let full_text = s
+        .selected_index
+        .and_then(|idx| s.log.get(idx))
+        .map_or("", |line| {
+            line.full_text.as_deref().unwrap_or(line.text.as_str())
+        });
+    let wrapped_lines = wrap_text(full_text, s.detail_viewport_width as usize);
+    let lines_count = wrapped_lines.len();
+    let viewport_h = s.detail_viewport_height as usize;
+    lines_count.saturating_sub(viewport_h)
+}
+
+#[allow(clippy::too_many_lines)]
 fn handle_key(dash: &Arc<RatatuiDashboard>, key: KeyEvent) {
     if !matches!(key.kind, KeyEventKind::Press) {
         return;
@@ -1202,8 +1343,102 @@ fn handle_key(dash: &Arc<RatatuiDashboard>, key: KeyEvent) {
             handle_key_feedback_input(dash, &mut s, pending, key.code, buffer);
         } else if let Some(buffer) = s.edit_input.take() {
             handle_key_edit_input(dash, &mut s, pending, key.code, buffer);
+        } else if s.detail_open {
+            match key.code {
+                KeyCode::Esc | KeyCode::Char('q' | 'Q') => {
+                    s.detail_open = false;
+                    s.pending = Some(pending);
+                    dash.notify.notify_waiters();
+                }
+                KeyCode::Up | KeyCode::Char('k' | 'K') => {
+                    s.detail_scroll_top = s.detail_scroll_top.saturating_sub(1);
+                    s.pending = Some(pending);
+                    dash.notify.notify_waiters();
+                }
+                KeyCode::Down | KeyCode::Char('j' | 'J') => {
+                    let max_scroll = get_max_detail_scroll(&s);
+                    s.detail_scroll_top = (s.detail_scroll_top + 1).min(max_scroll);
+                    s.pending = Some(pending);
+                    dash.notify.notify_waiters();
+                }
+                KeyCode::PageUp => {
+                    let page_size = s.detail_viewport_height as usize;
+                    s.detail_scroll_top = s.detail_scroll_top.saturating_sub(page_size);
+                    s.pending = Some(pending);
+                    dash.notify.notify_waiters();
+                }
+                KeyCode::PageDown => {
+                    let page_size = s.detail_viewport_height as usize;
+                    let max_scroll = get_max_detail_scroll(&s);
+                    s.detail_scroll_top = (s.detail_scroll_top + page_size).min(max_scroll);
+                    s.pending = Some(pending);
+                    dash.notify.notify_waiters();
+                }
+                KeyCode::Home => {
+                    s.detail_scroll_top = 0;
+                    s.pending = Some(pending);
+                    dash.notify.notify_waiters();
+                }
+                KeyCode::End => {
+                    s.detail_scroll_top = get_max_detail_scroll(&s);
+                    s.pending = Some(pending);
+                    dash.notify.notify_waiters();
+                }
+                _ => {
+                    s.pending = Some(pending);
+                }
+            }
         } else {
-            handle_key_normal(dash, &mut s, pending, key);
+            let mut handled_by_navigation = false;
+            if !s.is_monitor {
+                match key.code {
+                    KeyCode::Up | KeyCode::Char('k' | 'K') => {
+                        // Rationale scroll takes priority; only move the feed
+                        // cursor when the rationale fits entirely on screen.
+                        if !perform_rationale_scroll(&mut s, &pending.ctx, KeyCode::Up) {
+                            move_cursor_up(&mut s);
+                        }
+                        dash.notify.notify_waiters();
+                        handled_by_navigation = true;
+                    }
+                    KeyCode::Down | KeyCode::Char('j' | 'J') => {
+                        if !perform_rationale_scroll(&mut s, &pending.ctx, KeyCode::Down) {
+                            move_cursor_down(&mut s);
+                        }
+                        dash.notify.notify_waiters();
+                        handled_by_navigation = true;
+                    }
+                    KeyCode::Esc if s.detail_open => {
+                        // Close detail pane without aborting the pending
+                        // confirmation. A second Esc will then reach
+                        // handle_key_normal and abort the modal.
+                        s.detail_open = false;
+                        dash.notify.notify_waiters();
+                        handled_by_navigation = true;
+                    }
+                    KeyCode::Enter if !s.detail_open => {
+                        // Open the detail inspector; draw_modal is guarded by
+                        // !snap.detail_open so the modal hides while the pane
+                        // is open. A following Esc will close the pane, then a
+                        // second Esc aborts the pending confirmation.
+                        if let Some(idx) = s.selected_index {
+                            if idx < s.log.len() {
+                                s.detail_open = true;
+                                s.detail_scroll_top = 0;
+                                dash.notify.notify_waiters();
+                            }
+                        }
+                        handled_by_navigation = true;
+                    }
+                    _ => {}
+                }
+            }
+
+            if handled_by_navigation {
+                s.pending = Some(pending);
+            } else {
+                handle_key_normal(dash, &mut s, pending, key);
+            }
         }
     } else {
         // No modal open
@@ -1213,35 +1448,132 @@ fn handle_key(dash: &Arc<RatatuiDashboard>, key: KeyEvent) {
             }
         }
 
-        // The active /-search sub-mode owns Esc/Enter/typing/n/N, taking
-        // priority over the finished-close and scroll handling below. Ctrl-C
-        // still falls through so the global stop/close keeps working.
-        if !ctrl_c {
-            if let Some(search) = s.search.take() {
-                handle_key_search(dash, &mut s, search, key);
-                return;
+        // Detail inspector consumes all keys while open so that '/', Esc,
+        // j/k, etc. are not intercepted by search or finished-close handling.
+        if s.detail_open {
+            match key.code {
+                KeyCode::Esc | KeyCode::Char('q' | 'Q') => {
+                    s.detail_open = false;
+                    dash.notify.notify_waiters();
+                }
+                KeyCode::Up | KeyCode::Char('k' | 'K') => {
+                    s.detail_scroll_top = s.detail_scroll_top.saturating_sub(1);
+                    dash.notify.notify_waiters();
+                }
+                KeyCode::Down | KeyCode::Char('j' | 'J') => {
+                    let max_scroll = get_max_detail_scroll(&s);
+                    s.detail_scroll_top = (s.detail_scroll_top + 1).min(max_scroll);
+                    dash.notify.notify_waiters();
+                }
+                KeyCode::PageUp => {
+                    let page_size = s.detail_viewport_height as usize;
+                    s.detail_scroll_top = s.detail_scroll_top.saturating_sub(page_size);
+                    dash.notify.notify_waiters();
+                }
+                KeyCode::PageDown => {
+                    let page_size = s.detail_viewport_height as usize;
+                    let max_scroll = get_max_detail_scroll(&s);
+                    s.detail_scroll_top = (s.detail_scroll_top + page_size).min(max_scroll);
+                    dash.notify.notify_waiters();
+                }
+                KeyCode::Home => {
+                    s.detail_scroll_top = 0;
+                    dash.notify.notify_waiters();
+                }
+                KeyCode::End => {
+                    s.detail_scroll_top = get_max_detail_scroll(&s);
+                    dash.notify.notify_waiters();
+                }
+                _ => {
+                    if s.finished.is_some() && ctrl_c {
+                        s.should_exit = true;
+                        drop(s);
+                        dash.notify.notify_waiters();
+                    }
+                }
             }
-            if matches!(key.code, KeyCode::Char('/')) {
-                s.search = Some(SearchState::new());
-                drop(s);
-                dash.notify.notify_waiters();
-                return;
+        } else {
+            // The active /-search sub-mode owns Esc/Enter/typing/n/N, taking
+            // priority over the finished-close and scroll handling below. Ctrl-C
+            // still falls through so the global stop/close keeps working.
+            if !ctrl_c {
+                if let Some(search) = s.search.take() {
+                    handle_key_search(dash, &mut s, search, key);
+                    return;
+                }
+                if matches!(key.code, KeyCode::Char('/')) {
+                    s.search = Some(SearchState::new());
+                    drop(s);
+                    dash.notify.notify_waiters();
+                    return;
+                }
             }
-        }
 
-        if s.finished.is_some() {
-            let close_key = matches!(key.code, KeyCode::Char('q' | 'Q') | KeyCode::Esc) || ctrl_c;
-            if close_key {
-                s.should_exit = true;
-                drop(s);
-                dash.notify.notify_waiters();
-                return;
+            if s.finished.is_some() {
+                let close_key =
+                    matches!(key.code, KeyCode::Char('q' | 'Q') | KeyCode::Esc) || ctrl_c;
+                if close_key {
+                    s.should_exit = true;
+                    drop(s);
+                    dash.notify.notify_waiters();
+                    return;
+                }
             }
-        }
 
-        if perform_scroll(&mut s, key.code) {
-            drop(s);
-            dash.notify.notify_waiters();
+            if s.is_monitor {
+                if perform_scroll(&mut s, key.code) {
+                    drop(s);
+                    dash.notify.notify_waiters();
+                }
+            } else {
+                match key.code {
+                    KeyCode::Up | KeyCode::Char('k' | 'K') => {
+                        move_cursor_up(&mut s);
+                        dash.notify.notify_waiters();
+                    }
+                    KeyCode::Down | KeyCode::Char('j' | 'J') => {
+                        move_cursor_down(&mut s);
+                        dash.notify.notify_waiters();
+                    }
+                    KeyCode::PageUp => {
+                        let page = s.viewport_height as usize;
+                        for _ in 0..page {
+                            move_cursor_up(&mut s);
+                        }
+                        dash.notify.notify_waiters();
+                    }
+                    KeyCode::PageDown => {
+                        let page = s.viewport_height as usize;
+                        for _ in 0..page {
+                            move_cursor_down(&mut s);
+                        }
+                        dash.notify.notify_waiters();
+                    }
+                    KeyCode::Home => {
+                        if !s.log.is_empty() {
+                            s.selected_index = Some(0);
+                            s.feed_scroll_top = 0;
+                            dash.notify.notify_waiters();
+                        }
+                    }
+                    KeyCode::End => {
+                        let last = s.log.len().saturating_sub(1);
+                        s.selected_index = Some(last);
+                        dash.notify.notify_waiters();
+                    }
+                    KeyCode::Enter => {
+                        if let Some(idx) = s.selected_index {
+                            if idx < s.log.len() {
+                                s.detail_open = true;
+                                s.detail_scroll_top = 0;
+                                drop(s);
+                                dash.notify.notify_waiters();
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
         }
     }
 }
@@ -1347,6 +1679,7 @@ fn draw_frame(
     let log_chunk = chunks[1];
     let log_width = log_chunk.width.saturating_sub(2) as usize;
     let log_height = log_chunk.height.saturating_sub(2) as usize;
+    let inner_feed_height = log_chunk.height.saturating_sub(2);
 
     let snapshot = {
         let mut s = dash
@@ -1355,6 +1688,21 @@ fn draw_frame(
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         s.last_log_width = log_width;
         s.last_log_height = log_height;
+        s.viewport_height = inner_feed_height;
+        // Clamp feed_scroll_top before the snapshot so this frame renders
+        // the corrected offset. Skip while search is active to avoid undoing
+        // scroll_to_line's positioning.
+        if s.search.is_none() {
+            if let Some(idx) = s.selected_index {
+                if log_height > 0 {
+                    if idx < s.feed_scroll_top {
+                        s.feed_scroll_top = idx;
+                    } else if idx >= s.feed_scroll_top + log_height {
+                        s.feed_scroll_top = idx + 1 - log_height;
+                    }
+                }
+            }
+        }
 
         // Capture the modal's rationale layout metrics (in wrapped display
         // rows) so the key handler can clamp scrolling correctly (issue #655).
@@ -1392,6 +1740,10 @@ fn draw_frame(
             feedback_input: s.feedback_input.clone(),
             edit_input: s.edit_input.clone(),
             active_rules: s.active_rules.clone(),
+            selected_index: s.selected_index,
+            feed_scroll_top: s.feed_scroll_top,
+            detail_open: s.detail_open,
+            detail_scroll_top: s.detail_scroll_top,
             scroll_offset: s.scroll_offset,
             auto_follow: s.auto_follow,
             last_log_width: s.last_log_width,
@@ -1403,7 +1755,7 @@ fn draw_frame(
             stall_threshold: s.stall_threshold,
         }
     };
-    terminal.draw(|frame| draw(frame, &snapshot))?;
+    terminal.draw(|frame| draw(frame, dash, &snapshot))?;
     Ok(())
 }
 
@@ -1419,6 +1771,10 @@ struct DashboardSnapshot {
     feedback_input: Option<String>,
     edit_input: Option<String>,
     active_rules: Vec<String>,
+    selected_index: Option<usize>,
+    feed_scroll_top: usize,
+    detail_open: bool,
+    detail_scroll_top: usize,
     scroll_offset: usize,
     auto_follow: bool,
     last_log_width: usize,
@@ -1430,7 +1786,7 @@ struct DashboardSnapshot {
     stall_threshold: Duration,
 }
 
-fn draw(frame: &mut ratatui::Frame, snap: &DashboardSnapshot) {
+fn draw(frame: &mut ratatui::Frame, dash: &Arc<RatatuiDashboard>, snap: &DashboardSnapshot) {
     let area = frame.area();
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -1441,19 +1797,61 @@ fn draw(frame: &mut ratatui::Frame, snap: &DashboardSnapshot) {
         ])
         .split(area);
 
+    let inner_feed_height = chunks[1].height.saturating_sub(2);
+
     frame.render_widget(header_paragraph(snap), chunks[0]);
-    frame.render_widget(log_paragraph(snap), chunks[1]);
+    frame.render_widget(log_paragraph(snap, inner_feed_height as usize), chunks[1]);
     frame.render_widget(footer_paragraph(snap), chunks[2]);
 
+    if snap.detail_open {
+        let detail_area = chunks[1];
+        frame.render_widget(Clear, detail_area);
+
+        let inner_detail_height = detail_area.height.saturating_sub(2);
+        let inner_detail_width = detail_area.width.saturating_sub(2);
+        {
+            let mut s = dash
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            s.detail_viewport_height = inner_detail_height;
+            s.detail_viewport_width = inner_detail_width;
+        }
+
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .title(" detail inspector ");
+
+        let full_text = snap
+            .selected_index
+            .and_then(|idx| snap.log.get(idx))
+            .map_or("", |line| {
+                line.full_text.as_deref().unwrap_or(line.text.as_str())
+            });
+
+        let wrapped_lines = wrap_text(full_text, inner_detail_width as usize);
+        let display_lines: Vec<Line> = wrapped_lines
+            .iter()
+            .skip(snap.detail_scroll_top)
+            .take(inner_detail_height as usize)
+            .map(|l| Line::from(l.as_str()))
+            .collect();
+
+        let p = Paragraph::new(display_lines).block(block);
+        frame.render_widget(p, detail_area);
+    }
+
     if let Some(ctx) = &snap.pending {
-        draw_modal(
-            frame,
-            ctx,
-            snap.feedback_input.as_ref(),
-            snap.edit_input.as_ref(),
-            snap.rationale_scroll,
-            area,
-        );
+        if !snap.detail_open {
+            draw_modal(
+                frame,
+                ctx,
+                snap.feedback_input.as_ref(),
+                snap.edit_input.as_ref(),
+                snap.rationale_scroll,
+                area,
+            );
+        }
     }
 }
 
@@ -1497,38 +1895,33 @@ fn header_paragraph(snap: &DashboardSnapshot) -> Paragraph<'_> {
     Paragraph::new(line).block(Block::default().borders(Borders::ALL).title(block_title))
 }
 
-fn log_paragraph(snap: &DashboardSnapshot) -> Paragraph<'_> {
-    let max_lines = snap.log.len().min(MAX_LOG_LINES);
-    let take_from = snap.log.len().saturating_sub(max_lines);
-    let window: Vec<&LogLine> = snap.log[take_from..].iter().collect();
+fn line_base_style(kind: LineKind) -> Style {
+    match kind {
+        LineKind::Info => Style::default().fg(Color::Gray),
+        LineKind::AssistantMsg => Style::default().fg(Color::Cyan),
+        LineKind::BashRun => Style::default().fg(Color::White),
+        LineKind::BashOk => Style::default().fg(Color::Green),
+        LineKind::BashErr => Style::default().fg(Color::Red),
+        LineKind::Observation => Style::default().fg(Color::LightBlue),
+        LineKind::Warn => Style::default().fg(Color::LightYellow),
+    }
+}
 
-    // Recompute matches each frame so highlights stay correct as the log
-    // grows; the persisted `current` ordinal picks the active hit.
+fn log_paragraph_monitor<'a>(snap: &'a DashboardSnapshot, window: &[&'a LogLine]) -> Paragraph<'a> {
     let query = snap.search.as_ref().map_or("", |s| s.query.as_str());
-    let matches = search_matches(&window, query);
+    let matches = search_matches(window, query);
     let match_set: HashSet<usize> = matches.iter().copied().collect();
     let current_line = snap.search.as_ref().and_then(|s| {
         matches
             .get(s.current.min(matches.len().saturating_sub(1)))
             .copied()
     });
-
     let lines: Vec<Line> = window
         .iter()
         .enumerate()
         .map(|(i, l)| {
-            let base = match l.kind {
-                LineKind::Info => Style::default().fg(Color::Gray),
-                LineKind::AssistantMsg => Style::default().fg(Color::Cyan),
-                LineKind::BashRun => Style::default().fg(Color::White),
-                LineKind::BashOk => Style::default().fg(Color::Green),
-                LineKind::BashErr => Style::default().fg(Color::Red),
-                LineKind::Observation => Style::default().fg(Color::LightBlue),
-                LineKind::Warn => Style::default().fg(Color::LightYellow),
-            };
+            let base = line_base_style(l.kind);
             let style = if current_line == Some(i) {
-                // The active match: a distinct high-contrast highlight so the
-                // operator always knows which hit they are on.
                 Style::default()
                     .bg(Color::Yellow)
                     .fg(Color::Black)
@@ -1541,7 +1934,6 @@ fn log_paragraph(snap: &DashboardSnapshot) -> Paragraph<'_> {
             Line::from(Span::styled(l.text.clone(), style))
         })
         .collect();
-
     let total = total_wrapped_lines(&snap.log, snap.last_log_width);
     let max_scroll = total.saturating_sub(snap.last_log_height);
     let scroll_y = if snap.auto_follow {
@@ -1549,7 +1941,6 @@ fn log_paragraph(snap: &DashboardSnapshot) -> Paragraph<'_> {
     } else {
         snap.scroll_offset.min(max_scroll)
     };
-
     let title = if let Some(search) = &snap.search {
         let total_matches = matches.len();
         let pos = if total_matches == 0 {
@@ -1563,22 +1954,89 @@ fn log_paragraph(snap: &DashboardSnapshot) -> Paragraph<'_> {
     } else {
         " trajectory [SCROLLED] ".to_string()
     };
-
     #[allow(clippy::cast_possible_truncation)]
     let scroll_y_u16 = scroll_y.min(u16::MAX as usize) as u16;
-
     Paragraph::new(lines)
         .block(Block::default().borders(Borders::ALL).title(title))
-        .wrap(Wrap { trim: false })
         .scroll((scroll_y_u16, 0))
+        .wrap(Wrap { trim: false })
+}
+
+fn log_paragraph(snap: &DashboardSnapshot, visible_lines: usize) -> Paragraph<'_> {
+    // Both branches operate on the last MAX_LOG_LINES entries of the log.
+    let max_lines = snap.log.len().min(MAX_LOG_LINES);
+    let take_from = snap.log.len().saturating_sub(max_lines);
+    let window: Vec<&LogLine> = snap.log[take_from..].iter().collect();
+
+    if snap.is_monitor {
+        return log_paragraph_monitor(snap, &window);
+    }
+    {
+        // Interactive mode: slice by feed_scroll_top for rendering, but compute
+        // search matches over the same full window that handle_key_search uses
+        // so that match indices stay consistent and scroll_to_line can bring
+        // off-screen matches into view.
+        let query = snap.search.as_ref().map_or("", |s| s.query.as_str());
+        let all_matches = search_matches(&window, query);
+        let current_window_match = snap.search.as_ref().and_then(|s| {
+            all_matches
+                .get(s.current.min(all_matches.len().saturating_sub(1)))
+                .copied()
+        });
+        let match_set: HashSet<usize> = all_matches.iter().copied().collect();
+
+        // Visible slice for rendering (entry-based viewport).
+        let items: Vec<_> = if visible_lines > 0 {
+            snap.log
+                .iter()
+                .skip(snap.feed_scroll_top)
+                .take(visible_lines)
+                .collect()
+        } else {
+            snap.log.iter().skip(snap.feed_scroll_top).collect()
+        };
+
+        let lines: Vec<Line> = items
+            .iter()
+            .enumerate()
+            .map(|(i, l)| {
+                let abs_idx = snap.feed_scroll_top + i;
+                let is_selected = Some(abs_idx) == snap.selected_index;
+                // window_idx is the index into window (same frame as matches).
+                let window_idx = abs_idx.saturating_sub(take_from);
+                let base = line_base_style(l.kind);
+                let style = if current_window_match == Some(window_idx) {
+                    Style::default()
+                        .bg(Color::Yellow)
+                        .fg(Color::Black)
+                        .add_modifier(Modifier::BOLD)
+                } else if match_set.contains(&window_idx) {
+                    base.bg(Color::DarkGray)
+                } else if is_selected {
+                    base.add_modifier(Modifier::REVERSED)
+                } else {
+                    base
+                };
+                Line::from(Span::styled(l.text.clone(), style))
+            })
+            .collect();
+
+        Paragraph::new(lines)
+            .block(Block::default().borders(Borders::ALL).title(" trajectory "))
+            .scroll((0, 0))
+    }
 }
 
 fn footer_paragraph(snap: &DashboardSnapshot) -> Paragraph<'_> {
     let bold = Style::default().add_modifier(Modifier::BOLD);
-    // Search / finished / edit / pending all take precedence over the activity
-    // cell — a raised confirm modal must show its decision keys, not a spinner
-    // (issue #649, AC3: awaiting a confirm decision is "genuinely idle").
-    let span = if let Some(search) = &snap.search {
+    // detail_open, search, finished, edit, pending, and idle activity all
+    // take precedence in this order.
+    let span = if snap.detail_open {
+        Span::styled(
+            "[Esc/q] close   [Up/Down/j/k] scroll   [PgUp/PgDn] page   [Home/End] bounds",
+            bold,
+        )
+    } else if let Some(search) = &snap.search {
         let max_lines = snap.log.len().min(MAX_LOG_LINES);
         let take_from = snap.log.len().saturating_sub(max_lines);
         let window: Vec<&LogLine> = snap.log[take_from..].iter().collect();
@@ -1610,7 +2068,9 @@ fn footer_paragraph(snap: &DashboardSnapshot) -> Paragraph<'_> {
     } else if let Some(pending) = &snap.pending {
         let scope = pending.derive_scope();
         Span::styled(
-            format!("(y) approve   (n) reject   (e) edit   (a) abort   (A) auto-approve {scope}"),
+            format!(
+                "(y) approve   (n) reject   (e) edit   (a) abort   (A) auto-approve {scope}   [Up/Down] navigate   [Enter] inspect"
+            ),
             bold,
         )
     } else {
@@ -1634,7 +2094,7 @@ fn footer_paragraph(snap: &DashboardSnapshot) -> Paragraph<'_> {
                 activity_style(*elapsed, snap.stall_threshold),
             ),
             ActivitySnapshot::Idle => Span::styled(
-                "waiting for next agent step…  [scroll: ↑/↓/PgUp/PgDn/Home/End]  [/ search]",
+                "waiting for next agent step…  [↑/↓] navigate   [Enter] inspect   [/ search]",
                 bold,
             ),
         }
@@ -1984,7 +2444,7 @@ fn summarize_stream(stdout: &str, stderr: &str) -> String {
 
 fn total_wrapped_lines<'a>(log: impl IntoIterator<Item = &'a LogLine>, width: usize) -> usize {
     log.into_iter()
-        .map(|line| count_wrapped_lines(&line.text, width))
+        .map(|line| count_wrapped_lines(line.text.as_str(), width))
         .sum()
 }
 
@@ -2083,10 +2543,140 @@ fn count_wrapped_line(line: &str, width: usize) -> usize {
     total_lines
 }
 
+fn wrap_text(text: &str, width: usize) -> Vec<String> {
+    if width == 0 {
+        return vec![];
+    }
+    let mut wrapped = Vec::new();
+    for line in text.split('\n') {
+        let line = line.strip_suffix('\r').unwrap_or(line);
+        wrapped.extend(wrap_line(line, width));
+    }
+    wrapped
+}
+
+fn wrap_line(line: &str, width: usize) -> Vec<String> {
+    use unicode_segmentation::UnicodeSegmentation;
+    use unicode_width::UnicodeWidthStr;
+
+    if line.is_empty() {
+        return vec![String::new()];
+    }
+
+    let mut lines = Vec::new();
+    let mut current_line = String::new();
+    let mut current_width = 0;
+
+    let mut current_word = String::new();
+    let mut word_width = 0;
+
+    let mut current_spaces = String::new();
+    let mut space_width = 0;
+
+    for g in line.graphemes(true) {
+        if g == " " {
+            if word_width > 0 {
+                if current_width + word_width <= width {
+                    current_line.push_str(&current_word);
+                    current_width += word_width;
+                } else {
+                    lines.push(std::mem::take(&mut current_line));
+                    current_line = current_word.clone();
+                    current_width = word_width;
+                }
+                current_word.clear();
+                word_width = 0;
+            }
+            current_spaces.push_str(g);
+            space_width += 1;
+        } else {
+            if space_width > 0 {
+                let remaining_on_line = width - current_width;
+                if space_width <= remaining_on_line {
+                    current_line.push_str(&current_spaces);
+                    current_width += space_width;
+                } else {
+                    lines.push(std::mem::take(&mut current_line));
+                    let mut rem = space_width - remaining_on_line;
+                    rem = rem.saturating_sub(1);
+                    while rem > width {
+                        lines.push(String::new());
+                        rem = rem.saturating_sub(width + 1);
+                    }
+                    current_line = " ".repeat(rem);
+                    current_width = rem;
+                }
+                current_spaces.clear();
+                space_width = 0;
+            }
+            let g_width = g.width();
+            if g_width > width {
+                continue;
+            }
+            current_word.push_str(g);
+            word_width += g_width;
+            if word_width > width {
+                if !current_line.is_empty() {
+                    lines.push(std::mem::take(&mut current_line));
+                }
+                let mut prev_word = current_word.clone();
+                let g_len = g.len();
+                prev_word.truncate(prev_word.len() - g_len);
+
+                lines.push(prev_word);
+                current_word = g.to_string();
+                word_width = g_width;
+                current_line.clear();
+                current_width = 0;
+            }
+        }
+    }
+
+    if space_width > 0 {
+        let remaining_on_line = width - current_width;
+        if space_width <= remaining_on_line {
+            current_line.push_str(&current_spaces);
+            current_width += space_width;
+        } else {
+            lines.push(std::mem::take(&mut current_line));
+            let mut rem = space_width - remaining_on_line;
+            rem = rem.saturating_sub(1);
+            while rem > width {
+                lines.push(String::new());
+                rem = rem.saturating_sub(width + 1);
+            }
+            current_line = " ".repeat(rem);
+            current_width = rem;
+        }
+    } else if word_width > 0 {
+        if current_width + word_width <= width {
+            current_line.push_str(&current_word);
+            current_width += word_width;
+        } else {
+            lines.push(std::mem::take(&mut current_line));
+            current_line = current_word;
+            current_width = word_width;
+        }
+    }
+
+    if current_width > 0 || current_line.is_empty() && lines.is_empty() {
+        lines.push(std::mem::take(&mut current_line));
+    }
+    lines
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used)]
     use super::*;
+
+    fn push_info(s: &mut DashboardState, text: &str) {
+        s.log.push_back(LogLine {
+            full_text: None,
+            kind: LineKind::Info,
+            text: text.to_string(),
+        });
+    }
 
     #[test]
     fn test_dashboard_state_defaults() {
@@ -2116,44 +2706,22 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::significant_drop_tightening)]
     fn test_scroll_navigation_keys() {
         let d = make_dashboard();
         {
             let mut s = d.state.lock().unwrap();
             s.last_log_height = 5;
             s.last_log_width = 10;
-            s.log.push_back(LogLine {
-                kind: LineKind::Info,
-                text: "line1".into(),
-            });
-            s.log.push_back(LogLine {
-                kind: LineKind::Info,
-                text: "line2".into(),
-            });
-            s.log.push_back(LogLine {
-                kind: LineKind::Info,
-                text: "line3".into(),
-            });
-            s.log.push_back(LogLine {
-                kind: LineKind::Info,
-                text: "line4".into(),
-            });
-            s.log.push_back(LogLine {
-                kind: LineKind::Info,
-                text: "line5".into(),
-            });
-            s.log.push_back(LogLine {
-                kind: LineKind::Info,
-                text: "line6".into(),
-            });
-            s.log.push_back(LogLine {
-                kind: LineKind::Info,
-                text: "line7".into(),
-            });
-            s.log.push_back(LogLine {
-                kind: LineKind::Info,
-                text: "line8".into(),
-            });
+            s.is_monitor = true;
+            push_info(&mut s, "line1");
+            push_info(&mut s, "line2");
+            push_info(&mut s, "line3");
+            push_info(&mut s, "line4");
+            push_info(&mut s, "line5");
+            push_info(&mut s, "line6");
+            push_info(&mut s, "line7");
+            push_info(&mut s, "line8");
         }
 
         handle_key(&d, KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
@@ -2218,6 +2786,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::significant_drop_tightening)]
     fn test_scroll_navigation_keys_when_modal_open() {
         let d = make_dashboard();
         let _rx = make_pending(&d);
@@ -2225,38 +2794,14 @@ mod tests {
             let mut s = d.state.lock().unwrap();
             s.last_log_height = 5;
             s.last_log_width = 10;
-            s.log.push_back(LogLine {
-                kind: LineKind::Info,
-                text: "line1".into(),
-            });
-            s.log.push_back(LogLine {
-                kind: LineKind::Info,
-                text: "line2".into(),
-            });
-            s.log.push_back(LogLine {
-                kind: LineKind::Info,
-                text: "line3".into(),
-            });
-            s.log.push_back(LogLine {
-                kind: LineKind::Info,
-                text: "line4".into(),
-            });
-            s.log.push_back(LogLine {
-                kind: LineKind::Info,
-                text: "line5".into(),
-            });
-            s.log.push_back(LogLine {
-                kind: LineKind::Info,
-                text: "line6".into(),
-            });
-            s.log.push_back(LogLine {
-                kind: LineKind::Info,
-                text: "line7".into(),
-            });
-            s.log.push_back(LogLine {
-                kind: LineKind::Info,
-                text: "line8".into(),
-            });
+            push_info(&mut s, "line1");
+            push_info(&mut s, "line2");
+            push_info(&mut s, "line3");
+            push_info(&mut s, "line4");
+            push_info(&mut s, "line5");
+            push_info(&mut s, "line6");
+            push_info(&mut s, "line7");
+            push_info(&mut s, "line8");
         }
 
         // Send PageUp key. It should scroll the log but keep s.pending (modal) intact!
@@ -2316,32 +2861,19 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::significant_drop_tightening)]
     fn test_render_scrolled_vs_live() {
         let d = make_dashboard();
         {
             let mut s = d.state.lock().unwrap();
             s.last_log_height = 3;
             s.last_log_width = 10;
-            s.log.push_back(LogLine {
-                kind: LineKind::Info,
-                text: "line1".into(),
-            });
-            s.log.push_back(LogLine {
-                kind: LineKind::Info,
-                text: "line2".into(),
-            });
-            s.log.push_back(LogLine {
-                kind: LineKind::Info,
-                text: "line3".into(),
-            });
-            s.log.push_back(LogLine {
-                kind: LineKind::Info,
-                text: "line4".into(),
-            });
-            s.log.push_back(LogLine {
-                kind: LineKind::Info,
-                text: "line5".into(),
-            });
+            s.is_monitor = true;
+            push_info(&mut s, "line1");
+            push_info(&mut s, "line2");
+            push_info(&mut s, "line3");
+            push_info(&mut s, "line4");
+            push_info(&mut s, "line5");
         }
 
         let s_live = snap(&d);
@@ -2363,6 +2895,30 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::significant_drop_tightening)]
+    fn test_interactive_mode_does_not_scroll() {
+        let d = make_dashboard();
+        {
+            let mut s = d.state.lock().unwrap();
+            s.last_log_height = 3;
+            s.last_log_width = 10;
+            s.is_monitor = false;
+            push_info(&mut s, "line1");
+            push_info(&mut s, "line2");
+            push_info(&mut s, "line3");
+            push_info(&mut s, "line4");
+            push_info(&mut s, "line5");
+        }
+
+        let s_interactive = snap(&d);
+        let buf = render_to_buffer(&s_interactive, 40, 9);
+        let text = buffer_text(&buf);
+        assert!(text.contains(" trajectory "));
+        assert!(!text.contains("[LIVE]"));
+        assert!(!text.contains("[SCROLLED]"));
+    }
+
+    #[test]
     fn test_scrollback_success_metric() {
         let d = make_dashboard();
         {
@@ -2378,6 +2934,7 @@ mod tests {
             let mut s = d.state.lock().unwrap();
             s.last_log_height = 5;
             s.last_log_width = 80;
+            s.is_monitor = true;
         }
 
         d.emit(StreamEvent::RunStarted {
@@ -2492,6 +3049,17 @@ mod tests {
     #[test]
     fn summarize_stream_counts_both_streams() {
         assert_eq!(summarize_stream("ab", "cd"), " (4B output)");
+    }
+
+    #[test]
+    fn test_truncate_to_cap() {
+        let under_limit = "a".repeat(10);
+        assert_eq!(truncate_to_cap(under_limit.clone()), under_limit);
+
+        let over_limit = "a".repeat(MAX_RETAINED_ENTRY_BYTES + 10);
+        let truncated = truncate_to_cap(over_limit);
+        assert!(truncated.len() <= MAX_RETAINED_ENTRY_BYTES + 50);
+        assert!(truncated.contains("truncated"));
     }
 
     // ── Dashboard-without-a-terminal tests ──────────────────────────────
@@ -2711,6 +3279,10 @@ mod tests {
             feedback_input: s.feedback_input.clone(),
             edit_input: s.edit_input.clone(),
             active_rules: s.active_rules.clone(),
+            selected_index: s.selected_index,
+            feed_scroll_top: s.feed_scroll_top,
+            detail_open: s.detail_open,
+            detail_scroll_top: s.detail_scroll_top,
             scroll_offset: s.scroll_offset,
             auto_follow: s.auto_follow,
             last_log_width: s.last_log_width,
@@ -2726,7 +3298,8 @@ mod tests {
     fn render_to_buffer(snap: &DashboardSnapshot, w: u16, h: u16) -> Buffer {
         let backend = TestBackend::new(w, h);
         let mut terminal = RatatuiTerminal::new(backend).unwrap();
-        terminal.draw(|frame| draw(frame, snap)).unwrap();
+        let dash = make_dashboard();
+        terminal.draw(|frame| draw(frame, &dash, snap)).unwrap();
         terminal.backend().buffer().clone()
     }
 
@@ -3144,7 +3717,7 @@ mod tests {
     fn append_caps_log_at_max_lines() {
         let d = make_dashboard();
         for _ in 0..(MAX_LOG_LINES + 10) {
-            d.append(LineKind::Info, "x");
+            d.append(LineKind::Info, "x", None);
         }
         let s = snap(&d);
         assert_eq!(s.log.len(), MAX_LOG_LINES);
@@ -3241,6 +3814,7 @@ mod tests {
         let mut s = d.state.lock().unwrap();
         for i in 1..=n {
             s.log.push_back(LogLine {
+                full_text: None,
                 kind: LineKind::Info,
                 text: format!("line{i}"),
             });
@@ -3320,6 +3894,7 @@ mod tests {
         {
             let mut s = d.state.lock().unwrap();
             s.log.push_back(LogLine {
+                full_text: None,
                 kind: LineKind::BashErr,
                 text: "Tests FAILED in module foo".into(),
             });
@@ -3346,6 +3921,7 @@ mod tests {
                     format!("other line {i}")
                 };
                 s.log.push_back(LogLine {
+                    full_text: None,
                     kind: LineKind::Info,
                     text,
                 });
@@ -3495,15 +4071,21 @@ mod tests {
             // 20 filler lines, the unique token buried near the top (off-screen
             // when the feed auto-follows to the bottom).
             s.log.push_back(LogLine {
+                full_text: None,
                 kind: LineKind::BashErr,
                 text: "UNIQUETOKEN the failing assertion".into(),
             });
             for i in 1..=20 {
                 s.log.push_back(LogLine {
+                    full_text: None,
                     kind: LineKind::Info,
                     text: format!("filler line number {i}"),
                 });
             }
+            // Simulate auto-follow: position feed_scroll_top so the bottom
+            // entries are visible (render_to_buffer height=11 gives inner_feed
+            // height=3 after borders and chrome; 21 entries – 3 visible = 18).
+            s.feed_scroll_top = s.log.len().saturating_sub(3);
             drop(s);
         }
         // Before search: the token line is off-screen (auto-follow at bottom).
@@ -4354,6 +4936,7 @@ mod tests {
             s.last_log_width = 10;
             for i in 1..=8 {
                 s.log.push_back(LogLine {
+                    full_text: None,
                     kind: LineKind::Info,
                     text: format!("line{i}"),
                 });
@@ -4537,6 +5120,183 @@ mod tests {
     }
 
     #[test]
+    fn test_feed_navigation_and_toggle() {
+        let d = make_dashboard();
+        d.append(LineKind::Info, "line1", None);
+        d.append(LineKind::Info, "line2", None);
+        d.append(LineKind::Info, "line3", None);
+
+        // State starts with selected_index at the last item (2)
+        assert_eq!(snap(&d).selected_index, Some(2));
+        assert!(!snap(&d).detail_open);
+
+        // Move cursor up: 2 -> 1
+        handle_key(&d, KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+        assert_eq!(snap(&d).selected_index, Some(1));
+
+        // Move cursor up: 1 -> 0
+        handle_key(&d, KeyEvent::new(KeyCode::Char('k'), KeyModifiers::NONE));
+        assert_eq!(snap(&d).selected_index, Some(0));
+
+        // Move cursor up again: stays at 0
+        handle_key(&d, KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+        assert_eq!(snap(&d).selected_index, Some(0));
+
+        // Move cursor down: 0 -> 1
+        handle_key(&d, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        assert_eq!(snap(&d).selected_index, Some(1));
+
+        // Move cursor down: 1 -> 2
+        handle_key(&d, KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE));
+        assert_eq!(snap(&d).selected_index, Some(2));
+
+        // Move cursor down again: stays at 2
+        handle_key(&d, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        assert_eq!(snap(&d).selected_index, Some(2));
+
+        // Press Enter to open detail view
+        handle_key(&d, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(snap(&d).detail_open);
+        assert_eq!(snap(&d).detail_scroll_top, 0);
+    }
+
+    #[test]
+    fn test_detail_view_scrolling() {
+        let d = make_dashboard();
+        let multiline_text = (0..10)
+            .map(|i| format!("line {i}"))
+            .collect::<Vec<_>>()
+            .join(
+                "
+",
+            );
+        d.append(LineKind::Info, "summary", Some(multiline_text));
+
+        // Open detail view
+        handle_key(&d, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(snap(&d).detail_open);
+        assert_eq!(snap(&d).detail_scroll_top, 0);
+
+        // Set detail_viewport_height to 3
+        {
+            let mut s = d.state.lock().unwrap();
+            s.detail_viewport_height = 3;
+        }
+
+        // Scroll down 1: 0 -> 1
+        handle_key(&d, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        assert_eq!(snap(&d).detail_scroll_top, 1);
+
+        // Scroll down 1 with 'j': 1 -> 2
+        handle_key(&d, KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE));
+        assert_eq!(snap(&d).detail_scroll_top, 2);
+
+        // Scroll up 1: 2 -> 1
+        handle_key(&d, KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+        assert_eq!(snap(&d).detail_scroll_top, 1);
+
+        // Scroll up 1 with 'k': 1 -> 0
+        handle_key(&d, KeyEvent::new(KeyCode::Char('k'), KeyModifiers::NONE));
+        assert_eq!(snap(&d).detail_scroll_top, 0);
+
+        // Page Down: 0 -> 3 (page size is 3)
+        handle_key(&d, KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE));
+        assert_eq!(snap(&d).detail_scroll_top, 3);
+
+        // End: 3 -> 7 (max scroll is 10 - 3 = 7)
+        handle_key(&d, KeyEvent::new(KeyCode::End, KeyModifiers::NONE));
+        assert_eq!(snap(&d).detail_scroll_top, 7);
+
+        // Page Up: 7 -> 4
+        handle_key(&d, KeyEvent::new(KeyCode::PageUp, KeyModifiers::NONE));
+        assert_eq!(snap(&d).detail_scroll_top, 4);
+
+        // Home: 4 -> 0
+        handle_key(&d, KeyEvent::new(KeyCode::Home, KeyModifiers::NONE));
+        assert_eq!(snap(&d).detail_scroll_top, 0);
+
+        // Esc closes
+        handle_key(&d, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert!(!snap(&d).detail_open);
+    }
+
+    #[test]
+    fn test_rendered_viewport_hints() {
+        let d = make_dashboard();
+        d.append(LineKind::Info, "item", None);
+
+        // 1. Normal state (no modal, detail closed)
+        let s1 = snap(&d);
+        let buf1 = render_to_buffer(&s1, 120, 10);
+        let text1 = buffer_text(&buf1);
+        assert!(text1.contains("waiting for next agent step"));
+        assert!(text1.contains("navigate"));
+        assert!(text1.contains("inspect"));
+
+        // 2. Detail open state
+        {
+            let mut s = d.state.lock().unwrap();
+            s.detail_open = true;
+        }
+        let s2 = snap(&d);
+        let buf2 = render_to_buffer(&s2, 120, 10);
+        let text2 = buffer_text(&buf2);
+        assert!(text2.contains("close"));
+        assert!(text2.contains("scroll"));
+        assert!(text2.contains("bounds"));
+
+        // 3. Modal pending state
+        {
+            let mut s = d.state.lock().unwrap();
+            s.detail_open = false;
+        }
+        let _rx = make_pending(&d);
+        let s3 = snap(&d);
+        let buf3 = render_to_buffer(&s3, 120, 10);
+        let text3 = buffer_text(&buf3);
+        assert!(text3.contains("approve"));
+        assert!(text3.contains("reject"));
+        assert!(text3.contains("inspect"));
+    }
+
+    #[test]
+    fn test_backend_detail_inspection() {
+        let d = make_dashboard();
+        // 1. Emit a BashResult event with a long stdout that exceeds the summary feed
+        let long_stdout = "THIS IS A UNIQUE STDOUT LINE THAT EXCEEDS THE FEED SUMMARY";
+        d.emit(StreamEvent::BashResult {
+            step: 1,
+            exit_code: 0,
+            stdout: long_stdout.to_string(),
+            stderr: String::new(),
+            timed_out: false,
+            timestamp: "t".into(),
+        });
+
+        // 2. Render normal view and check that feed shows only the summary (byte count)
+        // and NOT the long stdout line itself.
+        let s = snap(&d);
+        let buf_feed = render_to_buffer(&s, 100, 10);
+        let text_feed = buffer_text(&buf_feed);
+        assert!(text_feed.contains("58B output")); // 58 bytes output
+        assert!(!text_feed.contains(long_stdout));
+
+        // 3. Move selection cursor to the entry and press Enter to open detail view
+        // Since it's the only entry, it will already be selected by default (selected_index = Some(0)).
+        assert_eq!(s.selected_index, Some(0));
+
+        handle_key(&d, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+        // 4. Render the detail view and check that the full stdout is now rendered
+        let s_detail = snap(&d);
+        assert!(s_detail.detail_open);
+
+        let buf_detail = render_to_buffer(&s_detail, 100, 10);
+        let text_detail = buffer_text(&buf_detail);
+        assert!(text_detail.contains(long_stdout));
+    }
+
+    #[test]
     fn header_paragraph_renders_monitor_mode_correctly() {
         let d = make_dashboard();
         {
@@ -4556,5 +5316,311 @@ mod tests {
             !text.contains("interactive"),
             "should not contain interactive label"
         );
+    }
+
+    #[tokio::test]
+    async fn test_detail_closes_on_confirm() {
+        let d = make_dashboard();
+        d.append(LineKind::Info, "summary", Some("detail".to_string()));
+        // Open detail view
+        {
+            let mut s = d.state.lock().unwrap();
+            s.selected_index = Some(0);
+            s.detail_open = true;
+        }
+        assert!(snap(&d).detail_open);
+
+        // Trigger confirm callback
+        let ctx = ConfirmContext {
+            tool_name: "bash".into(),
+            command: "x".into(),
+            step: 0,
+            step_limit: 1,
+            cost_usd: 0.0,
+            cache_marker: "cache:auto-or-none",
+            rationale: String::new(),
+        };
+        let d_clone = d.clone();
+        let task = tokio::spawn(async move { d_clone.confirm(&ctx).await });
+
+        // Wait briefly for confirm to execute and set state
+        for _ in 0..50 {
+            if snap(&d).pending.is_some() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+
+        assert!(!snap(&d).detail_open);
+
+        // Clean up: send decision to resolve confirm future
+        {
+            let mut s = d.state.lock().unwrap();
+            if let Some(pending) = s.pending.take() {
+                let _ = pending.responder.send(ConfirmDecision::Approve);
+            }
+        }
+        let _ = task.await;
+    }
+
+    #[test]
+    fn test_scrolling_on_wrapped_long_lines() {
+        let d = make_dashboard();
+        // A single logical line of 50 chars
+        let long_line = "a".repeat(50);
+        d.append(LineKind::Info, "summary", Some(long_line));
+
+        // Open detail view
+        handle_key(&d, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(snap(&d).detail_open);
+
+        // Set viewport width to 10 and height to 2
+        {
+            let mut s = d.state.lock().unwrap();
+            s.detail_viewport_height = 2;
+            s.detail_viewport_width = 10;
+        }
+
+        // The 50 character line wrapped to width 10 should produce 5 rows.
+        // With viewport height of 2, max scroll should be 5 - 2 = 3.
+        let max_scroll = {
+            let s = d.state.lock().unwrap();
+            get_max_detail_scroll(&s)
+        };
+        assert_eq!(max_scroll, 3);
+    }
+
+    #[test]
+    fn test_navigation_during_confirmation() {
+        let d = make_dashboard();
+        d.append(LineKind::Info, "line1", Some("detail1".to_string()));
+        d.append(LineKind::Info, "line2", Some("detail2".to_string()));
+
+        // Injected pending prompt (modal is visible)
+        let mut rx = make_pending(&d);
+
+        // State selected_index starts at the last item (1)
+        assert_eq!(snap(&d).selected_index, Some(1));
+        assert!(!snap(&d).detail_open);
+
+        // Move cursor up: 1 -> 0
+        handle_key(&d, KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+        assert_eq!(snap(&d).selected_index, Some(0));
+        // Selected index changed, meaning cursor navigated instead of scrolling log!
+        assert_eq!(snap(&d).scroll_offset, 0);
+
+        // Press Enter to inspect detail view
+        handle_key(&d, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(snap(&d).detail_open);
+        assert!(snap(&d).pending.is_some()); // Modal is still open!
+
+        // Press Esc to close detail view (modal should stay open)
+        handle_key(&d, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert!(!snap(&d).detail_open);
+        assert!(snap(&d).pending.is_some()); // Modal is still open!
+
+        // Press Esc again to abort the pending prompt (modal should abort/close)
+        handle_key(&d, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert!(snap(&d).pending.is_none());
+        assert_eq!(rx.try_recv().unwrap(), ConfirmDecision::Abort);
+    }
+
+    #[test]
+    fn test_inspected_entry_stable_on_append() {
+        let d = make_dashboard();
+        d.append(LineKind::Info, "line1", Some("detail1".to_string()));
+
+        // Open detail view
+        {
+            let mut s = d.state.lock().unwrap();
+            s.detail_open = true;
+        }
+
+        // Append line2
+        d.append(LineKind::Info, "line2", Some("detail2".to_string()));
+
+        // Selected index should still be Some(0), pointing to line1
+        assert_eq!(snap(&d).selected_index, Some(0));
+
+        // Now test the popped case. Let's fill the dashboard.
+        let d2 = make_dashboard();
+        for i in 0..MAX_LOG_LINES {
+            d2.append(
+                LineKind::Info,
+                format!("line_{i}"),
+                Some(format!("detail_{i}")),
+            );
+        }
+
+        // Open detail view for the last item (MAX_LOG_LINES - 1)
+        {
+            let mut s = d2.state.lock().unwrap();
+            s.detail_open = true;
+            s.selected_index = Some(MAX_LOG_LINES - 1);
+        }
+
+        // Append one more item (will pop the first item, line_0)
+        d2.append(LineKind::Info, "new_line", Some("new_detail".to_string()));
+
+        // The selected index should decrement to MAX_LOG_LINES - 2 to point to line_{MAX_LOG_LINES - 1}
+        let s = snap(&d2);
+        assert_eq!(s.selected_index, Some(MAX_LOG_LINES - 2));
+        assert_eq!(
+            s.log[MAX_LOG_LINES - 2].text,
+            format!("line_{}", MAX_LOG_LINES - 1)
+        );
+    }
+
+    #[test]
+    fn test_finished_closes_detail_before_exit() {
+        let d = make_dashboard();
+        {
+            let mut s = d.state.lock().unwrap();
+            s.finished = Some("completed".into());
+            s.detail_open = true;
+        }
+
+        // Press 'q'
+        handle_key(&d, KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE));
+        {
+            let s = d.state.lock().unwrap();
+            let detail_open = s.detail_open;
+            let should_exit = s.should_exit;
+            drop(s);
+            assert!(!detail_open);
+            assert!(!should_exit);
+        }
+
+        // Press 'q' again
+        handle_key(&d, KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE));
+        {
+            let s = d.state.lock().unwrap();
+            let should_exit = s.should_exit;
+            drop(s);
+            assert!(should_exit);
+        }
+    }
+
+    #[test]
+    fn test_confirm_modal_hidden_when_detail_open() {
+        let d = make_dashboard();
+        {
+            let (tx, _rx) = oneshot::channel();
+            let mut s = d.state.lock().unwrap();
+            s.detail_open = true;
+            s.pending = Some(PendingPrompt {
+                ctx: ConfirmContext {
+                    tool_name: "bash".into(),
+                    command: "rm -rf /tmp/dangerous".into(),
+                    step: 2,
+                    step_limit: 5,
+                    cost_usd: 0.0099,
+                    cache_marker: "cache:explicit",
+                    rationale: String::new(),
+                },
+                responder: tx,
+            });
+        }
+        let s = snap(&d);
+        let buf = render_to_buffer(&s, 100, 20);
+        let text = buffer_text(&buf);
+
+        // When detail_open is true, the confirm modal should not be rendered
+        assert!(!text.contains("rm -rf /tmp/dangerous"));
+        assert!(!text.contains("confirm action"));
+    }
+
+    #[test]
+    fn test_main_feed_does_not_wrap() {
+        let d = make_dashboard();
+        let long_line = "a".repeat(50);
+        d.append(LineKind::Info, &long_line, None);
+
+        // total_wrapped_lines counts rendered rows (ceil(len/width)), which is
+        // 5 for a 50-char line at width 10. The main feed uses entry-based
+        // feed_scroll_top (not wrapped rows), so this function is only used
+        // for monitor-mode scroll math.
+        let s = snap(&d);
+        let total = total_wrapped_lines(&s.log, 10);
+        assert_eq!(total, 5);
+    }
+
+    #[test]
+    fn test_ignore_confirm_keys_when_detail_open() {
+        let d = make_dashboard();
+        let mut rx = make_pending(&d);
+        {
+            let mut s = d.state.lock().unwrap();
+            s.detail_open = true;
+        }
+
+        // Press 'y' while detail is open
+        handle_key(&d, KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE));
+
+        // It should be ignored, and pending is still Some
+        assert!(snap(&d).pending.is_some());
+        assert!(rx.try_recv().is_err());
+
+        // Press 'n' while detail is open
+        handle_key(&d, KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE));
+        assert!(snap(&d).pending.is_some());
+        assert!(snap(&d).feedback_input.is_none());
+    }
+
+    #[test]
+    fn test_bash_result_empty_output_fallback() {
+        let d = make_dashboard();
+        d.emit(StreamEvent::BashResult {
+            step: 1,
+            exit_code: 0,
+            stdout: String::new(),
+            stderr: String::new(),
+            timed_out: false,
+            timestamp: "t".into(),
+        });
+
+        // Set selected_index to 0 and detail_open to true
+        {
+            let mut s = d.state.lock().unwrap();
+            s.selected_index = Some(0);
+            s.detail_open = true;
+        }
+
+        let s = snap(&d);
+        let buf = render_to_buffer(&s, 80, 10);
+        let text = buffer_text(&buf);
+
+        // It should fallback to the summary text rather than rendering an empty pane
+        assert!(text.contains("bash exit 0"));
+    }
+
+    #[test]
+    fn test_monitor_scrollback_stable_on_append() {
+        let d = make_dashboard();
+        {
+            let mut s = d.state.lock().unwrap();
+            s.is_monitor = true;
+            s.viewport_height = 3;
+        }
+
+        // Append 5 items
+        for i in 1..=5 {
+            d.append(LineKind::Info, format!("line{i}"), None);
+        }
+
+        // Since auto_follow is true initially, feed_scroll_top should advance to 5 - 3 = 2
+        assert_eq!(snap(&d).feed_scroll_top, 2);
+
+        // Set auto_follow to false (scrolled away)
+        {
+            let mut s = d.state.lock().unwrap();
+            s.auto_follow = false;
+        }
+
+        // Append line 6
+        d.append(LineKind::Info, "line6", None);
+
+        // Since auto_follow is false, feed_scroll_top should remain stable at 2 (not advance to 3)
+        assert_eq!(snap(&d).feed_scroll_top, 2);
     }
 }
