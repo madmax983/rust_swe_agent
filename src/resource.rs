@@ -162,12 +162,12 @@ fn proc_self_stat_cpu() -> Option<f64> {
     let utime: u64 = fields.get(11)?.parse().ok()?;
     let stime: u64 = fields.get(12)?.parse().ok()?;
     // cutime/cstime accumulate CPU of waited-for children (bash tool subprocesses).
-    let cutime: u64 = fields.get(13).and_then(|s| s.parse().ok()).unwrap_or(0);
-    let cstime: u64 = fields.get(14).and_then(|s| s.parse().ok()).unwrap_or(0);
+    let child_utime: u64 = fields.get(13).and_then(|s| s.parse().ok()).unwrap_or(0);
+    let child_stime: u64 = fields.get(14).and_then(|s| s.parse().ok()).unwrap_or(0);
     let total_ticks = utime
         .saturating_add(stime)
-        .saturating_add(cutime)
-        .saturating_add(cstime);
+        .saturating_add(child_utime)
+        .saturating_add(child_stime);
     // Linux standard: 100 clock ticks per second (USER_HZ = 100).
     (total_ticks > 0).then_some(total_ticks as f64 / 100.0)
 }
