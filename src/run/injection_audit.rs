@@ -569,7 +569,7 @@ fn load_custom_signatures(path: &Path) -> Result<Vec<RawSignature>, Error> {
         .to_ascii_lowercase();
 
     if ext == "yaml" || ext == "yml" {
-        serde_yml::from_str(&content).map_err(|e| {
+        serde_norway::from_str(&content).map_err(|e| {
             Error::Config(crate::error::ConfigError::Invalid(format!(
                 "invalid YAML signature file: {e}"
             )))
@@ -659,6 +659,30 @@ pub fn format_jsonl(report: &InjectionAuditReport) -> String {
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used)]
+    #[test]
+    fn test_exploit_serde_norway_billion_laughs() {
+        // A classic "Billion Laughs" YAML bomb payload.
+        let bomb = r#"
+a: &a ["lol","lol","lol","lol","lol","lol","lol","lol","lol"]
+b: &b [*a,*a,*a,*a,*a,*a,*a,*a,*a]
+c: &c [*b,*b,*b,*b,*b,*b,*b,*b,*b]
+d: &d [*c,*c,*c,*c,*c,*c,*c,*c,*c]
+e: &e [*d,*d,*d,*d,*d,*d,*d,*d,*d]
+f: &f [*e,*e,*e,*e,*e,*e,*e,*e,*e]
+g: &g [*f,*f,*f,*f,*f,*f,*f,*f,*f]
+h: &h [*g,*g,*g,*g,*g,*g,*g,*g,*g]
+i: &i [*h,*h,*h,*h,*h,*h,*h,*h,*h]
+"#;
+        // The expected behavior of a secure YAML parser like serde_norway
+        // is to either safely refuse to parse it due to alias expansion limits
+        // or parse it safely without exhausting memory.
+        let result: Result<serde_norway::Value, _> = serde_norway::from_str(bomb);
+
+        // As long as it doesn't OOM crash/panic the process, we consider the defense successful.
+        // It should return an error indicating alias limits exceeded.
+        assert!(result.is_err(), "Expected billion laughs attack to be rejected with an error, but it parsed successfully.");
+    }
+
     use super::*;
 
     #[test]
