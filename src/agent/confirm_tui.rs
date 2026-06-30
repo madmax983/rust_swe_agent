@@ -1891,7 +1891,11 @@ fn draw(frame: &mut ratatui::Frame, dash: &Arc<RatatuiDashboard>, snap: &Dashboa
     }
 
     if let Some(ctx) = &snap.pending {
-        if !snap.detail_open {
+        // Suppress the modal while a stop confirmation is in progress so
+        // the visible key hints stay consistent with what handle_key does:
+        // the footer shows "stop run? [y] yes  [n/Esc] cancel" and the
+        // modal's "(y) approve" prompt must not contradict it (#638).
+        if !snap.detail_open && !snap.stop_pending {
             draw_modal(
                 frame,
                 ctx,
@@ -5911,6 +5915,37 @@ mod tests {
         assert!(
             !text.contains("[Esc/q] close"),
             "detail hint must not override stop_pending in footer; got:\n{text}"
+        );
+    }
+
+    #[test]
+    fn modal_hidden_while_stop_pending() {
+        let d = make_dashboard();
+        let _rx = make_pending(&d);
+        // Simulate the user pressing Ctrl-Q while a confirm modal is open.
+        handle_key(&d, ctrl_q());
+        assert!(snap(&d).stop_pending, "Ctrl-Q sets stop_pending");
+        assert!(
+            snap(&d).pending.is_some(),
+            "modal context is still retained"
+        );
+
+        let s = snap(&d);
+        let buf = render_to_buffer(&s, 100, 24);
+        let text = buffer_text(&buf);
+        // The approval modal must not be visible while stop is pending.
+        assert!(
+            !text.contains("confirm action"),
+            "modal must be hidden while stop_pending; got:\n{text}"
+        );
+        assert!(
+            !text.contains("approve"),
+            "approve prompt must not show while stop_pending; got:\n{text}"
+        );
+        // The stop confirmation must be visible instead.
+        assert!(
+            text.contains("stop run"),
+            "stop confirmation must be visible; got:\n{text}"
         );
     }
 }
