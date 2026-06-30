@@ -87,6 +87,8 @@ fn scrub_volatile(value: &mut serde_json::Value) {
         "tool_latency_ms",
         "harness_overhead_ms",
         "trace_id",
+        "peak_memory_bytes",
+        "cpu_seconds",
     ];
     match value {
         serde_json::Value::Object(map) => {
