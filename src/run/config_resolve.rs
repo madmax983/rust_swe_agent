@@ -97,7 +97,7 @@ pub struct ConfigResolveReport {
 // ── Clap-default constants ────────────────────────────────────────────────────
 
 /// Clap default for `--model` in `mini` and `bench swebench`.
-const CLAP_DEFAULT_MODEL: &str = "claude-opus-4-7";
+pub(crate) const CLAP_DEFAULT_MODEL: &str = "claude-opus-4-7";
 /// Clap default for `--step-limit` in `bench swebench`.
 const CLAP_DEFAULT_STEP_LIMIT: u64 = 50;
 

@@ -133,6 +133,11 @@ pub struct SuiteCheckArgs {
     pub suite_cost_limit_usd: Option<f64>,
     pub per_task_budget_usd: Option<f64>,
     pub step_limit_flag: Option<u32>,
+    /// The explicit `--model` value, when the caller passed one that differs
+    /// from the clap default. Forwarded to the hazard detector so a
+    /// deliberately-acknowledged `--model` override doesn't get flagged as a
+    /// silent config-file override hazard.
+    pub model_flag: Option<String>,
     pub strict: bool,
 }
 
@@ -261,14 +266,13 @@ pub async fn run(args: &SuiteCheckArgs) -> Result<SuiteCheckReport, Error> {
             message: hook.error.clone(),
         });
     }
-    let mcp_server_count = args.config.root.agent.mcp_servers.len();
-    let hook_count = args.config.root.agent.hooks.pre_tool_use.len()
-        + args.config.root.agent.hooks.post_tool_use.len();
+    let mcp_server_count = scriptability_report.servers.len();
+    let hook_count = scriptability_report.hooks.len();
 
     // ── Config-provenance hazards (reuse `agent config resolve`) ───────────
     let hazard_args = ConfigResolveArgs {
         config: args.config_path.clone(),
-        model_flag: None,
+        model_flag: args.model_flag.clone(),
         step_limit_flag: args.step_limit_flag,
         observation_max_bytes_flag: None,
         observation_head_ratio_flag: None,
@@ -280,9 +284,17 @@ pub async fn run(args: &SuiteCheckArgs) -> Result<SuiteCheckReport, Error> {
         stagnation_repeat_threshold_flag: None,
         stagnation_window_flag: None,
     };
-    let hazards = run_config_resolve(&hazard_args)
+    // `agent config resolve` reports hazards for several commands (e.g. the
+    // `agent.step_limit` hazard only affects `bench swebench`/`rehearsal`/
+    // `forecast`/`doctor`, not `agent suite`, which honors a config-file
+    // step_limit when `--step-limit` is absent). Only surface hazards that
+    // actually affect `agent suite`.
+    let hazards: Vec<OverrideHazard> = run_config_resolve(&hazard_args)
         .map_err(Error::Config)?
-        .hazards;
+        .hazards
+        .into_iter()
+        .filter(|h| h.commands_affected.iter().any(|c| c == "agent suite"))
+        .collect();
     for hazard in &hazards {
         let target = Some(hazard.field.clone());
         if args.strict {
@@ -358,7 +370,8 @@ fn resolve_format(path: &Path, format_override: Option<&str>) -> Result<TaskFile
 // ── verify-check format + launchability ─────────────────────────────────────────
 
 fn check_verify_spec(target: Option<String>, spec: &str) -> CheckItem {
-    match parse_verify_checks(std::slice::from_ref(&spec.to_owned())) {
+    let specs = [spec.to_owned()];
+    match parse_verify_checks(&specs) {
         Ok(parsed) => {
             let Some(check) = parsed.first() else {
                 return CheckItem::fail("verify", target, "empty --verify entry");
@@ -465,7 +478,7 @@ fn is_env_assignment(word: &str) -> bool {
 }
 
 const SHELL_BUILTINS_AND_KEYWORDS: &[&str] = &[
-    "cd", "pushd", "popd", "echo", "printf", "export", "unset", "set", "source", ".", "true",
+    "cd", "pushd", "popd", "echo", "printf", "export", "unset", "set", "source", ".", ":", "true",
     "false", "test", "[", "[[", "exit", "return", "eval", "exec", "read", "type", "command",
     "builtin", "pwd", "alias", "unalias", "local", "declare", "typeset", "readonly", "shift",
     "trap", "wait", "jobs", "ulimit", "umask", "hash", "let", "time", "if", "then", "elif", "else",
@@ -573,6 +586,7 @@ mod tests {
             suite_cost_limit_usd: None,
             per_task_budget_usd: None,
             step_limit_flag: None,
+            model_flag: None,
             strict: false,
         }
     }
@@ -811,6 +825,56 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn explicit_model_flag_suppresses_model_hazard_even_under_strict() {
+        // The config file's model.name matches the operator's explicit
+        // --model, so this is not a *silent* override and must not be
+        // flagged as a hazard — regression test for a false-positive found
+        // in review (issue #821).
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_tasks(&dir, "tasks.yaml", "- id: t1\n  task: fix it\n");
+        let config_path = dir.path().join("config.toml");
+        std::fs::write(&config_path, "[model]\nname = \"claude-sonnet-4-6\"\n").unwrap();
+
+        let mut args = base_args(path);
+        args.config_path = Some(config_path);
+        args.model_flag = Some("claude-sonnet-4-6".to_owned());
+        args.strict = true;
+        let report = run(&args).await.unwrap();
+        assert!(report.ok, "checks: {:?}", report.checks);
+        assert!(
+            !report.checks.iter().any(|c| c.check == "hazard:model.name"),
+            "checks: {:?}",
+            report.checks
+        );
+    }
+
+    #[tokio::test]
+    async fn step_limit_hazard_does_not_affect_agent_suite_even_under_strict() {
+        // `agent.step_limit`'s hazard only applies to `bench swebench` /
+        // `rehearsal` / `forecast` / `doctor` — `agent suite` honors a
+        // config-file step_limit when `--step-limit` is absent, so this
+        // hazard must never surface for `agent suite --check`, even under
+        // --strict. Regression test for a false-positive found in review
+        // (issue #821).
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_tasks(&dir, "tasks.yaml", "- id: t1\n  task: fix it\n");
+        let config_path = dir.path().join("config.toml");
+        std::fs::write(&config_path, "[agent]\nstep_limit = 100\n").unwrap();
+
+        let mut args = base_args(path);
+        args.config_path = Some(config_path);
+        args.strict = true;
+        let report = run(&args).await.unwrap();
+        assert!(report.ok, "checks: {:?}", report.checks);
+        assert!(report.hazards.is_empty(), "hazards: {:?}", report.hazards);
+        assert!(
+            !report.checks.iter().any(|c| c.check.starts_with("hazard:")),
+            "checks: {:?}",
+            report.checks
+        );
+    }
+
     // ── RED: worst-case cost summary ────────────────────────────────────
 
     #[tokio::test]
@@ -931,6 +995,13 @@ mod tests {
     #[test]
     fn shell_builtin_true_is_launchable() {
         assert!(check_command_launchable("true").is_ok());
+    }
+
+    #[test]
+    fn null_command_builtin_is_launchable() {
+        // `:` is the shell no-op builtin, commonly used as a dummy
+        // always-pass verify command (`verify: ":"`).
+        assert!(check_command_launchable(":").is_ok());
     }
 
     #[test]
