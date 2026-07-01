@@ -344,8 +344,23 @@ pub struct SuiteCmd {
 
     /// Resume: skip tasks whose `.traj.json` already has a terminal outcome;
     /// re-run only missing or non-terminal tasks.
-    #[arg(long, default_value_t = false)]
+    #[arg(long, default_value_t = false, conflicts_with = "rerun_failed")]
     pub resume: bool,
+
+    /// Re-run only the tasks whose last recorded result was non-passing
+    /// (issue #825): loads `suite-results.json` (or reconstructs from
+    /// per-task terminal trajectories) from the output suite directory,
+    /// selects exactly the failed/errored/skipped tasks, and merges their
+    /// freshly-run outcomes with the carried-forward passing results into a
+    /// fresh `suite-results.json`. Zero model calls and zero cost for tasks
+    /// that already passed. Mutually exclusive with `--resume` (opposite
+    /// selection semantics — see `docs/spec-agent-suite.md`).
+    #[arg(
+        long = "rerun-failed",
+        default_value_t = false,
+        conflicts_with = "resume"
+    )]
+    pub rerun_failed: bool,
 
     /// Preflight-only mode (issue #821): validate the pack, verify-check
     /// launchability, MCP/hook startup, and config-provenance hazards, then

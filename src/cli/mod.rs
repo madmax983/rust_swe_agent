@@ -7692,6 +7692,9 @@ async fn agent_suite_cmd(s: args::SuiteCmd) -> Result<(), Error> {
         task_timeout_secs: s.task_timeout_secs,
         step_limit: s.step_limit,
         per_task_budget_usd: s.per_task_budget_usd,
+        rerun_failed: s.rerun_failed,
+        deterministic_responses: None,
+        deterministic_usage_per_call: None,
     };
 
     let exit_code = crate::run::suite::run(suite_args).await?;

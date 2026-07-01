@@ -39,6 +39,11 @@ fn artifact_schema_current_minor_bumped_for_replay_fingerprinting() {
     //   (reads as None in new code, is silently ignored by all old readers) and no
     //   existing bench inspect/tail/compare command displays or requires the field.
     //   The change is fully reader-transparent under the major-1 additive policy.
+    // NO-BUMP (issue #825): SuiteTaskResult gained `carried_over: bool` with
+    //   `#[serde(default)]` for `agent suite --rerun-failed`. Absent from
+    //   pre-#825 suite-results.json files (reads as `false`, matching their
+    //   actual historical behavior — every row was freshly run), and no
+    //   existing reader inspects the field. Fully reader-transparent.
     assert_eq!(
         ArtifactSchemaVersion::CURRENT,
         ArtifactSchemaVersion::new(1, 13)
