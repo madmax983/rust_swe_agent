@@ -457,20 +457,30 @@ fn scriptability_check_item(
     error: Option<String>,
     is_docker: bool,
 ) -> CheckItem {
-    if ok {
-        return CheckItem::pass(check, Some(target));
-    }
-    let message = error.unwrap_or_else(|| "probe failed".to_owned());
     if is_docker {
-        CheckItem::warn(
-            check,
-            Some(target),
+        // A host probe result is inconclusive either way under --env
+        // docker: MCP servers/hooks run inside the container image in a
+        // live run, so a passing host probe doesn't confirm the command
+        // exists in the image, and a failing one doesn't confirm it
+        // doesn't. Report both as a warning rather than asserting a
+        // verdict the host can't actually back up.
+        let message = if ok {
+            "host probe succeeded, but --env docker runs MCP servers/hooks inside the \
+             container image — this does not confirm the command is present there"
+                .to_owned()
+        } else {
+            let base = error.unwrap_or_else(|| "probe failed".to_owned());
             format!(
-                "{message} (probed on the host; --env docker runs MCP servers/hooks inside \
+                "{base} (probed on the host; --env docker runs MCP servers/hooks inside \
                  the container image, so this may not reflect the real environment)"
-            ),
-        )
+            )
+        };
+        return CheckItem::warn(check, Some(target), message);
+    }
+    if ok {
+        CheckItem::pass(check, Some(target))
     } else {
+        let message = error.unwrap_or_else(|| "probe failed".to_owned());
         CheckItem::fail(check, Some(target), message)
     }
 }
@@ -1056,6 +1066,44 @@ mod tests {
             .find(|c| c.check == "mcp_server")
             .unwrap();
         assert_eq!(checked.status, CheckStatus::Warn);
+    }
+
+    #[test]
+    fn scriptability_check_item_local_env_reflects_probe_result() {
+        let ok = scriptability_check_item("mcp_server".into(), "s".into(), true, None, false);
+        assert_eq!(ok.status, CheckStatus::Pass);
+
+        let fail = scriptability_check_item(
+            "mcp_server".into(),
+            "s".into(),
+            false,
+            Some("boom".into()),
+            false,
+        );
+        assert_eq!(fail.status, CheckStatus::Fail);
+        assert_eq!(fail.message.as_deref(), Some("boom"));
+    }
+
+    #[test]
+    fn scriptability_check_item_docker_env_is_inconclusive_either_way() {
+        // A host probe result is never a verdict under --env docker: a
+        // passing host probe doesn't confirm the command exists inside the
+        // container image (the actual execution target), just as a failing
+        // one doesn't confirm it's absent. Regression test for a
+        // pass-side false-positive found in review (issue #821): a host-only
+        // MCP server/hook that doesn't exist in the image previously
+        // reported PASS.
+        let ok = scriptability_check_item("mcp_server".into(), "s".into(), true, None, true);
+        assert_eq!(ok.status, CheckStatus::Warn);
+
+        let fail = scriptability_check_item(
+            "mcp_server".into(),
+            "s".into(),
+            false,
+            Some("boom".into()),
+            true,
+        );
+        assert_eq!(fail.status, CheckStatus::Warn);
     }
 
     #[tokio::test]
