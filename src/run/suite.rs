@@ -378,14 +378,8 @@ pub async fn run(args: SuiteArgs) -> Result<ExitCode, Error> {
 
     // ── Prepare output directory ──────────────────────────────────────────
     let suite_dir = args.output_dir.join(&args.suite_name);
-    if args.suite_name.contains('/')
-        || args.suite_name.contains('\\')
-        || args.suite_name.contains("..")
-    {
-        return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
-            "suite name '{}' must not contain path separators or '..'",
-            args.suite_name
-        ))));
+    if let Err(msg) = validate_suite_name(&args.suite_name) {
+        return Err(Error::Config(crate::error::ConfigError::Invalid(msg)));
     }
     std::fs::create_dir_all(&suite_dir).map_err(Error::Io)?;
 
@@ -781,6 +775,19 @@ pub(crate) fn collect_task_validation_issues(tasks: &[SuiteTaskSpec]) -> Vec<Tas
     issues
 }
 
+/// Validate a suite name for safe use as an `--output` subdirectory path
+/// segment. Shared by `agent suite` (fails fast on the first violation via
+/// [`run`]) and `agent suite --check` (reports it as a preflight check).
+pub(crate) fn validate_suite_name(name: &str) -> Result<(), String> {
+    if name.contains('/') || name.contains('\\') || name.contains("..") {
+        Err(format!(
+            "suite name '{name}' must not contain path separators or '..'"
+        ))
+    } else {
+        Ok(())
+    }
+}
+
 /// Parse `NAME:COMMAND` verify check specs.
 pub(crate) fn parse_verify_checks(specs: &[String]) -> Result<Vec<VerificationCheck>, Error> {
     specs
@@ -964,6 +971,20 @@ mod tests {
             issues.len() >= 3,
             "expected multiple issues, got {issues:?}"
         );
+    }
+
+    // ── RED: validate_suite_name ────────────────────────────────────────
+
+    #[test]
+    fn validate_suite_name_accepts_plain_name() {
+        assert!(validate_suite_name("my-suite").is_ok());
+    }
+
+    #[test]
+    fn validate_suite_name_rejects_path_separators_and_dotdot() {
+        assert!(validate_suite_name("../escape").is_err());
+        assert!(validate_suite_name("a/b").is_err());
+        assert!(validate_suite_name("a\\b").is_err());
     }
 
     // ── RED: TaskFileFormat detection ─────────────────────────────────────

@@ -235,6 +235,56 @@ fn cli_check_strict_escalates_hazard_to_preflight_failure() {
     assert_eq!(out.status.code(), Some(ExitCode::PreflightFailure.as_i32()));
 }
 
+#[test]
+fn cli_check_explicit_default_model_flag_still_suppresses_hazard() {
+    // The operator explicitly passes `--model claude-opus-4-7` (the clap
+    // default value) to intentionally override a config file that sets a
+    // different model.name. Because `--model` has no clap default, this
+    // must be tracked as "explicitly passed" and suppress the hazard, even
+    // under --strict.
+    let dir = tempfile::tempdir().unwrap();
+    let path = write_tasks(&dir, "tasks.yaml", "- id: t1\n  task: fix it\n");
+    let config = tempfile::NamedTempFile::with_suffix(".toml").unwrap();
+    std::fs::write(config.path(), "[model]\nname = \"claude-sonnet-4-6\"\n").unwrap();
+
+    let out = no_credentials_command()
+        .args(["--log", "error", "agent", "suite", "--tasks-file"])
+        .arg(&path)
+        .args([
+            "--check",
+            "--strict",
+            "--model",
+            "claude-opus-4-7",
+            "--config",
+        ])
+        .arg(config.path())
+        .output()
+        .unwrap();
+
+    assert!(
+        out.status.success(),
+        "explicit --model (even matching the default) must suppress the hazard\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+#[test]
+fn cli_check_rejects_unsafe_suite_name() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = write_tasks(&dir, "tasks.yaml", "- id: t1\n  task: fix it\n");
+
+    let out = no_credentials_command()
+        .args(["--log", "error", "agent", "suite", "--tasks-file"])
+        .arg(&path)
+        .args(["--check", "--suite-name", "../escape"])
+        .output()
+        .unwrap();
+
+    assert!(!out.status.success());
+    assert_eq!(out.status.code(), Some(ExitCode::PreflightFailure.as_i32()));
+}
+
 // ── No writes to the output directory ───────────────────────────────────────
 
 #[test]

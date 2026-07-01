@@ -7605,7 +7605,13 @@ async fn agent_suite_cmd(s: args::SuiteCmd) -> Result<(), Error> {
         None => Config::defaults()?,
     };
 
-    cfg.root.model.name.clone_from(&s.model);
+    // `--model` has no clap default (it's an `Option`) so `--check` can tell
+    // "not passed" apart from "explicitly passed the default value"; the
+    // live run path still always resolves to a concrete model name here.
+    cfg.root.model.name = s
+        .model
+        .clone()
+        .unwrap_or_else(|| crate::run::config_resolve::CLAP_DEFAULT_MODEL.to_owned());
 
     if let Some(v) = s.step_limit {
         cfg.root.agent.step_limit = v;
@@ -7639,12 +7645,6 @@ async fn agent_suite_cmd(s: args::SuiteCmd) -> Result<(), Error> {
     });
 
     if s.check {
-        // `--model` always carries a clap default, so only forward it to the
-        // hazard detector when the operator passed something other than that
-        // default — otherwise every config file that sets model.name would
-        // be treated as "explicitly acknowledged" even when it wasn't.
-        let model_flag =
-            (s.model != crate::run::config_resolve::CLAP_DEFAULT_MODEL).then(|| s.model.clone());
         let check_args = crate::run::suite_check::SuiteCheckArgs {
             tasks_file: s.tasks_file,
             format_override: s.format,
@@ -7655,7 +7655,7 @@ async fn agent_suite_cmd(s: args::SuiteCmd) -> Result<(), Error> {
             suite_cost_limit_usd: s.suite_cost_limit_usd,
             per_task_budget_usd: s.per_task_budget_usd,
             step_limit_flag: s.step_limit,
-            model_flag,
+            model_flag: s.model.clone(),
             strict: s.strict,
         };
         let report = crate::run::suite_check::run(&check_args).await?;

@@ -277,9 +277,12 @@ pub struct SuiteCmd {
     #[arg(long = "suite-name", value_name = "NAME")]
     pub suite_name: Option<String>,
 
-    /// Model name (e.g. `claude-haiku-4-5-20251001`).
-    #[arg(long, default_value = "claude-opus-4-7")]
-    pub model: String,
+    /// Model name (e.g. `claude-haiku-4-5-20251001`). Defaults to
+    /// `claude-opus-4-7` when omitted. Left as `Option` (rather than a clap
+    /// default) so `--check` can distinguish "not passed" from "explicitly
+    /// passed the default value" when detecting config-provenance hazards.
+    #[arg(long)]
+    pub model: Option<String>,
 
     /// Optional path to a TOML config file (overlays defaults).
     #[arg(long)]

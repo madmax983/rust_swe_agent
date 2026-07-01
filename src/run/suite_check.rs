@@ -23,7 +23,7 @@ use crate::run::config_resolve::{ConfigResolveArgs, OverrideHazard, run_config_r
 use crate::run::scriptability_check;
 use crate::run::suite::{
     SuiteTaskSpec, TaskFileFormat, collect_task_validation_issues, parse_task_file,
-    parse_verify_checks,
+    parse_verify_checks, validate_suite_name,
 };
 
 /// Schema version for [`SuiteCheckReport`]'s machine-readable form.
@@ -134,10 +134,11 @@ pub struct SuiteCheckArgs {
     pub suite_cost_limit_usd: Option<f64>,
     pub per_task_budget_usd: Option<f64>,
     pub step_limit_flag: Option<u32>,
-    /// The explicit `--model` value, when the caller passed one that differs
-    /// from the clap default. Forwarded to the hazard detector so a
-    /// deliberately-acknowledged `--model` override doesn't get flagged as a
-    /// silent config-file override hazard.
+    /// The `--model` value, `Some(_)` iff the caller explicitly passed the
+    /// flag (regardless of whether the value matches the clap default).
+    /// Forwarded to the hazard detector so a deliberately-acknowledged
+    /// `--model` override doesn't get flagged as a silent config-file
+    /// override hazard.
     pub model_flag: Option<String>,
     pub strict: bool,
 }
@@ -199,13 +200,24 @@ pub async fn run(args: &SuiteCheckArgs) -> Result<SuiteCheckReport, Error> {
         _ => None,
     };
 
-    // Verify commands run inside the configured environment, not on this
-    // host: with `--env docker` the real check runs in the container image,
-    // so a host-PATH lookup can't validate it (a docker-only binary would
-    // false-fail; a host-only same-named binary would false-pass). Skip the
-    // static launchability probe in that case and only validate
-    // `NAME:COMMAND` well-formedness.
-    let skip_launchability = matches!(args.config.root.environment.kind, EnvKind::Docker);
+    // ── Suite name (output-directory path segment) ─────────────────────
+    // The live run rejects an unsafe suite name before creating the output
+    // directory; --check must catch the same problem so it can't report
+    // PASS for a pack whose real run would immediately fail on invocation.
+    match validate_suite_name(&args.suite_name) {
+        Ok(()) => checks.push(CheckItem::pass("suite_name_safe", None)),
+        Err(msg) => checks.push(CheckItem::fail("suite_name_safe", None, msg)),
+    }
+
+    // With `--env docker`, verify commands, MCP servers, and hooks all run
+    // inside the container image in a live run — not on this host. A
+    // host-side probe/PATH lookup can't authoritatively validate them (a
+    // docker-only binary would false-fail; a host-only same-named binary
+    // would false-pass). Verify-command launchability is skipped entirely
+    // in that case (format is still validated); MCP/hook probe failures are
+    // downgraded to warnings instead of fatal (see below).
+    let is_docker = matches!(args.config.root.environment.kind, EnvKind::Docker);
+    let skip_launchability = is_docker;
 
     // ── Non-empty pack + per-task field/id validation ──────────────────
     let mut task_count = 0usize;
@@ -254,30 +266,30 @@ pub async fn run(args: &SuiteCheckArgs) -> Result<SuiteCheckReport, Error> {
     let verify_check_count = args.verify.len() + per_task_verify_count;
 
     // ── MCP servers + hooks (reuse scriptability-check, no artifact write) ─
+    // NOTE: `scriptability_check` always probes via a `LocalEnvironment`
+    // regardless of `environment.kind` (a pre-existing limitation shared by
+    // `bench scriptability-check` itself). Under `--env docker`, a live run
+    // launches MCP servers/hooks inside the container instead, so a host
+    // probe failure here may not reflect the real environment — downgrade
+    // it to a warning rather than a fatal preflight failure.
     let scriptability_report = scriptability_check::run_with_config(&args.config, None).await?;
     for server in &scriptability_report.servers {
-        checks.push(CheckItem {
-            check: "mcp_server".to_owned(),
-            target: Some(server.name.clone()),
-            status: if server.ok {
-                CheckStatus::Pass
-            } else {
-                CheckStatus::Fail
-            },
-            message: server.error.clone(),
-        });
+        checks.push(scriptability_check_item(
+            "mcp_server".to_owned(),
+            server.name.clone(),
+            server.ok,
+            server.error.clone(),
+            is_docker,
+        ));
     }
     for hook in &scriptability_report.hooks {
-        checks.push(CheckItem {
-            check: format!("hook:{}", hook.phase),
-            target: Some(hook.name.clone()),
-            status: if hook.ok {
-                CheckStatus::Pass
-            } else {
-                CheckStatus::Fail
-            },
-            message: hook.error.clone(),
-        });
+        checks.push(scriptability_check_item(
+            format!("hook:{}", hook.phase),
+            hook.name.clone(),
+            hook.ok,
+            hook.error.clone(),
+            is_docker,
+        ));
     }
     let mcp_server_count = scriptability_report.servers.len();
     let hook_count = scriptability_report.hooks.len();
@@ -383,6 +395,36 @@ fn resolve_format(path: &Path, format_override: Option<&str>) -> Result<TaskFile
             path.display()
         )
     })
+}
+
+// ── MCP/hook probe result → CheckItem ────────────────────────────────────────
+
+/// Build a [`CheckItem`] from a `scriptability_check` server/hook result.
+/// A failure is downgraded from `Fail` to `Warn` under `--env docker`,
+/// since the probe ran on the host, not inside the configured container.
+fn scriptability_check_item(
+    check: String,
+    target: String,
+    ok: bool,
+    error: Option<String>,
+    is_docker: bool,
+) -> CheckItem {
+    if ok {
+        return CheckItem::pass(check, Some(target));
+    }
+    let message = error.unwrap_or_else(|| "probe failed".to_owned());
+    if is_docker {
+        CheckItem::warn(
+            check,
+            Some(target),
+            format!(
+                "{message} (probed on the host; --env docker runs MCP servers/hooks inside \
+                 the container image, so this may not reflect the real environment)"
+            ),
+        )
+    } else {
+        CheckItem::fail(check, Some(target), message)
+    }
 }
 
 // ── verify-check format + launchability ─────────────────────────────────────────
@@ -690,6 +732,40 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn unsafe_suite_name_fails_preflight() {
+        // The live `agent suite` run rejects a suite name containing path
+        // separators or '..' before creating the output directory; --check
+        // must catch this too instead of reporting PASS for a pack whose
+        // real run would fail on invocation (regression test for a gap
+        // found in review, issue #821).
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_tasks(&dir, "tasks.yaml", "- id: t1\n  task: fix it\n");
+        let mut args = base_args(path);
+        args.suite_name = "../escape".to_owned();
+        let report = run(&args).await.unwrap();
+        assert!(!report.ok);
+        assert!(
+            report
+                .checks
+                .iter()
+                .any(|c| c.check == "suite_name_safe" && c.status == CheckStatus::Fail)
+        );
+    }
+
+    #[tokio::test]
+    async fn safe_suite_name_passes_preflight() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_tasks(&dir, "tasks.yaml", "- id: t1\n  task: fix it\n");
+        let report = run(&base_args(path)).await.unwrap();
+        assert!(
+            report
+                .checks
+                .iter()
+                .any(|c| c.check == "suite_name_safe" && c.status == CheckStatus::Pass)
+        );
+    }
+
+    #[tokio::test]
     async fn empty_pack_fails_non_empty_check() {
         let dir = tempfile::tempdir().unwrap();
         let path = write_tasks(&dir, "tasks.jsonl", "");
@@ -807,6 +883,61 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn docker_env_downgrades_mcp_failure_to_warning() {
+        // `scriptability_check` always probes on the host; under --env
+        // docker a live run launches MCP servers inside the container
+        // instead, so a host-side probe failure can't be trusted as fatal.
+        // Regression test for a false-fail found in review (issue #821).
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_tasks(&dir, "tasks.yaml", "- id: t1\n  task: fix it\n");
+        let mut config = Config::defaults().unwrap();
+        config.root.environment.kind = EnvKind::Docker;
+        config
+            .root
+            .agent
+            .mcp_servers
+            .push(crate::config::McpServerCfg {
+                command: "__no_such_binary_xyz_suite_check_mcp__".to_owned(),
+                timeout_secs: Some(1),
+            });
+        let mut args = base_args(path);
+        args.config = config;
+        let report = run(&args).await.unwrap();
+        assert!(report.ok, "checks: {:?}", report.checks);
+        let checked = report
+            .checks
+            .iter()
+            .find(|c| c.check == "mcp_server")
+            .unwrap();
+        assert_eq!(checked.status, CheckStatus::Warn);
+    }
+
+    #[tokio::test]
+    async fn local_env_mcp_failure_stays_fatal() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_tasks(&dir, "tasks.yaml", "- id: t1\n  task: fix it\n");
+        let mut config = Config::defaults().unwrap();
+        config
+            .root
+            .agent
+            .mcp_servers
+            .push(crate::config::McpServerCfg {
+                command: "__no_such_binary_xyz_suite_check_mcp__".to_owned(),
+                timeout_secs: Some(1),
+            });
+        let mut args = base_args(path);
+        args.config = config;
+        let report = run(&args).await.unwrap();
+        assert!(!report.ok);
+        let checked = report
+            .checks
+            .iter()
+            .find(|c| c.check == "mcp_server")
+            .unwrap();
+        assert_eq!(checked.status, CheckStatus::Fail);
+    }
+
+    #[tokio::test]
     async fn malformed_verify_spec_without_colon_fails() {
         let dir = tempfile::tempdir().unwrap();
         let path = write_tasks(
@@ -895,6 +1026,32 @@ mod tests {
         let mut args = base_args(path);
         args.config_path = Some(config_path);
         args.model_flag = Some("claude-sonnet-4-6".to_owned());
+        args.strict = true;
+        let report = run(&args).await.unwrap();
+        assert!(report.ok, "checks: {:?}", report.checks);
+        assert!(
+            !report.checks.iter().any(|c| c.check == "hazard:model.name"),
+            "checks: {:?}",
+            report.checks
+        );
+    }
+
+    #[tokio::test]
+    async fn explicit_model_flag_matching_clap_default_still_suppresses_hazard() {
+        // The operator explicitly chose the clap-default model name on
+        // purpose (e.g. `--model claude-opus-4-7`) to override a config
+        // file that sets a different model.name. Because `model_flag` is
+        // `Some(_)` regardless of which value was passed, this must count
+        // as an acknowledged override, not a silent one — regression test
+        // for the "explicitness vs. value" gap found in review (issue #821).
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_tasks(&dir, "tasks.yaml", "- id: t1\n  task: fix it\n");
+        let config_path = dir.path().join("config.toml");
+        std::fs::write(&config_path, "[model]\nname = \"claude-sonnet-4-6\"\n").unwrap();
+
+        let mut args = base_args(path);
+        args.config_path = Some(config_path);
+        args.model_flag = Some(crate::run::config_resolve::CLAP_DEFAULT_MODEL.to_owned());
         args.strict = true;
         let report = run(&args).await.unwrap();
         assert!(report.ok, "checks: {:?}", report.checks);
