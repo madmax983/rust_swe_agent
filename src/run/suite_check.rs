@@ -568,29 +568,46 @@ fn check_verify_spec(target: Option<String>, spec: &str, skip_launchability: boo
 /// are not specially parsed; operators should keep verify commands to a
 /// simple `program args...` or `VAR=val program args...` shape.
 fn check_command_launchable(command: &str) -> Result<(), String> {
-    let Some(token) = extract_program_token(command) else {
-        return Err("verify command has no resolvable program token".to_owned());
-    };
-    if is_shell_builtin_or_keyword(&token) {
-        return Ok(());
-    }
-    if token.contains('/') || token.contains(std::path::MAIN_SEPARATOR) {
-        let path = Path::new(&token);
-        return if path.is_file() && is_executable(path) {
+    let mut rest = command;
+    loop {
+        let Some((token, remainder)) = split_off_program_token(rest) else {
+            return Err("verify command has no resolvable program token".to_owned());
+        };
+        // `time foo`, `exec foo`, `command foo`, `eval foo`, and `builtin foo`
+        // don't launch anything themselves — the real payload is whatever
+        // follows. Unwrap the wrapper and check that instead, rather than
+        // asserting Ok on the wrapper's own name.
+        if WRAPPER_BUILTINS.contains(&token.as_str()) {
+            rest = remainder;
+            continue;
+        }
+        if is_shell_builtin_or_keyword(&token) {
+            return Ok(());
+        }
+        if token.contains('/') || token.contains(std::path::MAIN_SEPARATOR) {
+            let path = Path::new(&token);
+            return if path.is_file() && is_executable(path) {
+                Ok(())
+            } else {
+                Err(format!("'{token}' does not resolve to an executable file"))
+            };
+        }
+        return if resolve_on_path(&token).is_some() {
             Ok(())
         } else {
-            Err(format!("'{token}' does not resolve to an executable file"))
+            Err(format!("'{token}' was not found on PATH"))
         };
-    }
-    if resolve_on_path(&token).is_some() {
-        Ok(())
-    } else {
-        Err(format!("'{token}' was not found on PATH"))
     }
 }
 
-/// Extract the first non-`VAR=value` token from a shell command string.
-fn extract_program_token(command: &str) -> Option<String> {
+/// Builtins/keywords whose own name is not the thing being launched — the
+/// command that follows them is. Checked before [`SHELL_BUILTINS_AND_KEYWORDS`]
+/// so `time __no_such_binary__` doesn't short-circuit on `time` alone.
+const WRAPPER_BUILTINS: &[&str] = &["time", "exec", "command", "eval", "builtin"];
+
+/// Extract the first non-`VAR=value` token from a shell command string,
+/// along with the unconsumed remainder of the command after it.
+fn split_off_program_token(command: &str) -> Option<(String, &str)> {
     let mut rest = command;
     loop {
         let (word, remainder) = next_shell_word(rest)?;
@@ -598,7 +615,7 @@ fn extract_program_token(command: &str) -> Option<String> {
         if is_env_assignment(&word) {
             continue;
         }
-        return Some(word);
+        return Some((word, rest));
     }
 }
 
@@ -672,11 +689,14 @@ fn has_leading_path_assignment(command: &str) -> bool {
 
 const SHELL_BUILTINS_AND_KEYWORDS: &[&str] = &[
     "cd", "pushd", "popd", "echo", "printf", "export", "unset", "set", "source", ".", ":", "true",
-    "false", "test", "[", "[[", "exit", "return", "eval", "exec", "read", "type", "command",
-    "builtin", "pwd", "alias", "unalias", "local", "declare", "typeset", "readonly", "shift",
-    "trap", "wait", "jobs", "ulimit", "umask", "hash", "let", "time", "if", "then", "elif", "else",
-    "fi", "for", "while", "until", "do", "done", "case", "esac", "function", "select", "in", "not",
-    "{", "}",
+    "false", "test", "[", "[[", "exit", "return", "read", "type", "pwd", "alias", "unalias",
+    "local", "declare", "typeset", "readonly", "shift", "trap", "wait", "jobs", "ulimit", "umask",
+    "hash", "let", "if", "then", "elif", "else", "fi", "for", "while", "until", "do", "done",
+    "case", "esac", "function", "select", "in", "not", "{",
+    "}",
+    // NOTE: "time", "exec", "command", "eval", "builtin" are intentionally
+    // absent — they're wrapper builtins handled by WRAPPER_BUILTINS above,
+    // which unwraps them and checks the command that actually follows.
 ];
 
 fn is_shell_builtin_or_keyword(token: &str) -> bool {
@@ -1627,7 +1647,11 @@ mod tests {
         assert!(text.contains("dup"));
     }
 
-    // ── extract_program_token / launchability unit tests ────────────────
+    // ── split_off_program_token / launchability unit tests ────────────────
+
+    fn extract_program_token(command: &str) -> Option<String> {
+        split_off_program_token(command).map(|(token, _)| token)
+    }
 
     #[test]
     fn extract_program_token_skips_env_assignments() {
@@ -1687,5 +1711,26 @@ mod tests {
     fn path_resolvable_binary_is_launchable() {
         // `cargo` must exist on PATH for the test harness itself to have run.
         assert!(check_command_launchable("cargo --version").is_ok());
+    }
+
+    #[test]
+    fn wrapper_builtin_does_not_hide_unresolvable_wrapped_command() {
+        // `time`/`exec`/`command`/`eval`/`builtin` launch whatever follows
+        // them, not themselves — a missing wrapped binary must still be
+        // caught rather than short-circuiting as launchable on the wrapper
+        // alone. Regression test for a gap found in review (issue #821).
+        assert!(check_command_launchable("time __no_such_binary_xyz_suite_check__").is_err());
+        assert!(check_command_launchable("exec __no_such_binary_xyz_suite_check__").is_err());
+        assert!(check_command_launchable("command __no_such_binary_xyz_suite_check__").is_err());
+        assert!(check_command_launchable("eval __no_such_binary_xyz_suite_check__").is_err());
+        assert!(check_command_launchable("builtin __no_such_binary_xyz_suite_check__").is_err());
+    }
+
+    #[test]
+    fn wrapper_builtin_resolves_a_real_wrapped_command() {
+        assert!(check_command_launchable("time cargo --version").is_ok());
+        assert!(check_command_launchable("exec true").is_ok());
+        // Nested wrappers unwrap one at a time.
+        assert!(check_command_launchable("time exec cargo --version").is_ok());
     }
 }
