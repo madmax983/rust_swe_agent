@@ -95,6 +95,14 @@ pub fn registry() -> Vec<ExportFormat> {
         render: MermaidExporter::export,
     });
 
+    #[cfg(feature = "table-export")]
+    formats.push(ExportFormat {
+        name: "table",
+        tier: StabilityTier::Experimental,
+        consumer: "console readers",
+        render: TableExporter::export,
+    });
+
     formats
 }
 
@@ -109,6 +117,7 @@ pub const FEATURE_GATED_FORMATS: &[(&str, &str)] = &[
     ("csv", "csv-export"),
     ("html", "html-export"),
     ("mermaid", "mermaid-export"),
+    ("table", "table-export"),
 ];
 
 /// Returns `true` if `name` is a trajectory export format known to this codebase,
@@ -165,6 +174,9 @@ pub struct MermaidExporter;
 
 #[cfg(feature = "html-export")]
 pub struct HtmlExporter;
+
+#[cfg(feature = "table-export")]
+pub struct TableExporter;
 
 use std::fmt::Write;
 
@@ -452,5 +464,50 @@ mod tests {
         assert!(html.contains("submitted"));
         assert!(html.contains("Hello agent"));
         assert!(html.contains("Hello user"));
+    }
+}
+
+#[cfg(feature = "table-export")]
+impl TrajectoryExporter for TableExporter {
+    fn export(trajectory: &Trajectory) -> String {
+        let redactor = Redactor::default_enabled();
+        let mut table = comfy_table::Table::new();
+
+        table.set_header(vec!["Role", "Content"]);
+
+        for msg in &trajectory.messages {
+            let role = msg.role.as_str().to_string();
+            let content = redactor.redact_text(&msg.content, surface::EXPORT).text;
+            table.add_row(vec![role, content]);
+        }
+
+        table.to_string()
+    }
+}
+
+#[cfg(test)]
+mod table_tests {
+    use super::*;
+    use crate::model::Message;
+    use crate::trajectory::outcome;
+
+    #[cfg(feature = "table-export")]
+    #[test]
+    fn test_table_export_format() {
+        let mut t = Trajectory::new();
+        t.info.task = Some("Add a feature".to_string());
+        t.info.outcome = Some(outcome::SUBMITTED.to_string());
+
+        t.record_message(&Message::user("Hello agent"));
+        t.record_message(&Message::assistant("Hello user"));
+
+        let table = TableExporter::export(&t);
+
+        assert!(table.contains("Role"));
+        assert!(table.contains("Content"));
+        assert!(table.contains("user"));
+        assert!(table.contains("Hello agent"));
+        assert!(table.contains("assistant"));
+        assert!(table.contains("Hello user"));
     }
 }
