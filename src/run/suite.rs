@@ -566,8 +566,18 @@ pub async fn run(args: SuiteArgs) -> Result<ExitCode, Error> {
     // ── Parse suite-level verify checks ──────────────────────────────────
     let suite_verify = parse_verify_checks(&args.verify)?;
 
-    // ── Pre-validate all per-task verify entries ──────────────────────────
+    // ── Pre-validate per-task verify entries ──────────────────────────────
+    // Under `--rerun-failed`, only tasks actually selected to (re)run need a
+    // valid `verify` list — a carried-forward task's prior
+    // `verification_status` is kept as-is and its verify commands are never
+    // parsed or executed, so a malformed entry there must not block the
+    // whole invocation.
     for task in &tasks {
+        if let Some(ids) = &run_ids {
+            if !ids.contains(&task.id) {
+                continue;
+            }
+        }
         parse_verify_checks(&task.verify).map_err(|e| match e {
             Error::Config(crate::error::ConfigError::Invalid(msg)) => Error::Config(
                 crate::error::ConfigError::Invalid(format!("task '{}': {msg}", task.id)),
@@ -1987,5 +1997,81 @@ mod tests {
             x["steps"], 99,
             "the stale trajectory's steps count must not leak into this invocation's result: {x}"
         );
+    }
+
+    /// Regression for a review finding: a malformed `verify` entry on a
+    /// carried-forward (already-passing, not selected to re-run) task must
+    /// not block `--rerun-failed` — that task's verify commands are never
+    /// parsed or executed, only its cached prior result is carried forward.
+    #[tokio::test]
+    async fn rerun_failed_ignores_malformed_verify_on_carried_forward_task() {
+        let work = tempfile::tempdir().unwrap();
+        let output_dir = work.path().join("runs");
+        let suite_name = "verify-skip-suite";
+
+        let suite_dir = output_dir.join(suite_name);
+        std::fs::create_dir_all(&suite_dir).unwrap();
+
+        // Prior state: task-a already passes; task-b needs a re-run.
+        let prior = SuiteResults {
+            suite_name: suite_name.to_owned(),
+            task_count: 2,
+            resolved_count: 1,
+            verified_count: 1,
+            total_cost_usd: 0.02,
+            total_duration_secs: 2.0,
+            started_at: "2026-01-01T00:00:00Z".into(),
+            finished_at: "2026-01-01T00:00:02Z".into(),
+            tasks: vec![passing_result("task-a"), failing_result("task-b")],
+        };
+        let json = crate::artifact::to_string_pretty(ArtifactKind::SuiteResults, &prior).unwrap();
+        std::fs::write(suite_dir.join("suite-results.json"), json).unwrap();
+
+        // task-a's verify entry in the *current* pack is malformed (no
+        // `NAME:COMMAND` colon) — it must never be parsed since task-a is
+        // carried forward, not re-run. task-b's is well-formed.
+        let pack = work.path().join("tasks.yaml");
+        std::fs::write(
+            &pack,
+            "- id: task-a\n  task: do a\n  verify:\n    - this-is-not-name-colon-command\n\
+             - id: task-b\n  task: do b\n  verify:\n    - ok:true\n",
+        )
+        .unwrap();
+
+        let mut cfg = crate::config::Config::defaults().unwrap();
+        cfg.root.agent.step_limit = 5;
+        let submit = "COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT\n```\nfix\n```".to_owned();
+
+        let args = SuiteArgs {
+            tasks_file: pack,
+            format_override: None,
+            suite_name: suite_name.to_owned(),
+            config: cfg,
+            output_dir,
+            suite_cost_limit_usd: None,
+            verify: vec![],
+            verify_timeout_secs: 60,
+            resume: false,
+            task_timeout_secs: Some(30),
+            step_limit: None,
+            per_task_budget_usd: None,
+            rerun_failed: true,
+            deterministic_responses: Some(vec![submit]),
+            deterministic_usage_per_call: None,
+        };
+
+        let exit = match run(args).await {
+            Ok(exit) => exit,
+            Err(e) => {
+                panic!("a malformed verify entry on a carried-forward task must not error: {e}")
+            }
+        };
+        assert_eq!(exit, ExitCode::Success);
+
+        let merged_text = std::fs::read_to_string(suite_dir.join("suite-results.json")).unwrap();
+        let merged: serde_json::Value = serde_json::from_str(&merged_text).unwrap();
+        let tasks_arr = merged["tasks"].as_array().unwrap();
+        let a = tasks_arr.iter().find(|t| t["id"] == "task-a").unwrap();
+        assert_eq!(a["carried_over"], true, "task-a: {a}");
     }
 }

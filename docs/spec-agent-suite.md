@@ -302,7 +302,10 @@ exclusive (rejected with a usage error, exit `2`, if both are passed):
   carried-forward row.
 - **Per-task `--verify` override**: applied normally to whichever tasks are
   actually selected for re-run; carried-forward tasks keep their prior
-  `verification_status` untouched.
+  `verification_status` untouched. Their `verify` entries in the current
+  pack file are never parsed or executed — a malformed or since-edited
+  `verify` command on a task that isn't being re-run does not block the
+  invocation.
 - **`--check`**: unaffected; `--check` is a zero-spend preflight over the
   *whole* pack and does not consult prior results.
 
