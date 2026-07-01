@@ -34,11 +34,12 @@ max bench inspect --list-formats
 | `csv` | stable | `csv-export` | spreadsheets, jq pipelines, tabular tools |
 | `html` | stable | `html-export` | self-contained browser view, shared notebooks |
 | `mermaid` | experimental | `mermaid-export` | Mermaid sequence-diagram renderers (GitLab, GitHub markdown, mermaid.live) |
+| `table` | stable | `table-export` | CLI viewers, text-based log readers |
 
 Feature-gated formats require rebuilding with the corresponding feature:
 
 ```bash
-cargo build --features csv-export,html-export,mermaid-export
+cargo build --features csv-export,html-export,mermaid-export,table-export
 ```
 
 When a format is requested but its Cargo feature was not compiled in, the command exits
@@ -121,6 +122,7 @@ markdown    stable        docs, PR review, human readers
 csv         stable        spreadsheets, jq pipelines, tabular tools
 html        stable        self-contained browser view, shared notebooks
 mermaid     experimental  Mermaid sequence-diagram renderers (GitLab, GitHub markdown, mermaid.live)
+table       stable        CLI viewers, text-based log readers
 ```
 
 The output lists only formats compiled into the running binary (feature-gated formats

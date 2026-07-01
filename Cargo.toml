@@ -62,7 +62,7 @@ litellm-rs = { version = "0.4.16", default-features = false }
 chrono = { version = "0.4", features = ["serde"] }
 sha2 = "0.10"
 similar = "2"
-comfy-table = "7.2.2"
+comfy-table = { version = "7.2.2", optional = true }
 tempfile = "3"
 flate2 = "1.1"
 tar = "0.4"
@@ -92,8 +92,10 @@ html-export = []
 webhook = []
 csv-export = []
 mermaid-export = []
+table-export = ["dep:comfy-table"]
 # Enables the `max ui` local sweep browser. Requires `html-export` for rendering.
 ui-server = ["html-export"]
+comfy-table = ["dep:comfy-table"]
 
 [lints.clippy]
 pedantic = { level = "warn", priority = -1 }

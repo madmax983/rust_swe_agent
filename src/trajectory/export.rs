@@ -109,6 +109,7 @@ pub const FEATURE_GATED_FORMATS: &[(&str, &str)] = &[
     ("csv", "csv-export"),
     ("html", "html-export"),
     ("mermaid", "mermaid-export"),
+    ("table", "table-export"),
 ];
 
 /// Returns `true` if `name` is a trajectory export format known to this codebase,
@@ -358,8 +359,64 @@ impl TrajectoryExporter for MermaidExporter {
     }
 }
 
+#[cfg(feature = "table-export")]
+pub struct TableExporter;
+
+#[cfg(feature = "table-export")]
+impl TrajectoryExporter for TableExporter {
+    fn export(trajectory: &Trajectory) -> String {
+        let redactor = Redactor::default_enabled();
+        let mut table = comfy_table::Table::new();
+        table.set_header(vec!["Role", "Content"]);
+
+        for msg in &trajectory.messages {
+            let role = msg.role.clone();
+            let content = redactor.redact_text(&msg.content, surface::EXPORT).text;
+            table.add_row(vec![role, content]);
+        }
+
+        let mut output = String::new();
+        if let Some(task) = &trajectory.info.task {
+            let task = redactor.redact_text(task, surface::EXPORT).text;
+            let _ = writeln!(output, "Task: {task}");
+        }
+        if let Some(outcome) = &trajectory.info.outcome {
+            let outcome = redactor.redact_text(outcome, surface::EXPORT).text;
+            let _ = writeln!(output, "Outcome: {outcome}");
+        }
+        if !output.is_empty() {
+            output.push('\n');
+        }
+
+        output.push_str(&table.to_string());
+        output.push('\n');
+        output
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "table-export")]
+    #[test]
+    fn test_table_export_format() {
+        let mut t = Trajectory::new();
+        t.info.task = Some("Add a feature".to_string());
+        t.info.outcome = Some("submitted".to_string());
+
+        t.record_message(&Message::system("System prompt"));
+        t.record_message(&Message::user("Hello agent"));
+        t.record_message(&Message::assistant("Hello user"));
+
+        let table_out = TableExporter::export(&t);
+
+        assert!(table_out.contains("Task: Add a feature"));
+        assert!(table_out.contains("Outcome: submitted"));
+        assert!(table_out.contains("system"));
+        assert!(table_out.contains("System prompt"));
+        assert!(table_out.contains("Hello agent"));
+        assert!(table_out.contains("Hello user"));
+    }
+
     use super::*;
     use crate::model::Message;
     use crate::trajectory::outcome;
