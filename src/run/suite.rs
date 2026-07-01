@@ -659,6 +659,16 @@ pub async fn run(args: SuiteArgs) -> Result<ExitCode, Error> {
             }
         }
 
+        // ── Clear any stale trajectory before dispatching a fresh run ─────
+        // If this exact task/output-dir combination ran before (most
+        // commonly under `--rerun-failed`, where every selected task by
+        // definition already has a failing trajectory on disk) and the fresh
+        // `mini::run` below hard-fails before writing a new trajectory (e.g.
+        // an env/preflight error), `try_load_terminal_trajectory` must not
+        // silently pick up the old file and misreport its stale
+        // outcome/cost/verification data as this invocation's result.
+        let _ = std::fs::remove_file(&traj_path);
+
         // ── Merge per-task verify with suite-level verify ─────────────────
         let mut task_verify_checks = suite_verify.clone();
         let per_task_checks = parse_verify_checks(&task.verify)?;
@@ -1887,5 +1897,95 @@ mod tests {
         );
         assert_eq!(y["outcome"], "submitted", "task-y: {y}");
         assert_eq!(y["verification_status"], "verified", "task-y: {y}");
+    }
+
+    /// Regression for a review finding: a task selected for `--rerun-failed`
+    /// already has a stale `.traj.json` from the prior (failing) run sitting
+    /// at the exact path the fresh `mini::run` will write to. If the fresh
+    /// run hard-fails before writing anything (e.g. an env/preflight error),
+    /// the stale file must not be silently picked up and misreported as this
+    /// invocation's result.
+    #[tokio::test]
+    async fn rerun_failed_does_not_report_stale_trajectory_as_fresh_result() {
+        let work = tempfile::tempdir().unwrap();
+        let output_dir = work.path().join("runs");
+        let suite_name = "stale-suite";
+
+        let suite_dir = output_dir.join(suite_name);
+        std::fs::create_dir_all(&suite_dir).unwrap();
+
+        // Prior state: task-x needs a re-run.
+        let prior = SuiteResults {
+            suite_name: suite_name.to_owned(),
+            task_count: 1,
+            resolved_count: 0,
+            verified_count: 0,
+            total_cost_usd: 0.02,
+            total_duration_secs: 1.0,
+            started_at: "2026-01-01T00:00:00Z".into(),
+            finished_at: "2026-01-01T00:00:01Z".into(),
+            tasks: vec![failing_result("task-x")],
+        };
+        let json = crate::artifact::to_string_pretty(ArtifactKind::SuiteResults, &prior).unwrap();
+        std::fs::write(suite_dir.join("suite-results.json"), json).unwrap();
+
+        // A real, stale terminal trajectory already sits at task-x's path —
+        // distinguishable from any fresh result by `steps: 99`.
+        let mut stale = Trajectory::new();
+        stale.info.task = Some("do x".into());
+        stale.info.outcome = Some(crate::trajectory::outcome::SUBMITTED.to_owned());
+        stale.info.verification_status =
+            Some(crate::trajectory::verification_status::VERIFICATION_FAILED.to_owned());
+        stale.info.steps = Some(99);
+        stale.info.partial = false;
+        std::fs::write(
+            suite_dir.join("task-x.traj.json"),
+            serde_json::to_string(&stale).unwrap(),
+        )
+        .unwrap();
+
+        let pack = work.path().join("tasks.yaml");
+        std::fs::write(&pack, "- id: task-x\n  task: do x\n").unwrap();
+
+        // Force mini::run to hard-fail before writing anything, deterministically
+        // and without a real Docker daemon: environment.kind=docker with no
+        // docker_image configured errors immediately in build_env (both with
+        // and without the docker cargo feature compiled in).
+        let mut cfg = crate::config::Config::defaults().unwrap();
+        cfg.root.environment.kind = crate::config::EnvKind::Docker;
+        cfg.root.environment.docker_image = None;
+
+        let args = SuiteArgs {
+            tasks_file: pack,
+            format_override: None,
+            suite_name: suite_name.to_owned(),
+            config: cfg,
+            output_dir,
+            suite_cost_limit_usd: None,
+            verify: vec![],
+            verify_timeout_secs: 60,
+            resume: false,
+            task_timeout_secs: Some(30),
+            step_limit: None,
+            per_task_budget_usd: None,
+            rerun_failed: true,
+            deterministic_responses: None,
+            deterministic_usage_per_call: None,
+        };
+
+        let _ = run(args).await.unwrap();
+
+        let merged_text = std::fs::read_to_string(suite_dir.join("suite-results.json")).unwrap();
+        let merged: serde_json::Value = serde_json::from_str(&merged_text).unwrap();
+        let x = &merged["tasks"][0];
+        assert_eq!(
+            x["outcome"], "error",
+            "a hard env/preflight failure on the fresh run must be reported as \
+             this invocation's own error, not the stale prior trajectory: {x}"
+        );
+        assert_ne!(
+            x["steps"], 99,
+            "the stale trajectory's steps count must not leak into this invocation's result: {x}"
+        );
     }
 }
