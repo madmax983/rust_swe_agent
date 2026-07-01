@@ -175,6 +175,17 @@ struct DashboardState {
     /// Elapsed-time threshold past which the activity indicator escalates to
     /// flag a likely stall (issue #649). Default 60s; configurable.
     stall_threshold: Duration,
+    /// True while the `?` help overlay (issue #639) is shown. Takes absolute
+    /// priority in `handle_key`: every keystroke other than the ones that
+    /// close or scroll it is swallowed, so opening it can never resolve a
+    /// pending confirm prompt or advance/abort the run.
+    help_open: bool,
+    /// Scroll offset (in content lines) within the help overlay, reset to 0
+    /// each time it opens.
+    help_scroll: usize,
+    /// Inner height of the help overlay, captured by the renderer so the key
+    /// handler can clamp scrolling to content that actually overflows it.
+    help_viewport_height: u16,
 }
 
 impl Default for DashboardState {
@@ -212,6 +223,9 @@ impl Default for DashboardState {
             last_rationale_visible_rows: 0,
             activity: Activity::Idle,
             stall_threshold: Duration::from_secs(DEFAULT_STALL_THRESHOLD_SECS),
+            help_open: false,
+            help_scroll: 0,
+            help_viewport_height: 20,
         }
     }
 }
@@ -1331,6 +1345,56 @@ fn handle_key(dash: &Arc<RatatuiDashboard>, key: KeyEvent) {
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
 
+    // Help overlay (issue #639): takes absolute priority over every other
+    // state. Only the keys that close or scroll it are handled; everything
+    // else — including Ctrl-C/Ctrl-Q — is swallowed, so showing help can
+    // never send input to the agent, resolve a pending confirm prompt, or
+    // advance/abort the run (AC4).
+    if s.help_open {
+        let content_len = help_overlay_lines_count();
+        let handled = match key.code {
+            KeyCode::Char('?') | KeyCode::Esc => {
+                s.help_open = false;
+                s.help_scroll = 0;
+                true
+            }
+            KeyCode::Up | KeyCode::Char('k' | 'K') => {
+                s.help_scroll = s.help_scroll.saturating_sub(1);
+                true
+            }
+            KeyCode::Down | KeyCode::Char('j' | 'J') => {
+                let max = content_len.saturating_sub(s.help_viewport_height as usize);
+                s.help_scroll = (s.help_scroll + 1).min(max);
+                true
+            }
+            KeyCode::PageUp => {
+                let page = (s.help_viewport_height as usize).max(1);
+                s.help_scroll = s.help_scroll.saturating_sub(page);
+                true
+            }
+            KeyCode::PageDown => {
+                let page = (s.help_viewport_height as usize).max(1);
+                let max = content_len.saturating_sub(page);
+                s.help_scroll = (s.help_scroll + page).min(max);
+                true
+            }
+            KeyCode::Home => {
+                s.help_scroll = 0;
+                true
+            }
+            KeyCode::End => {
+                s.help_scroll = content_len.saturating_sub(s.help_viewport_height as usize);
+                true
+            }
+            _ => false,
+        };
+        if handled {
+            drop(s);
+            dash.notify.notify_waiters();
+        }
+        return;
+    }
+
     let ctrl_c = key.modifiers.contains(KeyModifiers::CONTROL)
         && matches!(key.code, KeyCode::Char('c' | 'C'));
 
@@ -1338,6 +1402,40 @@ fn handle_key(dash: &Arc<RatatuiDashboard>, key: KeyEvent) {
     // modal-open, and monitor/yolo mode where no modal ever appears.
     let ctrl_q = key.modifiers.contains(KeyModifiers::CONTROL)
         && matches!(key.code, KeyCode::Char('q' | 'Q'));
+
+    // Toggle the help overlay open (issue #639). `?` is reserved globally
+    // except: while the operator is typing free text (rejection feedback, an
+    // edited command, or an in-progress search query), where it must stay a
+    // literal character; and while the stop confirmation is showing, which
+    // already owns all non-y/n/Esc input.
+    //
+    // Plain Shift must be accepted alongside no modifiers: terminals that
+    // report Shift for printable characters (e.g. crossterm's Windows
+    // parser) deliver `?` as `Char('?')` with `KeyModifiers::SHIFT`, matching
+    // the convention `handle_key_normal`/`handle_key_search` already use.
+    //
+    // An in-progress search query only counts as "typing" while it is the
+    // surface actually receiving keystrokes. A confirm prompt that arrives
+    // mid-edit (`confirm()` doesn't clear `s.search`) shadows it — input goes
+    // to the modal, not `handle_key_search` — so `search.editing` must be
+    // ignored whenever `s.pending` is set, mirroring the precedence
+    // `active_input_target` already uses for paste routing.
+    let search_editing_visible =
+        s.pending.is_none() && s.search.as_ref().is_some_and(|se| se.editing);
+    let typing_free_text =
+        s.feedback_input.is_some() || s.edit_input.is_some() || search_editing_visible;
+    let plain_or_shift = key.modifiers.is_empty() || key.modifiers == KeyModifiers::SHIFT;
+    if !typing_free_text
+        && !s.stop_pending
+        && plain_or_shift
+        && matches!(key.code, KeyCode::Char('?'))
+    {
+        s.help_open = true;
+        s.help_scroll = 0;
+        drop(s);
+        dash.notify.notify_waiters();
+        return;
+    }
 
     // When a stop confirmation is waiting, y/Y and Ctrl-C immediately abort;
     // n/N/Esc cancel; everything else is swallowed so a stray keypress cannot
@@ -1787,6 +1885,13 @@ fn draw_frame(
         s.last_rationale_total_rows = total_rows;
         s.last_rationale_visible_rows = visible_rows;
 
+        // Capture the help overlay's inner height here, while the state lock
+        // is already held, so `draw_help_overlay` can stay a pure rendering
+        // function that never touches `dash`/the mutex (issue #639 review).
+        let help_overlay = centered_rect(80, 80, area);
+        let help_block = Block::default().borders(Borders::ALL);
+        s.help_viewport_height = help_block.inner(help_overlay).height;
+
         DashboardSnapshot {
             task: s.task.clone(),
             model: s.model.clone(),
@@ -1813,6 +1918,8 @@ fn draw_frame(
             rationale_scroll: s.rationale_scroll,
             activity: ActivitySnapshot::from_activity(&s.activity),
             stall_threshold: s.stall_threshold,
+            help_open: s.help_open,
+            help_scroll: s.help_scroll,
         }
     };
     terminal.draw(|frame| draw(frame, dash, &snapshot))?;
@@ -1846,6 +1953,8 @@ struct DashboardSnapshot {
     rationale_scroll: usize,
     activity: ActivitySnapshot,
     stall_threshold: Duration,
+    help_open: bool,
+    help_scroll: usize,
 }
 
 fn draw(frame: &mut ratatui::Frame, dash: &Arc<RatatuiDashboard>, snap: &DashboardSnapshot) {
@@ -1918,6 +2027,13 @@ fn draw(frame: &mut ratatui::Frame, dash: &Arc<RatatuiDashboard>, snap: &Dashboa
                 area,
             );
         }
+    }
+
+    // The help overlay (issue #639) renders last so it sits on top of the
+    // detail pane and confirm modal alike — `handle_key` leaves whatever was
+    // showing untouched underneath, so closing it returns to the same view.
+    if snap.help_open {
+        draw_help_overlay(frame, snap.help_scroll, area);
     }
 }
 
@@ -2093,6 +2209,233 @@ fn log_paragraph(snap: &DashboardSnapshot, visible_lines: usize) -> Paragraph<'_
     }
 }
 
+/// One entry in the `?` help overlay (issue #639). This is the single source
+/// of truth for both what is rendered (`category`/`keys`/`description`) and
+/// what an automated test checks is documented (`matches`, the literal
+/// keystrokes this entry covers) — see
+/// `every_dispatched_keystroke_is_documented_in_help_overlay`, the drift
+/// guard the issue requires: a new binding added to `handle_key` must also
+/// be added here, or that test fails.
+struct KeyBinding {
+    category: &'static str,
+    keys: &'static str,
+    description: &'static str,
+    /// Read only by the completeness test below; absent from non-test
+    /// builds' code paths since rendering only needs `category`/`keys`/
+    /// `description`.
+    #[allow(dead_code)]
+    matches: &'static [(KeyCode, KeyModifiers)],
+}
+
+const KEYBINDINGS: &[KeyBinding] = &[
+    KeyBinding {
+        category: "Navigation",
+        keys: "Up/k  Down/j",
+        description: "move the selection, or scroll the feed",
+        matches: &[
+            (KeyCode::Up, KeyModifiers::NONE),
+            (KeyCode::Down, KeyModifiers::NONE),
+            (KeyCode::Char('k'), KeyModifiers::NONE),
+            (KeyCode::Char('K'), KeyModifiers::NONE),
+            (KeyCode::Char('j'), KeyModifiers::NONE),
+            (KeyCode::Char('J'), KeyModifiers::NONE),
+        ],
+    },
+    KeyBinding {
+        category: "Navigation",
+        keys: "PgUp / PgDn",
+        description: "scroll a page at a time",
+        matches: &[
+            (KeyCode::PageUp, KeyModifiers::NONE),
+            (KeyCode::PageDown, KeyModifiers::NONE),
+        ],
+    },
+    KeyBinding {
+        category: "Navigation",
+        keys: "Home / End",
+        description: "jump to the oldest / latest entry",
+        matches: &[
+            (KeyCode::Home, KeyModifiers::NONE),
+            (KeyCode::End, KeyModifiers::NONE),
+        ],
+    },
+    KeyBinding {
+        category: "Navigation",
+        keys: "Enter",
+        description: "open the detail inspector for the selected entry",
+        matches: &[(KeyCode::Enter, KeyModifiers::NONE)],
+    },
+    KeyBinding {
+        category: "Navigation",
+        keys: "/",
+        description: "start an incremental search of the trajectory feed",
+        matches: &[(KeyCode::Char('/'), KeyModifiers::NONE)],
+    },
+    KeyBinding {
+        category: "Navigation",
+        keys: "n / N",
+        description: "jump to the next / previous search match",
+        matches: &[
+            (KeyCode::Char('n'), KeyModifiers::NONE),
+            (KeyCode::Char('N'), KeyModifiers::NONE),
+        ],
+    },
+    KeyBinding {
+        category: "Confirm",
+        keys: "y / Y",
+        description: "approve the proposed command",
+        matches: &[
+            (KeyCode::Char('y'), KeyModifiers::NONE),
+            (KeyCode::Char('Y'), KeyModifiers::NONE),
+        ],
+    },
+    KeyBinding {
+        category: "Confirm",
+        keys: "n / N",
+        description: "reject, with an optional feedback note",
+        matches: &[
+            (KeyCode::Char('n'), KeyModifiers::NONE),
+            (KeyCode::Char('N'), KeyModifiers::NONE),
+        ],
+    },
+    KeyBinding {
+        category: "Confirm",
+        keys: "e / E",
+        description: "edit the proposed command, then run it",
+        matches: &[
+            (KeyCode::Char('e'), KeyModifiers::NONE),
+            (KeyCode::Char('E'), KeyModifiers::NONE),
+        ],
+    },
+    KeyBinding {
+        category: "Confirm",
+        keys: "A",
+        description: "auto-approve this scope for the rest of the run",
+        matches: &[(KeyCode::Char('A'), KeyModifiers::NONE)],
+    },
+    KeyBinding {
+        category: "Confirm",
+        keys: "a",
+        description: "abort the run",
+        matches: &[(KeyCode::Char('a'), KeyModifiers::NONE)],
+    },
+    KeyBinding {
+        category: "Run control",
+        keys: "Ctrl-Q",
+        description: "stop the run (asks for y/N confirmation)",
+        matches: &[
+            (KeyCode::Char('q'), KeyModifiers::CONTROL),
+            (KeyCode::Char('Q'), KeyModifiers::CONTROL),
+        ],
+    },
+    KeyBinding {
+        category: "Run control",
+        keys: "Ctrl-C",
+        description: "abort immediately",
+        matches: &[(KeyCode::Char('c'), KeyModifiers::CONTROL)],
+    },
+    KeyBinding {
+        category: "Run control",
+        keys: "Esc",
+        description: "cancel the active prompt, search, or pane (aborts when nothing else is open)",
+        matches: &[(KeyCode::Esc, KeyModifiers::NONE)],
+    },
+    KeyBinding {
+        category: "Run control",
+        keys: "q / Q",
+        description: "close the detail pane, or close the dashboard once the run has finished",
+        matches: &[
+            (KeyCode::Char('q'), KeyModifiers::NONE),
+            (KeyCode::Char('Q'), KeyModifiers::NONE),
+        ],
+    },
+    KeyBinding {
+        category: "Text input",
+        keys: "Backspace",
+        description: "delete the last character while typing feedback, an edit, or a search query",
+        matches: &[(KeyCode::Backspace, KeyModifiers::NONE)],
+    },
+    KeyBinding {
+        category: "View",
+        keys: "?",
+        description: "toggle this help overlay",
+        matches: &[(KeyCode::Char('?'), KeyModifiers::NONE)],
+    },
+];
+
+/// Render the `?` help overlay's body content (issue #639), grouped by
+/// category with a blank separator line between groups. Pure and
+/// terminal-size independent, so its length can be used to compute scroll
+/// bounds without a live render.
+fn help_overlay_lines() -> Vec<Line<'static>> {
+    let mut lines = Vec::new();
+    let mut last_category: Option<&str> = None;
+    for binding in KEYBINDINGS {
+        if last_category != Some(binding.category) {
+            if last_category.is_some() {
+                lines.push(Line::from(""));
+            }
+            lines.push(Line::from(Span::styled(
+                binding.category,
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            )));
+            last_category = Some(binding.category);
+        }
+        lines.push(Line::from(format!(
+            "  {:<14} {}",
+            binding.keys, binding.description
+        )));
+    }
+    lines
+}
+
+/// The line count `help_overlay_lines()` would produce, without allocating a
+/// `Vec` or formatting any strings. `handle_key` calls this on every
+/// keystroke while the overlay is open (including swallowed ones) to clamp
+/// scrolling, so it must stay allocation-free (issue #639 review).
+fn help_overlay_lines_count() -> usize {
+    let mut count = 0;
+    let mut last_category: Option<&str> = None;
+    for binding in KEYBINDINGS {
+        if last_category != Some(binding.category) {
+            if last_category.is_some() {
+                count += 1;
+            }
+            count += 1;
+            last_category = Some(binding.category);
+        }
+        count += 1;
+    }
+    count
+}
+
+/// Render the `?` help overlay (issue #639) on top of everything else,
+/// scrolling its content if it overflows the available height (AC5). Never
+/// reads or mutates `pending`/`feedback_input`/`edit_input`/run state —
+/// `handle_key` gives it absolute priority before any of that is touched.
+/// Pure: `draw_frame` captures `help_viewport_height` into state itself
+/// (while it already holds the lock), so this never needs to lock the
+/// mutex from inside the render callback (issue #639 review).
+fn draw_help_overlay(frame: &mut ratatui::Frame, scroll: usize, area: Rect) {
+    let overlay = centered_rect(80, 80, area);
+    frame.render_widget(Clear, overlay);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(" help — keybindings (? or Esc to close) ");
+    let inner = block.inner(overlay);
+    frame.render_widget(block, overlay);
+
+    let lines = help_overlay_lines();
+    let visible: Vec<Line> = lines
+        .into_iter()
+        .skip(scroll)
+        .take(inner.height as usize)
+        .collect();
+    frame.render_widget(Paragraph::new(visible), inner);
+}
+
 fn footer_paragraph(snap: &DashboardSnapshot) -> Paragraph<'_> {
     let bold = Style::default().add_modifier(Modifier::BOLD);
     // stop_pending takes top priority so the confirmation prompt is always
@@ -2168,7 +2511,41 @@ fn footer_paragraph(snap: &DashboardSnapshot) -> Paragraph<'_> {
             ),
         }
     };
-    Paragraph::new(Line::from(span)).block(Block::default().borders(Borders::ALL))
+
+    // Stable `?: help` affordance (issue #639, AC6) so operators can discover
+    // the overlay. Shown only while `?` actually toggles it — i.e. not while
+    // it would instead be swallowed (stop confirmation) or typed as a literal
+    // character (rejection feedback, an edited command, or an in-progress
+    // search query). Mirrors the precedence `handle_key` uses to decide
+    // whether `?` opens the overlay, including that a pending confirm prompt
+    // shadows an in-progress search query (the prompt owns input, not the
+    // search box) so `search.editing` alone must not suppress the hint then.
+    let search_editing_visible =
+        snap.pending.is_none() && snap.search.as_ref().is_some_and(|s| s.editing);
+    let show_help_hint = !snap.stop_pending
+        && snap.edit_input.is_none()
+        && snap.feedback_input.is_none()
+        && !search_editing_visible;
+    // Appended, not prepended (issue #639 review follow-up): `footer_paragraph`'s
+    // `Paragraph` is not wrapped, and several branches — idle, `finished`, and a
+    // filled-in `pending` scope — are already wider than an 80-column terminal's
+    // inner width (78 cols) on their own, independent of this hint. Prepending
+    // was tried and reverted: it shifts *later* content out of view instead
+    // (verified by test — it broke 3 previously-passing footer assertions for
+    // exactly that reason), so it only relocates the pre-existing overflow
+    // rather than fixing it. Appending keeps that pre-existing limitation
+    // unchanged and adds the hint where the branch already had room (e.g.
+    // `stop_pending`/`edit_input`-free short states); it does not fully
+    // guarantee visibility in every state at 80 columns. Properly fixing that
+    // needs either shorter footer copy across several branches or a taller/
+    // wrapped footer — both larger, more disruptive changes than a review-
+    // response fix, and better scoped as a separate follow-up.
+    let line = if show_help_hint {
+        Line::from(vec![span, Span::styled("   [?: help]", bold)])
+    } else {
+        Line::from(span)
+    };
+    Paragraph::new(line).block(Block::default().borders(Borders::ALL))
 }
 
 /// Render the confirm modal (issue #655).
@@ -3362,6 +3739,8 @@ mod tests {
             rationale_scroll: s.rationale_scroll,
             activity: ActivitySnapshot::from_activity(&s.activity),
             stall_threshold: s.stall_threshold,
+            help_open: s.help_open,
+            help_scroll: s.help_scroll,
         }
     }
 
@@ -6016,5 +6395,437 @@ mod tests {
             Some(""),
             "paste must not modify the feedback buffer while stop_pending"
         );
+    }
+
+    // ── Help overlay (#639) ─────────────────────────────────────────────────
+
+    fn question_mark() -> KeyEvent {
+        KeyEvent::new(KeyCode::Char('?'), KeyModifiers::NONE)
+    }
+
+    /// Render `dash`'s *current* state (not a snapshot frozen earlier) onto a
+    /// `TestBackend`, returning the rendered text. Unlike `render_to_buffer`
+    /// (which draws a frozen `DashboardSnapshot` against an unrelated fresh
+    /// dashboard), this drives the real `draw_frame` path against `dash`
+    /// itself so viewport metrics (e.g. `help_viewport_height`) get written
+    /// back into the same dashboard the test inspects.
+    fn render_live(d: &Arc<RatatuiDashboard>, w: u16, h: u16) -> String {
+        let backend = TestBackend::new(w, h);
+        let mut terminal = RatatuiTerminal::new(backend).unwrap();
+        let area = Rect::new(0, 0, w, h);
+        // Mirrors the one line of `draw_frame`'s pre-computation this helper
+        // needs: `draw_help_overlay` is now a pure function (issue #639
+        // review), so `help_viewport_height` must be captured before `draw`
+        // renders, exactly as `draw_frame` does while it holds the lock.
+        {
+            let mut s = d
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let help_overlay = centered_rect(80, 80, area);
+            let help_block = Block::default().borders(Borders::ALL);
+            s.help_viewport_height = help_block.inner(help_overlay).height;
+        }
+        let s = snap(d);
+        terminal
+            .draw(|frame| {
+                draw(frame, d, &s);
+                let _ = area;
+            })
+            .unwrap();
+        buffer_text(terminal.backend().buffer())
+    }
+
+    #[test]
+    fn question_mark_opens_help_overlay() {
+        let d = make_dashboard();
+        assert!(!snap(&d).help_open);
+
+        handle_key(&d, question_mark());
+        assert!(snap(&d).help_open, "? must open the help overlay");
+    }
+
+    /// Terminals that report Shift for printable characters (e.g.
+    /// crossterm's Windows parser) deliver `?` as `Char('?')` with
+    /// `KeyModifiers::SHIFT`, not empty modifiers. The toggle must still
+    /// work there, matching how `handle_key_normal`/`handle_key_search`
+    /// already treat plain Shift as equivalent to no modifiers.
+    #[test]
+    fn shifted_question_mark_opens_help_overlay() {
+        let d = make_dashboard();
+        assert!(!snap(&d).help_open);
+
+        handle_key(&d, KeyEvent::new(KeyCode::Char('?'), KeyModifiers::SHIFT));
+        assert!(
+            snap(&d).help_open,
+            "a shifted ? must still open the help overlay"
+        );
+    }
+
+    #[test]
+    fn question_mark_again_closes_help_overlay() {
+        let d = make_dashboard();
+        handle_key(&d, question_mark());
+        assert!(snap(&d).help_open);
+
+        handle_key(&d, question_mark());
+        assert!(!snap(&d).help_open, "a second ? must close the overlay");
+    }
+
+    #[test]
+    fn esc_closes_help_overlay() {
+        let d = make_dashboard();
+        handle_key(&d, question_mark());
+        assert!(snap(&d).help_open);
+
+        handle_key(&d, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert!(!snap(&d).help_open, "Esc must close the overlay");
+    }
+
+    #[test]
+    fn help_overlay_never_resolves_a_pending_prompt() {
+        let d = make_dashboard();
+        let mut rx = make_pending(&d);
+
+        handle_key(&d, question_mark());
+        assert!(snap(&d).help_open);
+        assert!(
+            snap(&d).pending.is_some(),
+            "opening help must not consume the pending prompt"
+        );
+
+        // While help is open, decision keys (y/n/e/a/A) and Ctrl-C must be
+        // swallowed rather than reaching the pending confirm responder.
+        for code in [
+            KeyCode::Char('y'),
+            KeyCode::Char('n'),
+            KeyCode::Char('e'),
+            KeyCode::Char('a'),
+            KeyCode::Char('A'),
+        ] {
+            handle_key(&d, KeyEvent::new(code, KeyModifiers::NONE));
+        }
+        handle_key(&d, KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
+        assert!(
+            rx.try_recv().is_err(),
+            "no decision should have been sent while help is open"
+        );
+        assert!(snap(&d).help_open, "help must still be open");
+        assert!(snap(&d).pending.is_some(), "prompt must still be pending");
+
+        // Closing help must restore the live view with the prompt untouched.
+        handle_key(&d, question_mark());
+        assert!(!snap(&d).help_open);
+        assert!(snap(&d).pending.is_some());
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn help_overlay_never_aborts_or_advances_a_monitor_run() {
+        // In monitor/yolo mode there is never a pending modal, but Ctrl-Q must
+        // still be inert while help is open (AC4: never advances/aborts the
+        // run).
+        let (d, cancel_rx) = make_dashboard_with_cancel();
+        {
+            let mut s = d.state.lock().unwrap();
+            s.is_monitor = true;
+        }
+
+        handle_key(&d, question_mark());
+        assert!(snap(&d).help_open);
+
+        handle_key(&d, ctrl_q());
+        assert!(
+            !snap(&d).stop_pending,
+            "Ctrl-Q must be swallowed while help is open"
+        );
+        assert!(
+            !*cancel_rx.borrow(),
+            "the run must not be cancelled while help is open"
+        );
+    }
+
+    #[test]
+    fn question_mark_types_literally_while_entering_feedback() {
+        let d = make_dashboard();
+        let _rx = make_pending(&d);
+        // Enter reject-feedback mode.
+        handle_key(&d, KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE));
+        assert_eq!(snap(&d).feedback_input.as_deref(), Some(""));
+
+        handle_key(&d, question_mark());
+        assert!(
+            !snap(&d).help_open,
+            "? must be a literal character while typing feedback, not the help toggle"
+        );
+        assert_eq!(snap(&d).feedback_input.as_deref(), Some("?"));
+    }
+
+    #[test]
+    fn question_mark_types_literally_while_editing_command() {
+        let d = make_dashboard();
+        let _rx = make_pending(&d);
+        handle_key(&d, KeyEvent::new(KeyCode::Char('e'), KeyModifiers::NONE));
+        assert!(snap(&d).edit_input.is_some());
+
+        handle_key(&d, question_mark());
+        assert!(!snap(&d).help_open);
+        assert_eq!(snap(&d).edit_input.as_deref(), Some("x?"));
+    }
+
+    #[test]
+    fn question_mark_types_literally_while_search_query_is_active() {
+        let d = make_dashboard();
+        push_lines(&d, 3);
+        press(&d, KeyCode::Char('/'));
+        assert!(snap(&d).search.is_some());
+
+        handle_key(&d, question_mark());
+        assert!(
+            !snap(&d).help_open,
+            "? must be a literal character in an active search query"
+        );
+        let query = snap(&d).search.map(|s| s.query);
+        assert_eq!(query.as_deref(), Some("?"));
+    }
+
+    /// A confirm prompt can arrive asynchronously while a search query is
+    /// still being edited — `confirm()` doesn't clear `s.search`. Once that
+    /// happens, the modal (not `handle_key_search`) owns input, so the
+    /// hidden search-editing state must not block `?` from opening help.
+    #[test]
+    fn question_mark_opens_help_even_when_a_pending_prompt_shadows_an_editing_search() {
+        let d = make_dashboard();
+        push_lines(&d, 3);
+        press(&d, KeyCode::Char('/'));
+        assert!(snap(&d).search.as_ref().is_some_and(|s| s.editing));
+
+        let _rx = make_pending(&d);
+        assert!(snap(&d).pending.is_some());
+
+        handle_key(&d, question_mark());
+        assert!(
+            snap(&d).help_open,
+            "? must open help when the editing search is shadowed by a pending prompt"
+        );
+    }
+
+    #[test]
+    fn help_overlay_footer_hint_present_when_pending_shadows_editing_search() {
+        let d = make_dashboard();
+        push_lines(&d, 3);
+        press(&d, KeyCode::Char('/'));
+        let _rx = make_pending(&d);
+        let s = snap(&d);
+        assert!(s.pending.is_some());
+        assert!(s.search.as_ref().is_some_and(|se| se.editing));
+
+        let text = buffer_text(&render_to_buffer(&s, 120, 10));
+        assert!(
+            text.contains("?: help"),
+            "footer must not hide the help hint just because a shadowed, non-receiving search exists; got:\n{text}"
+        );
+    }
+
+    #[test]
+    fn question_mark_toggles_help_in_committed_search_mode() {
+        let d = make_dashboard();
+        push_lines(&d, 3);
+        press(&d, KeyCode::Char('/'));
+        type_str(&d, "line");
+        press(&d, KeyCode::Enter); // commit: editing == false
+
+        handle_key(&d, question_mark());
+        assert!(
+            snap(&d).help_open,
+            "? toggles help once the search query is committed"
+        );
+    }
+
+    #[test]
+    fn question_mark_is_swallowed_during_stop_confirmation() {
+        let d = make_dashboard();
+        handle_key(&d, ctrl_q());
+        assert!(snap(&d).stop_pending);
+
+        handle_key(&d, question_mark());
+        assert!(
+            !snap(&d).help_open,
+            "? must not open help while the stop confirmation owns input"
+        );
+    }
+
+    #[test]
+    fn help_overlay_renders_at_small_terminal_size_without_panicking() {
+        let d = make_dashboard();
+        handle_key(&d, question_mark());
+        // Must not panic at a minimal 80x24 terminal (AC5).
+        let text = render_live(&d, 80, 24);
+        assert!(text.contains("Navigation"));
+        assert!(text.contains("Confirm"));
+    }
+
+    #[test]
+    fn help_overlay_scrolls_when_content_exceeds_viewport() {
+        let d = make_dashboard();
+        handle_key(&d, question_mark());
+        // Render once at a small size so help_viewport_height is captured.
+        let text_top = render_live(&d, 80, 24);
+        assert!(
+            text_top.contains("Navigation"),
+            "top of the list must be visible initially; got:\n{text_top}"
+        );
+
+        // Scroll to the end and confirm later categories become visible.
+        press(&d, KeyCode::End);
+        let text_end = render_live(&d, 80, 24);
+        assert!(
+            text_end.contains("View"),
+            "scrolling to End must reveal the last category; got:\n{text_end}"
+        );
+    }
+
+    #[test]
+    fn help_overlay_footer_hint_present_when_toggle_is_live() {
+        let d = make_dashboard();
+        let text = render_to_buffer(&snap(&d), 120, 10);
+        let text = buffer_text(&text);
+        assert!(
+            text.contains("?: help"),
+            "idle footer must advertise the help affordance; got:\n{text}"
+        );
+    }
+
+    /// `footer_paragraph`'s `Paragraph` is not wrapped, so content past the
+    /// render width is clipped rather than wrapped onto another line. Several
+    /// branches (idle, `finished`, a filled-in `pending` scope) are already
+    /// wider than an 80-column terminal's inner width (78 cols) on their own,
+    /// independent of this hint — a pre-existing limitation this feature
+    /// doesn't fully overcome (issue #639 review; see the comment above
+    /// `show_help_hint`'s use). This test instead pins the achievable
+    /// guarantee: in a state with room to spare (short elapsed "thinking"),
+    /// the hint is not clipped.
+    #[test]
+    fn help_overlay_footer_hint_survives_clipping_at_80_columns() {
+        let d = make_dashboard();
+        {
+            let mut s = d.state.lock().unwrap();
+            s.activity = Activity::Thinking { since: ago(5) };
+        }
+        let text = buffer_text(&render_to_buffer(&snap(&d), 80, 10));
+        assert!(
+            text.contains("?: help"),
+            "help hint must not be clipped off an 80-column footer when the state has room; got:\n{text}"
+        );
+    }
+
+    #[test]
+    fn help_overlay_footer_hint_absent_while_typing_feedback() {
+        let d = make_dashboard();
+        let _rx = make_pending(&d);
+        handle_key(&d, KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE));
+        let s = snap(&d);
+        assert!(s.feedback_input.is_some());
+        let text = buffer_text(&render_to_buffer(&s, 120, 10));
+        assert!(
+            !text.contains("?: help"),
+            "footer must not advertise help while ? is a literal feedback character; got:\n{text}"
+        );
+    }
+
+    #[test]
+    fn help_overlay_footer_hint_absent_during_stop_confirmation() {
+        let d = make_dashboard();
+        handle_key(&d, ctrl_q());
+        let s = snap(&d);
+        assert!(s.stop_pending);
+        let text = buffer_text(&render_to_buffer(&s, 120, 10));
+        assert!(
+            !text.contains("?: help"),
+            "footer must not advertise help while the stop confirmation owns input; got:\n{text}"
+        );
+    }
+
+    /// Every literal keystroke `handle_key` (and its mode-specific helpers)
+    /// special-cases must be documented in the `?` help overlay. This is the
+    /// drift guard required by the issue: when a new binding is added to
+    /// `handle_key`, it must also be added to `KEYBINDINGS`, or this test
+    /// fails. Free-text entry (`Char(c)` while typing feedback/edit/search)
+    /// is intentionally excluded — that's "any character", not a binding.
+    #[test]
+    fn every_dispatched_keystroke_is_documented_in_help_overlay() {
+        let dispatched: &[(KeyCode, KeyModifiers)] = &[
+            (KeyCode::Char('y'), KeyModifiers::NONE),
+            (KeyCode::Char('Y'), KeyModifiers::NONE),
+            (KeyCode::Char('n'), KeyModifiers::NONE),
+            (KeyCode::Char('N'), KeyModifiers::NONE),
+            (KeyCode::Char('e'), KeyModifiers::NONE),
+            (KeyCode::Char('E'), KeyModifiers::NONE),
+            (KeyCode::Char('A'), KeyModifiers::NONE),
+            (KeyCode::Char('a'), KeyModifiers::NONE),
+            (KeyCode::Esc, KeyModifiers::NONE),
+            (KeyCode::Enter, KeyModifiers::NONE),
+            (KeyCode::Backspace, KeyModifiers::NONE),
+            (KeyCode::Up, KeyModifiers::NONE),
+            (KeyCode::Down, KeyModifiers::NONE),
+            (KeyCode::Char('k'), KeyModifiers::NONE),
+            (KeyCode::Char('K'), KeyModifiers::NONE),
+            (KeyCode::Char('j'), KeyModifiers::NONE),
+            (KeyCode::Char('J'), KeyModifiers::NONE),
+            (KeyCode::PageUp, KeyModifiers::NONE),
+            (KeyCode::PageDown, KeyModifiers::NONE),
+            (KeyCode::Home, KeyModifiers::NONE),
+            (KeyCode::End, KeyModifiers::NONE),
+            (KeyCode::Char('/'), KeyModifiers::NONE),
+            (KeyCode::Char('q'), KeyModifiers::NONE),
+            (KeyCode::Char('Q'), KeyModifiers::NONE),
+            (KeyCode::Char('c'), KeyModifiers::CONTROL),
+            (KeyCode::Char('q'), KeyModifiers::CONTROL),
+            (KeyCode::Char('Q'), KeyModifiers::CONTROL),
+            (KeyCode::Char('?'), KeyModifiers::NONE),
+        ];
+        for (code, mods) in dispatched.iter().copied() {
+            let documented = KEYBINDINGS
+                .iter()
+                .any(|kb| kb.matches.iter().any(|&(c, m)| c == code && m == mods));
+            assert!(
+                documented,
+                "key {code:?} (mods {mods:?}) is handled by handle_key but missing from KEYBINDINGS"
+            );
+        }
+    }
+
+    #[test]
+    fn help_overlay_lines_cover_every_keybindings_entry() {
+        let rendered: Vec<String> = help_overlay_lines()
+            .iter()
+            .map(|l| {
+                l.spans
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect();
+        let text = rendered.join("\n");
+        for kb in KEYBINDINGS {
+            assert!(
+                text.contains(kb.keys),
+                "help text missing keys label {:?}",
+                kb.keys
+            );
+            assert!(
+                text.contains(kb.description),
+                "help text missing description for {:?}",
+                kb.keys
+            );
+        }
+    }
+
+    /// `help_overlay_lines_count()` (allocation-free, used on every keystroke
+    /// while help is open) must always agree with the actual line count
+    /// `help_overlay_lines()` renders (issue #639 review).
+    #[test]
+    fn help_overlay_lines_count_matches_actual_line_count() {
+        assert_eq!(help_overlay_lines_count(), help_overlay_lines().len());
     }
 }
