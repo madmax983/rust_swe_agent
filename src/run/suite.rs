@@ -693,6 +693,33 @@ pub async fn run(args: SuiteArgs) -> Result<ExitCode, Error> {
             }
         }
 
+        // ── Refuse to dispatch over an un-cleared stale trajectory ────────
+        // The best-effort clear above can fail (e.g. a locked or read-only
+        // file). If a stale prior-run trajectory is still sitting at this
+        // exact path, do not risk `mini::run` hard-failing before writing a
+        // replacement and `try_load_terminal_trajectory` below silently
+        // reading that stale file as this invocation's fresh result. Record
+        // the cleanup failure directly instead of dispatching.
+        if run_ids.as_ref().is_some_and(|ids| ids.contains(&task.id)) && traj_path.exists() {
+            task_results.push(SuiteTaskResult {
+                id: task.id.clone(),
+                outcome: "error".to_owned(),
+                verification_status: crate::trajectory::verification_status::UNVERIFIED.to_owned(),
+                steps: None,
+                cost_usd: None,
+                duration_secs: None,
+                failure_category: Some(FailureCategory::AgentInternal),
+                trajectory_path: traj_path.display().to_string(),
+                attempt_count: 0,
+                unchanged_failure_count: 0,
+                verifier_delta: None,
+                stop_reason: Some("stale_trajectory_cleanup_failed".to_owned()),
+                carried_over: false,
+            });
+            suite_exit = merge_exit_code(suite_exit, ExitCode::InternalError);
+            continue;
+        }
+
         // ── Merge per-task verify with suite-level verify ─────────────────
         let mut task_verify_checks = suite_verify.clone();
         let per_task_checks = parse_verify_checks(&task.verify)?;
@@ -966,6 +993,20 @@ fn write_suite_results(
 ) -> Result<(), Error> {
     let mut json_val = serde_json::to_value(results).map_err(Error::Json)?;
     redact_json_strings(&mut json_val, redactor);
+    // A task `id` is an operator-chosen structural identifier, not sensitive
+    // content, and `--rerun-failed` matches it verbatim against the current
+    // pack file on the next invocation. Restore the pristine id after the
+    // blanket redaction pass above so a broad redaction pattern that
+    // happens to match part of an id string can never desync task
+    // selection from the pack (issue #825 review finding) — an
+    // already-passing task would otherwise silently re-run at full cost.
+    if let Some(arr) = json_val.get_mut("tasks").and_then(|v| v.as_array_mut()) {
+        for (task_val, task) in arr.iter_mut().zip(&results.tasks) {
+            if let Some(obj) = task_val.as_object_mut() {
+                obj.insert("id".to_owned(), serde_json::Value::String(task.id.clone()));
+            }
+        }
+    }
     let json = crate::artifact::to_string_pretty(ArtifactKind::SuiteResults, &json_val)
         .map_err(Error::Json)?;
     atomic_write(path, json.as_bytes())?;
@@ -2197,5 +2238,172 @@ mod tests {
              skipped by the suite cost cap, not left behind to be misread as \
              belonging to this invocation"
         );
+    }
+
+    /// Regression for a review finding: if the best-effort stale-trajectory
+    /// clear fails (simulated here by a directory sitting at the exact
+    /// `.traj.json` path, which `remove_file` cannot remove), the fresh
+    /// `mini::run` must never be dispatched — the cleanup failure must be
+    /// surfaced as this task's own error instead of risking the old file
+    /// being silently read as this invocation's result.
+    #[tokio::test]
+    async fn rerun_failed_surfaces_stale_trajectory_cleanup_failure_without_dispatching() {
+        let work = tempfile::tempdir().unwrap();
+        let output_dir = work.path().join("runs");
+        let suite_name = "undeletable-suite";
+
+        let suite_dir = output_dir.join(suite_name);
+        std::fs::create_dir_all(&suite_dir).unwrap();
+
+        let prior = SuiteResults {
+            suite_name: suite_name.to_owned(),
+            task_count: 1,
+            resolved_count: 0,
+            verified_count: 0,
+            total_cost_usd: 0.02,
+            total_duration_secs: 1.0,
+            started_at: "2026-01-01T00:00:00Z".into(),
+            finished_at: "2026-01-01T00:00:01Z".into(),
+            tasks: vec![failing_result("task-x")],
+        };
+        let json = crate::artifact::to_string_pretty(ArtifactKind::SuiteResults, &prior).unwrap();
+        std::fs::write(suite_dir.join("suite-results.json"), json).unwrap();
+
+        // A directory at this exact path can never be removed by
+        // `std::fs::remove_file`, deterministically simulating a stale
+        // trajectory that resists cleanup (e.g. a locked file on Windows).
+        std::fs::create_dir_all(suite_dir.join("task-x.traj.json")).unwrap();
+
+        let pack = work.path().join("tasks.yaml");
+        std::fs::write(&pack, "- id: task-x\n  task: do x\n").unwrap();
+
+        let mut cfg = crate::config::Config::defaults().unwrap();
+        cfg.root.agent.step_limit = 5;
+
+        let args = SuiteArgs {
+            tasks_file: pack,
+            format_override: None,
+            suite_name: suite_name.to_owned(),
+            config: cfg,
+            output_dir,
+            suite_cost_limit_usd: None,
+            verify: vec![],
+            verify_timeout_secs: 60,
+            resume: false,
+            task_timeout_secs: Some(30),
+            step_limit: None,
+            per_task_budget_usd: None,
+            rerun_failed: true,
+            // No scripted response at all: if mini::run were mistakenly
+            // dispatched despite the undeletable stale file, it would fail
+            // for an entirely different reason (no model configured),
+            // giving a different stop_reason than the one asserted below.
+            deterministic_responses: None,
+            deterministic_usage_per_call: None,
+        };
+
+        let _ = run(args).await.unwrap();
+
+        let merged_text = std::fs::read_to_string(suite_dir.join("suite-results.json")).unwrap();
+        let merged: serde_json::Value = serde_json::from_str(&merged_text).unwrap();
+        let x = &merged["tasks"][0];
+        assert_eq!(x["outcome"], "error", "x: {x}");
+        assert_eq!(
+            x["stop_reason"], "stale_trajectory_cleanup_failed",
+            "the cleanup failure must be surfaced with its own distinct stop_reason, \
+             proving mini::run was never dispatched for this task: {x}"
+        );
+    }
+
+    /// Regression for a review finding: `write_suite_results` redacts every
+    /// JSON string in the artifact, including task `id`. If a configured
+    /// redaction pattern happens to match part of an id, a subsequent
+    /// `--rerun-failed` invocation's `load_prior_suite_state` would key its
+    /// map by the redacted string, fail to match the pack's real id, and
+    /// silently re-run an already-passing task at full cost.
+    #[tokio::test]
+    async fn rerun_failed_matches_prior_results_even_when_id_would_be_redacted() {
+        let work = tempfile::tempdir().unwrap();
+        let output_dir = work.path().join("runs");
+        let suite_name = "redact-id-suite";
+
+        let mut cfg = crate::config::Config::defaults().unwrap();
+        cfg.root.agent.step_limit = 5;
+        // A broad custom pattern that matches the literal substring "secret"
+        // — deliberately chosen to collide with a task id below.
+        cfg.root.redaction.custom_patterns = vec!["secret".to_owned()];
+        let submit = "COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT\n```\nfix\n```".to_owned();
+
+        let suite_dir = output_dir.join(suite_name);
+
+        // First run: task-secret-rotation passes; task-b fails.
+        let pack_v1 = work.path().join("tasks.yaml");
+        std::fs::write(
+            &pack_v1,
+            "- id: task-secret-rotation\n  task: do a\n  verify:\n    - ok:true\n\
+             - id: task-b\n  task: do b\n  verify:\n    - bad:false\n",
+        )
+        .unwrap();
+
+        let base_args = |tasks_file: PathBuf, rerun_failed: bool| SuiteArgs {
+            tasks_file,
+            format_override: None,
+            suite_name: suite_name.to_owned(),
+            config: cfg.clone(),
+            output_dir: output_dir.clone(),
+            suite_cost_limit_usd: None,
+            verify: vec![],
+            verify_timeout_secs: 60,
+            resume: false,
+            task_timeout_secs: Some(30),
+            step_limit: None,
+            per_task_budget_usd: None,
+            rerun_failed,
+            deterministic_responses: Some(vec![submit.clone()]),
+            deterministic_usage_per_call: None,
+        };
+
+        run(base_args(pack_v1, false)).await.unwrap();
+
+        // The written artifact's id must be the pristine string, not a
+        // `[REDACTED:...]` placeholder, even though "secret" is configured
+        // as a redaction pattern and is a substring of the task id.
+        let results_text = std::fs::read_to_string(suite_dir.join("suite-results.json")).unwrap();
+        assert!(
+            results_text.contains("task-secret-rotation"),
+            "the on-disk id must not be redacted: {results_text}"
+        );
+
+        let task_a_traj_before =
+            std::fs::read_to_string(suite_dir.join("task-secret-rotation.traj.json")).unwrap();
+
+        // Second run: fix task-b, re-run only the failed subset.
+        let pack_v2 = work.path().join("tasks-fixed.yaml");
+        std::fs::write(
+            &pack_v2,
+            "- id: task-secret-rotation\n  task: do a\n  verify:\n    - ok:true\n\
+             - id: task-b\n  task: do b\n  verify:\n    - ok2:true\n",
+        )
+        .unwrap();
+
+        let exit2 = run(base_args(pack_v2, true)).await.unwrap();
+        assert_eq!(exit2, ExitCode::Success);
+
+        let task_a_traj_after =
+            std::fs::read_to_string(suite_dir.join("task-secret-rotation.traj.json")).unwrap();
+        assert_eq!(
+            task_a_traj_before, task_a_traj_after,
+            "the passing task must be carried forward unchanged — a redaction \
+             collision on its id must not cause it to be silently re-run"
+        );
+
+        let merged_text = std::fs::read_to_string(suite_dir.join("suite-results.json")).unwrap();
+        let merged: serde_json::Value = serde_json::from_str(&merged_text).unwrap();
+        let tasks_arr = merged["tasks"].as_array().unwrap();
+        let a = tasks_arr
+            .iter()
+            .find(|t| t["id"] == "task-secret-rotation")
+            .unwrap();
+        assert_eq!(a["carried_over"], true, "task-a: {a}");
     }
 }
