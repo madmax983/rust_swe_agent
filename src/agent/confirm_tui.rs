@@ -1816,9 +1816,20 @@ fn handle_mouse(dash: &Arc<RatatuiDashboard>, mouse: MouseEvent) -> bool {
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
 
+    // `pending` alone doesn't own focus when `detail_open` is also true:
+    // opening the detail inspector (Enter) while a confirm prompt is pending
+    // hides the modal behind it (`draw` skips `draw_modal` whenever
+    // `detail_open`) and `handle_key` already routes scroll keys to the
+    // detail pane in that state — see the `s.detail_open` arm nested inside
+    // `s.pending.take()` below. Mouse wheel must match, or it silently does
+    // nothing over a pane that's visibly scrollable by keyboard (issue #734
+    // review). `feedback_input`/`edit_input` still win unconditionally: they
+    // can only be set while `!detail_open` (`n`/`e` are only reachable from
+    // the non-detail-open branch of `handle_key`), so this never lets mouse
+    // input reach an active feedback/edit text buffer.
     let modal_owns_focus = s.help_open
         || s.stop_pending
-        || s.pending.is_some()
+        || (s.pending.is_some() && !s.detail_open)
         || s.feedback_input.is_some()
         || s.edit_input.is_some()
         || s.search.is_some();
@@ -7211,6 +7222,65 @@ mod tests {
         }
 
         handle_mouse(&d, mouse_event(MouseEventKind::ScrollDown, 0, 0));
+        handle_mouse(
+            &d,
+            mouse_event(MouseEventKind::Down(MouseButton::Left), 10, 6),
+        );
+        assert_eq!(snap(&d).selected_index, Some(0));
+    }
+
+    /// Opening the detail inspector (Enter) while a confirm prompt is
+    /// pending hides the modal behind it and `handle_key` already lets
+    /// scroll keys reach the detail pane in that state; the mouse wheel must
+    /// match, or it silently does nothing over a pane that's visibly
+    /// scrollable by keyboard (issue #734 review).
+    #[test]
+    fn test_mouse_wheel_scrolls_detail_inspector_while_confirm_pending() {
+        let d = make_dashboard();
+        let multiline_text = (0..10)
+            .map(|i| format!("line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        d.append(LineKind::Info, "summary", Some(multiline_text));
+        let _rx = make_pending(&d);
+        {
+            let mut s = d.state.lock().unwrap();
+            s.detail_open = true;
+            s.detail_viewport_height = 3;
+        }
+        assert_eq!(snap(&d).detail_scroll_top, 0);
+
+        assert!(handle_mouse(
+            &d,
+            mouse_event(MouseEventKind::ScrollDown, 0, 0)
+        ));
+        assert_eq!(snap(&d).detail_scroll_top, 3);
+        assert!(
+            snap(&d).pending.is_some(),
+            "scrolling the detail pane must not disturb the pending prompt"
+        );
+
+        assert!(handle_mouse(
+            &d,
+            mouse_event(MouseEventKind::ScrollUp, 0, 0)
+        ));
+        assert_eq!(snap(&d).detail_scroll_top, 0);
+    }
+
+    /// A click still can't select a main-feed row in this state: the detail
+    /// pane (not the feed) is what's visible, mirroring the keyboard's
+    /// `s.detail_open` gate on the click branch.
+    #[test]
+    fn test_mouse_click_ignored_in_detail_inspector_while_confirm_pending() {
+        let d = make_dashboard();
+        setup_feed(&d, 10, 4, 5);
+        let _rx = make_pending(&d);
+        {
+            let mut s = d.state.lock().unwrap();
+            s.detail_open = true;
+            s.selected_index = Some(0);
+        }
+
         handle_mouse(
             &d,
             mouse_event(MouseEventKind::Down(MouseButton::Left), 10, 6),
