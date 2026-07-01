@@ -1187,7 +1187,12 @@ fn search_jump(s: &mut DashboardState, search: &mut SearchState, step: isize) {
     scroll_to_line(s, line_idx);
 }
 
-fn perform_scroll(s: &mut DashboardState, code: KeyCode) -> bool {
+/// Current scroll offset and max scroll bound for the feed, in wrapped
+/// display rows. Shared by `perform_scroll` (keyboard, one row/page at a
+/// time) and the mouse wheel handler, which moves by an arbitrary step and
+/// must not re-run `total_wrapped_lines` — an O(log size) wrap of the whole
+/// feed — once per scroll notch (issue #734 review).
+fn feed_scroll_bounds(s: &DashboardState) -> (usize, usize) {
     let total = total_wrapped_lines(&s.log, s.last_log_width);
     let max_scroll = total.saturating_sub(s.last_log_height);
     let current_offset = if s.auto_follow {
@@ -1195,6 +1200,11 @@ fn perform_scroll(s: &mut DashboardState, code: KeyCode) -> bool {
     } else {
         s.scroll_offset
     };
+    (current_offset, max_scroll)
+}
+
+fn perform_scroll(s: &mut DashboardState, code: KeyCode) -> bool {
+    let (current_offset, max_scroll) = feed_scroll_bounds(s);
 
     match code {
         KeyCode::Up => {
@@ -1796,25 +1806,42 @@ fn handle_mouse(dash: &Arc<RatatuiDashboard>, mouse: MouseEvent) {
     }
 
     match mouse.kind {
+        // `detail_open`/`is_monitor` resolve their scroll bound exactly once
+        // per event rather than once per stepped row: `get_max_detail_scroll`
+        // wraps the selected entry's full text (up to 100 KB) and
+        // `feed_scroll_bounds` wraps the whole feed, so re-running either
+        // `mouse_scroll_step` times per notch would be O(step * log size)
+        // for no benefit (issue #734 review). `move_cursor_up`/`_down` are
+        // O(1), so the feed-selection branch keeps the step loop.
         MouseEventKind::ScrollUp => {
-            for _ in 0..s.mouse_scroll_step {
-                if s.detail_open {
-                    s.detail_scroll_top = s.detail_scroll_top.saturating_sub(1);
-                } else if s.is_monitor {
-                    perform_scroll(&mut s, KeyCode::Up);
-                } else {
+            if s.detail_open {
+                s.detail_scroll_top = s.detail_scroll_top.saturating_sub(s.mouse_scroll_step);
+            } else if s.is_monitor {
+                let (current_offset, _max_scroll) = feed_scroll_bounds(&s);
+                let next_offset = current_offset.saturating_sub(s.mouse_scroll_step);
+                if next_offset != current_offset {
+                    s.scroll_offset = next_offset;
+                    s.auto_follow = false;
+                }
+            } else {
+                for _ in 0..s.mouse_scroll_step {
                     move_cursor_up(&mut s);
                 }
             }
         }
         MouseEventKind::ScrollDown => {
-            for _ in 0..s.mouse_scroll_step {
-                if s.detail_open {
-                    let max_scroll = get_max_detail_scroll(&s);
-                    s.detail_scroll_top = (s.detail_scroll_top + 1).min(max_scroll);
-                } else if s.is_monitor {
-                    perform_scroll(&mut s, KeyCode::Down);
-                } else {
+            if s.detail_open {
+                let max_scroll = get_max_detail_scroll(&s);
+                s.detail_scroll_top = (s.detail_scroll_top + s.mouse_scroll_step).min(max_scroll);
+            } else if s.is_monitor {
+                let (current_offset, max_scroll) = feed_scroll_bounds(&s);
+                let next_offset = (current_offset + s.mouse_scroll_step).min(max_scroll);
+                if next_offset != current_offset {
+                    s.scroll_offset = next_offset;
+                    s.auto_follow = false;
+                }
+            } else {
+                for _ in 0..s.mouse_scroll_step {
                     move_cursor_down(&mut s);
                 }
             }
