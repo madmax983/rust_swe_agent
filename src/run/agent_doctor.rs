@@ -350,7 +350,10 @@ fn check_toolchain() -> DoctorCheck {
 /// must additionally carry an executable permission bit, so a non-executable
 /// file of the same name in a higher-priority `PATH` directory is not a false
 /// positive.
-fn resolve_on_path(name: &str) -> Option<PathBuf> {
+///
+/// Shared with `agent suite --check`'s verify-command launchability check
+/// (issue #821) so both preflights resolve executables identically.
+pub(crate) fn resolve_on_path(name: &str) -> Option<PathBuf> {
     let path_var = std::env::var_os("PATH")?;
     for dir in std::env::split_paths(&path_var) {
         if dir.as_os_str().is_empty() {
@@ -372,13 +375,13 @@ fn resolve_on_path(name: &str) -> Option<PathBuf> {
 /// Whether `path` is a regular file that is runnable as a command. On Unix this
 /// requires an executable permission bit; elsewhere being a file is sufficient.
 #[cfg(unix)]
-fn is_executable(path: &Path) -> bool {
+pub(crate) fn is_executable(path: &Path) -> bool {
     use std::os::unix::fs::PermissionsExt as _;
     std::fs::metadata(path).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
 }
 
 #[cfg(not(unix))]
-fn is_executable(path: &Path) -> bool {
+pub(crate) fn is_executable(path: &Path) -> bool {
     path.is_file()
 }
 
