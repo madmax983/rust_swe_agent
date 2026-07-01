@@ -507,6 +507,22 @@ fn check_verify_spec(target: Option<String>, spec: &str, skip_launchability: boo
                      the container image, not on this host",
                 );
             }
+            if has_leading_path_assignment(&check.command) {
+                // A command that sets its own PATH (e.g. `PATH=./venv/bin:$PATH
+                // pytest`) is resolved by the shell against that assigned
+                // value, not this process's PATH — resolving the program
+                // token against our own PATH could produce either a
+                // false-fail (only reachable via the assignment) or a
+                // false-pass (the assignment would actually hide it).
+                // Emulating shell variable expansion is out of scope; be
+                // honest that this can't be statically determined.
+                return CheckItem::warn(
+                    check_id,
+                    target,
+                    "launchability not checked: verify command sets PATH itself, which this \
+                     static check does not emulate",
+                );
+            }
             match check_command_launchable(&check.command) {
                 Ok(()) => CheckItem::pass(check_id, target),
                 Err(reason) => CheckItem::fail(check_id, target, reason),
@@ -605,6 +621,24 @@ fn is_env_assignment(word: &str) -> bool {
                 c.is_ascii_alphanumeric() || c == '_'
             }
         })
+}
+
+/// Whether `command` begins with one or more `VAR=value` assignments that
+/// include a `PATH=` override. `resolve_on_path` only ever consults this
+/// process's own `PATH`, so a command that assigns its own can't be
+/// statically resolved against it without emulating shell expansion.
+fn has_leading_path_assignment(command: &str) -> bool {
+    let mut rest = command;
+    while let Some((word, remainder)) = next_shell_word(rest) {
+        if !is_env_assignment(&word) {
+            return false;
+        }
+        if word.split('=').next() == Some("PATH") {
+            return true;
+        }
+        rest = remainder;
+    }
+    false
 }
 
 const SHELL_BUILTINS_AND_KEYWORDS: &[&str] = &[
@@ -1163,6 +1197,30 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn verify_command_with_path_override_is_inconclusive_not_pass_or_fail() {
+        // `resolve_on_path` only ever consults this process's own PATH, so
+        // a verify command that assigns its own PATH (e.g. a venv prefix)
+        // can't be statically resolved against it — asserting Pass could
+        // hide a binary that only the assigned PATH would find, and
+        // asserting Fail could reject one that's genuinely reachable
+        // there. Regression test for a gap found in review (issue #821).
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_tasks(
+            &dir,
+            "tasks.yaml",
+            "- id: t1\n  task: fix it\n  verify:\n    - tests:PATH=./venv/bin:$PATH pytest -q\n",
+        );
+        let report = run(&base_args(path)).await.unwrap();
+        assert!(report.ok, "checks: {:?}", report.checks);
+        let checked = report
+            .checks
+            .iter()
+            .find(|c| c.check == "verify:tests")
+            .unwrap();
+        assert_eq!(checked.status, CheckStatus::Warn);
+    }
+
     // ── RED: hazards ─────────────────────────────────────────────────────
 
     #[tokio::test]
@@ -1492,6 +1550,21 @@ mod tests {
     fn extract_program_token_none_for_empty() {
         assert_eq!(extract_program_token(""), None);
         assert_eq!(extract_program_token("   "), None);
+    }
+
+    #[test]
+    fn has_leading_path_assignment_detects_path_override() {
+        assert!(has_leading_path_assignment("PATH=./venv/bin:$PATH pytest"));
+        assert!(has_leading_path_assignment("PATH=/custom/bin pytest -q"));
+    }
+
+    #[test]
+    fn has_leading_path_assignment_ignores_other_assignments() {
+        assert!(!has_leading_path_assignment("FOO=bar pytest -q"));
+        assert!(!has_leading_path_assignment("cargo test"));
+        // A non-PATH assignment before a PATH assignment doesn't matter for
+        // this check — only that the command as a whole doesn't set PATH.
+        assert!(has_leading_path_assignment("FOO=bar PATH=/x pytest"));
     }
 
     #[test]
