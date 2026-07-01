@@ -170,7 +170,7 @@ pub fn entries() -> &'static [CatalogEntry] {
         },
         CatalogEntry {
             path: "agent suite",
-            summary: "Run an operator-defined personal eval task pack",
+            summary: "Run an operator-defined personal eval task pack ($0 preflight via --check)",
             cost_tier: "paid",
             stage: "run",
         },

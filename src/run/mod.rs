@@ -78,6 +78,7 @@ pub mod stability;
 pub mod stagnation_report;
 pub mod subset;
 pub mod suite;
+pub mod suite_check;
 pub mod swebench;
 pub mod tail;
 pub mod test_progress;

@@ -370,45 +370,16 @@ pub async fn run(args: SuiteArgs) -> Result<ExitCode, Error> {
     }
 
     // ── Validate task IDs ─────────────────────────────────────────────────
-    {
-        let mut seen = std::collections::HashSet::new();
-        for task in &tasks {
-            if task.id.is_empty() {
-                return Err(Error::Config(crate::error::ConfigError::Invalid(
-                    "task id must not be empty".into(),
-                )));
-            }
-            if task.task.trim().is_empty() {
-                return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
-                    "task '{}': task description must not be empty",
-                    task.id
-                ))));
-            }
-            if task.id.contains('/') || task.id.contains('\\') || task.id.contains("..") {
-                return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
-                    "task id '{}' must not contain path separators or '..'",
-                    task.id
-                ))));
-            }
-            if !seen.insert(task.id.as_str()) {
-                return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
-                    "duplicate task id '{}'",
-                    task.id
-                ))));
-            }
-        }
+    if let Some(issue) = collect_task_validation_issues(&tasks).into_iter().next() {
+        return Err(Error::Config(crate::error::ConfigError::Invalid(
+            issue.message,
+        )));
     }
 
     // ── Prepare output directory ──────────────────────────────────────────
     let suite_dir = args.output_dir.join(&args.suite_name);
-    if args.suite_name.contains('/')
-        || args.suite_name.contains('\\')
-        || args.suite_name.contains("..")
-    {
-        return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
-            "suite name '{}' must not contain path separators or '..'",
-            args.suite_name
-        ))));
+    if let Err(msg) = validate_suite_name(&args.suite_name) {
+        return Err(Error::Config(crate::error::ConfigError::Invalid(msg)));
     }
     std::fs::create_dir_all(&suite_dir).map_err(Error::Io)?;
 
@@ -754,8 +725,71 @@ fn write_suite_results(
     Ok(())
 }
 
+/// One task-pack validation problem found by [`collect_task_validation_issues`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct TaskIssue {
+    /// The offending task id, when known (absent for an empty-id violation).
+    pub task_id: Option<String>,
+    /// Human-readable description, matching the historical `agent suite`
+    /// error-message wording for each violation kind.
+    pub message: String,
+}
+
+/// Validate every task's `id`/`task` fields and cross-task id uniqueness,
+/// returning *all* violations found rather than stopping at the first
+/// (unlike the `agent suite` run path, which bails on the first issue via
+/// [`run`]). Used by both `agent suite` (which reports only the first issue)
+/// and `agent suite --check` (which reports every issue it can find).
+pub(crate) fn collect_task_validation_issues(tasks: &[SuiteTaskSpec]) -> Vec<TaskIssue> {
+    let mut issues = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for task in tasks {
+        if task.id.is_empty() {
+            issues.push(TaskIssue {
+                task_id: None,
+                message: "task id must not be empty".to_owned(),
+            });
+        }
+        if task.task.trim().is_empty() {
+            issues.push(TaskIssue {
+                task_id: Some(task.id.clone()),
+                message: format!("task '{}': task description must not be empty", task.id),
+            });
+        }
+        if task.id.contains('/') || task.id.contains('\\') || task.id.contains("..") {
+            issues.push(TaskIssue {
+                task_id: Some(task.id.clone()),
+                message: format!(
+                    "task id '{}' must not contain path separators or '..'",
+                    task.id
+                ),
+            });
+        }
+        if !task.id.is_empty() && !seen.insert(task.id.as_str()) {
+            issues.push(TaskIssue {
+                task_id: Some(task.id.clone()),
+                message: format!("duplicate task id '{}'", task.id),
+            });
+        }
+    }
+    issues
+}
+
+/// Validate a suite name for safe use as an `--output` subdirectory path
+/// segment. Shared by `agent suite` (fails fast on the first violation via
+/// [`run`]) and `agent suite --check` (reports it as a preflight check).
+pub(crate) fn validate_suite_name(name: &str) -> Result<(), String> {
+    if name.contains('/') || name.contains('\\') || name.contains("..") {
+        Err(format!(
+            "suite name '{name}' must not contain path separators or '..'"
+        ))
+    } else {
+        Ok(())
+    }
+}
+
 /// Parse `NAME:COMMAND` verify check specs.
-fn parse_verify_checks(specs: &[String]) -> Result<Vec<VerificationCheck>, Error> {
+pub(crate) fn parse_verify_checks(specs: &[String]) -> Result<Vec<VerificationCheck>, Error> {
     specs
         .iter()
         .map(|s| {
@@ -866,6 +900,91 @@ mod tests {
     fn parse_bad_jsonl_returns_error() {
         let input = "not json\n";
         assert!(parse_task_file(input, TaskFileFormat::Jsonl).is_err());
+    }
+
+    // ── RED: collect_task_validation_issues (issue #821) ───────────────────
+
+    fn spec(id: &str, task: &str) -> SuiteTaskSpec {
+        SuiteTaskSpec {
+            id: id.to_owned(),
+            task: task.to_owned(),
+            extra_context: None,
+            verify: vec![],
+        }
+    }
+
+    #[test]
+    fn collect_task_validation_issues_empty_for_valid_pack() {
+        let tasks = vec![spec("t1", "do a thing"), spec("t2", "do another")];
+        assert!(collect_task_validation_issues(&tasks).is_empty());
+    }
+
+    #[test]
+    fn collect_task_validation_issues_flags_empty_id() {
+        let tasks = vec![spec("", "do a thing")];
+        let issues = collect_task_validation_issues(&tasks);
+        assert!(
+            issues
+                .iter()
+                .any(|i| i.message == "task id must not be empty")
+        );
+    }
+
+    #[test]
+    fn collect_task_validation_issues_flags_empty_task_description() {
+        let tasks = vec![spec("t1", "   ")];
+        let issues = collect_task_validation_issues(&tasks);
+        assert!(issues.iter().any(|i| i.task_id.as_deref() == Some("t1")
+            && i.message.contains("task description must not be empty")));
+    }
+
+    #[test]
+    fn collect_task_validation_issues_flags_unsafe_id() {
+        let tasks = vec![spec("../escape", "do a thing")];
+        let issues = collect_task_validation_issues(&tasks);
+        assert!(issues.iter().any(|i| i.message.contains("path separators")));
+    }
+
+    #[test]
+    fn collect_task_validation_issues_flags_duplicate_id() {
+        let tasks = vec![spec("dup", "first"), spec("dup", "second")];
+        let issues = collect_task_validation_issues(&tasks);
+        assert!(
+            issues
+                .iter()
+                .any(|i| i.message == "duplicate task id 'dup'")
+        );
+    }
+
+    #[test]
+    fn collect_task_validation_issues_reports_every_violation_not_just_first() {
+        // Three independently-broken tasks: all issues should surface, not
+        // just the first one encountered (the whole point of --check).
+        let tasks = vec![
+            spec("", "ok task"),
+            spec("t2", "  "),
+            spec("dup", "ok"),
+            spec("dup", "ok again"),
+        ];
+        let issues = collect_task_validation_issues(&tasks);
+        assert!(
+            issues.len() >= 3,
+            "expected multiple issues, got {issues:?}"
+        );
+    }
+
+    // ── RED: validate_suite_name ────────────────────────────────────────
+
+    #[test]
+    fn validate_suite_name_accepts_plain_name() {
+        assert!(validate_suite_name("my-suite").is_ok());
+    }
+
+    #[test]
+    fn validate_suite_name_rejects_path_separators_and_dotdot() {
+        assert!(validate_suite_name("../escape").is_err());
+        assert!(validate_suite_name("a/b").is_err());
+        assert!(validate_suite_name("a\\b").is_err());
     }
 
     // ── RED: TaskFileFormat detection ─────────────────────────────────────

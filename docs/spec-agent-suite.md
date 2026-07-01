@@ -103,6 +103,9 @@ verify = ["lint:cargo clippy --quiet"]
 | `--history-keep-last-observations N` | (unset)  | Keep only last N observations                      |
 | `--config PATH`           | (none)               | TOML config overlay                                |
 | `--resume`                | false                | Skip tasks with existing terminal trajectories     |
+| `--check`                 | false                | Preflight-only: validate the pack and exit with **zero model calls** (see below) |
+| `--check-format text\|json` | `text`             | Output format for `--check`'s report (requires `--check`) |
+| `--strict`                | false                | With `--check`, escalate config hazards from warnings to fatal (requires `--check`) |
 
 ---
 
@@ -264,6 +267,77 @@ max agent suite \
 # 3. Inspect results
 cat regression-runs/my-regression-pack/suite-results.json | jq '.tasks[] | {id, outcome, attempt_count, unchanged_failure_count, verifier_delta}'
 ```
+
+---
+
+## `agent suite --check` — Zero-Spend Preflight (issue #821)
+
+The dataset path has `bench swebench --dry-run` and `bench scriptability-check`
+to validate inputs before a paid sweep. `agent suite --check` is the
+equivalent for the operator personal-eval path: it validates a task pack —
+parsing, task fields, verify-check launchability, MCP/hook startup, and
+config-provenance hazards — **without making any model call or starting an
+agent loop**, so a typo'd verify command or missing test binary is caught
+before dozens of paid trajectories are burned.
+
+```sh
+max agent suite --tasks-file my-tasks.yaml --check
+max agent suite --tasks-file my-tasks.yaml --check --check-format json
+max agent suite --tasks-file my-tasks.yaml --check --strict   # hazards become fatal
+```
+
+### What it validates
+
+| # | Check                | Fatal?                  | Notes                                                     |
+|---|-----------------------|--------------------------|------------------------------------------------------------|
+| a | Pack parses for the detected/declared format | yes | `format_detect`, `pack_readable`, `pack_parse` |
+| b | Every task has non-empty `id` and `task`     | yes | `task_fields_and_ids` |
+| c | Task ids are unique                          | yes | `task_fields_and_ids` (reuses the same validation `agent suite` runs) |
+| d | Every `--verify`/per-task `verify` is well-formed `NAME:COMMAND` and its command is **statically launchable** | yes | `verify:<name>` — resolves the first program token against `PATH` / shell builtins; never executes the command |
+| e | Configured MCP servers and hooks start       | yes | `mcp_server`, `hook:<phase>` — reuses the `bench scriptability-check` probe (the same transient, non-model subprocess spawn) |
+| — | Config-provenance hazards (e.g. a silently overridden `model.name`) | only with `--strict` | `hazard:<field>` — reuses the `agent config resolve` hazard detector |
+| — | Worst-case cost vs `--suite-cost-limit-usd`  | never (informational)   | `cost_ceiling` — `--per-task-budget-usd × task_count`, no model call |
+
+Launchability is a *static* check only: the out-of-scope verify-execution
+semantics from issue #821 mean `--check` confirms a command's program token
+resolves to something runnable, not that the command would actually pass.
+Complex shell constructs (subshells, command substitution) are not specially
+parsed — keep verify commands to a simple `program args...` or
+`VAR=val program args...` shape.
+
+### Output
+
+On success: exit `0` and a one-line summary —
+
+```
+agent suite --check [PASS]  tasks-file=my-tasks.yaml  (4 ms)
+5 task(s), 6 verify check(s), 0 MCP server(s), 0 hook(s), worst-case $0.5000 (limit $1.0000)
+```
+
+On any fatal check failing: exit `3` (`preflight_failure`) and every failure
+is listed with its check id and offending task id / target:
+
+```
+agent suite --check [FAIL]  tasks-file=my-tasks.yaml  (6 ms)
+5 task(s), 6 verify check(s), 0 MCP server(s), 0 hook(s), worst-case cost unknown (no --per-task-budget-usd set)
+
+Failures:
+  [FAIL] task_fields_and_ids       id=task-47               task id 'task-47' must not contain path separators or '..'
+  [FAIL] verify:tests              id=task-12               'pytset' was not found on PATH
+```
+
+`--check-format json` emits a schema-versioned report (`schema_version: 1`)
+listing every check performed — including passes — each with
+`status: "pass" | "fail" | "warn"`, suitable for CI parsing.
+
+### Guarantees
+
+- **Zero spend**: no model call, no agent loop. Asserted in tests by running
+  with no credential env vars set.
+- **Read-only**: `--check` takes no `--output` directory and never writes
+  `suite-results.json` or per-task artifacts — only the transient MCP-server
+  and hook probe subprocesses are spawned (same as `scriptability-check`).
+- **< 1s** for a 50-task pack with no MCP servers configured.
 
 ---
 

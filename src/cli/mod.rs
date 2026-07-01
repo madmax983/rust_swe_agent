@@ -7605,7 +7605,13 @@ async fn agent_suite_cmd(s: args::SuiteCmd) -> Result<(), Error> {
         None => Config::defaults()?,
     };
 
-    cfg.root.model.name.clone_from(&s.model);
+    // `--model` has no clap default (it's an `Option`) so `--check` can tell
+    // "not passed" apart from "explicitly passed the default value"; the
+    // live run path still always resolves to a concrete model name here.
+    cfg.root.model.name = s
+        .model
+        .clone()
+        .unwrap_or_else(|| crate::run::config_resolve::CLAP_DEFAULT_MODEL.to_owned());
 
     if let Some(v) = s.step_limit {
         cfg.root.agent.step_limit = v;
@@ -7637,6 +7643,41 @@ async fn agent_suite_cmd(s: args::SuiteCmd) -> Result<(), Error> {
             .unwrap_or("suite")
             .to_owned()
     });
+
+    if s.check {
+        let check_args = crate::run::suite_check::SuiteCheckArgs {
+            tasks_file: s.tasks_file,
+            format_override: s.format,
+            suite_name,
+            config: cfg,
+            config_path: s.config,
+            verify: s.verify,
+            suite_cost_limit_usd: s.suite_cost_limit_usd,
+            per_task_budget_usd: s.per_task_budget_usd,
+            step_limit_flag: s.step_limit,
+            model_flag: s.model.clone(),
+            detect_stagnation_flag: s.detect_stagnation,
+            strict: s.strict,
+        };
+        let report = crate::run::suite_check::run(&check_args).await?;
+        match s.check_format.as_str() {
+            "json" => {
+                let wrapped = serde_json::json!({ "suite_check": &report });
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&wrapped).map_err(Error::Json)?
+                );
+            }
+            _ => print!("{}", crate::run::suite_check::render_text(&report)),
+        }
+        if !report.ok {
+            exit_with_outcome(
+                ExitCode::PreflightFailure,
+                "agent suite --check found at least one fatal preflight failure",
+            );
+        }
+        return Ok(());
+    }
 
     let suite_args = crate::run::suite::SuiteArgs {
         tasks_file: s.tasks_file,

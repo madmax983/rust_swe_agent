@@ -277,9 +277,12 @@ pub struct SuiteCmd {
     #[arg(long = "suite-name", value_name = "NAME")]
     pub suite_name: Option<String>,
 
-    /// Model name (e.g. `claude-haiku-4-5-20251001`).
-    #[arg(long, default_value = "claude-opus-4-7")]
-    pub model: String,
+    /// Model name (e.g. `claude-haiku-4-5-20251001`). Defaults to
+    /// `claude-opus-4-7` when omitted. Left as `Option` (rather than a clap
+    /// default) so `--check` can distinguish "not passed" from "explicitly
+    /// passed the default value" when detecting config-provenance hazards.
+    #[arg(long)]
+    pub model: Option<String>,
 
     /// Optional path to a TOML config file (overlays defaults).
     #[arg(long)]
@@ -343,6 +346,22 @@ pub struct SuiteCmd {
     /// re-run only missing or non-terminal tasks.
     #[arg(long, default_value_t = false)]
     pub resume: bool,
+
+    /// Preflight-only mode (issue #821): validate the pack, verify-check
+    /// launchability, MCP/hook startup, and config-provenance hazards, then
+    /// exit *without making any model call or starting an agent loop*.
+    /// Zero spend; makes no writes to `--output`.
+    #[arg(long, default_value_t = false)]
+    pub check: bool,
+
+    /// Output format for `--check`'s report: `text` (default) or `json`.
+    #[arg(long = "check-format", default_value = "text", value_parser = ["text", "json"], requires = "check")]
+    pub check_format: String,
+
+    /// With `--check`, escalate config-provenance hazards (e.g. a silently
+    /// overridden `model.name`) from warnings to fatal preflight failures.
+    #[arg(long, default_value_t = false, requires = "check")]
+    pub strict: bool,
 }
 
 /// `agent artifact-check` — zero-cost structural conformance gate for artifact files (issue #534).
