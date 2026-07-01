@@ -496,16 +496,16 @@ fn check_verify_spec(target: Option<String>, spec: &str, skip_launchability: boo
             };
             let check_id = format!("verify:{}", check.name);
             if skip_launchability {
-                return CheckItem {
-                    check: check_id,
+                // Inconclusive, not a pass: a typo'd or missing binary
+                // inside the container image would still be undetectable
+                // from here, so asserting Pass would hide it from `ok` and
+                // from a `--format text` reader skimming for failures.
+                return CheckItem::warn(
+                    check_id,
                     target,
-                    status: CheckStatus::Pass,
-                    message: Some(
-                        "launchability not checked: --env docker runs verify commands inside \
-                         the container image, not on this host"
-                            .to_owned(),
-                    ),
-                };
+                    "launchability not checked: --env docker runs verify commands inside \
+                     the container image, not on this host",
+                );
             }
             match check_command_launchable(&check.command) {
                 Ok(()) => CheckItem::pass(check_id, target),
@@ -1006,11 +1006,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn docker_env_skips_host_path_launchability_check() {
+    async fn docker_env_marks_verify_launchability_inconclusive_not_fatal() {
         // A binary that only exists inside the configured Docker image (not
         // on this host) must not fail preflight — the real verify command
-        // runs inside the container, not on the host PATH. Regression test
-        // for a false-fail found in review (issue #821).
+        // runs inside the container, not on the host PATH. It also must not
+        // be asserted as a definite Pass: a typo'd/missing binary inside
+        // the image would be just as undetectable from here. Warn is the
+        // honest status. Regression test for a false-fail (and later a
+        // false-pass) found in review (issue #821).
         let dir = tempfile::tempdir().unwrap();
         let path = write_tasks(
             &dir,
@@ -1025,14 +1028,14 @@ mod tests {
         let report = run(&args).await.unwrap();
         // Not asserting report.ok: this test binary may or may not be built
         // with --features docker, which independently gates `ok` (see
-        // docker_env_fails_when_docker_feature_not_compiled below). Only
-        // the launchability-skip behavior under test is asserted here.
+        // docker_feature_gate_matches_this_build). Only the
+        // launchability-skip behavior under test is asserted here.
         let checked = report
             .checks
             .iter()
             .find(|c| c.check == "verify:tests")
             .unwrap();
-        assert_eq!(checked.status, CheckStatus::Pass);
+        assert_eq!(checked.status, CheckStatus::Warn);
     }
 
     #[tokio::test]
