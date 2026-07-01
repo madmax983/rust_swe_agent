@@ -225,12 +225,22 @@ pub async fn run(args: &SuiteCheckArgs) -> Result<SuiteCheckReport, Error> {
     // downgraded to warnings instead of fatal (see below).
     let is_docker = matches!(args.config.root.environment.kind, EnvKind::Docker);
 
-    // `mini::build_docker_env` unconditionally requires `docker_image` and
-    // errors before any task runs; catch that statically here rather than
-    // reporting PASS for a suite that cannot start. This does not probe the
-    // Docker daemon itself or pull the image — run `agent doctor` for full
-    // host readiness.
+    // `mini::build_docker_env` unconditionally requires `docker_image`, and
+    // a binary built without the (non-default) `docker` cargo feature
+    // refuses `--env docker` entirely — both fail before any task runs.
+    // Catch both statically here rather than reporting PASS for a suite
+    // that cannot start. This does not probe the Docker daemon itself or
+    // pull the image — run `agent doctor` for full host readiness.
     if is_docker {
+        if cfg!(feature = "docker") {
+            checks.push(CheckItem::pass("docker_feature_compiled", None));
+        } else {
+            checks.push(CheckItem::fail(
+                "docker_feature_compiled",
+                None,
+                "docker support not compiled in — rebuild with --features docker",
+            ));
+        }
         match &args.config.root.environment.docker_image {
             Some(_) => checks.push(CheckItem::pass("docker_image_configured", None)),
             None => checks.push(CheckItem::fail(
@@ -856,6 +866,42 @@ mod tests {
                 .iter()
                 .any(|c| c.check == "docker_image_configured")
         );
+        assert!(
+            !report
+                .checks
+                .iter()
+                .any(|c| c.check == "docker_feature_compiled")
+        );
+    }
+
+    #[tokio::test]
+    async fn docker_feature_gate_matches_this_build() {
+        // A binary built without --features docker refuses --env docker
+        // entirely at `mini::build_docker_env`, even with a valid
+        // docker_image configured — --check must catch that too instead of
+        // reporting PASS for a build that cannot start a docker suite.
+        // Self-adapts to whether *this* test binary was built with the
+        // feature, rather than assuming either way. Regression test for a
+        // gap found in review (issue #821).
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_tasks(&dir, "tasks.yaml", "- id: t1\n  task: fix it\n");
+        let mut config = Config::defaults().unwrap();
+        config.root.environment.kind = EnvKind::Docker;
+        config.root.environment.docker_image = Some("my-image:latest".to_owned());
+        let mut args = base_args(path);
+        args.config = config;
+        let report = run(&args).await.unwrap();
+        let feature_check = report
+            .checks
+            .iter()
+            .find(|c| c.check == "docker_feature_compiled")
+            .unwrap();
+        if cfg!(feature = "docker") {
+            assert_eq!(feature_check.status, CheckStatus::Pass);
+        } else {
+            assert_eq!(feature_check.status, CheckStatus::Fail);
+            assert!(!report.ok, "checks: {:?}", report.checks);
+        }
     }
 
     #[tokio::test]
@@ -967,7 +1013,10 @@ mod tests {
         let mut args = base_args(path);
         args.config = config;
         let report = run(&args).await.unwrap();
-        assert!(report.ok, "checks: {:?}", report.checks);
+        // Not asserting report.ok: this test binary may or may not be built
+        // with --features docker, which independently gates `ok` (see
+        // docker_env_fails_when_docker_feature_not_compiled below). Only
+        // the launchability-skip behavior under test is asserted here.
         let checked = report
             .checks
             .iter()
@@ -998,7 +1047,9 @@ mod tests {
         let mut args = base_args(path);
         args.config = config;
         let report = run(&args).await.unwrap();
-        assert!(report.ok, "checks: {:?}", report.checks);
+        // Not asserting report.ok here — see docker_env_skips_host_path_
+        // launchability_check for why (the docker-feature gate is tested
+        // separately below).
         let checked = report
             .checks
             .iter()
