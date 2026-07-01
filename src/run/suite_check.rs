@@ -153,8 +153,11 @@ pub struct SuiteCheckArgs {
 // ── main entry point ──────────────────────────────────────────────────────────
 
 /// Run the preflight and return a [`SuiteCheckReport`]. Performs zero model
-/// calls and starts no agent loop; the only subprocesses spawned are the
-/// transient MCP-server/hook probes already used by `bench scriptability-check`.
+/// calls and starts no agent loop. For `environment.kind = local`, the only
+/// subprocesses spawned are the transient MCP-server/hook probes already
+/// used by `bench scriptability-check`; for `environment.kind = docker`
+/// those probes are skipped entirely (nothing configured is executed on
+/// the host — see the `is_docker` branch below).
 #[allow(clippy::too_many_lines)]
 pub async fn run(args: &SuiteCheckArgs) -> Result<SuiteCheckReport, Error> {
     let started = std::time::Instant::now();
@@ -241,13 +244,18 @@ pub async fn run(args: &SuiteCheckArgs) -> Result<SuiteCheckReport, Error> {
                 "docker support not compiled in — rebuild with --features docker",
             ));
         }
-        match &args.config.root.environment.docker_image {
-            Some(_) => checks.push(CheckItem::pass("docker_image_configured", None)),
-            None => checks.push(CheckItem::fail(
+        // `Some("")`/whitespace-only is accepted by the `Option` check but
+        // still passes an unusable image straight to `docker run`, which
+        // fails with a confusing error instead of the clear one above.
+        match args.config.root.environment.docker_image.as_deref() {
+            Some(image) if !image.trim().is_empty() => {
+                checks.push(CheckItem::pass("docker_image_configured", None));
+            }
+            _ => checks.push(CheckItem::fail(
                 "docker_image_configured",
                 None,
-                "environment.kind=docker requires environment.docker_image; run `agent doctor` \
-                 to also verify the Docker daemon is reachable",
+                "environment.kind=docker requires a non-empty environment.docker_image; run \
+                 `agent doctor` to also verify the Docker daemon is reachable",
             )),
         }
     }
@@ -300,33 +308,71 @@ pub async fn run(args: &SuiteCheckArgs) -> Result<SuiteCheckReport, Error> {
     let verify_check_count = args.verify.len() + per_task_verify_count;
 
     // ── MCP servers + hooks (reuse scriptability-check, no artifact write) ─
-    // NOTE: `scriptability_check` always probes via a `LocalEnvironment`
-    // regardless of `environment.kind` (a pre-existing limitation shared by
-    // `bench scriptability-check` itself). Under `--env docker`, a live run
-    // launches MCP servers/hooks inside the container instead, so a host
-    // probe failure here may not reflect the real environment — downgrade
-    // it to a warning rather than a fatal preflight failure.
-    let scriptability_report = scriptability_check::run_with_config(&args.config, None).await?;
-    for server in &scriptability_report.servers {
-        checks.push(scriptability_check_item(
-            "mcp_server".to_owned(),
-            server.name.clone(),
-            server.ok,
-            server.error.clone(),
-            is_docker,
-        ));
+    // `scriptability_check` probes via a `LocalEnvironment` — it actually
+    // spawns each configured MCP server and executes each configured hook
+    // command. Under `--env docker` a live run never does that on the host
+    // (MCP servers/hooks launch inside the container), so doing it here
+    // would both misrepresent the container and — for a destructive or
+    // container-only command — cause real side effects on the host outside
+    // the sandbox the operator chose. Skip the probe entirely for docker;
+    // report each configured server/hook as unprobed instead.
+    let mcp_server_count = args.config.root.agent.mcp_servers.len();
+    let hook_count = args.config.root.agent.hooks.pre_tool_use.len()
+        + args.config.root.agent.hooks.post_tool_use.len();
+    if is_docker {
+        for (i, _) in args.config.root.agent.mcp_servers.iter().enumerate() {
+            checks.push(CheckItem::warn(
+                "mcp_server",
+                Some(format!("mcp-{i}")),
+                "not probed: --env docker is configured; running configured commands on the \
+                 host would bypass the sandbox the operator chose",
+            ));
+        }
+        for hook_cfg in args
+            .config
+            .root
+            .agent
+            .hooks
+            .pre_tool_use
+            .iter()
+            .map(|h| (h, "pre_tool_use"))
+            .chain(
+                args.config
+                    .root
+                    .agent
+                    .hooks
+                    .post_tool_use
+                    .iter()
+                    .map(|h| (h, "post_tool_use")),
+            )
+        {
+            let (hook, phase) = hook_cfg;
+            checks.push(CheckItem::warn(
+                format!("hook:{phase}"),
+                Some(hook.name.clone()),
+                "not probed: --env docker is configured; running configured commands on the \
+                 host would bypass the sandbox the operator chose",
+            ));
+        }
+    } else {
+        let scriptability_report = scriptability_check::run_with_config(&args.config, None).await?;
+        for server in &scriptability_report.servers {
+            checks.push(scriptability_check_item(
+                "mcp_server".to_owned(),
+                server.name.clone(),
+                server.ok,
+                server.error.clone(),
+            ));
+        }
+        for hook in &scriptability_report.hooks {
+            checks.push(scriptability_check_item(
+                format!("hook:{}", hook.phase),
+                hook.name.clone(),
+                hook.ok,
+                hook.error.clone(),
+            ));
+        }
     }
-    for hook in &scriptability_report.hooks {
-        checks.push(scriptability_check_item(
-            format!("hook:{}", hook.phase),
-            hook.name.clone(),
-            hook.ok,
-            hook.error.clone(),
-            is_docker,
-        ));
-    }
-    let mcp_server_count = scriptability_report.servers.len();
-    let hook_count = scriptability_report.hooks.len();
 
     // ── Config-provenance hazards (reuse `agent config resolve`) ───────────
     let hazard_args = ConfigResolveArgs {
@@ -450,33 +496,16 @@ fn resolve_format(path: &Path, format_override: Option<&str>) -> Result<TaskFile
 /// Build a [`CheckItem`] from a `scriptability_check` server/hook result.
 /// A failure is downgraded from `Fail` to `Warn` under `--env docker`,
 /// since the probe ran on the host, not inside the configured container.
+/// Build a [`CheckItem`] from a `scriptability_check` server/hook result.
+/// Only ever called for `environment.kind = local` — under `--env docker`
+/// the probe itself is skipped rather than run and downgraded (see the
+/// `is_docker` branch in [`run`]).
 fn scriptability_check_item(
     check: String,
     target: String,
     ok: bool,
     error: Option<String>,
-    is_docker: bool,
 ) -> CheckItem {
-    if is_docker {
-        // A host probe result is inconclusive either way under --env
-        // docker: MCP servers/hooks run inside the container image in a
-        // live run, so a passing host probe doesn't confirm the command
-        // exists in the image, and a failing one doesn't confirm it
-        // doesn't. Report both as a warning rather than asserting a
-        // verdict the host can't actually back up.
-        let message = if ok {
-            "host probe succeeded, but --env docker runs MCP servers/hooks inside the \
-             container image — this does not confirm the command is present there"
-                .to_owned()
-        } else {
-            let base = error.unwrap_or_else(|| "probe failed".to_owned());
-            format!(
-                "{base} (probed on the host; --env docker runs MCP servers/hooks inside \
-                 the container image, so this may not reflect the real environment)"
-            )
-        };
-        return CheckItem::warn(check, Some(target), message);
-    }
     if ok {
         CheckItem::pass(check, Some(target))
     } else {
@@ -882,6 +911,30 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn docker_env_with_blank_image_fails_preflight() {
+        // `docker_image = Some("")` (or whitespace) passes the `Option`
+        // check but is still an unusable image string passed straight to
+        // `docker run`, which fails with a confusing error rather than the
+        // clear one above. Regression test for a gap found in review
+        // (issue #821).
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_tasks(&dir, "tasks.yaml", "- id: t1\n  task: fix it\n");
+        let mut config = Config::defaults().unwrap();
+        config.root.environment.kind = EnvKind::Docker;
+        config.root.environment.docker_image = Some("   ".to_owned());
+        let mut args = base_args(path);
+        args.config = config;
+        let report = run(&args).await.unwrap();
+        assert!(!report.ok, "checks: {:?}", report.checks);
+        assert!(
+            report
+                .checks
+                .iter()
+                .any(|c| c.check == "docker_image_configured" && c.status == CheckStatus::Fail)
+        );
+    }
+
+    #[tokio::test]
     async fn docker_env_with_image_passes_that_check() {
         let dir = tempfile::tempdir().unwrap();
         let path = write_tasks(&dir, "tasks.yaml", "- id: t1\n  task: fix it\n");
@@ -1073,11 +1126,81 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn docker_env_downgrades_mcp_failure_to_warning() {
-        // `scriptability_check` always probes on the host; under --env
-        // docker a live run launches MCP servers inside the container
-        // instead, so a host-side probe failure can't be trusted as fatal.
-        // Regression test for a false-fail found in review (issue #821).
+    async fn docker_env_does_not_execute_mcp_servers_on_host() {
+        // The live run never launches MCP servers on the host under --env
+        // docker (they run inside the container), and running a configured
+        // command here anyway could have real side effects outside the
+        // sandbox the operator chose. Prove no execution happens at all —
+        // not just that a failure is downgraded — by using a command whose
+        // side effect (writing a marker file) would be observable if run.
+        // Regression test for a host-execution safety gap found in review
+        // (issue #821).
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_tasks(&dir, "tasks.yaml", "- id: t1\n  task: fix it\n");
+        let marker = dir.path().join("marker.txt");
+        let mut config = Config::defaults().unwrap();
+        config.root.environment.kind = EnvKind::Docker;
+        config.root.environment.docker_image = Some("my-image:latest".to_owned());
+        config
+            .root
+            .agent
+            .mcp_servers
+            .push(crate::config::McpServerCfg {
+                command: format!("touch {}", marker.display()),
+                timeout_secs: Some(1),
+            });
+        let mut args = base_args(path);
+        args.config = config;
+        let report = run(&args).await.unwrap();
+        assert!(
+            !marker.exists(),
+            "MCP server command must not execute on the host under --env docker"
+        );
+        let checked = report
+            .checks
+            .iter()
+            .find(|c| c.check == "mcp_server")
+            .unwrap();
+        assert_eq!(checked.status, CheckStatus::Warn);
+        assert!(checked.message.as_deref().unwrap().contains("not probed"));
+    }
+
+    #[tokio::test]
+    async fn docker_env_does_not_execute_hooks_on_host() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_tasks(&dir, "tasks.yaml", "- id: t1\n  task: fix it\n");
+        let marker = dir.path().join("marker.txt");
+        let mut config = Config::defaults().unwrap();
+        config.root.environment.kind = EnvKind::Docker;
+        config.root.environment.docker_image = Some("my-image:latest".to_owned());
+        config
+            .root
+            .agent
+            .hooks
+            .pre_tool_use
+            .push(crate::config::ToolHookCfg {
+                name: "guard".to_owned(),
+                command: format!("touch {}", marker.display()),
+                timeout_secs: Some(1),
+            });
+        let mut args = base_args(path);
+        args.config = config;
+        let report = run(&args).await.unwrap();
+        assert!(
+            !marker.exists(),
+            "hook command must not execute on the host under --env docker"
+        );
+        let checked = report
+            .checks
+            .iter()
+            .find(|c| c.check == "hook:pre_tool_use")
+            .unwrap();
+        assert_eq!(checked.status, CheckStatus::Warn);
+        assert_eq!(checked.target.as_deref(), Some("guard"));
+    }
+
+    #[tokio::test]
+    async fn docker_env_mcp_and_hook_counts_still_reflect_config() {
         let dir = tempfile::tempdir().unwrap();
         let path = write_tasks(&dir, "tasks.yaml", "- id: t1\n  task: fix it\n");
         let mut config = Config::defaults().unwrap();
@@ -1088,59 +1211,35 @@ mod tests {
             .agent
             .mcp_servers
             .push(crate::config::McpServerCfg {
-                command: "__no_such_binary_xyz_suite_check_mcp__".to_owned(),
+                command: "true".to_owned(),
+                timeout_secs: Some(1),
+            });
+        config
+            .root
+            .agent
+            .hooks
+            .post_tool_use
+            .push(crate::config::ToolHookCfg {
+                name: "note".to_owned(),
+                command: "true".to_owned(),
                 timeout_secs: Some(1),
             });
         let mut args = base_args(path);
         args.config = config;
         let report = run(&args).await.unwrap();
-        // Not asserting report.ok here — see docker_env_skips_host_path_
-        // launchability_check for why (the docker-feature gate is tested
-        // separately below).
-        let checked = report
-            .checks
-            .iter()
-            .find(|c| c.check == "mcp_server")
-            .unwrap();
-        assert_eq!(checked.status, CheckStatus::Warn);
+        assert_eq!(report.mcp_server_count, 1);
+        assert_eq!(report.hook_count, 1);
     }
 
     #[test]
-    fn scriptability_check_item_local_env_reflects_probe_result() {
-        let ok = scriptability_check_item("mcp_server".into(), "s".into(), true, None, false);
+    fn scriptability_check_item_reflects_probe_result() {
+        let ok = scriptability_check_item("mcp_server".into(), "s".into(), true, None);
         assert_eq!(ok.status, CheckStatus::Pass);
 
-        let fail = scriptability_check_item(
-            "mcp_server".into(),
-            "s".into(),
-            false,
-            Some("boom".into()),
-            false,
-        );
+        let fail =
+            scriptability_check_item("mcp_server".into(), "s".into(), false, Some("boom".into()));
         assert_eq!(fail.status, CheckStatus::Fail);
         assert_eq!(fail.message.as_deref(), Some("boom"));
-    }
-
-    #[test]
-    fn scriptability_check_item_docker_env_is_inconclusive_either_way() {
-        // A host probe result is never a verdict under --env docker: a
-        // passing host probe doesn't confirm the command exists inside the
-        // container image (the actual execution target), just as a failing
-        // one doesn't confirm it's absent. Regression test for a
-        // pass-side false-positive found in review (issue #821): a host-only
-        // MCP server/hook that doesn't exist in the image previously
-        // reported PASS.
-        let ok = scriptability_check_item("mcp_server".into(), "s".into(), true, None, true);
-        assert_eq!(ok.status, CheckStatus::Warn);
-
-        let fail = scriptability_check_item(
-            "mcp_server".into(),
-            "s".into(),
-            false,
-            Some("boom".into()),
-            true,
-        );
-        assert_eq!(fail.status, CheckStatus::Warn);
     }
 
     #[tokio::test]
