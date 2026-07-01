@@ -602,6 +602,32 @@ fn check_command_launchable(command: &str) -> Result<(), String> {
 /// wrapper shape: `env [OPTION]... [NAME=VALUE]... [COMMAND [ARG]...]`.
 const WRAPPER_COMMANDS: &[&str] = &["time", "exec", "command", "eval", "builtin", "env"];
 
+/// Shell binaries whose `-c`/`-lc`/etc. option hands an entire nested
+/// command line to the shell as a single string argument.
+const SHELL_BINARIES: &[&str] = &["bash", "sh", "zsh", "ksh", "dash"];
+
+/// Whether `token` (already extracted as the program name, with `remainder`
+/// the rest of the command line) is a known shell binary invoked with a
+/// `-c`-style option — i.e. `bash -c '...'`, `sh -lc '...'`. Matches by
+/// basename so `/bin/bash -c ...` is caught too.
+fn is_shell_dash_c_invocation(token: &str, remainder: &str) -> bool {
+    let base_name = token.rsplit('/').next().unwrap_or(token);
+    if !SHELL_BINARIES.contains(&base_name) {
+        return false;
+    }
+    let mut rest = remainder;
+    while let Some((word, next_remainder)) = next_shell_word(rest) {
+        let Some(flags) = word.strip_prefix('-') else {
+            return false;
+        };
+        if flags.contains('c') {
+            return true;
+        }
+        rest = next_remainder;
+    }
+    false
+}
+
 /// Reasons `check_command_launchable` can't be trusted to resolve `command`
 /// statically, checked at every layer as [`WRAPPER_COMMANDS`] are unwrapped
 /// — not just the outermost command string. A `PATH=` assignment or an
@@ -625,6 +651,20 @@ fn verify_command_inconclusive_reason(command: &str) -> Option<&'static str> {
             );
         }
         let (token, remainder) = split_off_program_token(rest)?;
+        if is_shell_dash_c_invocation(&token, remainder) {
+            // `bash -c '...'`, `sh -lc '...'` etc. hand an entire nested
+            // command line to the shell as a single string argument —
+            // safely inspecting it would mean recursively re-parsing an
+            // arbitrary shell string (which could itself contain further
+            // wrappers, PATH assignments, pipes...). Resolving just the
+            // outer shell binary (which almost always exists) and calling
+            // it Pass would hide a typo'd/missing binary inside the
+            // payload until after a paid task ran.
+            return Some(
+                "verify command delegates to a nested shell invocation (a `-c`-style option), \
+                 whose payload this static check does not parse",
+            );
+        }
         if !WRAPPER_COMMANDS.contains(&token.as_str()) {
             return None;
         }
@@ -1819,6 +1859,51 @@ mod tests {
         assert!(verify_command_inconclusive_reason("time cargo test").is_none());
         assert!(verify_command_inconclusive_reason("cargo -v test").is_none());
         assert!(verify_command_inconclusive_reason("env PYTHONPATH=. cargo test").is_none());
+    }
+
+    #[test]
+    fn verify_command_inconclusive_reason_detects_shell_dash_c() {
+        // `bash -c '...'` / `sh -lc '...'` hand an entire nested command
+        // line to the shell as one string argument — resolving just the
+        // outer shell binary (which almost always exists) would hide a
+        // typo'd/missing binary inside that payload until after a paid
+        // task ran. Regression test for a gap found in review (issue
+        // #821).
+        assert!(verify_command_inconclusive_reason("bash -lc __no_such_binary_xyz__").is_some());
+        assert!(verify_command_inconclusive_reason("sh -c 'pytest -q'").is_some());
+        assert!(verify_command_inconclusive_reason("/bin/bash -c cargo").is_some());
+        // Nested inside another wrapper too.
+        assert!(verify_command_inconclusive_reason("time bash -c cargo").is_some());
+    }
+
+    #[test]
+    fn verify_command_inconclusive_reason_none_for_shell_without_dash_c() {
+        // Running a script file (no -c) is an ordinary case this checker
+        // doesn't specially model — it just resolves the shell binary
+        // itself, same as before this fix.
+        assert!(verify_command_inconclusive_reason("bash script.sh").is_none());
+        assert!(verify_command_inconclusive_reason("bash -l script.sh").is_none());
+    }
+
+    #[tokio::test]
+    async fn verify_command_with_shell_dash_c_is_inconclusive_not_fatal() {
+        // Exact scenario from review (issue #821): `bash -lc
+        // __no_such_binary__` previously resolved only the outer `bash`
+        // and reported PASS.
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_tasks(
+            &dir,
+            "tasks.yaml",
+            "- id: t1\n  task: fix it\n  verify:\n    - tests:bash -lc __no_such_binary_xyz_suite_check__\n",
+        );
+        let report = run(&base_args(path)).await.unwrap();
+        assert!(report.ok, "checks: {:?}", report.checks);
+        let checked = report
+            .checks
+            .iter()
+            .find(|c| c.check == "verify:tests")
+            .unwrap();
+        assert_eq!(checked.status, CheckStatus::Warn);
     }
 
     #[tokio::test]
