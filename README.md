@@ -218,6 +218,14 @@ Each task also records loop-behaviour fields (`attempt_count`,
 `unchanged_failure_count`, `verifier_delta`, `stop_reason`) so you can detect
 the "same miss, more spend" regression pattern before it reaches the full sweep.
 
+Fixed the one task that failed? Re-run **only** that task — the other 49
+incur zero model calls and are carried forward unchanged:
+
+```bash
+cargo run --quiet -- --log error agent suite \
+    --tasks-file my-tasks.yaml --output ./regression-runs --rerun-failed
+```
+
 See `docs/spec-agent-suite.md` for the full flag reference, file schema, and
 exit-code matrix.
 

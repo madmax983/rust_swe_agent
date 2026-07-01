@@ -103,6 +103,7 @@ verify = ["lint:cargo clippy --quiet"]
 | `--history-keep-last-observations N` | (unset)  | Keep only last N observations                      |
 | `--config PATH`           | (none)               | TOML config overlay                                |
 | `--resume`                | false                | Skip tasks with existing terminal trajectories     |
+| `--rerun-failed`          | false                | Re-run only tasks whose last result was non-passing; carries passing tasks forward at zero cost (see below). Mutually exclusive with `--resume` |
 | `--check`                 | false                | Preflight-only: validate the pack and exit with **zero model calls** (see below) |
 | `--check-format text\|json` | `text`             | Output format for `--check`'s report (requires `--check`) |
 | `--strict`                | false                | With `--check`, escalate config hazards from warnings to fatal (requires `--check`) |
@@ -154,9 +155,14 @@ Per-task entry with **loop-behaviour fields**:
   "attempt_count": 12,
   "unchanged_failure_count": 0,
   "verifier_delta": 1,
-  "stop_reason": "submitted"
+  "stop_reason": "submitted",
+  "carried_over": false
 }
 ```
+
+`carried_over` is `true` only for a row copied forward unchanged by
+`--rerun-failed` (see below); `false` for every freshly-run task, including
+every task in a plain `agent suite` run.
 
 #### Loop-behaviour fields (issue #322 feedback)
 
@@ -216,6 +222,113 @@ max agent suite --tasks-file tasks.yaml --suite-cost-limit-usd 0.10
 # Second run continues from task 4
 max agent suite --tasks-file tasks.yaml --suite-cost-limit-usd 0.10 --resume
 ```
+
+---
+
+## `--rerun-failed` — Re-run only failed tasks (issue #825)
+
+`agent suite` is the cheap, high-iteration fix-confirm loop: tweak a
+prompt/config/model, re-run your personal pack, confirm the regression is
+gone. `--rerun-failed` is the `pytest --last-failed` of that loop: after
+fixing the one task that failed in a 50-task pack, re-run **only** that
+task and merge the result into a fresh `suite-results.json` — no cost paid
+for the 49 tasks that already pass.
+
+```sh
+# First run: task 7 fails verification.
+max agent suite --tasks-file tasks.yaml --suite-name my-pack
+
+# Edit the prompt/config/verify command for the failing task, then:
+max agent suite --tasks-file tasks.yaml --suite-name my-pack --rerun-failed
+```
+
+### Source of truth
+
+Each task's own `<output>/<suite-name>/<task-id>.traj.json` — never
+`suite-results.json`'s `id` field — is the source of truth for matching a
+task's prior result to the current pack. `suite-results.json` is redacted on
+write like every other field (see **Redaction** below), and matching a task
+by an `id` that might have been redacted would either desync selection from
+the pack (an already-passing task silently re-runs at full cost) or require
+un-redacting the artifact, reopening a redaction-bypass surface. A task's
+real trajectory filename, by contrast, is never redacted — only JSON string
+*content* is — so it is always a trustworthy correlation key. Every
+genuinely passing task has one (submitting a patch requires having run and
+written it); a task without one is treated as needing a re-run, matching
+the definition below. If **no** task in the pack has a reconstructable
+trajectory (and no `suite-results.json` exists either, so there is no
+evidence this suite ever ran at all), the command refuses to guess: it
+exits `2` (`usage_error`) with a message to run `agent suite` once without
+`--rerun-failed` first, rather than silently running nothing or the whole
+pack.
+
+### Definition of "failed"
+
+A task counts as **passing** — and is therefore carried forward unchanged
+without being re-run — only when its last recorded row has
+`outcome == "submitted"` **and** `verification_status != "verification_failed"`.
+Every other case is selected for re-run, including:
+
+- `error`, `step_limit_reached`, `budget_exhausted`, `skipped_budget_exhausted`,
+  `skipped_preflight_halt`, `skipped_interrupted` — anything that didn't submit.
+- `outcome == "submitted"` but `verification_status == "verification_failed"` —
+  it submitted a patch, but the patch didn't pass its checks.
+- A task id present in the current pack with **no** prior recorded row at
+  all (e.g. a task newly added to the pack since the last run) — there is no
+  passing result to carry forward, so it runs.
+
+If every task in the pack is already passing, `--rerun-failed` runs zero
+tasks, prints a `0 of N task(s) need a re-run` notice, and exits `0`
+(`success`) — a documented no-op, not silent nothing.
+
+### Carry-forward rule
+
+For every task **not** selected for re-run, the prior `SuiteTaskResult` row
+is copied into the new `suite-results.json` byte-for-byte except for a new
+`carried_over: true` marker (`false` for every freshly-run row, and for
+every row produced by a plain `agent suite` run without `--rerun-failed`).
+The task's `<task-id>.traj.json` file is not opened, modified, or
+re-timestamped — the strongest available evidence of zero spend. The
+stdout summary table also gets a `N/task_count carried forward from a prior
+run (--rerun-failed), 0 fresh cost` line when at least one row was carried.
+
+### Relationship to `--resume`
+
+`--resume` and `--rerun-failed` answer different questions and are mutually
+exclusive (rejected with a usage error, exit `2`, if both are passed):
+
+| Flag              | Skips                                             | Re-runs                                   |
+|-------------------|----------------------------------------------------|--------------------------------------------|
+| `--resume`        | Every task with a **terminal** trajectory, pass or fail | Only missing/non-terminal (interrupted) tasks |
+| `--rerun-failed`  | Only **passing** tasks                             | Every non-passing task, even if terminal   |
+
+### Composition
+
+- **`--suite-cost-limit-usd`**: the cap applies only to the re-run subset's
+  cumulative cost. Carried-forward tasks never touch the running total used
+  for the cap, so a low cap can halt the re-run subset early (remaining
+  re-run tasks recorded as `skipped_budget_exhausted`) without affecting any
+  carried-forward row.
+- **Per-task `--verify` override**: applied normally to whichever tasks are
+  actually selected for re-run; carried-forward tasks keep their prior
+  `verification_status` untouched. Their `verify` entries in the current
+  pack file are never parsed or executed — a malformed or since-edited
+  `verify` command on a task that isn't being re-run does not block the
+  invocation.
+- **`--check`**: unaffected; `--check` is a zero-spend preflight over the
+  *whole* pack and does not consult prior results.
+
+### Exit codes
+
+The merged `suite-results.json` has the same schema and the same
+[exit-code matrix](#exit-code-matrix) as a full run, so `--rerun-failed`
+gates CI identically. Two additional deterministic outcomes are specific to
+`--rerun-failed` itself:
+
+| Code | Class         | When                                                                 |
+|------|---------------|-----------------------------------------------------------------------|
+| 2    | `usage_error` | `--rerun-failed` combined with `--resume`, or no prior `suite-results.json`/trajectories exist to select from |
+| 0    | `success`     | Every task in the pack was already passing; zero tasks were re-run  |
 
 ---
 

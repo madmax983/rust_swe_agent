@@ -4,7 +4,14 @@
 //! existing `mini` code path, and writes both per-task trajectories and an
 //! aggregated `suite-results.json` artifact. Redaction, resume, and
 //! suite-level cost cap are all honoured.
+//!
+//! `--rerun-failed` (issue #825) re-runs only the tasks whose last recorded
+//! result was non-passing, carrying every already-passing result forward
+//! unchanged (zero model calls, zero fresh cost) into a freshly merged
+//! `suite-results.json`. See [`tasks_needing_rerun`] and
+//! [`load_prior_suite_state`].
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use chrono::Utc;
@@ -148,6 +155,15 @@ pub struct SuiteTaskResult {
     /// Why the agent loop stopped (e.g. `"submitted"`, `"step_limit"`,
     /// `"agent_stagnation"`, `"budget_exhausted"`, `"wallclock_timeout"`).
     pub stop_reason: Option<String>,
+    // ── `--rerun-failed` provenance (issue #825) ───────────────────────────
+    /// `true` when this row was carried forward unchanged from a prior run
+    /// (a `--rerun-failed` invocation found it already passing) rather than
+    /// freshly executed in this invocation. Always `false` for a plain
+    /// `agent suite` run. Absent on artifacts written before issue #825;
+    /// defaults to `false` on read, matching the historical behavior (every
+    /// row was freshly run).
+    #[serde(default)]
+    pub carried_over: bool,
 }
 
 /// Top-level `suite-results.json` artifact.
@@ -201,6 +217,14 @@ impl SuiteResults {
             self.total_cost_usd,
             self.total_duration_secs,
         );
+        let carried = self.tasks.iter().filter(|t| t.carried_over).count();
+        if carried > 0 {
+            let _ = writeln!(
+                &mut out,
+                "{carried}/{} carried forward from a prior run (--rerun-failed), 0 fresh cost",
+                self.task_count,
+            );
+        }
         out
     }
 }
@@ -315,6 +339,149 @@ fn task_result_from_trajectory(id: &str, traj: &Trajectory, traj_path: &Path) ->
         unchanged_failure_count: count_unchanged_failures(&traj.info.test_invocations),
         verifier_delta: compute_verifier_delta(&traj.info.verification_results),
         stop_reason: derive_stop_reason(traj),
+        carried_over: false,
+    }
+}
+
+// ── `--rerun-failed` selection & carry-forward (issue #825) ──────────────────
+
+/// A task result counts as "passing" — and is therefore eligible to be
+/// carried forward unchanged by `--rerun-failed` — only when it submitted
+/// *and* did not fail verification. Everything else (`error`,
+/// `step_limit_reached`, `budget_exhausted`, `skipped_budget_exhausted`, a
+/// submitted-but-`verification_failed` row, …) is "failed" for selection
+/// purposes.
+fn is_passing_result(result: &SuiteTaskResult) -> bool {
+    result.outcome == crate::trajectory::outcome::SUBMITTED
+        && result.verification_status != crate::trajectory::verification_status::VERIFICATION_FAILED
+}
+
+/// Determine which task ids in the current pack need to be (re)run under
+/// `--rerun-failed`: every id absent from `prior` (never recorded, e.g. a
+/// task newly added to the pack) or present but not [`is_passing_result`].
+/// Ids present in `prior` and passing are excluded — the whole point of the
+/// mode is to skip work already confirmed to pass.
+pub(crate) fn tasks_needing_rerun(
+    tasks: &[SuiteTaskSpec],
+    prior: &HashMap<String, SuiteTaskResult>,
+) -> std::collections::HashSet<String> {
+    tasks
+        .iter()
+        .filter(|t| !prior.get(&t.id).is_some_and(is_passing_result))
+        .map(|t| t.id.clone())
+        .collect()
+}
+
+/// Load the suite's prior state for `--rerun-failed` selection.
+///
+/// Prefers `suite-results.json` — written at the end of every prior `agent
+/// suite` invocation, even one halted early — since it is the authoritative,
+/// already-aggregated source of truth. Falls back to reconstructing per-task
+/// results from individual `<task-id>.traj.json` files (for the tasks in the
+/// current pack) when that artifact is missing entirely, e.g. the previous
+/// process was killed before it could write the aggregate.
+///
+/// Returns `None` when neither source has anything to report for this pack —
+/// the caller should treat that as "never run; run without `--rerun-failed`
+/// first".
+fn load_prior_suite_state(
+    suite_dir: &Path,
+    tasks: &[SuiteTaskSpec],
+) -> Option<HashMap<String, SuiteTaskResult>> {
+    // Always key by the *current* task's real id and locate its evidence via
+    // the deterministic `<suite_dir>/<id>.traj.json` filename — never by an
+    // `id` value read back out of `suite-results.json`'s JSON content. That
+    // content is redacted on write (`write_suite_results` redacts every
+    // string, including `id`, since a task id is JSON data like any other
+    // and must get the same guarantee), so trusting it here would either
+    // silently mismatch a redacted id against the pack's real id (treating
+    // an already-passing task as never-run and re-spending on it) or
+    // require un-redacting the persisted artifact, reopening exactly the
+    // redaction-bypass surface the spec promises not to add (issue #825
+    // review findings). Every genuinely passing task has a real terminal
+    // trajectory on disk — reconstructing from it is always sufficient and
+    // never depends on redaction-sensitive content.
+    let mut map = HashMap::new();
+    for task in tasks {
+        let traj_path = suite_dir.join(format!("{}.traj.json", task.id));
+        if let Some(traj) = try_load_terminal_trajectory(&traj_path) {
+            map.insert(
+                task.id.clone(),
+                task_result_from_trajectory(&task.id, &traj, &traj_path),
+            );
+        }
+    }
+    if !map.is_empty() {
+        return Some(map);
+    }
+    // No task in the current pack has a reconstructable trajectory. If
+    // `suite-results.json` exists at all, this suite has still run before
+    // (e.g. every task was skipped before writing a trajectory, or the pack
+    // was edited enough that none of its ids match prior trajectory files)
+    // — report "has run before, but nothing verifiable is passing" (every
+    // task selected for rerun) rather than the stronger "never run" error.
+    if suite_dir.join("suite-results.json").exists() {
+        return Some(map);
+    }
+    None
+}
+
+/// Returns the prior passing result for `task_id`, marked `carried_over:
+/// true`, when `--rerun-failed` has excluded it from the re-run subset.
+/// `None` when the task must run (or re-run) instead — either this isn't a
+/// `--rerun-failed` invocation, or the task is in the re-run subset, or (a
+/// defensive fallback that should not occur in practice) it has no prior
+/// result to carry.
+///
+/// Used both by the main per-task loop and by the early-halt padding loop so
+/// a passing task later in the pack is never demoted to a `skipped_*` row
+/// just because an earlier re-run task hit a hard error.
+fn try_carry_forward(
+    task_id: &str,
+    run_ids: Option<&std::collections::HashSet<String>>,
+    prior_by_id: &HashMap<String, SuiteTaskResult>,
+) -> Option<SuiteTaskResult> {
+    let ids = run_ids?;
+    if ids.contains(task_id) {
+        return None;
+    }
+    let mut carried = prior_by_id.get(task_id).cloned()?;
+    carried.carried_over = true;
+    Some(carried)
+}
+
+/// Fold a carried-forward result's cost/resolved/verified contribution into
+/// the running suite totals. Shared by the main loop and the halt-padding
+/// loop so both count carried rows identically.
+fn accumulate_carried(
+    carried: &SuiteTaskResult,
+    total_cost: &mut f64,
+    resolved_count: &mut usize,
+    verified_count: &mut usize,
+) {
+    *total_cost += carried.cost_usd.unwrap_or(0.0);
+    if carried.outcome == crate::trajectory::outcome::SUBMITTED {
+        *resolved_count += 1;
+    }
+    if carried.verification_status == crate::trajectory::verification_status::VERIFIED {
+        *verified_count += 1;
+    }
+}
+
+/// Remove a stale trajectory left over from a prior run for a task
+/// `--rerun-failed` has selected to (re)run, so no row recorded for it in
+/// *this* invocation ever points at a file with unrelated old content —
+/// whether the task goes on to actually run, gets skipped by the suite cost
+/// cap, or gets skipped by an early halt before it is reached at all. A
+/// no-op for a plain `agent suite` run (`run_ids` is `None`) or a task not
+/// selected for rerun.
+fn clear_stale_rerun_trajectory(
+    task_id: &str,
+    run_ids: Option<&std::collections::HashSet<String>>,
+    traj_path: &Path,
+) {
+    if run_ids.is_some_and(|ids| ids.contains(task_id)) {
+        let _ = std::fs::remove_file(traj_path);
     }
 }
 
@@ -334,6 +501,16 @@ pub struct SuiteArgs {
     pub task_timeout_secs: Option<u64>,
     pub step_limit: Option<u32>,
     pub per_task_budget_usd: Option<f64>,
+    /// Re-run only tasks whose last recorded result was non-passing (issue
+    /// #825). Mutually exclusive with `resume`.
+    pub rerun_failed: bool,
+    /// Test-only hook mirroring `MiniArgs::deterministic_responses`: scripted
+    /// model responses forwarded to every task's `mini::run`, bypassing the
+    /// real model API. Always `None` from the CLI entry point.
+    pub deterministic_responses: Option<Vec<String>>,
+    /// Test-only hook mirroring `MiniArgs::deterministic_usage_per_call`.
+    /// Always `None` from the CLI entry point.
+    pub deterministic_usage_per_call: Option<crate::model::ModelUsage>,
 }
 
 /// Run the suite and return the final exit code.
@@ -383,11 +560,59 @@ pub async fn run(args: SuiteArgs) -> Result<ExitCode, Error> {
     }
     std::fs::create_dir_all(&suite_dir).map_err(Error::Io)?;
 
+    // ── `--rerun-failed` selection (issue #825) ────────────────────────────
+    // Distinct from `--resume` (which continues an interrupted run and skips
+    // every terminal task, pass or fail): this mode re-runs only the subset
+    // that previously did not pass. The CLI also rejects this combination via
+    // `conflicts_with`; this guard keeps `suite::run` itself safe for direct
+    // (non-CLI) callers.
+    if args.rerun_failed && args.resume {
+        return Err(Error::Config(crate::error::ConfigError::Invalid(
+            "--rerun-failed cannot be combined with --resume: --resume continues an \
+             interrupted run (skips every terminal task, pass or fail); --rerun-failed \
+             re-runs only the previously-failed subset. Choose one."
+                .into(),
+        )));
+    }
+    let prior_by_id: HashMap<String, SuiteTaskResult> = if args.rerun_failed {
+        load_prior_suite_state(&suite_dir, &tasks).ok_or_else(|| {
+            Error::Config(crate::error::ConfigError::Invalid(format!(
+                "--rerun-failed: no suite-results.json or task trajectories found in '{}'; \
+                 run `agent suite` once without --rerun-failed first",
+                suite_dir.display()
+            )))
+        })?
+    } else {
+        HashMap::new()
+    };
+    let run_ids: Option<std::collections::HashSet<String>> = if args.rerun_failed {
+        let ids = tasks_needing_rerun(&tasks, &prior_by_id);
+        eprintln!(
+            "agent suite --rerun-failed: {} of {} task(s) need a re-run in '{}'",
+            ids.len(),
+            tasks.len(),
+            suite_dir.display()
+        );
+        Some(ids)
+    } else {
+        None
+    };
+
     // ── Parse suite-level verify checks ──────────────────────────────────
     let suite_verify = parse_verify_checks(&args.verify)?;
 
-    // ── Pre-validate all per-task verify entries ──────────────────────────
+    // ── Pre-validate per-task verify entries ──────────────────────────────
+    // Under `--rerun-failed`, only tasks actually selected to (re)run need a
+    // valid `verify` list — a carried-forward task's prior
+    // `verification_status` is kept as-is and its verify commands are never
+    // parsed or executed, so a malformed entry there must not block the
+    // whole invocation.
     for task in &tasks {
+        if let Some(ids) = &run_ids {
+            if !ids.contains(&task.id) {
+                continue;
+            }
+        }
         parse_verify_checks(&task.verify).map_err(|e| match e {
             Error::Config(crate::error::ConfigError::Invalid(msg)) => Error::Config(
                 crate::error::ConfigError::Invalid(format!("task '{}': {msg}", task.id)),
@@ -412,6 +637,26 @@ pub async fn run(args: SuiteArgs) -> Result<ExitCode, Error> {
 
     for task in &tasks {
         let traj_path = suite_dir.join(format!("{}.traj.json", task.id));
+
+        // ── `--rerun-failed`: carry forward already-passing results untouched,
+        //    zero model calls and zero fresh cost for them ──────────────────
+        if let Some(carried) = try_carry_forward(&task.id, run_ids.as_ref(), &prior_by_id) {
+            accumulate_carried(
+                &carried,
+                &mut total_cost,
+                &mut resolved_count,
+                &mut verified_count,
+            );
+            task_results.push(carried);
+            continue;
+        }
+
+        // A task selected for rerun already has a stale, failing trajectory
+        // from the prior run at this exact path. Clear it *before* any
+        // outcome is recorded for it this invocation — including the suite
+        // cost-cap skip below — so no row (run, or skipped) ever points at
+        // that unrelated old content.
+        clear_stale_rerun_trajectory(&task.id, run_ids.as_ref(), &traj_path);
 
         // ── Resume: skip tasks with terminal outcomes ─────────────────────
         if args.resume && traj_path.exists() {
@@ -459,10 +704,43 @@ pub async fn run(args: SuiteArgs) -> Result<ExitCode, Error> {
                     unchanged_failure_count: 0,
                     verifier_delta: None,
                     stop_reason: Some("suite_budget_exhausted".to_owned()),
+                    carried_over: false,
                 });
                 suite_exit = merge_exit_code(suite_exit, ExitCode::BudgetHalt);
                 continue;
             }
+        }
+
+        // ── Refuse to dispatch over an un-cleared stale trajectory ────────
+        // The best-effort clear above can fail (e.g. a locked or read-only
+        // file). If a stale prior-run trajectory is still sitting at this
+        // exact path, do not risk `mini::run` hard-failing before writing a
+        // replacement and `try_load_terminal_trajectory` below silently
+        // reading that stale file as this invocation's fresh result. Record
+        // the cleanup failure directly instead of dispatching.
+        if run_ids.as_ref().is_some_and(|ids| ids.contains(&task.id)) && traj_path.exists() {
+            task_results.push(SuiteTaskResult {
+                id: task.id.clone(),
+                outcome: "error".to_owned(),
+                verification_status: crate::trajectory::verification_status::UNVERIFIED.to_owned(),
+                steps: None,
+                cost_usd: None,
+                duration_secs: None,
+                failure_category: Some(FailureCategory::AgentInternal),
+                // Deliberately not `traj_path` — that file is confirmed to
+                // still exist with stale prior-run content (that's why this
+                // branch was reached), so publishing it here would let
+                // anyone following the path see the old trajectory as if it
+                // belonged to this invocation (issue #825 review finding).
+                trajectory_path: String::new(),
+                attempt_count: 0,
+                unchanged_failure_count: 0,
+                verifier_delta: None,
+                stop_reason: Some("stale_trajectory_cleanup_failed".to_owned()),
+                carried_over: false,
+            });
+            suite_exit = merge_exit_code(suite_exit, ExitCode::InternalError);
+            continue;
         }
 
         // ── Merge per-task verify with suite-level verify ─────────────────
@@ -489,8 +767,8 @@ pub async fn run(args: SuiteArgs) -> Result<ExitCode, Error> {
             driver_isolated: false,
             output_dir: suite_dir.clone(),
             trajectory_name: trajectory_name.clone(),
-            deterministic_responses: None,
-            deterministic_usage_per_call: None,
+            deterministic_responses: args.deterministic_responses.clone(),
+            deterministic_usage_per_call: args.deterministic_usage_per_call.clone(),
             task_timeout_secs: args.task_timeout_secs,
             cancellation: None,
             stream_addr: None,
@@ -554,6 +832,7 @@ pub async fn run(args: SuiteArgs) -> Result<ExitCode, Error> {
                 unchanged_failure_count: 0,
                 verifier_delta: None,
                 stop_reason,
+                carried_over: false,
             }
         };
 
@@ -616,7 +895,24 @@ pub async fn run(args: SuiteArgs) -> Result<ExitCode, Error> {
     };
     let reached = task_results.len();
     for task in tasks.iter().skip(reached) {
+        // A passing task later in the pack must still be carried forward
+        // unchanged even when an earlier re-run task caused this halt —
+        // otherwise it would be wrongly demoted to a `skipped_*` row here.
+        if let Some(carried) = try_carry_forward(&task.id, run_ids.as_ref(), &prior_by_id) {
+            accumulate_carried(
+                &carried,
+                &mut total_cost,
+                &mut resolved_count,
+                &mut verified_count,
+            );
+            task_results.push(carried);
+            continue;
+        }
         let traj_path = suite_dir.join(format!("{}.traj.json", task.id));
+        // This task was selected for rerun but never reached before the
+        // early halt — clear its stale prior-run trajectory so the
+        // `skipped_*` row below doesn't point at unrelated old content.
+        clear_stale_rerun_trajectory(&task.id, run_ids.as_ref(), &traj_path);
         task_results.push(SuiteTaskResult {
             id: task.id.clone(),
             outcome: halt_outcome.to_owned(),
@@ -630,6 +926,7 @@ pub async fn run(args: SuiteArgs) -> Result<ExitCode, Error> {
             unchanged_failure_count: 0,
             verifier_delta: None,
             stop_reason: Some(halt_reason.to_owned()),
+            carried_over: false,
         });
     }
 
@@ -719,6 +1016,12 @@ fn write_suite_results(
 ) -> Result<(), Error> {
     let mut json_val = serde_json::to_value(results).map_err(Error::Json)?;
     redact_json_strings(&mut json_val, redactor);
+    // `id` is deliberately left subject to the same blanket redaction as
+    // every other string here — restoring it would reopen exactly the
+    // redaction-bypass surface the spec promises not to add for a suite
+    // whose operator-chosen ids happen to contain sensitive content
+    // (issue #825 review finding). `--rerun-failed` selection never reads
+    // `id` back out of this file; see `load_prior_suite_state`.
     let json = crate::artifact::to_string_pretty(ArtifactKind::SuiteResults, &json_val)
         .map_err(Error::Json)?;
     atomic_write(path, json.as_bytes())?;
@@ -1174,6 +1477,7 @@ mod tests {
             unchanged_failure_count: 2,
             verifier_delta: Some(1),
             stop_reason: Some("submitted".into()),
+            carried_over: false,
         };
         let val = serde_json::to_value(&result).unwrap();
         assert_eq!(val["attempt_count"], 7);
@@ -1230,6 +1534,7 @@ mod tests {
                     unchanged_failure_count: 0,
                     verifier_delta: Some(1),
                     stop_reason: Some("submitted".into()),
+                    carried_over: false,
                 },
                 SuiteTaskResult {
                     id: "task-beta".into(),
@@ -1244,8 +1549,925 @@ mod tests {
                     unchanged_failure_count: 3,
                     verifier_delta: None,
                     stop_reason: Some("step_limit".into()),
+                    carried_over: false,
                 },
             ],
         }
+    }
+
+    fn passing_result(id: &str) -> SuiteTaskResult {
+        SuiteTaskResult {
+            id: id.to_owned(),
+            outcome: crate::trajectory::outcome::SUBMITTED.to_owned(),
+            verification_status: crate::trajectory::verification_status::VERIFIED.to_owned(),
+            steps: Some(3),
+            cost_usd: Some(0.02),
+            duration_secs: Some(1.0),
+            failure_category: None,
+            trajectory_path: format!("runs/s/{id}.traj.json"),
+            attempt_count: 3,
+            unchanged_failure_count: 0,
+            verifier_delta: Some(1),
+            stop_reason: Some("submitted".into()),
+            carried_over: false,
+        }
+    }
+
+    fn failing_result(id: &str) -> SuiteTaskResult {
+        SuiteTaskResult {
+            verification_status: crate::trajectory::verification_status::VERIFICATION_FAILED
+                .to_owned(),
+            ..passing_result(id)
+        }
+    }
+
+    /// Write a real, terminal, passing `.traj.json` for `id` into
+    /// `suite_dir`. `load_prior_suite_state` only recognizes a task as
+    /// passing via a real trajectory file on disk — never via
+    /// `suite-results.json`'s own (possibly redacted) content — so any test
+    /// that wants `--rerun-failed` to carry a task forward must provide one.
+    fn write_passing_trajectory(suite_dir: &Path, id: &str) {
+        let mut t = Trajectory::new();
+        t.info.task = Some(format!("do {id}"));
+        t.info.outcome = Some(crate::trajectory::outcome::SUBMITTED.to_owned());
+        t.info.verification_status =
+            Some(crate::trajectory::verification_status::VERIFIED.to_owned());
+        t.info.partial = false;
+        std::fs::write(
+            suite_dir.join(format!("{id}.traj.json")),
+            serde_json::to_string(&t).unwrap(),
+        )
+        .unwrap();
+    }
+
+    // ── RED: `tasks_needing_rerun` (issue #825) ────────────────────────────
+
+    #[test]
+    fn tasks_needing_rerun_excludes_passing_includes_failing_and_unknown() {
+        let tasks = vec![spec("t1", "do a"), spec("t2", "do b"), spec("t3", "do c")];
+        let mut prior = HashMap::new();
+        prior.insert("t1".to_owned(), passing_result("t1"));
+        prior.insert("t2".to_owned(), failing_result("t2"));
+        // t3 has no prior entry at all (e.g. added to the pack after the last run).
+        let ids = tasks_needing_rerun(&tasks, &prior);
+        assert!(
+            !ids.contains("t1"),
+            "passing task must be excluded: {ids:?}"
+        );
+        assert!(ids.contains("t2"), "failing task must be selected: {ids:?}");
+        assert!(
+            ids.contains("t3"),
+            "never-run task must be selected: {ids:?}"
+        );
+    }
+
+    #[test]
+    fn tasks_needing_rerun_treats_submitted_but_verification_failed_as_failing() {
+        let tasks = vec![spec("t1", "do a")];
+        let mut prior = HashMap::new();
+        let mut r = passing_result("t1");
+        r.verification_status =
+            crate::trajectory::verification_status::VERIFICATION_FAILED.to_owned();
+        prior.insert("t1".to_owned(), r);
+        assert!(tasks_needing_rerun(&tasks, &prior).contains("t1"));
+    }
+
+    #[test]
+    fn tasks_needing_rerun_empty_when_all_passing() {
+        let tasks = vec![spec("t1", "a"), spec("t2", "b")];
+        let mut prior = HashMap::new();
+        prior.insert("t1".to_owned(), passing_result("t1"));
+        prior.insert("t2".to_owned(), passing_result("t2"));
+        assert!(tasks_needing_rerun(&tasks, &prior).is_empty());
+    }
+
+    // ── RED: `load_prior_suite_state` (issue #825) ─────────────────────────
+
+    #[test]
+    fn load_prior_suite_state_ignores_suite_results_json_id_and_uses_real_trajectories() {
+        // suite-results.json's own `id` field is deliberately never trusted
+        // for matching (it may have been redacted on write) — simulate that
+        // here with a row whose id does not match the current pack at all.
+        let dir = tempfile::tempdir().unwrap();
+        let mut mismatched = passing_result("t1");
+        mismatched.id = "[REDACTED:custom_pattern:short:deadbeef]".to_owned();
+        let results = SuiteResults {
+            suite_name: "s".into(),
+            task_count: 1,
+            resolved_count: 1,
+            verified_count: 1,
+            total_cost_usd: 0.01,
+            total_duration_secs: 1.0,
+            started_at: "2026-01-01T00:00:00Z".into(),
+            finished_at: "2026-01-01T00:00:01Z".into(),
+            tasks: vec![mismatched],
+        };
+        let json = crate::artifact::to_string_pretty(ArtifactKind::SuiteResults, &results).unwrap();
+        std::fs::write(dir.path().join("suite-results.json"), json).unwrap();
+
+        // The real, on-disk trajectory is what must be trusted instead.
+        let mut traj = Trajectory::new();
+        traj.info.outcome = Some(crate::trajectory::outcome::SUBMITTED.to_owned());
+        traj.info.verification_status =
+            Some(crate::trajectory::verification_status::VERIFIED.to_owned());
+        traj.info.partial = false;
+        std::fs::write(
+            dir.path().join("t1.traj.json"),
+            serde_json::to_string(&traj).unwrap(),
+        )
+        .unwrap();
+
+        let tasks = vec![spec("t1", "do a")];
+        let prior = load_prior_suite_state(dir.path(), &tasks).unwrap();
+        assert!(
+            prior.contains_key("t1"),
+            "must be keyed by the pack's real id, not suite-results.json's: {prior:?}"
+        );
+        assert_eq!(prior["t1"].verification_status, "verified");
+    }
+
+    #[test]
+    fn load_prior_suite_state_falls_back_to_trajectories_when_results_json_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut traj = Trajectory::new();
+        traj.info.outcome = Some(crate::trajectory::outcome::SUBMITTED.to_owned());
+        traj.info.verification_status =
+            Some(crate::trajectory::verification_status::VERIFIED.to_owned());
+        traj.info.partial = false;
+        let text = serde_json::to_string(&traj).unwrap();
+        std::fs::write(dir.path().join("t1.traj.json"), text).unwrap();
+
+        let tasks = vec![spec("t1", "do a")];
+        let prior = load_prior_suite_state(dir.path(), &tasks).unwrap();
+        assert!(prior.contains_key("t1"));
+    }
+
+    #[test]
+    fn load_prior_suite_state_none_when_nothing_recorded() {
+        let dir = tempfile::tempdir().unwrap();
+        let tasks = vec![spec("t1", "do a")];
+        assert!(load_prior_suite_state(dir.path(), &tasks).is_none());
+    }
+
+    // ── RED: `summary_table` carried-forward note (issue #825) ─────────────
+
+    #[test]
+    fn summary_table_shows_carried_forward_note_when_present() {
+        let mut results = make_sample_suite_results();
+        results.tasks[0].carried_over = true;
+        let table = results.summary_table();
+        assert!(table.contains("carried forward"), "table: {table}");
+    }
+
+    #[test]
+    fn summary_table_omits_carried_forward_note_when_absent() {
+        let results = make_sample_suite_results();
+        let table = results.summary_table();
+        assert!(!table.contains("carried forward"), "table: {table}");
+    }
+
+    // ── RED/GREEN: `--rerun-failed` guards (issue #825) ────────────────────
+
+    #[tokio::test]
+    async fn rerun_failed_and_resume_together_is_rejected() {
+        let work = tempfile::tempdir().unwrap();
+        let pack = work.path().join("tasks.yaml");
+        std::fs::write(&pack, "- id: t1\n  task: do a\n").unwrap();
+        let args = SuiteArgs {
+            tasks_file: pack,
+            format_override: None,
+            suite_name: "s".into(),
+            config: crate::config::Config::defaults().unwrap(),
+            output_dir: work.path().join("runs"),
+            suite_cost_limit_usd: None,
+            verify: vec![],
+            verify_timeout_secs: 60,
+            resume: true,
+            task_timeout_secs: None,
+            step_limit: None,
+            per_task_budget_usd: None,
+            rerun_failed: true,
+            deterministic_responses: None,
+            deterministic_usage_per_call: None,
+        };
+        let err = run(args).await.unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("--resume"), "message: {msg}");
+    }
+
+    #[tokio::test]
+    async fn rerun_failed_without_prior_results_is_rejected() {
+        let work = tempfile::tempdir().unwrap();
+        let pack = work.path().join("tasks.yaml");
+        std::fs::write(&pack, "- id: t1\n  task: do a\n").unwrap();
+        let args = SuiteArgs {
+            tasks_file: pack,
+            format_override: None,
+            suite_name: "never-run".into(),
+            config: crate::config::Config::defaults().unwrap(),
+            output_dir: work.path().join("runs"),
+            suite_cost_limit_usd: None,
+            verify: vec![],
+            verify_timeout_secs: 60,
+            resume: false,
+            task_timeout_secs: None,
+            step_limit: None,
+            per_task_budget_usd: None,
+            rerun_failed: true,
+            deterministic_responses: None,
+            deterministic_usage_per_call: None,
+        };
+        let err = run(args).await.unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("no suite-results.json"), "message: {msg}");
+    }
+
+    // ── GREEN: `--rerun-failed` end-to-end (issue #825) ────────────────────
+
+    #[tokio::test]
+    async fn rerun_failed_reruns_only_failing_tasks_and_carries_the_rest_forward() {
+        let work = tempfile::tempdir().unwrap();
+        let output_dir = work.path().join("runs");
+
+        let pack_v1 = work.path().join("tasks.yaml");
+        std::fs::write(
+            &pack_v1,
+            "- id: task-a\n  task: do a\n  verify:\n    - ok:true\n\
+             - id: task-b\n  task: do b\n  verify:\n    - bad:false\n",
+        )
+        .unwrap();
+
+        let mut cfg = crate::config::Config::defaults().unwrap();
+        cfg.root.agent.step_limit = 5;
+        let submit = "COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT\n```\nfix\n```".to_owned();
+
+        let base_args = |tasks_file: PathBuf, rerun_failed: bool| SuiteArgs {
+            tasks_file,
+            format_override: None,
+            suite_name: "my-suite".to_owned(),
+            config: cfg.clone(),
+            output_dir: output_dir.clone(),
+            suite_cost_limit_usd: None,
+            verify: vec![],
+            verify_timeout_secs: 60,
+            resume: false,
+            task_timeout_secs: Some(30),
+            step_limit: None,
+            per_task_budget_usd: None,
+            rerun_failed,
+            deterministic_responses: Some(vec![submit.clone()]),
+            deterministic_usage_per_call: None,
+        };
+
+        let exit1 = run(base_args(pack_v1, false)).await.unwrap();
+        assert_eq!(exit1, ExitCode::VerificationFailure);
+
+        let suite_dir = output_dir.join("my-suite");
+        let task_a_traj_before =
+            std::fs::read_to_string(suite_dir.join("task-a.traj.json")).unwrap();
+
+        // Operator fixes task-b's verify command and re-runs only the failed subset.
+        let pack_v2 = work.path().join("tasks-fixed.yaml");
+        std::fs::write(
+            &pack_v2,
+            "- id: task-a\n  task: do a\n  verify:\n    - ok:true\n\
+             - id: task-b\n  task: do b\n  verify:\n    - ok2:true\n",
+        )
+        .unwrap();
+
+        let exit2 = run(base_args(pack_v2, true)).await.unwrap();
+        assert_eq!(exit2, ExitCode::Success);
+
+        let task_a_traj_after =
+            std::fs::read_to_string(suite_dir.join("task-a.traj.json")).unwrap();
+        assert_eq!(
+            task_a_traj_before, task_a_traj_after,
+            "carried-forward task's trajectory must not be touched (zero cost, zero model calls)"
+        );
+
+        let merged_text = std::fs::read_to_string(suite_dir.join("suite-results.json")).unwrap();
+        let merged: serde_json::Value = serde_json::from_str(&merged_text).unwrap();
+        let tasks_arr = merged["tasks"].as_array().unwrap();
+        let a = tasks_arr.iter().find(|t| t["id"] == "task-a").unwrap();
+        let b = tasks_arr.iter().find(|t| t["id"] == "task-b").unwrap();
+        assert_eq!(a["carried_over"], true, "a: {a}");
+        assert_eq!(b["carried_over"], false, "b: {b}");
+        assert_eq!(b["verification_status"], "verified", "b: {b}");
+        assert_eq!(merged["task_count"], 2);
+    }
+
+    #[tokio::test]
+    async fn rerun_failed_suite_cost_limit_applies_only_to_rerun_subset() {
+        let work = tempfile::tempdir().unwrap();
+        let output_dir = work.path().join("runs");
+        let suite_name = "budget-suite";
+
+        // Seed prior state directly: two failing tasks and one already-passing.
+        let suite_dir = output_dir.join(suite_name);
+        std::fs::create_dir_all(&suite_dir).unwrap();
+        let prior = SuiteResults {
+            suite_name: suite_name.to_owned(),
+            task_count: 3,
+            resolved_count: 1,
+            verified_count: 1,
+            total_cost_usd: 0.02,
+            total_duration_secs: 3.0,
+            started_at: "2026-01-01T00:00:00Z".into(),
+            finished_at: "2026-01-01T00:00:03Z".into(),
+            tasks: vec![
+                failing_result("task-x"),
+                failing_result("task-y"),
+                passing_result("task-z"),
+            ],
+        };
+        let json = crate::artifact::to_string_pretty(ArtifactKind::SuiteResults, &prior).unwrap();
+        std::fs::write(suite_dir.join("suite-results.json"), json).unwrap();
+        write_passing_trajectory(&suite_dir, "task-z");
+
+        let pack = work.path().join("tasks.yaml");
+        std::fs::write(
+            &pack,
+            "- id: task-x\n  task: do x\n- id: task-y\n  task: do y\n- id: task-z\n  task: do z\n",
+        )
+        .unwrap();
+
+        let mut cfg = crate::config::Config::defaults().unwrap();
+        cfg.root.agent.step_limit = 5;
+        let submit = "COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT\n```\nfix\n```".to_owned();
+
+        let args = SuiteArgs {
+            tasks_file: pack,
+            format_override: None,
+            suite_name: suite_name.to_owned(),
+            config: cfg,
+            output_dir,
+            suite_cost_limit_usd: Some(0.5),
+            verify: vec![],
+            verify_timeout_secs: 60,
+            resume: false,
+            task_timeout_secs: Some(30),
+            step_limit: None,
+            per_task_budget_usd: None,
+            rerun_failed: true,
+            deterministic_responses: Some(vec![submit]),
+            deterministic_usage_per_call: Some(crate::model::ModelUsage {
+                input_tokens: 0,
+                output_tokens: 0,
+                cache_read_tokens: 0,
+                cache_creation_tokens: 0,
+                cost_usd: Some(1.0),
+            }),
+        };
+
+        let exit = run(args).await.unwrap();
+        assert_eq!(exit, ExitCode::BudgetHalt);
+
+        let merged_text = std::fs::read_to_string(suite_dir.join("suite-results.json")).unwrap();
+        let merged: serde_json::Value = serde_json::from_str(&merged_text).unwrap();
+        let tasks_arr = merged["tasks"].as_array().unwrap();
+        let z = tasks_arr.iter().find(|t| t["id"] == "task-z").unwrap();
+        assert_eq!(
+            z["carried_over"], true,
+            "already-passing task must stay carried forward regardless of the rerun \
+             subset's cost cap: {z}"
+        );
+        let outcomes: Vec<&str> = tasks_arr
+            .iter()
+            .map(|t| t["outcome"].as_str().unwrap())
+            .collect();
+        assert!(
+            outcomes.contains(&"skipped_budget_exhausted"),
+            "one rerun task should be skipped by the cost cap: {outcomes:?}"
+        );
+    }
+
+    /// Regression for a review finding: the early-halt padding loop used to
+    /// mark *every* not-yet-reached task as `skipped_*`, even ones that
+    /// `--rerun-failed` had already decided to carry forward unchanged. If
+    /// an earlier re-run task hard-fails (env/preflight error) before a
+    /// later, already-passing task is reached, that later task must still
+    /// be carried forward — not demoted to a skipped row.
+    #[tokio::test]
+    async fn rerun_failed_carries_forward_later_passing_task_despite_earlier_hard_halt() {
+        let work = tempfile::tempdir().unwrap();
+        let output_dir = work.path().join("runs");
+        let suite_name = "halt-suite";
+
+        let suite_dir = output_dir.join(suite_name);
+        std::fs::create_dir_all(&suite_dir).unwrap();
+
+        // Prior state: task-x needs a re-run; task-y already passes.
+        let prior = SuiteResults {
+            suite_name: suite_name.to_owned(),
+            task_count: 2,
+            resolved_count: 1,
+            verified_count: 1,
+            total_cost_usd: 0.02,
+            total_duration_secs: 2.0,
+            started_at: "2026-01-01T00:00:00Z".into(),
+            finished_at: "2026-01-01T00:00:02Z".into(),
+            tasks: vec![failing_result("task-x"), passing_result("task-y")],
+        };
+        let json = crate::artifact::to_string_pretty(ArtifactKind::SuiteResults, &prior).unwrap();
+        std::fs::write(suite_dir.join("suite-results.json"), json).unwrap();
+        write_passing_trajectory(&suite_dir, "task-y");
+
+        // Force task-x's mini run to hard-fail with an I/O error before any
+        // trajectory is written, by pre-occupying its trajectory path with a
+        // directory instead of a file.
+        std::fs::create_dir_all(suite_dir.join("task-x.traj.json")).unwrap();
+
+        let pack = work.path().join("tasks.yaml");
+        std::fs::write(
+            &pack,
+            "- id: task-x\n  task: do x\n- id: task-y\n  task: do y\n",
+        )
+        .unwrap();
+
+        let mut cfg = crate::config::Config::defaults().unwrap();
+        cfg.root.agent.step_limit = 5;
+        let submit = "COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT\n```\nfix\n```".to_owned();
+
+        let args = SuiteArgs {
+            tasks_file: pack,
+            format_override: None,
+            suite_name: suite_name.to_owned(),
+            config: cfg,
+            output_dir,
+            suite_cost_limit_usd: None,
+            verify: vec![],
+            verify_timeout_secs: 60,
+            resume: false,
+            task_timeout_secs: Some(30),
+            step_limit: None,
+            per_task_budget_usd: None,
+            rerun_failed: true,
+            deterministic_responses: Some(vec![submit]),
+            deterministic_usage_per_call: None,
+        };
+
+        // The suite still completes (returns Ok) — task-x's hard failure is
+        // recorded as a task-scoped error, not a propagated Err.
+        let _ = run(args).await.unwrap();
+
+        let merged_text = std::fs::read_to_string(suite_dir.join("suite-results.json")).unwrap();
+        let merged: serde_json::Value = serde_json::from_str(&merged_text).unwrap();
+        let tasks_arr = merged["tasks"].as_array().unwrap();
+        // task-y must still be present in the merged results.
+        let y = tasks_arr.iter().find(|t| t["id"] == "task-y").unwrap();
+        assert_eq!(
+            y["carried_over"], true,
+            "a passing task after an earlier hard-halted re-run task must still be carried \
+             forward, not demoted to skipped_*: {y}"
+        );
+        assert_eq!(y["outcome"], "submitted", "task-y: {y}");
+        assert_eq!(y["verification_status"], "verified", "task-y: {y}");
+    }
+
+    /// Regression for a review finding: a task selected for `--rerun-failed`
+    /// already has a stale `.traj.json` from the prior (failing) run sitting
+    /// at the exact path the fresh `mini::run` will write to. If the fresh
+    /// run hard-fails before writing anything (e.g. an env/preflight error),
+    /// the stale file must not be silently picked up and misreported as this
+    /// invocation's result.
+    #[tokio::test]
+    async fn rerun_failed_does_not_report_stale_trajectory_as_fresh_result() {
+        let work = tempfile::tempdir().unwrap();
+        let output_dir = work.path().join("runs");
+        let suite_name = "stale-suite";
+
+        let suite_dir = output_dir.join(suite_name);
+        std::fs::create_dir_all(&suite_dir).unwrap();
+
+        // Prior state: task-x needs a re-run.
+        let prior = SuiteResults {
+            suite_name: suite_name.to_owned(),
+            task_count: 1,
+            resolved_count: 0,
+            verified_count: 0,
+            total_cost_usd: 0.02,
+            total_duration_secs: 1.0,
+            started_at: "2026-01-01T00:00:00Z".into(),
+            finished_at: "2026-01-01T00:00:01Z".into(),
+            tasks: vec![failing_result("task-x")],
+        };
+        let json = crate::artifact::to_string_pretty(ArtifactKind::SuiteResults, &prior).unwrap();
+        std::fs::write(suite_dir.join("suite-results.json"), json).unwrap();
+
+        // A real, stale terminal trajectory already sits at task-x's path —
+        // distinguishable from any fresh result by `steps: 99`.
+        let mut stale = Trajectory::new();
+        stale.info.task = Some("do x".into());
+        stale.info.outcome = Some(crate::trajectory::outcome::SUBMITTED.to_owned());
+        stale.info.verification_status =
+            Some(crate::trajectory::verification_status::VERIFICATION_FAILED.to_owned());
+        stale.info.steps = Some(99);
+        stale.info.partial = false;
+        std::fs::write(
+            suite_dir.join("task-x.traj.json"),
+            serde_json::to_string(&stale).unwrap(),
+        )
+        .unwrap();
+
+        let pack = work.path().join("tasks.yaml");
+        std::fs::write(&pack, "- id: task-x\n  task: do x\n").unwrap();
+
+        // Force mini::run to hard-fail before writing anything, deterministically
+        // and without a real Docker daemon: environment.kind=docker with no
+        // docker_image configured errors immediately in build_env (both with
+        // and without the docker cargo feature compiled in).
+        let mut cfg = crate::config::Config::defaults().unwrap();
+        cfg.root.environment.kind = crate::config::EnvKind::Docker;
+        cfg.root.environment.docker_image = None;
+
+        let args = SuiteArgs {
+            tasks_file: pack,
+            format_override: None,
+            suite_name: suite_name.to_owned(),
+            config: cfg,
+            output_dir,
+            suite_cost_limit_usd: None,
+            verify: vec![],
+            verify_timeout_secs: 60,
+            resume: false,
+            task_timeout_secs: Some(30),
+            step_limit: None,
+            per_task_budget_usd: None,
+            rerun_failed: true,
+            deterministic_responses: None,
+            deterministic_usage_per_call: None,
+        };
+
+        let _ = run(args).await.unwrap();
+
+        let merged_text = std::fs::read_to_string(suite_dir.join("suite-results.json")).unwrap();
+        let merged: serde_json::Value = serde_json::from_str(&merged_text).unwrap();
+        let x = &merged["tasks"][0];
+        assert_eq!(
+            x["outcome"], "error",
+            "a hard env/preflight failure on the fresh run must be reported as \
+             this invocation's own error, not the stale prior trajectory: {x}"
+        );
+        assert_ne!(
+            x["steps"], 99,
+            "the stale trajectory's steps count must not leak into this invocation's result: {x}"
+        );
+    }
+
+    /// Regression for a review finding: a malformed `verify` entry on a
+    /// carried-forward (already-passing, not selected to re-run) task must
+    /// not block `--rerun-failed` — that task's verify commands are never
+    /// parsed or executed, only its cached prior result is carried forward.
+    #[tokio::test]
+    async fn rerun_failed_ignores_malformed_verify_on_carried_forward_task() {
+        let work = tempfile::tempdir().unwrap();
+        let output_dir = work.path().join("runs");
+        let suite_name = "verify-skip-suite";
+
+        let suite_dir = output_dir.join(suite_name);
+        std::fs::create_dir_all(&suite_dir).unwrap();
+
+        // Prior state: task-a already passes; task-b needs a re-run.
+        let prior = SuiteResults {
+            suite_name: suite_name.to_owned(),
+            task_count: 2,
+            resolved_count: 1,
+            verified_count: 1,
+            total_cost_usd: 0.02,
+            total_duration_secs: 2.0,
+            started_at: "2026-01-01T00:00:00Z".into(),
+            finished_at: "2026-01-01T00:00:02Z".into(),
+            tasks: vec![passing_result("task-a"), failing_result("task-b")],
+        };
+        let json = crate::artifact::to_string_pretty(ArtifactKind::SuiteResults, &prior).unwrap();
+        std::fs::write(suite_dir.join("suite-results.json"), json).unwrap();
+        write_passing_trajectory(&suite_dir, "task-a");
+
+        // task-a's verify entry in the *current* pack is malformed (no
+        // `NAME:COMMAND` colon) — it must never be parsed since task-a is
+        // carried forward, not re-run. task-b's is well-formed.
+        let pack = work.path().join("tasks.yaml");
+        std::fs::write(
+            &pack,
+            "- id: task-a\n  task: do a\n  verify:\n    - this-is-not-name-colon-command\n\
+             - id: task-b\n  task: do b\n  verify:\n    - ok:true\n",
+        )
+        .unwrap();
+
+        let mut cfg = crate::config::Config::defaults().unwrap();
+        cfg.root.agent.step_limit = 5;
+        let submit = "COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT\n```\nfix\n```".to_owned();
+
+        let args = SuiteArgs {
+            tasks_file: pack,
+            format_override: None,
+            suite_name: suite_name.to_owned(),
+            config: cfg,
+            output_dir,
+            suite_cost_limit_usd: None,
+            verify: vec![],
+            verify_timeout_secs: 60,
+            resume: false,
+            task_timeout_secs: Some(30),
+            step_limit: None,
+            per_task_budget_usd: None,
+            rerun_failed: true,
+            deterministic_responses: Some(vec![submit]),
+            deterministic_usage_per_call: None,
+        };
+
+        let exit = match run(args).await {
+            Ok(exit) => exit,
+            Err(e) => {
+                panic!("a malformed verify entry on a carried-forward task must not error: {e}")
+            }
+        };
+        assert_eq!(exit, ExitCode::Success);
+
+        let merged_text = std::fs::read_to_string(suite_dir.join("suite-results.json")).unwrap();
+        let merged: serde_json::Value = serde_json::from_str(&merged_text).unwrap();
+        let tasks_arr = merged["tasks"].as_array().unwrap();
+        let a = tasks_arr.iter().find(|t| t["id"] == "task-a").unwrap();
+        assert_eq!(a["carried_over"], true, "task-a: {a}");
+    }
+
+    /// Regression for a review finding: when the suite cost cap is hit
+    /// partway through a `--rerun-failed` pass and a *later* selected task
+    /// takes the budget-skip branch (never reaching `mini::run` at all), its
+    /// stale prior-run trajectory must be cleared — otherwise the
+    /// `skipped_budget_exhausted` row's `trajectory_path` still points at a
+    /// file full of unrelated old content.
+    #[tokio::test]
+    async fn rerun_failed_clears_stale_trajectory_for_budget_skipped_task() {
+        let work = tempfile::tempdir().unwrap();
+        let output_dir = work.path().join("runs");
+        let suite_name = "budget-stale-suite";
+
+        let suite_dir = output_dir.join(suite_name);
+        std::fs::create_dir_all(&suite_dir).unwrap();
+
+        // Prior state: both task-p and task-q need a re-run.
+        let prior = SuiteResults {
+            suite_name: suite_name.to_owned(),
+            task_count: 2,
+            resolved_count: 0,
+            verified_count: 0,
+            total_cost_usd: 0.02,
+            total_duration_secs: 2.0,
+            started_at: "2026-01-01T00:00:00Z".into(),
+            finished_at: "2026-01-01T00:00:02Z".into(),
+            tasks: vec![failing_result("task-p"), failing_result("task-q")],
+        };
+        let json = crate::artifact::to_string_pretty(ArtifactKind::SuiteResults, &prior).unwrap();
+        std::fs::write(suite_dir.join("suite-results.json"), json).unwrap();
+
+        // Both have a real, stale terminal trajectory already on disk.
+        let make_stale = |steps: u32| {
+            let mut t = Trajectory::new();
+            t.info.task = Some("do it".into());
+            t.info.outcome = Some(crate::trajectory::outcome::SUBMITTED.to_owned());
+            t.info.verification_status =
+                Some(crate::trajectory::verification_status::VERIFICATION_FAILED.to_owned());
+            t.info.steps = Some(steps);
+            t.info.partial = false;
+            t
+        };
+        std::fs::write(
+            suite_dir.join("task-p.traj.json"),
+            serde_json::to_string(&make_stale(77)).unwrap(),
+        )
+        .unwrap();
+        std::fs::write(
+            suite_dir.join("task-q.traj.json"),
+            serde_json::to_string(&make_stale(88)).unwrap(),
+        )
+        .unwrap();
+
+        let pack = work.path().join("tasks.yaml");
+        std::fs::write(
+            &pack,
+            "- id: task-p\n  task: do p\n- id: task-q\n  task: do q\n",
+        )
+        .unwrap();
+
+        let mut cfg = crate::config::Config::defaults().unwrap();
+        cfg.root.agent.step_limit = 5;
+        let submit = "COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT\n```\nfix\n```".to_owned();
+
+        let args = SuiteArgs {
+            tasks_file: pack,
+            format_override: None,
+            suite_name: suite_name.to_owned(),
+            config: cfg,
+            output_dir,
+            // task-p's fresh run costs $1.00 (via deterministic_usage_per_call
+            // below), immediately exhausting this cap so task-q never runs.
+            suite_cost_limit_usd: Some(0.5),
+            verify: vec![],
+            verify_timeout_secs: 60,
+            resume: false,
+            task_timeout_secs: Some(30),
+            step_limit: None,
+            per_task_budget_usd: None,
+            rerun_failed: true,
+            deterministic_responses: Some(vec![submit]),
+            deterministic_usage_per_call: Some(crate::model::ModelUsage {
+                input_tokens: 0,
+                output_tokens: 0,
+                cache_read_tokens: 0,
+                cache_creation_tokens: 0,
+                cost_usd: Some(1.0),
+            }),
+        };
+
+        let exit = run(args).await.unwrap();
+        assert_eq!(exit, ExitCode::BudgetHalt);
+
+        let merged_text = std::fs::read_to_string(suite_dir.join("suite-results.json")).unwrap();
+        let merged: serde_json::Value = serde_json::from_str(&merged_text).unwrap();
+        let tasks_arr = merged["tasks"].as_array().unwrap();
+        let q = tasks_arr.iter().find(|t| t["id"] == "task-q").unwrap();
+        assert_eq!(q["outcome"], "skipped_budget_exhausted", "task-q: {q}");
+
+        assert!(
+            !suite_dir.join("task-q.traj.json").exists(),
+            "task-q's stale prior-run trajectory must be cleared when it is \
+             skipped by the suite cost cap, not left behind to be misread as \
+             belonging to this invocation"
+        );
+    }
+
+    /// Regression for a review finding: if the best-effort stale-trajectory
+    /// clear fails (simulated here by a directory sitting at the exact
+    /// `.traj.json` path, which `remove_file` cannot remove), the fresh
+    /// `mini::run` must never be dispatched — the cleanup failure must be
+    /// surfaced as this task's own error instead of risking the old file
+    /// being silently read as this invocation's result.
+    #[tokio::test]
+    async fn rerun_failed_surfaces_stale_trajectory_cleanup_failure_without_dispatching() {
+        let work = tempfile::tempdir().unwrap();
+        let output_dir = work.path().join("runs");
+        let suite_name = "undeletable-suite";
+
+        let suite_dir = output_dir.join(suite_name);
+        std::fs::create_dir_all(&suite_dir).unwrap();
+
+        let prior = SuiteResults {
+            suite_name: suite_name.to_owned(),
+            task_count: 1,
+            resolved_count: 0,
+            verified_count: 0,
+            total_cost_usd: 0.02,
+            total_duration_secs: 1.0,
+            started_at: "2026-01-01T00:00:00Z".into(),
+            finished_at: "2026-01-01T00:00:01Z".into(),
+            tasks: vec![failing_result("task-x")],
+        };
+        let json = crate::artifact::to_string_pretty(ArtifactKind::SuiteResults, &prior).unwrap();
+        std::fs::write(suite_dir.join("suite-results.json"), json).unwrap();
+
+        // A directory at this exact path can never be removed by
+        // `std::fs::remove_file`, deterministically simulating a stale
+        // trajectory that resists cleanup (e.g. a locked file on Windows).
+        std::fs::create_dir_all(suite_dir.join("task-x.traj.json")).unwrap();
+
+        let pack = work.path().join("tasks.yaml");
+        std::fs::write(&pack, "- id: task-x\n  task: do x\n").unwrap();
+
+        let mut cfg = crate::config::Config::defaults().unwrap();
+        cfg.root.agent.step_limit = 5;
+
+        let args = SuiteArgs {
+            tasks_file: pack,
+            format_override: None,
+            suite_name: suite_name.to_owned(),
+            config: cfg,
+            output_dir,
+            suite_cost_limit_usd: None,
+            verify: vec![],
+            verify_timeout_secs: 60,
+            resume: false,
+            task_timeout_secs: Some(30),
+            step_limit: None,
+            per_task_budget_usd: None,
+            rerun_failed: true,
+            // No scripted response at all: if mini::run were mistakenly
+            // dispatched despite the undeletable stale file, it would fail
+            // for an entirely different reason (no model configured),
+            // giving a different stop_reason than the one asserted below.
+            deterministic_responses: None,
+            deterministic_usage_per_call: None,
+        };
+
+        let _ = run(args).await.unwrap();
+
+        let merged_text = std::fs::read_to_string(suite_dir.join("suite-results.json")).unwrap();
+        let merged: serde_json::Value = serde_json::from_str(&merged_text).unwrap();
+        let x = &merged["tasks"][0];
+        assert_eq!(x["outcome"], "error", "x: {x}");
+        assert_eq!(
+            x["stop_reason"], "stale_trajectory_cleanup_failed",
+            "the cleanup failure must be surfaced with its own distinct stop_reason, \
+             proving mini::run was never dispatched for this task: {x}"
+        );
+        assert_eq!(
+            x["trajectory_path"], "",
+            "must not publish a path to the confirmed-stale, still-present file: {x}"
+        );
+    }
+
+    /// Regression for a review finding: `write_suite_results` redacts every
+    /// JSON string in the artifact, including task `id`. If a configured
+    /// redaction pattern happens to match part of an id, a subsequent
+    /// `--rerun-failed` invocation's `load_prior_suite_state` would key its
+    /// map by the redacted string, fail to match the pack's real id, and
+    /// silently re-run an already-passing task at full cost.
+    #[tokio::test]
+    async fn rerun_failed_never_unredacts_task_id_but_selection_still_works() {
+        let work = tempfile::tempdir().unwrap();
+        let output_dir = work.path().join("runs");
+        let suite_name = "redact-id-suite";
+
+        let mut cfg = crate::config::Config::defaults().unwrap();
+        cfg.root.agent.step_limit = 5;
+        // A broad custom pattern that matches the literal substring "secret"
+        // — deliberately chosen to collide with a task id below.
+        cfg.root.redaction.custom_patterns = vec!["secret".to_owned()];
+        let submit = "COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT\n```\nfix\n```".to_owned();
+
+        let suite_dir = output_dir.join(suite_name);
+
+        // First run: task-secret-rotation passes; task-b fails.
+        let pack_v1 = work.path().join("tasks.yaml");
+        std::fs::write(
+            &pack_v1,
+            "- id: task-secret-rotation\n  task: do a\n  verify:\n    - ok:true\n\
+             - id: task-b\n  task: do b\n  verify:\n    - bad:false\n",
+        )
+        .unwrap();
+
+        let base_args = |tasks_file: PathBuf, rerun_failed: bool| SuiteArgs {
+            tasks_file,
+            format_override: None,
+            suite_name: suite_name.to_owned(),
+            config: cfg.clone(),
+            output_dir: output_dir.clone(),
+            suite_cost_limit_usd: None,
+            verify: vec![],
+            verify_timeout_secs: 60,
+            resume: false,
+            task_timeout_secs: Some(30),
+            step_limit: None,
+            per_task_budget_usd: None,
+            rerun_failed,
+            deterministic_responses: Some(vec![submit.clone()]),
+            deterministic_usage_per_call: None,
+        };
+
+        run(base_args(pack_v1, false)).await.unwrap();
+
+        // The persisted artifact must NOT bypass redaction for `id` — a
+        // suite whose operator-chosen ids happen to contain sensitive
+        // content gets the same guarantee as every other field. The
+        // *filename* on disk (checked below) is unaffected by this, since
+        // redaction only ever touches JSON string content, never filenames.
+        let results_text = std::fs::read_to_string(suite_dir.join("suite-results.json")).unwrap();
+        let results_val: serde_json::Value = serde_json::from_str(&results_text).unwrap();
+        let persisted_a_id = results_val["tasks"][0]["id"].as_str().unwrap();
+        assert!(
+            persisted_a_id.contains("REDACTED"),
+            "the persisted id must remain redacted like any other field: {results_text}"
+        );
+
+        let task_a_traj_before =
+            std::fs::read_to_string(suite_dir.join("task-secret-rotation.traj.json")).unwrap();
+
+        // Second run: fix task-b, re-run only the failed subset.
+        let pack_v2 = work.path().join("tasks-fixed.yaml");
+        std::fs::write(
+            &pack_v2,
+            "- id: task-secret-rotation\n  task: do a\n  verify:\n    - ok:true\n\
+             - id: task-b\n  task: do b\n  verify:\n    - ok2:true\n",
+        )
+        .unwrap();
+
+        let exit2 = run(base_args(pack_v2, true)).await.unwrap();
+        assert_eq!(exit2, ExitCode::Success);
+
+        let task_a_traj_after =
+            std::fs::read_to_string(suite_dir.join("task-secret-rotation.traj.json")).unwrap();
+        assert_eq!(
+            task_a_traj_before, task_a_traj_after,
+            "the passing task must be carried forward unchanged — a redaction \
+             collision on its id must not cause it to be silently re-run, even \
+             though its persisted id is redacted"
+        );
+
+        let merged_text = std::fs::read_to_string(suite_dir.join("suite-results.json")).unwrap();
+        let merged: serde_json::Value = serde_json::from_str(&merged_text).unwrap();
+        // Matched by pack order (task-secret-rotation is always index 0),
+        // not by id — the persisted id is redacted and unusable for lookup.
+        let a = &merged["tasks"][0];
+        assert_eq!(a["carried_over"], true, "task-a: {a}");
     }
 }

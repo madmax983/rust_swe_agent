@@ -10,7 +10,7 @@ parsing human-oriented output.
 |-----:|--------------------------|--------------|
 | 0    | `success`                | Command completed with no errors; all checks passed. Also covers no-op success (e.g. `bench doctor` with every preflight check green). |
 | 1    | `internal_error`         | Unexpected failure: I/O error, JSON parse failure, unclassified panic. Treat as infrastructure broken, not a domain result. |
-| 2    | `usage_error`            | Bad flag, missing required argument, unknown enum value, or invalid config file. Fix the invocation before retrying. |
+| 2    | `usage_error`            | Bad flag, missing required argument, unknown enum value, or invalid config file. Fix the invocation before retrying. Also emitted by `agent suite --rerun-failed` when combined with `--resume`, or when no prior `suite-results.json`/per-task trajectories exist to select failed tasks from. See `docs/spec-agent-suite.md`. |
 | 3    | `preflight_failure`      | Dependency unavailable at sweep start: Docker not installed, Docker daemon unreachable, container failed to start, or model endpoint probe failed. Also emitted by `agent suite --check` when any fatal pack-validation, verify-launchability, MCP/hook, or (with `--strict`) config-hazard check fails — zero model calls are made. See `docs/spec-agent-suite.md`. |
 | 4    | `task_unsuccessful`      | The agent ran but did not produce a usable result: step limit reached, environment command failed, wallclock timeout, or repeated model API errors. |
 | 5    | `budget_halt`            | Cost ceiling triggered: `bench forecast --fail-over-cap` projected an over-cap run, or the sweep stopped because `--sweep-cost-limit-usd` was reached and no new tasks were dispatched. |
@@ -111,6 +111,7 @@ and the recommended triage action.
 | `agent skills-preview`          | `success`, `usage_error`, `skills_preview_warning`, `internal_error` |
 | `bench scriptability-check`     | `success`, `usage_error`, `scriptability_check_failure`, `internal_error` |
 | `agent suite --check`           | `success`, `usage_error`, `preflight_failure`, `internal_error` (see `docs/spec-agent-suite.md`) |
+| `agent suite --rerun-failed`    | `success`, `usage_error`, `task_unsuccessful`, `budget_halt`, `verification_failure` (same matrix as a plain `agent suite` run; `usage_error` additionally covers "combined with `--resume`" and "no prior results") (see `docs/spec-agent-suite.md`) |
 | `agent redact-check`            | `success`, `usage_error`, `redact_check_stale_literals`, `redact_check_strict_fail`, `internal_error` |
 | `agent redact-audit`            | `success`, `usage_error`, `redact_audit_findings`, `redact_audit_scan_error`, `internal_error` |
 | `bench assert`                  | `success`, `usage_error`, `slo_rule_failure`, `internal_error` |
