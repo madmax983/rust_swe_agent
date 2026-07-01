@@ -403,6 +403,8 @@ pub fn run_show(opts: &ShowOpts) -> Result<TrajectoryAnnotation, Error> {
 
 // ── text renderers ────────────────────────────────────────────────────────────
 
+use comfy_table::{Table, modifiers::UTF8_ROUND_CORNERS, presets::UTF8_FULL};
+
 pub fn render_write_text(traj_path: &Path, verdict: Verdict, sidecar: &Path) -> String {
     let mut s = String::new();
     let _ = writeln!(
@@ -416,20 +418,38 @@ pub fn render_write_text(traj_path: &Path, verdict: Verdict, sidecar: &Path) -> 
 }
 
 pub fn render_show_text(ann: &TrajectoryAnnotation) -> String {
-    let mut s = String::new();
-    let _ = writeln!(s, "=== annotation: {} ===", ann.instance_id);
-    let _ = writeln!(s, "  verdict          : {}", ann.verdict);
+    let mut table = Table::new();
+    table
+        .load_preset(UTF8_FULL)
+        .apply_modifier(UTF8_ROUND_CORNERS)
+        .set_header(vec!["Field", "Value"]);
+
+    table.add_row(vec!["Instance ID".to_string(), ann.instance_id.clone()]);
+    table.add_row(vec!["Verdict".to_string(), ann.verdict.to_string()]);
+
     if let Some(fc) = ann.failure_category.as_deref() {
-        let _ = writeln!(s, "  failure_category : {fc}");
+        table.add_row(vec!["Failure Category".to_string(), fc.to_string()]);
     }
     if let Some(note) = ann.note.as_deref() {
-        let _ = writeln!(s, "  note             : {note}");
+        table.add_row(vec!["Note".to_string(), note.to_string()]);
     }
+
     for sn in &ann.step_notes {
-        let _ = writeln!(s, "  step[{}]          : {}", sn.step, sn.note);
+        table.add_row(vec![format!("Step [{}]", sn.step), sn.note.clone()]);
     }
-    let _ = writeln!(s, "  annotated_at     : {}", ann.annotated_at);
-    let _ = writeln!(s, "  trajectory_sha256: {}", ann.trajectory_sha256);
+
+    table.add_row(vec![
+        "Annotated At".to_string(),
+        ann.annotated_at.clone(),
+    ]);
+    table.add_row(vec![
+        "Trajectory SHA256".to_string(),
+        ann.trajectory_sha256.clone(),
+    ]);
+
+    let mut s = String::new();
+    let _ = writeln!(s, "=== annotation: {} ===", ann.instance_id);
+    let _ = writeln!(s, "{table}");
     s
 }
 
