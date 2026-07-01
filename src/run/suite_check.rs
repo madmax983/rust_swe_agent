@@ -16,6 +16,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::config::Config;
+use crate::config::schema::EnvKind;
 use crate::error::Error;
 use crate::run::agent_doctor::{is_executable, resolve_on_path};
 use crate::run::config_resolve::{ConfigResolveArgs, OverrideHazard, run_config_resolve};
@@ -198,6 +199,14 @@ pub async fn run(args: &SuiteCheckArgs) -> Result<SuiteCheckReport, Error> {
         _ => None,
     };
 
+    // Verify commands run inside the configured environment, not on this
+    // host: with `--env docker` the real check runs in the container image,
+    // so a host-PATH lookup can't validate it (a docker-only binary would
+    // false-fail; a host-only same-named binary would false-pass). Skip the
+    // static launchability probe in that case and only validate
+    // `NAME:COMMAND` well-formedness.
+    let skip_launchability = matches!(args.config.root.environment.kind, EnvKind::Docker);
+
     // ── Non-empty pack + per-task field/id validation ──────────────────
     let mut task_count = 0usize;
     let mut per_task_verify_count = 0usize;
@@ -229,14 +238,18 @@ pub async fn run(args: &SuiteCheckArgs) -> Result<SuiteCheckReport, Error> {
         for task in tasks {
             per_task_verify_count += task.verify.len();
             for spec in &task.verify {
-                checks.push(check_verify_spec(Some(task.id.clone()), spec));
+                checks.push(check_verify_spec(
+                    Some(task.id.clone()),
+                    spec,
+                    skip_launchability,
+                ));
             }
         }
     }
 
     // ── Suite-level verify entries ───────────────────────────────────────
     for spec in &args.verify {
-        checks.push(check_verify_spec(None, spec));
+        checks.push(check_verify_spec(None, spec, skip_launchability));
     }
     let verify_check_count = args.verify.len() + per_task_verify_count;
 
@@ -313,10 +326,15 @@ pub async fn run(args: &SuiteCheckArgs) -> Result<SuiteCheckReport, Error> {
     }
 
     // ── Worst-case cost (arithmetic only — no model call) ──────────────────
+    // The `--per-task-budget-usd` flag always wins when passed; otherwise
+    // fall back to a config-file `[agent] per_task_budget_usd`, which the
+    // live suite run also honors per-task when no flag override is given.
+    let effective_per_task_budget_usd =
+        args.per_task_budget_usd
+            .or(args.config.root.agent.per_task_budget_usd);
     #[allow(clippy::cast_precision_loss)]
-    let estimated_worst_case_cost_usd = args
-        .per_task_budget_usd
-        .map(|budget| budget * task_count as f64);
+    let estimated_worst_case_cost_usd =
+        effective_per_task_budget_usd.map(|budget| budget * task_count as f64);
     if let (Some(cost), Some(limit)) = (estimated_worst_case_cost_usd, args.suite_cost_limit_usd) {
         if cost > limit {
             checks.push(CheckItem::warn(
@@ -369,7 +387,7 @@ fn resolve_format(path: &Path, format_override: Option<&str>) -> Result<TaskFile
 
 // ── verify-check format + launchability ─────────────────────────────────────────
 
-fn check_verify_spec(target: Option<String>, spec: &str) -> CheckItem {
+fn check_verify_spec(target: Option<String>, spec: &str, skip_launchability: bool) -> CheckItem {
     let specs = [spec.to_owned()];
     match parse_verify_checks(&specs) {
         Ok(parsed) => {
@@ -377,6 +395,18 @@ fn check_verify_spec(target: Option<String>, spec: &str) -> CheckItem {
                 return CheckItem::fail("verify", target, "empty --verify entry");
             };
             let check_id = format!("verify:{}", check.name);
+            if skip_launchability {
+                return CheckItem {
+                    check: check_id,
+                    target,
+                    status: CheckStatus::Pass,
+                    message: Some(
+                        "launchability not checked: --env docker runs verify commands inside \
+                         the container image, not on this host"
+                            .to_owned(),
+                    ),
+                };
+            }
             match check_command_launchable(&check.command) {
                 Ok(()) => CheckItem::pass(check_id, target),
                 Err(reason) => CheckItem::fail(check_id, target, reason),
@@ -751,6 +781,32 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn docker_env_skips_host_path_launchability_check() {
+        // A binary that only exists inside the configured Docker image (not
+        // on this host) must not fail preflight — the real verify command
+        // runs inside the container, not on the host PATH. Regression test
+        // for a false-fail found in review (issue #821).
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_tasks(
+            &dir,
+            "tasks.yaml",
+            "- id: t1\n  task: fix it\n  verify:\n    - tests:__no_such_binary_xyz_suite_check__ -q\n",
+        );
+        let mut config = Config::defaults().unwrap();
+        config.root.environment.kind = EnvKind::Docker;
+        let mut args = base_args(path);
+        args.config = config;
+        let report = run(&args).await.unwrap();
+        assert!(report.ok, "checks: {:?}", report.checks);
+        let checked = report
+            .checks
+            .iter()
+            .find(|c| c.check == "verify:tests")
+            .unwrap();
+        assert_eq!(checked.status, CheckStatus::Pass);
+    }
+
+    #[tokio::test]
     async fn malformed_verify_spec_without_colon_fails() {
         let dir = tempfile::tempdir().unwrap();
         let path = write_tasks(
@@ -897,6 +953,46 @@ mod tests {
         let path = write_tasks(&dir, "tasks.yaml", "- id: t1\n  task: a\n");
         let report = run(&base_args(path)).await.unwrap();
         assert!(report.estimated_worst_case_cost_usd.is_none());
+    }
+
+    #[tokio::test]
+    async fn worst_case_cost_uses_config_file_budget_when_no_cli_flag() {
+        // The live `agent suite` run path honors a config-file
+        // `[agent] per_task_budget_usd` per task when `--per-task-budget-usd`
+        // isn't passed on the CLI — `--check` must estimate cost the same
+        // way instead of reporting "unknown" (regression test for a gap
+        // found in review, issue #821).
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_tasks(
+            &dir,
+            "tasks.yaml",
+            "- id: t1\n  task: a\n- id: t2\n  task: b\n",
+        );
+        let mut config = Config::defaults().unwrap();
+        config.root.agent.per_task_budget_usd = Some(0.25);
+        let mut args = base_args(path);
+        args.config = config;
+        let report = run(&args).await.unwrap();
+        assert!(
+            (report.estimated_worst_case_cost_usd.unwrap() - 0.50).abs() < 1e-9,
+            "report: {report:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn worst_case_cost_cli_flag_wins_over_config_file_budget() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_tasks(&dir, "tasks.yaml", "- id: t1\n  task: a\n");
+        let mut config = Config::defaults().unwrap();
+        config.root.agent.per_task_budget_usd = Some(0.25);
+        let mut args = base_args(path);
+        args.config = config;
+        args.per_task_budget_usd = Some(1.0);
+        let report = run(&args).await.unwrap();
+        assert!(
+            (report.estimated_worst_case_cost_usd.unwrap() - 1.0).abs() < 1e-9,
+            "report: {report:?}"
+        );
     }
 
     #[tokio::test]
