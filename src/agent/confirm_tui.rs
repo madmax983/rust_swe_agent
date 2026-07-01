@@ -903,6 +903,18 @@ async fn renderer_loop(
         }
         redraw = true;
         tokio::select! {
+            // `biased` makes `notified` win any tie against `events.next()`
+            // (issue #734 review): without it, `select!`'s default random
+            // choice could let an ignored mouse event (which clears `redraw`
+            // above) win a race against a same-poll `notify_waiters()` call
+            // from another task — e.g. a fresh confirm prompt or log line —
+            // silently dropping that redraw since the `notified` future is
+            // cancelled unread. Biased polling costs nothing here: every
+            // branch's body other than `events.next()` is a no-op, and a
+            // mouse/key event not chosen this poll simply stays queued in
+            // the stream for the next one, so nothing is lost by picking
+            // `notified` first when both are ready.
+            biased;
             _ = &mut shutdown => break,
             () = &mut notified => {}
             _ = tick.tick(), if active => {}
