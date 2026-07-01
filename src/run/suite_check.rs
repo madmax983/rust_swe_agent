@@ -552,6 +552,21 @@ fn check_verify_spec(target: Option<String>, spec: &str, skip_launchability: boo
                      static check does not emulate",
                 );
             }
+            if has_ambiguous_wrapper_option(&check.command) {
+                // A wrapper (time/exec/command/env/...) followed by what
+                // looks like an option flag (`time -p`, `command -v`,
+                // `env -i`) may take that flag's own argument before the
+                // real payload (e.g. `exec -a name cmd`), which this
+                // checker doesn't model per-wrapper. Guessing wrong in
+                // either direction is worse than admitting uncertainty.
+                return CheckItem::warn(
+                    check_id,
+                    target,
+                    "launchability not checked: a wrapper command (time/exec/command/eval/\
+                     builtin/env) is followed by what looks like an option flag, which this \
+                     static check does not parse",
+                );
+            }
             match check_command_launchable(&check.command) {
                 Ok(()) => CheckItem::pass(check_id, target),
                 Err(reason) => CheckItem::fail(check_id, target, reason),
@@ -573,11 +588,13 @@ fn check_command_launchable(command: &str) -> Result<(), String> {
         let Some((token, remainder)) = split_off_program_token(rest) else {
             return Err("verify command has no resolvable program token".to_owned());
         };
-        // `time foo`, `exec foo`, `command foo`, `eval foo`, and `builtin foo`
-        // don't launch anything themselves — the real payload is whatever
-        // follows. Unwrap the wrapper and check that instead, rather than
-        // asserting Ok on the wrapper's own name.
-        if WRAPPER_BUILTINS.contains(&token.as_str()) {
+        // `time foo`, `exec foo`, `command foo`, `eval foo`, `builtin foo`,
+        // and `env foo` don't launch anything themselves — the real payload
+        // is whatever follows. Unwrap the wrapper and check that instead,
+        // rather than asserting Ok on the wrapper's own name. (Any leading
+        // `NAME=VALUE` assignments after `env` are skipped automatically by
+        // `split_off_program_token`'s own inner loop on the next iteration.)
+        if WRAPPER_COMMANDS.contains(&token.as_str()) {
             rest = remainder;
             continue;
         }
@@ -600,10 +617,34 @@ fn check_command_launchable(command: &str) -> Result<(), String> {
     }
 }
 
-/// Builtins/keywords whose own name is not the thing being launched — the
+/// Builtins/commands whose own name is not the thing being launched — the
 /// command that follows them is. Checked before [`SHELL_BUILTINS_AND_KEYWORDS`]
-/// so `time __no_such_binary__` doesn't short-circuit on `time` alone.
-const WRAPPER_BUILTINS: &[&str] = &["time", "exec", "command", "eval", "builtin"];
+/// so `time __no_such_binary__` doesn't short-circuit on `time` alone. `env`
+/// is a real external program (not a shell builtin) but has the same
+/// wrapper shape: `env [OPTION]... [NAME=VALUE]... [COMMAND [ARG]...]`.
+const WRAPPER_COMMANDS: &[&str] = &["time", "exec", "command", "eval", "builtin", "env"];
+
+/// Whether `command`, after unwrapping any [`WRAPPER_COMMANDS`] prefixes, is
+/// followed by a token that looks like an option flag (`-...`) for that
+/// wrapper. Each wrapper has its own option grammar — some flags take their
+/// own argument (e.g. `exec -a name`) — which this checker doesn't model,
+/// so treat the launchability as inconclusive rather than misresolving the
+/// flag (or its argument) as the payload.
+fn has_ambiguous_wrapper_option(command: &str) -> bool {
+    let mut rest = command;
+    loop {
+        let Some((token, remainder)) = split_off_program_token(rest) else {
+            return false;
+        };
+        if !WRAPPER_COMMANDS.contains(&token.as_str()) {
+            return false;
+        }
+        if matches!(next_shell_word(remainder), Some((next, _)) if next.starts_with('-')) {
+            return true;
+        }
+        rest = remainder;
+    }
+}
 
 /// Extract the first non-`VAR=value` token from a shell command string,
 /// along with the unconsumed remainder of the command after it.
@@ -695,7 +736,7 @@ const SHELL_BUILTINS_AND_KEYWORDS: &[&str] = &[
     "case", "esac", "function", "select", "in", "not", "{",
     "}",
     // NOTE: "time", "exec", "command", "eval", "builtin" are intentionally
-    // absent — they're wrapper builtins handled by WRAPPER_BUILTINS above,
+    // absent — they're wrapper commands handled by WRAPPER_COMMANDS above,
     // which unwraps them and checks the command that actually follows.
 ];
 
@@ -1732,5 +1773,60 @@ mod tests {
         assert!(check_command_launchable("exec true").is_ok());
         // Nested wrappers unwrap one at a time.
         assert!(check_command_launchable("time exec cargo --version").is_ok());
+    }
+
+    #[test]
+    fn env_wrapper_resolves_the_command_it_launches() {
+        // `env` is a real external program, not a shell builtin, but has
+        // the same wrapper shape as time/exec/command/eval — the payload
+        // after its NAME=VALUE assignments is what's actually launched.
+        // Regression test for a gap found in review (issue #821):
+        // `env PYTHONPATH=. __no_such_binary__` previously passed because
+        // only `env` itself (which always resolves) was checked.
+        assert!(check_command_launchable("env PYTHONPATH=. cargo --version").is_ok());
+        assert!(
+            check_command_launchable("env PYTHONPATH=. __no_such_binary_xyz_suite_check__")
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn has_ambiguous_wrapper_option_detects_option_after_wrapper() {
+        // `time -p`, `command -v`, `env -i` etc. are valid shell/coreutils
+        // invocations, but this checker doesn't model each wrapper's own
+        // option grammar (some flags take an argument, e.g. `exec -a
+        // name`), so guessing at the flag or its argument as the payload
+        // would misresolve either way. Regression test for a false-fail
+        // found in review (issue #821): `time -p cargo test` previously
+        // tried (and failed) to resolve "-p" as an executable.
+        assert!(has_ambiguous_wrapper_option("time -p cargo test"));
+        assert!(has_ambiguous_wrapper_option("command -v cargo"));
+        assert!(has_ambiguous_wrapper_option("env -i FOO=bar cargo test"));
+        assert!(has_ambiguous_wrapper_option("time exec -a name cargo"));
+    }
+
+    #[test]
+    fn has_ambiguous_wrapper_option_false_for_ordinary_commands() {
+        assert!(!has_ambiguous_wrapper_option("time cargo test"));
+        assert!(!has_ambiguous_wrapper_option("cargo -v test"));
+        assert!(!has_ambiguous_wrapper_option("env PYTHONPATH=. cargo test"));
+    }
+
+    #[tokio::test]
+    async fn verify_command_with_wrapper_option_is_inconclusive_not_fatal() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_tasks(
+            &dir,
+            "tasks.yaml",
+            "- id: t1\n  task: fix it\n  verify:\n    - tests:time -p cargo --version\n",
+        );
+        let report = run(&base_args(path)).await.unwrap();
+        assert!(report.ok, "checks: {:?}", report.checks);
+        let checked = report
+            .checks
+            .iter()
+            .find(|c| c.check == "verify:tests")
+            .unwrap();
+        assert_eq!(checked.status, CheckStatus::Warn);
     }
 }
