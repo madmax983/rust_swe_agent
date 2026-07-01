@@ -2526,6 +2526,20 @@ fn footer_paragraph(snap: &DashboardSnapshot) -> Paragraph<'_> {
         && snap.edit_input.is_none()
         && snap.feedback_input.is_none()
         && !search_editing_visible;
+    // Appended, not prepended (issue #639 review follow-up): `footer_paragraph`'s
+    // `Paragraph` is not wrapped, and several branches — idle, `finished`, and a
+    // filled-in `pending` scope — are already wider than an 80-column terminal's
+    // inner width (78 cols) on their own, independent of this hint. Prepending
+    // was tried and reverted: it shifts *later* content out of view instead
+    // (verified by test — it broke 3 previously-passing footer assertions for
+    // exactly that reason), so it only relocates the pre-existing overflow
+    // rather than fixing it. Appending keeps that pre-existing limitation
+    // unchanged and adds the hint where the branch already had room (e.g.
+    // `stop_pending`/`edit_input`-free short states); it does not fully
+    // guarantee visibility in every state at 80 columns. Properly fixing that
+    // needs either shorter footer copy across several branches or a taller/
+    // wrapped footer — both larger, more disruptive changes than a review-
+    // response fix, and better scoped as a separate follow-up.
     let line = if show_help_hint {
         Line::from(vec![span, Span::styled("   [?: help]", bold)])
     } else {
@@ -6679,6 +6693,29 @@ mod tests {
         assert!(
             text.contains("?: help"),
             "idle footer must advertise the help affordance; got:\n{text}"
+        );
+    }
+
+    /// `footer_paragraph`'s `Paragraph` is not wrapped, so content past the
+    /// render width is clipped rather than wrapped onto another line. Several
+    /// branches (idle, `finished`, a filled-in `pending` scope) are already
+    /// wider than an 80-column terminal's inner width (78 cols) on their own,
+    /// independent of this hint — a pre-existing limitation this feature
+    /// doesn't fully overcome (issue #639 review; see the comment above
+    /// `show_help_hint`'s use). This test instead pins the achievable
+    /// guarantee: in a state with room to spare (short elapsed "thinking"),
+    /// the hint is not clipped.
+    #[test]
+    fn help_overlay_footer_hint_survives_clipping_at_80_columns() {
+        let d = make_dashboard();
+        {
+            let mut s = d.state.lock().unwrap();
+            s.activity = Activity::Thinking { since: ago(5) };
+        }
+        let text = buffer_text(&render_to_buffer(&snap(&d), 80, 10));
+        assert!(
+            text.contains("?: help"),
+            "help hint must not be clipped off an 80-column footer when the state has room; got:\n{text}"
         );
     }
 
