@@ -342,6 +342,18 @@ Pass `--no-bell` (or set the `NO_BELL` environment variable to any non-empty
 value) to mute it; bells are also suppressed automatically when stdout is not a
 TTY, so piped/CI runs stay byte-clean.
 
+The `--ui ratatui` dashboard also supports the mouse (issue #734): the scroll
+wheel moves the selection in the step feed, or scrolls the detail inspector
+when it's open, 3 rows per notch (`MAXWELL_MOUSE_SCROLL_STEP` overrides the
+step). A left-click on a visible step row selects it, same as navigating
+there with the keyboard. Mouse input is ignored whenever a modal owns focus —
+the confirm prompt, the `?` help overlay, the stop confirmation, or an active
+search — so keyboard-only operators see no change in behavior. To copy text
+with your terminal's native selection instead of sending it to the app,
+hold Shift while dragging; this bypasses mouse capture in every terminal that
+supports it. Press `?` in the dashboard for the full keybinding/mouse
+reference.
+
 PowerShell:
 
 ```powershell

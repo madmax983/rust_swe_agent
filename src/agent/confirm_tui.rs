@@ -13,8 +13,9 @@ use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use crossterm::event::{
-    DisableBracketedPaste, EnableBracketedPaste, Event, EventStream, KeyCode, KeyEvent,
-    KeyEventKind, KeyModifiers,
+    DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture, Event,
+    EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent,
+    MouseEventKind,
 };
 use crossterm::execute;
 use crossterm::terminal::{
@@ -146,6 +147,15 @@ struct DashboardState {
     selected_index: Option<usize>,
     feed_scroll_top: usize,
     viewport_height: u16,
+    /// Absolute terminal row of the first visible feed line, captured by the
+    /// renderer each frame (issue #734) so `handle_mouse` can translate a
+    /// click's screen row into a log index without duplicating the layout
+    /// math in `draw_frame`.
+    feed_top_row: u16,
+    /// Rows moved per scroll-wheel notch, mirroring `stall_threshold`'s
+    /// env-configurability (issue #734, AC2). Default 3; see
+    /// `mouse_scroll_step_from_env`.
+    mouse_scroll_step: usize,
     detail_open: bool,
     detail_scroll_top: usize,
     detail_viewport_height: u16,
@@ -206,6 +216,8 @@ impl Default for DashboardState {
             selected_index: None,
             feed_scroll_top: 0,
             viewport_height: 20,
+            feed_top_row: 0,
+            mouse_scroll_step: DEFAULT_MOUSE_SCROLL_STEP,
             detail_open: false,
             detail_scroll_top: 0,
             detail_viewport_height: 10,
@@ -290,6 +302,20 @@ fn stall_threshold_from_env() -> Duration {
         .and_then(|v| v.trim().parse::<u64>().ok())
         .unwrap_or(DEFAULT_STALL_THRESHOLD_SECS);
     Duration::from_secs(secs)
+}
+
+/// Default rows moved per scroll-wheel notch (issue #734, AC2): one notch
+/// has the same effect as this many `Up`/`Down` keypresses.
+const DEFAULT_MOUSE_SCROLL_STEP: usize = 3;
+
+/// Resolve the mouse scroll step from `MAXWELL_MOUSE_SCROLL_STEP`, falling
+/// back to [`DEFAULT_MOUSE_SCROLL_STEP`] when unset, unparsable, or zero.
+fn mouse_scroll_step_from_env() -> usize {
+    std::env::var("MAXWELL_MOUSE_SCROLL_STEP")
+        .ok()
+        .and_then(|v| v.trim().parse::<usize>().ok())
+        .filter(|&n| n > 0)
+        .unwrap_or(DEFAULT_MOUSE_SCROLL_STEP)
 }
 
 /// Braille spinner frames for the in-flight activity indicator (issue #649).
@@ -461,6 +487,11 @@ impl RatatuiDashboard {
         // deliberately; teardown's unconditional `DisableBracketedPaste` is
         // likewise harmless on terminals that never enabled it.
         let _ = execute!(stdout, EnableBracketedPaste);
+        // SGR mouse capture (issue #734): best-effort like bracketed paste
+        // above — a terminal that doesn't support it just never emits
+        // `Event::Mouse`, and teardown's unconditional `DisableMouseCapture`
+        // is harmless either way.
+        let _ = execute!(stdout, EnableMouseCapture);
         let backend = CrosstermBackend::new(stdout);
         let terminal = match Terminal::new(backend) {
             Ok(t) => t,
@@ -473,6 +504,7 @@ impl RatatuiDashboard {
             state: Mutex::new(DashboardState {
                 is_monitor,
                 stall_threshold: stall_threshold_from_env(),
+                mouse_scroll_step: mouse_scroll_step_from_env(),
                 ..DashboardState::default()
             }),
             notify: Notify::new(),
@@ -533,11 +565,16 @@ impl RatatuiDashboard {
 
 fn restore_terminal() -> std::io::Result<()> {
     let mut stdout: Stdout = std::io::stdout();
-    // Disable bracketed paste before leaving the alt-screen so the mode is not
-    // leaked into the operator's shell on teardown — including the panic /
-    // early-exit path, since this runs from `RatatuiDashboardHandle::drop`
-    // (issue #745).
-    let _ = execute!(stdout, DisableBracketedPaste, LeaveAlternateScreen);
+    // Disable mouse capture and bracketed paste before leaving the alt-screen
+    // so neither mode is leaked into the operator's shell on teardown —
+    // including the panic / early-exit path, since this runs from
+    // `RatatuiDashboardHandle::drop` (issue #745, issue #734).
+    let _ = execute!(
+        stdout,
+        DisableMouseCapture,
+        DisableBracketedPaste,
+        LeaveAlternateScreen
+    );
     let _ = stdout.flush();
     disable_raw_mode()
 }
@@ -859,6 +896,7 @@ async fn renderer_loop(
             ev = events.next() => {
                 match ev {
                     Some(Ok(Event::Key(key))) => handle_key(&dash, key),
+                    Some(Ok(Event::Mouse(mouse))) => handle_mouse(&dash, mouse),
                     Some(Ok(Event::Paste(text))) => handle_paste(&dash, &text),
                     Some(Err(err)) => {
                         tracing::warn!(?err, "ratatui event stream error");
@@ -1730,6 +1768,79 @@ fn handle_key(dash: &Arc<RatatuiDashboard>, key: KeyEvent) {
     }
 }
 
+/// Handle a mouse event (issue #734): wheel-scroll and click-to-select for
+/// the main step feed and the detail inspector log, additive to (never a
+/// replacement for) the keyboard bindings above.
+///
+/// Mirrors `handle_key`'s focus rules: mouse input is ignored outright
+/// whenever a modal or overlay owns focus — the help overlay, the stop
+/// confirmation, a pending confirm prompt (including its feedback/edit
+/// sub-modes), or an active search — so a stray wheel notch or click can
+/// never change the selection out from under those (AC4). What's left, in
+/// priority order matching the keyboard's, is: the detail inspector (if
+/// open), the read-only monitor feed, or the interactive step feed.
+fn handle_mouse(dash: &Arc<RatatuiDashboard>, mouse: MouseEvent) {
+    let mut s = dash
+        .state
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+
+    let modal_owns_focus = s.help_open
+        || s.stop_pending
+        || s.pending.is_some()
+        || s.feedback_input.is_some()
+        || s.edit_input.is_some()
+        || s.search.is_some();
+    if modal_owns_focus {
+        return;
+    }
+
+    match mouse.kind {
+        MouseEventKind::ScrollUp => {
+            for _ in 0..s.mouse_scroll_step {
+                if s.detail_open {
+                    s.detail_scroll_top = s.detail_scroll_top.saturating_sub(1);
+                } else if s.is_monitor {
+                    perform_scroll(&mut s, KeyCode::Up);
+                } else {
+                    move_cursor_up(&mut s);
+                }
+            }
+        }
+        MouseEventKind::ScrollDown => {
+            for _ in 0..s.mouse_scroll_step {
+                if s.detail_open {
+                    let max_scroll = get_max_detail_scroll(&s);
+                    s.detail_scroll_top = (s.detail_scroll_top + 1).min(max_scroll);
+                } else if s.is_monitor {
+                    perform_scroll(&mut s, KeyCode::Down);
+                } else {
+                    move_cursor_down(&mut s);
+                }
+            }
+        }
+        MouseEventKind::Down(MouseButton::Left) => {
+            // Reuses the same `selected_index` the keyboard cursor drives
+            // (AC3) — only the main feed has clickable rows in this slice,
+            // so this is skipped while the detail pane covers it or in
+            // read-only monitor mode, which has no per-row selection.
+            let feed_top_row = s.feed_top_row;
+            if !s.detail_open && !s.is_monitor && mouse.row >= feed_top_row {
+                let offset = (mouse.row - feed_top_row) as usize;
+                if offset < s.viewport_height as usize {
+                    let idx = s.feed_scroll_top + offset;
+                    if idx < s.log.len() {
+                        s.selected_index = Some(idx);
+                    }
+                }
+            }
+        }
+        _ => return,
+    }
+    drop(s);
+    dash.notify.notify_waiters();
+}
+
 /// Normalize pasted text line endings to `\n` (issue #745 review). Windows
 /// clipboards deliver `\r\n` and some sources lone `\r`; the modal renderer
 /// strips trailing `\r` only for *display*, so without this an edit-command
@@ -1846,6 +1957,7 @@ fn draw_frame(
         s.last_log_width = log_width;
         s.last_log_height = log_height;
         s.viewport_height = inner_feed_height;
+        s.feed_top_row = log_chunk.y.saturating_add(1);
         // Clamp feed_scroll_top before the snapshot so this frame renders
         // the corrected offset. Skip while search is active to avoid undoing
         // scroll_to_line's positioning.
@@ -2360,6 +2472,28 @@ const KEYBINDINGS: &[KeyBinding] = &[
         keys: "?",
         description: "toggle this help overlay",
         matches: &[(KeyCode::Char('?'), KeyModifiers::NONE)],
+    },
+    // Mouse bindings (issue #734) have no `KeyCode`/`KeyModifiers` to match —
+    // `matches` stays empty; they're documented here purely so the help
+    // overlay and README stay the single source of truth for both input
+    // modes, and to satisfy `help_overlay_lines_cover_every_keybindings_entry`.
+    KeyBinding {
+        category: "Mouse",
+        keys: "Wheel",
+        description: "scroll the feed or detail inspector (same as Up/Down)",
+        matches: &[],
+    },
+    KeyBinding {
+        category: "Mouse",
+        keys: "Click",
+        description: "select a step row in the feed",
+        matches: &[],
+    },
+    KeyBinding {
+        category: "Mouse",
+        keys: "Shift-drag",
+        description: "select text with the terminal's native copy, bypassing mouse capture",
+        matches: &[],
     },
 ];
 
@@ -6827,5 +6961,309 @@ mod tests {
     #[test]
     fn help_overlay_lines_count_matches_actual_line_count() {
         assert_eq!(help_overlay_lines_count(), help_overlay_lines().len());
+    }
+
+    // -- Mouse support (issue #734) --------------------------------------
+    //
+    // These parallel the `handle_key` tests above but drive synthetic
+    // `MouseEvent`s through `handle_mouse` instead of `KeyEvent`s through
+    // `handle_key`.
+
+    fn mouse_event(kind: MouseEventKind, column: u16, row: u16) -> MouseEvent {
+        MouseEvent {
+            kind,
+            column,
+            row,
+            modifiers: KeyModifiers::NONE,
+        }
+    }
+
+    /// Push `n` log lines and lay out a feed viewport starting at terminal
+    /// row `feed_top_row` (mirrors what `draw_frame` would have captured),
+    /// `viewport_height` rows tall, scrolled so row 0 of the viewport shows
+    /// log index `feed_scroll_top`.
+    fn setup_feed(d: &Arc<RatatuiDashboard>, n: usize, feed_top_row: u16, viewport_height: u16) {
+        let mut s = d.state.lock().unwrap();
+        for i in 0..n {
+            push_info(&mut s, &format!("line{i}"));
+        }
+        s.feed_top_row = feed_top_row;
+        s.viewport_height = viewport_height;
+        s.selected_index = Some(0);
+        s.feed_scroll_top = 0;
+    }
+
+    #[test]
+    fn test_mouse_scroll_wheel_moves_selection_like_repeated_keyboard_down() {
+        let d = make_dashboard();
+        setup_feed(&d, 10, 4, 5);
+
+        // Default step is 3 rows: one wheel notch down should land exactly
+        // where three `Down` keypresses would.
+        let d2 = make_dashboard();
+        setup_feed(&d2, 10, 4, 5);
+        for _ in 0..3 {
+            handle_key(&d2, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        }
+        let expected = snap(&d2).selected_index;
+
+        handle_mouse(&d, mouse_event(MouseEventKind::ScrollDown, 0, 0));
+        assert_eq!(snap(&d).selected_index, expected);
+        assert_eq!(snap(&d).selected_index, Some(3));
+    }
+
+    #[test]
+    fn test_mouse_scroll_wheel_up_moves_selection() {
+        let d = make_dashboard();
+        setup_feed(&d, 10, 4, 5);
+        {
+            let mut s = d.state.lock().unwrap();
+            s.selected_index = Some(5);
+        }
+
+        handle_mouse(&d, mouse_event(MouseEventKind::ScrollUp, 0, 0));
+        assert_eq!(snap(&d).selected_index, Some(2));
+    }
+
+    #[test]
+    fn test_mouse_scroll_step_is_configurable() {
+        let d = make_dashboard();
+        setup_feed(&d, 10, 4, 5);
+        {
+            let mut s = d.state.lock().unwrap();
+            s.mouse_scroll_step = 1;
+        }
+
+        handle_mouse(&d, mouse_event(MouseEventKind::ScrollDown, 0, 0));
+        assert_eq!(snap(&d).selected_index, Some(1));
+    }
+
+    #[test]
+    #[allow(clippy::significant_drop_tightening)]
+    fn test_mouse_scroll_wheel_scrolls_monitor_feed_like_keyboard() {
+        let d = make_dashboard();
+        {
+            let mut s = d.state.lock().unwrap();
+            s.is_monitor = true;
+            s.last_log_height = 5;
+            s.last_log_width = 10;
+            for i in 0..8 {
+                push_info(&mut s, &format!("line{i}"));
+            }
+        }
+
+        handle_mouse(&d, mouse_event(MouseEventKind::ScrollUp, 0, 0));
+        let s = snap(&d);
+        assert!(!s.auto_follow);
+        assert_eq!(s.scroll_offset, 0); // starts auto-followed at max (3), -3 clamps to 0
+    }
+
+    #[test]
+    fn test_mouse_scroll_wheel_scrolls_detail_inspector() {
+        let d = make_dashboard();
+        let multiline_text = (0..10)
+            .map(|i| format!("line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        d.append(LineKind::Info, "summary", Some(multiline_text));
+        {
+            let mut s = d.state.lock().unwrap();
+            s.detail_open = true;
+            s.detail_viewport_height = 3;
+        }
+        assert_eq!(snap(&d).detail_scroll_top, 0);
+
+        handle_mouse(&d, mouse_event(MouseEventKind::ScrollDown, 0, 0));
+        assert_eq!(snap(&d).detail_scroll_top, 3);
+
+        handle_mouse(&d, mouse_event(MouseEventKind::ScrollUp, 0, 0));
+        assert_eq!(snap(&d).detail_scroll_top, 0);
+    }
+
+    #[test]
+    fn test_mouse_left_click_selects_visible_row() {
+        let d = make_dashboard();
+        // feed content starts at terminal row 4, 5 rows tall, showing log
+        // indices [2, 7) since feed_scroll_top = 2.
+        setup_feed(&d, 10, 4, 5);
+        {
+            let mut s = d.state.lock().unwrap();
+            s.feed_scroll_top = 2;
+        }
+
+        // Click the 3rd visible row (row 4+2=6) -> log index 2+2=4.
+        handle_mouse(
+            &d,
+            mouse_event(MouseEventKind::Down(MouseButton::Left), 10, 6),
+        );
+        assert_eq!(snap(&d).selected_index, Some(4));
+    }
+
+    #[test]
+    fn test_mouse_left_click_above_feed_is_ignored() {
+        let d = make_dashboard();
+        setup_feed(&d, 10, 4, 5);
+        {
+            let mut s = d.state.lock().unwrap();
+            s.selected_index = Some(0);
+        }
+
+        // Row 1 is inside the header, above the feed's top row (4).
+        handle_mouse(
+            &d,
+            mouse_event(MouseEventKind::Down(MouseButton::Left), 10, 1),
+        );
+        assert_eq!(snap(&d).selected_index, Some(0));
+    }
+
+    #[test]
+    fn test_mouse_left_click_below_feed_viewport_is_ignored() {
+        let d = make_dashboard();
+        setup_feed(&d, 10, 4, 5);
+        {
+            let mut s = d.state.lock().unwrap();
+            s.selected_index = Some(0);
+        }
+
+        // feed_top_row=4, viewport_height=5 -> visible rows are 4..9; row 9
+        // is one past the last visible row.
+        handle_mouse(
+            &d,
+            mouse_event(MouseEventKind::Down(MouseButton::Left), 10, 9),
+        );
+        assert_eq!(snap(&d).selected_index, Some(0));
+    }
+
+    #[test]
+    fn test_mouse_click_ignored_in_monitor_mode() {
+        let d = make_dashboard();
+        setup_feed(&d, 10, 4, 5);
+        {
+            let mut s = d.state.lock().unwrap();
+            s.is_monitor = true;
+            s.selected_index = Some(0);
+        }
+
+        handle_mouse(
+            &d,
+            mouse_event(MouseEventKind::Down(MouseButton::Left), 10, 6),
+        );
+        assert_eq!(snap(&d).selected_index, Some(0));
+    }
+
+    #[test]
+    fn test_mouse_ignored_while_confirm_modal_pending() {
+        let d = make_dashboard();
+        setup_feed(&d, 10, 4, 5);
+        let _rx = make_pending(&d);
+        {
+            let mut s = d.state.lock().unwrap();
+            s.selected_index = Some(0);
+        }
+
+        handle_mouse(&d, mouse_event(MouseEventKind::ScrollDown, 0, 0));
+        handle_mouse(
+            &d,
+            mouse_event(MouseEventKind::Down(MouseButton::Left), 10, 6),
+        );
+        assert_eq!(snap(&d).selected_index, Some(0));
+    }
+
+    #[test]
+    fn test_mouse_ignored_while_help_overlay_open() {
+        let d = make_dashboard();
+        setup_feed(&d, 10, 4, 5);
+        {
+            let mut s = d.state.lock().unwrap();
+            s.help_open = true;
+            s.selected_index = Some(0);
+        }
+
+        handle_mouse(&d, mouse_event(MouseEventKind::ScrollDown, 0, 0));
+        handle_mouse(
+            &d,
+            mouse_event(MouseEventKind::Down(MouseButton::Left), 10, 6),
+        );
+        assert_eq!(snap(&d).selected_index, Some(0));
+    }
+
+    #[test]
+    fn test_mouse_ignored_while_stop_confirmation_pending() {
+        let d = make_dashboard();
+        setup_feed(&d, 10, 4, 5);
+        {
+            let mut s = d.state.lock().unwrap();
+            s.stop_pending = true;
+            s.selected_index = Some(0);
+        }
+
+        handle_mouse(&d, mouse_event(MouseEventKind::ScrollDown, 0, 0));
+        assert_eq!(snap(&d).selected_index, Some(0));
+    }
+
+    #[test]
+    fn test_mouse_ignored_while_search_input_active() {
+        let d = make_dashboard();
+        setup_feed(&d, 10, 4, 5);
+        {
+            let mut s = d.state.lock().unwrap();
+            s.search = Some(SearchState::new());
+            s.selected_index = Some(0);
+        }
+
+        handle_mouse(&d, mouse_event(MouseEventKind::ScrollDown, 0, 0));
+        handle_mouse(
+            &d,
+            mouse_event(MouseEventKind::Down(MouseButton::Left), 10, 6),
+        );
+        assert_eq!(snap(&d).selected_index, Some(0));
+    }
+
+    #[test]
+    fn test_mouse_ignored_while_feedback_input_active() {
+        let d = make_dashboard();
+        setup_feed(&d, 10, 4, 5);
+        {
+            let mut s = d.state.lock().unwrap();
+            s.feedback_input = Some(String::new());
+            s.selected_index = Some(0);
+        }
+
+        handle_mouse(&d, mouse_event(MouseEventKind::ScrollDown, 0, 0));
+        assert_eq!(snap(&d).selected_index, Some(0));
+    }
+
+    #[test]
+    fn test_mouse_scroll_step_default_is_three() {
+        assert_eq!(DashboardState::default().mouse_scroll_step, 3);
+    }
+
+    #[test]
+    fn test_mouse_scroll_step_from_env() {
+        // No env var: default of 3.
+        // SAFETY: test-only env mutation, no other thread reads this var
+        // concurrently within this process's test harness for this key.
+        unsafe {
+            std::env::remove_var("MAXWELL_MOUSE_SCROLL_STEP");
+        }
+        assert_eq!(mouse_scroll_step_from_env(), DEFAULT_MOUSE_SCROLL_STEP);
+
+        unsafe {
+            std::env::set_var("MAXWELL_MOUSE_SCROLL_STEP", "7");
+        }
+        assert_eq!(mouse_scroll_step_from_env(), 7);
+
+        // Unparsable/zero falls back to the default.
+        unsafe {
+            std::env::set_var("MAXWELL_MOUSE_SCROLL_STEP", "not-a-number");
+        }
+        assert_eq!(mouse_scroll_step_from_env(), DEFAULT_MOUSE_SCROLL_STEP);
+        unsafe {
+            std::env::set_var("MAXWELL_MOUSE_SCROLL_STEP", "0");
+        }
+        assert_eq!(mouse_scroll_step_from_env(), DEFAULT_MOUSE_SCROLL_STEP);
+        unsafe {
+            std::env::remove_var("MAXWELL_MOUSE_SCROLL_STEP");
+        }
     }
 }
