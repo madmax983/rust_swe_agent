@@ -860,6 +860,16 @@ async fn renderer_loop(
     // idle gap during which the interval was never awaited.
     let mut tick = tokio::time::interval(Duration::from_millis(100));
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    // Whether the *next* loop iteration should redraw. Defaults true (every
+    // event redraws, as before); the mouse arm below can clear it. Needed
+    // because `EnableMouseCapture` requests any-event motion tracking, so a
+    // terminal that honors it emits an `Event::Mouse(Moved)` (or `Drag`) for
+    // every cell the pointer crosses even when the button isn't held —
+    // `handle_mouse` ignores those, but without this flag the unconditional
+    // `draw_frame` below would still re-render the whole screen once per
+    // pointer-move event, turning idle mouse motion into a redraw storm
+    // (issue #734 review).
+    let mut redraw = true;
     loop {
         // Register interest in the next state change *before* reading state and
         // drawing. `Notify::notify_waiters()` only wakes waiters already
@@ -886,9 +896,12 @@ async fn renderer_loop(
             break;
         }
 
-        if let Err(err) = draw_frame(&dash, &mut terminal) {
-            tracing::warn!(?err, "ratatui draw failed");
+        if redraw {
+            if let Err(err) = draw_frame(&dash, &mut terminal) {
+                tracing::warn!(?err, "ratatui draw failed");
+            }
         }
+        redraw = true;
         tokio::select! {
             _ = &mut shutdown => break,
             () = &mut notified => {}
@@ -896,7 +909,7 @@ async fn renderer_loop(
             ev = events.next() => {
                 match ev {
                     Some(Ok(Event::Key(key))) => handle_key(&dash, key),
-                    Some(Ok(Event::Mouse(mouse))) => handle_mouse(&dash, mouse),
+                    Some(Ok(Event::Mouse(mouse))) => redraw = handle_mouse(&dash, mouse),
                     Some(Ok(Event::Paste(text))) => handle_paste(&dash, &text),
                     Some(Err(err)) => {
                         tracing::warn!(?err, "ratatui event stream error");
@@ -1789,7 +1802,15 @@ fn handle_key(dash: &Arc<RatatuiDashboard>, key: KeyEvent) {
 /// never change the selection out from under those (AC4). What's left, in
 /// priority order matching the keyboard's, is: the detail inspector (if
 /// open), the read-only monitor feed, or the interactive step feed.
-fn handle_mouse(dash: &Arc<RatatuiDashboard>, mouse: MouseEvent) {
+///
+/// Returns whether the renderer should redraw on account of this event.
+/// `EnableMouseCapture` requests any-event motion tracking, so terminals
+/// that honor it emit a `Moved`/`Drag` event for every cell the pointer
+/// crosses even with no button held; `renderer_loop` uses this return value
+/// to skip the (comparatively expensive) full-frame redraw for those and
+/// other kinds this function doesn't act on, so idle mouse motion can't
+/// drive a redraw storm (issue #734 review).
+fn handle_mouse(dash: &Arc<RatatuiDashboard>, mouse: MouseEvent) -> bool {
     let mut s = dash
         .state
         .lock()
@@ -1802,7 +1823,7 @@ fn handle_mouse(dash: &Arc<RatatuiDashboard>, mouse: MouseEvent) {
         || s.edit_input.is_some()
         || s.search.is_some();
     if modal_owns_focus {
-        return;
+        return false;
     }
 
     match mouse.kind {
@@ -1862,10 +1883,11 @@ fn handle_mouse(dash: &Arc<RatatuiDashboard>, mouse: MouseEvent) {
                 }
             }
         }
-        _ => return,
+        _ => return false,
     }
     drop(s);
     dash.notify.notify_waiters();
+    true
 }
 
 /// Normalize pasted text line endings to `\n` (issue #745 review). Windows
@@ -7292,5 +7314,62 @@ mod tests {
         unsafe {
             std::env::remove_var("MAXWELL_MOUSE_SCROLL_STEP");
         }
+    }
+
+    // `renderer_loop` uses `handle_mouse`'s return value to decide whether to
+    // redraw, specifically to skip the redraw for the `Moved`/`Drag` events a
+    // terminal's any-event mouse tracking emits on every idle pointer move
+    // (issue #734 review). These tests pin down that contract directly,
+    // since `renderer_loop` itself needs a live terminal and isn't unit
+    // tested.
+
+    #[test]
+    fn test_handle_mouse_returns_true_for_actionable_events() {
+        let d = make_dashboard();
+        setup_feed(&d, 10, 4, 5);
+        assert!(handle_mouse(
+            &d,
+            mouse_event(MouseEventKind::ScrollDown, 0, 0)
+        ));
+        assert!(handle_mouse(
+            &d,
+            mouse_event(MouseEventKind::ScrollUp, 0, 0)
+        ));
+        assert!(handle_mouse(
+            &d,
+            mouse_event(MouseEventKind::Down(MouseButton::Left), 10, 6)
+        ));
+    }
+
+    #[test]
+    fn test_handle_mouse_returns_false_for_ignored_event_kinds() {
+        let d = make_dashboard();
+        setup_feed(&d, 10, 4, 5);
+        let ignored = [
+            MouseEventKind::Moved,
+            MouseEventKind::Drag(MouseButton::Left),
+            MouseEventKind::Up(MouseButton::Left),
+            MouseEventKind::ScrollLeft,
+            MouseEventKind::ScrollRight,
+            MouseEventKind::Down(MouseButton::Right),
+            MouseEventKind::Down(MouseButton::Middle),
+        ];
+        for kind in ignored {
+            assert!(
+                !handle_mouse(&d, mouse_event(kind, 10, 6)),
+                "expected {kind:?} to be a no-op that skips the redraw"
+            );
+        }
+    }
+
+    #[test]
+    fn test_handle_mouse_returns_false_when_modal_owns_focus() {
+        let d = make_dashboard();
+        setup_feed(&d, 10, 4, 5);
+        let _rx = make_pending(&d);
+        assert!(!handle_mouse(
+            &d,
+            mouse_event(MouseEventKind::ScrollDown, 0, 0)
+        ));
     }
 }
