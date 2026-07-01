@@ -1,0 +1,9 @@
+🗺️ Atlas: Extract sweep data loading to break circular dependency
+
+🕸️ Tangle: There was a circular dependency between \`crate::run::compare\` and \`crate::run::evaluate\` because \`evaluate\` depended on \`load_sweep\` and \`load_run_slots\` which were defined in \`compare\`, while \`compare\` depended on \`EvaluationResults\` and formatting types from \`evaluate\`. This tangled modules with separate responsibilities.
+
+📐 Blueprint: Extracted \`load_sweep\`, \`load_run_slots\`, \`LoadedSweep\`, and related unaggregated run-slot scanning logic from \`crate::run::compare\` into a new, dedicated \`crate::run::sweep_load\` module. Updated all downstream modules (\`evaluate\`, \`triage\`, \`instance_history\`, etc.) to import from the new module instead.
+
+🧱 Stability: Broken circular dependency ensures a cleaner acyclic directed graph. Separating data loading from diffing/comparison makes the codebase more cohesive and testable. Compile times and strict separation are enforced.
+
+🔬 Verification: Ran \`cargo check\`, \`cargo fmt\`, \`cargo clippy\`, and \`cargo test\`. All tests passed. The architecture correctly represents a tree structure instead of a web.
