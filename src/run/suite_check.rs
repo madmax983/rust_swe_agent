@@ -5,9 +5,11 @@
 //! paid agent loop: the pack parses, every task has a non-empty `id`/`task`
 //! and unique id, every `--verify`/per-task `verify` entry is well-formed and
 //! its command is statically launchable, configured MCP servers and hooks
-//! start (reusing the `scriptability-check` probe), the `[policy]` config
-//! builds a valid `PolicyEngine`, every task's configured skills resolve
-//! cleanly, and the resolved suite config carries no silent clap-default
+//! start (reusing the `scriptability-check` probe), discovered MCP tool
+//! names don't collide with `bash` or a configured tool, the `[policy]`
+//! config builds a valid `PolicyEngine`, every task's configured skills
+//! resolve cleanly, `[prompts].system`/`[prompts].instance` render for every
+//! task, and the resolved suite config carries no silent clap-default
 //! override hazard (reusing the `agent config resolve` hazard detector). No
 //! model calls and no agent loop are ever started; no files are written
 //! (this module takes no output directory).
@@ -351,6 +353,7 @@ pub async fn run(args: &SuiteCheckArgs) -> Result<SuiteCheckReport, Error> {
     let mcp_server_count = args.config.root.agent.mcp_servers.len();
     let hook_count = args.config.root.agent.hooks.pre_tool_use.len()
         + args.config.root.agent.hooks.post_tool_use.len();
+    let mut scriptability_report: Option<scriptability_check::ScriptabilityCheckReport> = None;
     if is_docker {
         for (i, _) in args.config.root.agent.mcp_servers.iter().enumerate() {
             checks.push(CheckItem::warn(
@@ -387,8 +390,8 @@ pub async fn run(args: &SuiteCheckArgs) -> Result<SuiteCheckReport, Error> {
             ));
         }
     } else {
-        let scriptability_report = scriptability_check::run_with_config(&args.config, None).await?;
-        for server in &scriptability_report.servers {
+        let report = scriptability_check::run_with_config(&args.config, None).await?;
+        for server in &report.servers {
             checks.push(scriptability_check_item(
                 "mcp_server".to_owned(),
                 server.name.clone(),
@@ -396,13 +399,118 @@ pub async fn run(args: &SuiteCheckArgs) -> Result<SuiteCheckReport, Error> {
                 server.error.clone(),
             ));
         }
-        for hook in &scriptability_report.hooks {
+        for hook in &report.hooks {
             checks.push(scriptability_check_item(
                 format!("hook:{}", hook.phase),
                 hook.name.clone(),
                 hook.ok,
                 hook.error.clone(),
             ));
+        }
+        scriptability_report = Some(report);
+    }
+
+    // ── MCP tool-name validation (mirrors `ToolRegistry::index_provider_tools`) ─
+    // `ToolRegistry::from_config_and_providers` rejects a discovered MCP
+    // tool name that fails `validate_tool_name`, collides with the
+    // built-in `bash` tool, or duplicates a configured command tool /
+    // another provider's tool name — before the first task starts. Reuse
+    // the tool names the scriptability probe above already discovered
+    // (skipped for docker, same as that probe) rather than reconnecting.
+    if let Some(report) = &scriptability_report {
+        if !report.servers.is_empty() {
+            let mut seen_names: std::collections::BTreeSet<String> = args
+                .config
+                .root
+                .agent
+                .tools
+                .iter()
+                .map(|t| t.name.clone())
+                .collect();
+            let mut issues: Vec<(String, String)> = Vec::new();
+            for server in &report.servers {
+                for tool in &server.tools {
+                    if let Err(reason) = crate::tool::validate_tool_name(&tool.name) {
+                        issues.push((
+                            tool.name.clone(),
+                            format!("invalid tool provider name {:?}: {reason}", tool.name),
+                        ));
+                    } else if tool.name == crate::tool::BASH_TOOL_NAME
+                        || !seen_names.insert(tool.name.clone())
+                    {
+                        issues.push((
+                            tool.name.clone(),
+                            format!("duplicate runtime tool name {:?}", tool.name),
+                        ));
+                    }
+                }
+            }
+            if issues.is_empty() {
+                checks.push(CheckItem::pass("mcp_tool_names", None));
+            } else {
+                for (name, message) in issues {
+                    checks.push(CheckItem::fail("mcp_tool_names", Some(name), message));
+                }
+            }
+        }
+    }
+
+    // ── Prompt template rendering (reuses the exact render call
+    // `DefaultAgentBuilder::build_with_tool_providers` makes before the
+    // first model request) ──────────────────────────────────────────────
+    // A MiniJinja syntax error in `[prompts].system`/`[prompts].instance`
+    // fails there, before any task runs. Rendering is pure string
+    // templating (no subprocess, no model call), so it's safe to run for
+    // every parsed task regardless of --env.
+    if let Some(tasks) = &tasks {
+        let renderer = crate::template::Renderer::new();
+        let mut prompt_tools =
+            crate::tool::ToolRegistry::from_config(&args.config.root.agent.tools).prompt_tools();
+        if let Some(report) = &scriptability_report {
+            for server in &report.servers {
+                for tool in &server.tools {
+                    prompt_tools.push(crate::tool::ToolPromptInfo {
+                        name: tool.name.clone(),
+                        description: String::new(),
+                        input_schema: None,
+                    });
+                }
+            }
+        }
+        for task in tasks {
+            let wrapped_task = crate::prompt_guard::PromptGuard::wrap(
+                crate::prompt_guard::UntrustedKind::TaskText,
+                &task.task,
+            );
+            let wrapped_extra_context = task.extra_context.as_deref().map(|ctx| {
+                crate::prompt_guard::PromptGuard::wrap(
+                    crate::prompt_guard::UntrustedKind::ExtraContext,
+                    ctx,
+                )
+            });
+            let ctx = serde_json::json!({
+                "task": wrapped_task,
+                "extra_context": wrapped_extra_context,
+                "tools": &prompt_tools,
+            });
+            match (
+                renderer.render_str(&args.config.root.prompts.system, &ctx),
+                renderer.render_str(&args.config.root.prompts.instance, &ctx),
+            ) {
+                (Ok(_), Ok(_)) => {
+                    checks.push(CheckItem::pass("prompts_render", Some(task.id.clone())));
+                }
+                (Err(e), _) => checks.push(CheckItem::fail(
+                    "prompts_render",
+                    Some(task.id.clone()),
+                    format!("[prompts].system: {e}"),
+                )),
+                (_, Err(e)) => checks.push(CheckItem::fail(
+                    "prompts_render",
+                    Some(task.id.clone()),
+                    format!("[prompts].instance: {e}"),
+                )),
+            }
         }
     }
 
@@ -1422,6 +1530,143 @@ mod tests {
             .find(|c| c.check == "mcp_server")
             .unwrap();
         assert_eq!(checked.status, CheckStatus::Fail);
+    }
+
+    /// Writes a minimal Python-based mock MCP stdio server that answers
+    /// `initialize` and `tools/list` with a single tool of `tool_name`, then
+    /// returns the `--mcp-server`-style shell command to launch it.
+    fn mock_mcp_server_command(dir: &tempfile::TempDir, tool_name: &str) -> String {
+        let script_path = dir.path().join("mock_mcp.py");
+        std::fs::write(
+            &script_path,
+            format!(
+                "import sys\n\
+                 sys.stdin.readline()\n\
+                 sys.stdin.readline()\n\
+                 print('{{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{{\"protocolVersion\":\"2025-11-25\",\"capabilities\":{{}},\"serverInfo\":{{\"name\":\"mock\",\"version\":\"1.0\"}}}}}}')\n\
+                 print('{{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{{\"tools\":[{{\"name\":\"{tool_name}\"}}]}}}}')\n"
+            ),
+        )
+        .unwrap();
+        format!("python3 {}", script_path.display())
+    }
+
+    #[tokio::test]
+    async fn mcp_tool_named_bash_fails_preflight() {
+        // `ToolRegistry::index_provider_tools` rejects a discovered MCP tool
+        // named `bash` — it collides with the built-in tool — before the
+        // first task starts. Regression test for a gap found in review
+        // (issue #821): --check probed MCP servers for launchability but
+        // never validated the tool names they advertised.
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_tasks(&dir, "tasks.yaml", "- id: t1\n  task: fix it\n");
+        let mut config = Config::defaults().unwrap();
+        config
+            .root
+            .agent
+            .mcp_servers
+            .push(crate::config::McpServerCfg {
+                command: mock_mcp_server_command(&dir, "bash"),
+                timeout_secs: Some(5),
+            });
+        let mut args = base_args(path);
+        args.config = config;
+        let report = run(&args).await.unwrap();
+        assert!(!report.ok, "checks: {:?}", report.checks);
+        let checked = report
+            .checks
+            .iter()
+            .find(|c| c.check == "mcp_tool_names")
+            .unwrap();
+        assert_eq!(checked.status, CheckStatus::Fail);
+    }
+
+    #[tokio::test]
+    async fn mcp_tool_with_invalid_name_fails_preflight() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_tasks(&dir, "tasks.yaml", "- id: t1\n  task: fix it\n");
+        let mut config = Config::defaults().unwrap();
+        config
+            .root
+            .agent
+            .mcp_servers
+            .push(crate::config::McpServerCfg {
+                command: mock_mcp_server_command(&dir, "1invalid"),
+                timeout_secs: Some(5),
+            });
+        let mut args = base_args(path);
+        args.config = config;
+        let report = run(&args).await.unwrap();
+        assert!(!report.ok, "checks: {:?}", report.checks);
+        let checked = report
+            .checks
+            .iter()
+            .find(|c| c.check == "mcp_tool_names")
+            .unwrap();
+        assert_eq!(checked.status, CheckStatus::Fail);
+    }
+
+    #[tokio::test]
+    async fn mcp_tool_names_pass_without_collision() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_tasks(&dir, "tasks.yaml", "- id: t1\n  task: fix it\n");
+        let mut config = Config::defaults().unwrap();
+        config
+            .root
+            .agent
+            .mcp_servers
+            .push(crate::config::McpServerCfg {
+                command: mock_mcp_server_command(&dir, "diagnose"),
+                timeout_secs: Some(5),
+            });
+        let mut args = base_args(path);
+        args.config = config;
+        let report = run(&args).await.unwrap();
+        assert!(report.ok, "checks: {:?}", report.checks);
+        assert!(
+            report
+                .checks
+                .iter()
+                .any(|c| c.check == "mcp_tool_names" && c.status == CheckStatus::Pass)
+        );
+    }
+
+    #[tokio::test]
+    async fn invalid_prompt_template_fails_preflight() {
+        // `DefaultAgentBuilder::build_with_tool_providers` renders
+        // `[prompts].system`/`[prompts].instance` before the first model
+        // request — a MiniJinja syntax error fails there. Regression test
+        // for a gap found in review (issue #821): --check never exercised
+        // the prompt-render path and would report PASS.
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_tasks(&dir, "tasks.yaml", "- id: t1\n  task: fix it\n");
+        let mut config = Config::defaults().unwrap();
+        config.root.prompts.system = "{{ unterminated".to_owned();
+        let mut args = base_args(path);
+        args.config = config;
+        let report = run(&args).await.unwrap();
+        assert!(!report.ok, "checks: {:?}", report.checks);
+        let checked = report
+            .checks
+            .iter()
+            .find(|c| c.check == "prompts_render")
+            .unwrap();
+        assert_eq!(checked.status, CheckStatus::Fail);
+        assert_eq!(checked.target.as_deref(), Some("t1"));
+    }
+
+    #[tokio::test]
+    async fn valid_prompt_templates_pass_preflight() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_tasks(&dir, "tasks.yaml", "- id: t1\n  task: fix it\n");
+        let report = run(&base_args(path)).await.unwrap();
+        assert!(report.ok, "checks: {:?}", report.checks);
+        assert!(
+            report
+                .checks
+                .iter()
+                .any(|c| c.check == "prompts_render" && c.status == CheckStatus::Pass)
+        );
     }
 
     #[tokio::test]
