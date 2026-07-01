@@ -610,22 +610,38 @@ const SHELL_BINARIES: &[&str] = &["bash", "sh", "zsh", "ksh", "dash"];
 /// the rest of the command line) is a known shell binary invoked with a
 /// `-c`-style option — i.e. `bash -c '...'`, `sh -lc '...'`. Matches by
 /// basename so `/bin/bash -c ...` is caught too.
+/// Short options for [`SHELL_BINARIES`] that consume the *following* word
+/// as their own operand (e.g. `bash -O extglob`, `bash -o pipefail`)
+/// rather than being boolean toggles. That operand must be skipped rather
+/// than treated as "the first non-flag word" — otherwise a later `-c`
+/// (e.g. `bash -O extglob -c foo`) would never be reached.
+const SHELL_OPTIONS_WITH_OPERAND: &[&str] = &["-o", "-O", "+o", "+O"];
+
 fn is_shell_dash_c_invocation(token: &str, remainder: &str) -> bool {
     let base_name = token.rsplit('/').next().unwrap_or(token);
     if !SHELL_BINARIES.contains(&base_name) {
         return false;
     }
     let mut rest = remainder;
-    while let Some((word, next_remainder)) = next_shell_word(rest) {
-        let Some(flags) = word.strip_prefix('-') else {
+    loop {
+        let Some((word, next_remainder)) = next_shell_word(rest) else {
             return false;
         };
-        if flags.contains('c') {
+        if SHELL_OPTIONS_WITH_OPERAND.contains(&word.as_str()) {
+            let Some((_, after_operand)) = next_shell_word(next_remainder) else {
+                return false;
+            };
+            rest = after_operand;
+            continue;
+        }
+        if !(word.starts_with('-') || word.starts_with('+')) {
+            return false;
+        }
+        if word[1..].contains('c') {
             return true;
         }
         rest = next_remainder;
     }
-    false
 }
 
 /// Reasons `check_command_launchable` can't be trusted to resolve `command`
@@ -1883,6 +1899,35 @@ mod tests {
         // itself, same as before this fix.
         assert!(verify_command_inconclusive_reason("bash script.sh").is_none());
         assert!(verify_command_inconclusive_reason("bash -l script.sh").is_none());
+    }
+
+    #[test]
+    fn verify_command_inconclusive_reason_detects_dash_c_behind_operand_taking_flag() {
+        // `-o`/`-O` (and `+o`/`+O`) consume the *next* word as their own
+        // operand (e.g. "extglob", "pipefail"), not a flag — a naive scan
+        // that stops at the first non-flag word would treat that operand
+        // as "not a flag" and give up before reaching a later -c.
+        // Regression test for a gap found in review (issue #821):
+        // `bash -O extglob -c __no_such_binary__` previously wasn't
+        // recognized as a -c invocation at all.
+        assert!(
+            verify_command_inconclusive_reason("bash -O extglob -c __no_such_binary__").is_some()
+        );
+        assert!(
+            verify_command_inconclusive_reason("bash -o pipefail -c __no_such_binary__").is_some()
+        );
+        // Multiple operand-taking flags before -c.
+        assert!(
+            verify_command_inconclusive_reason("bash -O extglob -o pipefail -c __no_such_binary__")
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn verify_command_inconclusive_reason_none_for_operand_taking_flag_without_dash_c() {
+        // `-O extglob` alone (no later -c) is an ordinary shopt toggle —
+        // still just resolves the shell binary itself, not ambiguous.
+        assert!(verify_command_inconclusive_reason("bash -O extglob script.sh").is_none());
     }
 
     #[tokio::test]
