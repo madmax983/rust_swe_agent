@@ -1408,12 +1408,18 @@ fn handle_key(dash: &Arc<RatatuiDashboard>, key: KeyEvent) {
     // edited command, or an in-progress search query), where it must stay a
     // literal character; and while the stop confirmation is showing, which
     // already owns all non-y/n/Esc input.
+    //
+    // Plain Shift must be accepted alongside no modifiers: terminals that
+    // report Shift for printable characters (e.g. crossterm's Windows
+    // parser) deliver `?` as `Char('?')` with `KeyModifiers::SHIFT`, matching
+    // the convention `handle_key_normal`/`handle_key_search` already use.
     let typing_free_text = s.feedback_input.is_some()
         || s.edit_input.is_some()
         || s.search.as_ref().is_some_and(|se| se.editing);
+    let plain_or_shift = key.modifiers.is_empty() || key.modifiers == KeyModifiers::SHIFT;
     if !typing_free_text
         && !s.stop_pending
-        && key.modifiers.is_empty()
+        && plain_or_shift
         && matches!(key.code, KeyCode::Char('?'))
     {
         s.help_open = true;
@@ -6411,6 +6417,23 @@ mod tests {
 
         handle_key(&d, question_mark());
         assert!(snap(&d).help_open, "? must open the help overlay");
+    }
+
+    /// Terminals that report Shift for printable characters (e.g.
+    /// crossterm's Windows parser) deliver `?` as `Char('?')` with
+    /// `KeyModifiers::SHIFT`, not empty modifiers. The toggle must still
+    /// work there, matching how `handle_key_normal`/`handle_key_search`
+    /// already treat plain Shift as equivalent to no modifiers.
+    #[test]
+    fn shifted_question_mark_opens_help_overlay() {
+        let d = make_dashboard();
+        assert!(!snap(&d).help_open);
+
+        handle_key(&d, KeyEvent::new(KeyCode::Char('?'), KeyModifiers::SHIFT));
+        assert!(
+            snap(&d).help_open,
+            "a shifted ? must still open the help overlay"
+        );
     }
 
     #[test]
