@@ -1413,9 +1413,17 @@ fn handle_key(dash: &Arc<RatatuiDashboard>, key: KeyEvent) {
     // report Shift for printable characters (e.g. crossterm's Windows
     // parser) deliver `?` as `Char('?')` with `KeyModifiers::SHIFT`, matching
     // the convention `handle_key_normal`/`handle_key_search` already use.
-    let typing_free_text = s.feedback_input.is_some()
-        || s.edit_input.is_some()
-        || s.search.as_ref().is_some_and(|se| se.editing);
+    //
+    // An in-progress search query only counts as "typing" while it is the
+    // surface actually receiving keystrokes. A confirm prompt that arrives
+    // mid-edit (`confirm()` doesn't clear `s.search`) shadows it — input goes
+    // to the modal, not `handle_key_search` — so `search.editing` must be
+    // ignored whenever `s.pending` is set, mirroring the precedence
+    // `active_input_target` already uses for paste routing.
+    let search_editing_visible =
+        s.pending.is_none() && s.search.as_ref().is_some_and(|se| se.editing);
+    let typing_free_text =
+        s.feedback_input.is_some() || s.edit_input.is_some() || search_editing_visible;
     let plain_or_shift = key.modifiers.is_empty() || key.modifiers == KeyModifiers::SHIFT;
     if !typing_free_text
         && !s.stop_pending
@@ -2509,11 +2517,15 @@ fn footer_paragraph(snap: &DashboardSnapshot) -> Paragraph<'_> {
     // it would instead be swallowed (stop confirmation) or typed as a literal
     // character (rejection feedback, an edited command, or an in-progress
     // search query). Mirrors the precedence `handle_key` uses to decide
-    // whether `?` opens the overlay.
+    // whether `?` opens the overlay, including that a pending confirm prompt
+    // shadows an in-progress search query (the prompt owns input, not the
+    // search box) so `search.editing` alone must not suppress the hint then.
+    let search_editing_visible =
+        snap.pending.is_none() && snap.search.as_ref().is_some_and(|s| s.editing);
     let show_help_hint = !snap.stop_pending
         && snap.edit_input.is_none()
         && snap.feedback_input.is_none()
-        && !snap.search.as_ref().is_some_and(|s| s.editing);
+        && !search_editing_visible;
     let line = if show_help_hint {
         Line::from(vec![span, Span::styled("   [?: help]", bold)])
     } else {
@@ -6561,6 +6573,44 @@ mod tests {
         );
         let query = snap(&d).search.map(|s| s.query);
         assert_eq!(query.as_deref(), Some("?"));
+    }
+
+    /// A confirm prompt can arrive asynchronously while a search query is
+    /// still being edited — `confirm()` doesn't clear `s.search`. Once that
+    /// happens, the modal (not `handle_key_search`) owns input, so the
+    /// hidden search-editing state must not block `?` from opening help.
+    #[test]
+    fn question_mark_opens_help_even_when_a_pending_prompt_shadows_an_editing_search() {
+        let d = make_dashboard();
+        push_lines(&d, 3);
+        press(&d, KeyCode::Char('/'));
+        assert!(snap(&d).search.as_ref().is_some_and(|s| s.editing));
+
+        let _rx = make_pending(&d);
+        assert!(snap(&d).pending.is_some());
+
+        handle_key(&d, question_mark());
+        assert!(
+            snap(&d).help_open,
+            "? must open help when the editing search is shadowed by a pending prompt"
+        );
+    }
+
+    #[test]
+    fn help_overlay_footer_hint_present_when_pending_shadows_editing_search() {
+        let d = make_dashboard();
+        push_lines(&d, 3);
+        press(&d, KeyCode::Char('/'));
+        let _rx = make_pending(&d);
+        let s = snap(&d);
+        assert!(s.pending.is_some());
+        assert!(s.search.as_ref().is_some_and(|se| se.editing));
+
+        let text = buffer_text(&render_to_buffer(&s, 120, 10));
+        assert!(
+            text.contains("?: help"),
+            "footer must not hide the help hint just because a shadowed, non-receiving search exists; got:\n{text}"
+        );
     }
 
     #[test]
