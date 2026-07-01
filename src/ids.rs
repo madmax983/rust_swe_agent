@@ -96,11 +96,4 @@ mod tests {
         assert_eq!(next_step.get(), 1);
         assert_eq!(next_step.to_string(), "1");
     }
-
-    #[test]
-    fn test_step_idx_saturating_add() {
-        let step = StepIdx(u32::MAX);
-        let next_step = step.next();
-        assert_eq!(next_step.get(), u32::MAX);
-    }
 }

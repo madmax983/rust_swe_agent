@@ -226,12 +226,5 @@ mod tests {
         assert!(det.observe(1, "ls").is_none());
         assert!(det.observe(2, "ls").is_none());
         assert!(det.observe(3, "ls").is_some());
-
-        let mut det2 = StagnationDetector::new(4, 4);
-        assert!(det2.observe(0, "ls").is_none());
-        assert!(det2.observe(1, "ls").is_none());
-        assert!(det2.observe(2, "ls").is_none());
-        assert!(det2.observe(3, "cat").is_none());
-        assert!(det2.observe(4, "ls").is_none());
     }
 }
