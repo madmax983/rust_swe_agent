@@ -1351,7 +1351,7 @@ fn handle_key(dash: &Arc<RatatuiDashboard>, key: KeyEvent) {
     // never send input to the agent, resolve a pending confirm prompt, or
     // advance/abort the run (AC4).
     if s.help_open {
-        let content_len = help_overlay_lines().len();
+        let content_len = help_overlay_lines_count();
         let handled = match key.code {
             KeyCode::Char('?') | KeyCode::Esc => {
                 s.help_open = false;
@@ -1871,6 +1871,13 @@ fn draw_frame(
         s.last_rationale_total_rows = total_rows;
         s.last_rationale_visible_rows = visible_rows;
 
+        // Capture the help overlay's inner height here, while the state lock
+        // is already held, so `draw_help_overlay` can stay a pure rendering
+        // function that never touches `dash`/the mutex (issue #639 review).
+        let help_overlay = centered_rect(80, 80, area);
+        let help_block = Block::default().borders(Borders::ALL);
+        s.help_viewport_height = help_block.inner(help_overlay).height;
+
         DashboardSnapshot {
             task: s.task.clone(),
             model: s.model.clone(),
@@ -2012,7 +2019,7 @@ fn draw(frame: &mut ratatui::Frame, dash: &Arc<RatatuiDashboard>, snap: &Dashboa
     // detail pane and confirm modal alike — `handle_key` leaves whatever was
     // showing untouched underneath, so closing it returns to the same view.
     if snap.help_open {
-        draw_help_overlay(frame, dash, snap.help_scroll, area);
+        draw_help_overlay(frame, snap.help_scroll, area);
     }
 }
 
@@ -2370,16 +2377,34 @@ fn help_overlay_lines() -> Vec<Line<'static>> {
     lines
 }
 
+/// The line count `help_overlay_lines()` would produce, without allocating a
+/// `Vec` or formatting any strings. `handle_key` calls this on every
+/// keystroke while the overlay is open (including swallowed ones) to clamp
+/// scrolling, so it must stay allocation-free (issue #639 review).
+fn help_overlay_lines_count() -> usize {
+    let mut count = 0;
+    let mut last_category: Option<&str> = None;
+    for binding in KEYBINDINGS {
+        if last_category != Some(binding.category) {
+            if last_category.is_some() {
+                count += 1;
+            }
+            count += 1;
+            last_category = Some(binding.category);
+        }
+        count += 1;
+    }
+    count
+}
+
 /// Render the `?` help overlay (issue #639) on top of everything else,
 /// scrolling its content if it overflows the available height (AC5). Never
 /// reads or mutates `pending`/`feedback_input`/`edit_input`/run state —
 /// `handle_key` gives it absolute priority before any of that is touched.
-fn draw_help_overlay(
-    frame: &mut ratatui::Frame,
-    dash: &Arc<RatatuiDashboard>,
-    scroll: usize,
-    area: Rect,
-) {
+/// Pure: `draw_frame` captures `help_viewport_height` into state itself
+/// (while it already holds the lock), so this never needs to lock the
+/// mutex from inside the render callback (issue #639 review).
+fn draw_help_overlay(frame: &mut ratatui::Frame, scroll: usize, area: Rect) {
     let overlay = centered_rect(80, 80, area);
     frame.render_widget(Clear, overlay);
     let block = Block::default()
@@ -2387,14 +2412,6 @@ fn draw_help_overlay(
         .title(" help — keybindings (? or Esc to close) ");
     let inner = block.inner(overlay);
     frame.render_widget(block, overlay);
-
-    {
-        let mut s = dash
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        s.help_viewport_height = inner.height;
-    }
 
     let lines = help_overlay_lines();
     let visible: Vec<Line> = lines
@@ -6364,6 +6381,19 @@ mod tests {
         let backend = TestBackend::new(w, h);
         let mut terminal = RatatuiTerminal::new(backend).unwrap();
         let area = Rect::new(0, 0, w, h);
+        // Mirrors the one line of `draw_frame`'s pre-computation this helper
+        // needs: `draw_help_overlay` is now a pure function (issue #639
+        // review), so `help_viewport_height` must be captured before `draw`
+        // renders, exactly as `draw_frame` does while it holds the lock.
+        {
+            let mut s = d
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let help_overlay = centered_rect(80, 80, area);
+            let help_block = Block::default().borders(Borders::ALL);
+            s.help_viewport_height = help_block.inner(help_overlay).height;
+        }
         let s = snap(d);
         terminal
             .draw(|frame| {
@@ -6679,5 +6709,13 @@ mod tests {
                 kb.keys
             );
         }
+    }
+
+    /// `help_overlay_lines_count()` (allocation-free, used on every keystroke
+    /// while help is open) must always agree with the actual line count
+    /// `help_overlay_lines()` renders (issue #639 review).
+    #[test]
+    fn help_overlay_lines_count_matches_actual_line_count() {
+        assert_eq!(help_overlay_lines_count(), help_overlay_lines().len());
     }
 }
