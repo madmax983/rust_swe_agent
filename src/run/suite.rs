@@ -408,6 +408,48 @@ fn load_prior_suite_state(
     if map.is_empty() { None } else { Some(map) }
 }
 
+/// Returns the prior passing result for `task_id`, marked `carried_over:
+/// true`, when `--rerun-failed` has excluded it from the re-run subset.
+/// `None` when the task must run (or re-run) instead — either this isn't a
+/// `--rerun-failed` invocation, or the task is in the re-run subset, or (a
+/// defensive fallback that should not occur in practice) it has no prior
+/// result to carry.
+///
+/// Used both by the main per-task loop and by the early-halt padding loop so
+/// a passing task later in the pack is never demoted to a `skipped_*` row
+/// just because an earlier re-run task hit a hard error.
+fn try_carry_forward(
+    task_id: &str,
+    run_ids: Option<&std::collections::HashSet<String>>,
+    prior_by_id: &HashMap<String, SuiteTaskResult>,
+) -> Option<SuiteTaskResult> {
+    let ids = run_ids?;
+    if ids.contains(task_id) {
+        return None;
+    }
+    let mut carried = prior_by_id.get(task_id).cloned()?;
+    carried.carried_over = true;
+    Some(carried)
+}
+
+/// Fold a carried-forward result's cost/resolved/verified contribution into
+/// the running suite totals. Shared by the main loop and the halt-padding
+/// loop so both count carried rows identically.
+fn accumulate_carried(
+    carried: &SuiteTaskResult,
+    total_cost: &mut f64,
+    resolved_count: &mut usize,
+    verified_count: &mut usize,
+) {
+    *total_cost += carried.cost_usd.unwrap_or(0.0);
+    if carried.outcome == crate::trajectory::outcome::SUBMITTED {
+        *resolved_count += 1;
+    }
+    if carried.verification_status == crate::trajectory::verification_status::VERIFIED {
+        *verified_count += 1;
+    }
+}
+
 // ── Suite runner ──────────────────────────────────────────────────────────────
 
 /// Arguments for `agent suite`.
@@ -510,7 +552,7 @@ pub async fn run(args: SuiteArgs) -> Result<ExitCode, Error> {
     };
     let run_ids: Option<std::collections::HashSet<String>> = if args.rerun_failed {
         let ids = tasks_needing_rerun(&tasks, &prior_by_id);
-        println!(
+        eprintln!(
             "agent suite --rerun-failed: {} of {} task(s) need a re-run in '{}'",
             ids.len(),
             tasks.len(),
@@ -553,23 +595,15 @@ pub async fn run(args: SuiteArgs) -> Result<ExitCode, Error> {
 
         // ── `--rerun-failed`: carry forward already-passing results untouched,
         //    zero model calls and zero fresh cost for them ──────────────────
-        if let Some(ids) = &run_ids {
-            if !ids.contains(&task.id) {
-                if let Some(mut carried) = prior_by_id.get(&task.id).cloned() {
-                    carried.carried_over = true;
-                    total_cost += carried.cost_usd.unwrap_or(0.0);
-                    if carried.outcome == crate::trajectory::outcome::SUBMITTED {
-                        resolved_count += 1;
-                    }
-                    if carried.verification_status
-                        == crate::trajectory::verification_status::VERIFIED
-                    {
-                        verified_count += 1;
-                    }
-                    task_results.push(carried);
-                    continue;
-                }
-            }
+        if let Some(carried) = try_carry_forward(&task.id, run_ids.as_ref(), &prior_by_id) {
+            accumulate_carried(
+                &carried,
+                &mut total_cost,
+                &mut resolved_count,
+                &mut verified_count,
+            );
+            task_results.push(carried);
+            continue;
         }
 
         // ── Resume: skip tasks with terminal outcomes ─────────────────────
@@ -777,6 +811,19 @@ pub async fn run(args: SuiteArgs) -> Result<ExitCode, Error> {
     };
     let reached = task_results.len();
     for task in tasks.iter().skip(reached) {
+        // A passing task later in the pack must still be carried forward
+        // unchanged even when an earlier re-run task caused this halt —
+        // otherwise it would be wrongly demoted to a `skipped_*` row here.
+        if let Some(carried) = try_carry_forward(&task.id, run_ids.as_ref(), &prior_by_id) {
+            accumulate_carried(
+                &carried,
+                &mut total_cost,
+                &mut resolved_count,
+                &mut verified_count,
+            );
+            task_results.push(carried);
+            continue;
+        }
         let traj_path = suite_dir.join(format!("{}.traj.json", task.id));
         task_results.push(SuiteTaskResult {
             id: task.id.clone(),
@@ -1758,5 +1805,87 @@ mod tests {
             outcomes.contains(&"skipped_budget_exhausted"),
             "one rerun task should be skipped by the cost cap: {outcomes:?}"
         );
+    }
+
+    /// Regression for a review finding: the early-halt padding loop used to
+    /// mark *every* not-yet-reached task as `skipped_*`, even ones that
+    /// `--rerun-failed` had already decided to carry forward unchanged. If
+    /// an earlier re-run task hard-fails (env/preflight error) before a
+    /// later, already-passing task is reached, that later task must still
+    /// be carried forward — not demoted to a skipped row.
+    #[tokio::test]
+    async fn rerun_failed_carries_forward_later_passing_task_despite_earlier_hard_halt() {
+        let work = tempfile::tempdir().unwrap();
+        let output_dir = work.path().join("runs");
+        let suite_name = "halt-suite";
+
+        let suite_dir = output_dir.join(suite_name);
+        std::fs::create_dir_all(&suite_dir).unwrap();
+
+        // Prior state: task-x needs a re-run; task-y already passes.
+        let prior = SuiteResults {
+            suite_name: suite_name.to_owned(),
+            task_count: 2,
+            resolved_count: 1,
+            verified_count: 1,
+            total_cost_usd: 0.02,
+            total_duration_secs: 2.0,
+            started_at: "2026-01-01T00:00:00Z".into(),
+            finished_at: "2026-01-01T00:00:02Z".into(),
+            tasks: vec![failing_result("task-x"), passing_result("task-y")],
+        };
+        let json = crate::artifact::to_string_pretty(ArtifactKind::SuiteResults, &prior).unwrap();
+        std::fs::write(suite_dir.join("suite-results.json"), json).unwrap();
+
+        // Force task-x's mini run to hard-fail with an I/O error before any
+        // trajectory is written, by pre-occupying its trajectory path with a
+        // directory instead of a file.
+        std::fs::create_dir_all(suite_dir.join("task-x.traj.json")).unwrap();
+
+        let pack = work.path().join("tasks.yaml");
+        std::fs::write(
+            &pack,
+            "- id: task-x\n  task: do x\n- id: task-y\n  task: do y\n",
+        )
+        .unwrap();
+
+        let mut cfg = crate::config::Config::defaults().unwrap();
+        cfg.root.agent.step_limit = 5;
+        let submit = "COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT\n```\nfix\n```".to_owned();
+
+        let args = SuiteArgs {
+            tasks_file: pack,
+            format_override: None,
+            suite_name: suite_name.to_owned(),
+            config: cfg,
+            output_dir,
+            suite_cost_limit_usd: None,
+            verify: vec![],
+            verify_timeout_secs: 60,
+            resume: false,
+            task_timeout_secs: Some(30),
+            step_limit: None,
+            per_task_budget_usd: None,
+            rerun_failed: true,
+            deterministic_responses: Some(vec![submit]),
+            deterministic_usage_per_call: None,
+        };
+
+        // The suite still completes (returns Ok) — task-x's hard failure is
+        // recorded as a task-scoped error, not a propagated Err.
+        let _ = run(args).await.unwrap();
+
+        let merged_text = std::fs::read_to_string(suite_dir.join("suite-results.json")).unwrap();
+        let merged: serde_json::Value = serde_json::from_str(&merged_text).unwrap();
+        let tasks_arr = merged["tasks"].as_array().unwrap();
+        // task-y must still be present in the merged results.
+        let y = tasks_arr.iter().find(|t| t["id"] == "task-y").unwrap();
+        assert_eq!(
+            y["carried_over"], true,
+            "a passing task after an earlier hard-halted re-run task must still be carried \
+             forward, not demoted to skipped_*: {y}"
+        );
+        assert_eq!(y["outcome"], "submitted", "task-y: {y}");
+        assert_eq!(y["verification_status"], "verified", "task-y: {y}");
     }
 }
