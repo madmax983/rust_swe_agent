@@ -572,7 +572,9 @@ fn check_command_launchable(command: &str) -> Result<(), String> {
         // rather than asserting Ok on the wrapper's own name. (Any leading
         // `NAME=VALUE` assignments after `env` are skipped automatically by
         // `split_off_program_token`'s own inner loop on the next iteration.)
-        if WRAPPER_COMMANDS.contains(&token.as_str()) {
+        // Matched by basename so path-qualified forms like `/usr/bin/env`
+        // or `/usr/bin/time` are unwrapped too, not just the bare name.
+        if is_wrapper_command(&token) {
             rest = remainder;
             continue;
         }
@@ -601,6 +603,15 @@ fn check_command_launchable(command: &str) -> Result<(), String> {
 /// is a real external program (not a shell builtin) but has the same
 /// wrapper shape: `env [OPTION]... [NAME=VALUE]... [COMMAND [ARG]...]`.
 const WRAPPER_COMMANDS: &[&str] = &["time", "exec", "command", "eval", "builtin", "env"];
+
+/// Whether `token` — the already-extracted program name — names a
+/// [`WRAPPER_COMMANDS`] entry, matched by basename so path-qualified forms
+/// like `/usr/bin/env` or `/usr/bin/time` are recognized as wrappers too,
+/// not just the bare name.
+fn is_wrapper_command(token: &str) -> bool {
+    let base_name = token.rsplit('/').next().unwrap_or(token);
+    WRAPPER_COMMANDS.contains(&base_name)
+}
 
 /// Shell binaries whose `-c`/`-lc`/etc. option hands an entire nested
 /// command line to the shell as a single string argument.
@@ -681,7 +692,7 @@ fn verify_command_inconclusive_reason(command: &str) -> Option<&'static str> {
                  whose payload this static check does not parse",
             );
         }
-        if !WRAPPER_COMMANDS.contains(&token.as_str()) {
+        if !is_wrapper_command(&token) {
             return None;
         }
         if matches!(next_shell_word(remainder), Some((next, _)) if next.starts_with('-')) {
@@ -1841,6 +1852,35 @@ mod tests {
             check_command_launchable("env PYTHONPATH=. __no_such_binary_xyz_suite_check__")
                 .is_err()
         );
+    }
+
+    #[test]
+    fn path_qualified_wrapper_still_unwraps_to_the_payload() {
+        // `/usr/bin/env foo` and `/usr/bin/time foo` are path-qualified
+        // forms of the same wrapper commands — they don't launch anything
+        // themselves either. Regression test for a gap found in review
+        // (issue #821): matching WRAPPER_COMMANDS by exact string meant
+        // `/usr/bin/env __no_such_binary__` resolved (and passed) `env`
+        // itself instead of unwrapping to check the missing payload.
+        assert!(check_command_launchable("/usr/bin/env PYTHONPATH=. cargo --version").is_ok());
+        assert!(
+            check_command_launchable(
+                "/usr/bin/env PYTHONPATH=. __no_such_binary_xyz_suite_check__"
+            )
+            .is_err()
+        );
+        assert!(check_command_launchable("/usr/bin/time cargo --version").is_ok());
+        assert!(
+            check_command_launchable("/usr/bin/time __no_such_binary_xyz_suite_check__").is_err()
+        );
+    }
+
+    #[test]
+    fn verify_command_inconclusive_reason_detects_option_after_path_qualified_wrapper() {
+        // Same basename-matching gap as `path_qualified_wrapper_still_unwraps_to_the_payload`,
+        // but for the "wrapper followed by an option flag" inconclusive
+        // path rather than plain launchability.
+        assert!(verify_command_inconclusive_reason("/usr/bin/env -i FOO=bar cargo test").is_some());
     }
 
     #[test]
