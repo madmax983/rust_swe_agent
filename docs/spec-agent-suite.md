@@ -244,14 +244,23 @@ max agent suite --tasks-file tasks.yaml --suite-name my-pack --rerun-failed
 
 ### Source of truth
 
-The prior run's `<output>/<suite-name>/suite-results.json` is the source of
-truth for task selection. If it is missing (e.g. the previous process was
-killed before it could write the aggregate), `--rerun-failed` falls back to
-reconstructing per-task state from each task's individual
-`<task-id>.traj.json`. If **neither** source has anything recorded for the
-pack, the command refuses to guess: it exits `2` (`usage_error`) with a
-message to run `agent suite` once without `--rerun-failed` first, rather
-than silently running nothing or the whole pack.
+Each task's own `<output>/<suite-name>/<task-id>.traj.json` — never
+`suite-results.json`'s `id` field — is the source of truth for matching a
+task's prior result to the current pack. `suite-results.json` is redacted on
+write like every other field (see **Redaction** below), and matching a task
+by an `id` that might have been redacted would either desync selection from
+the pack (an already-passing task silently re-runs at full cost) or require
+un-redacting the artifact, reopening a redaction-bypass surface. A task's
+real trajectory filename, by contrast, is never redacted — only JSON string
+*content* is — so it is always a trustworthy correlation key. Every
+genuinely passing task has one (submitting a patch requires having run and
+written it); a task without one is treated as needing a re-run, matching
+the definition below. If **no** task in the pack has a reconstructable
+trajectory (and no `suite-results.json` exists either, so there is no
+evidence this suite ever ran at all), the command refuses to guess: it
+exits `2` (`usage_error`) with a message to run `agent suite` once without
+`--rerun-failed` first, rather than silently running nothing or the whole
+pack.
 
 ### Definition of "failed"
 

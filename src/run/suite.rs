@@ -388,13 +388,19 @@ fn load_prior_suite_state(
     suite_dir: &Path,
     tasks: &[SuiteTaskSpec],
 ) -> Option<HashMap<String, SuiteTaskResult>> {
-    let results_path = suite_dir.join("suite-results.json");
-    if let Ok(text) = std::fs::read_to_string(&results_path) {
-        if let Ok(prior) = serde_json::from_str::<SuiteResults>(&text) {
-            return Some(prior.tasks.into_iter().map(|t| (t.id.clone(), t)).collect());
-        }
-    }
-
+    // Always key by the *current* task's real id and locate its evidence via
+    // the deterministic `<suite_dir>/<id>.traj.json` filename — never by an
+    // `id` value read back out of `suite-results.json`'s JSON content. That
+    // content is redacted on write (`write_suite_results` redacts every
+    // string, including `id`, since a task id is JSON data like any other
+    // and must get the same guarantee), so trusting it here would either
+    // silently mismatch a redacted id against the pack's real id (treating
+    // an already-passing task as never-run and re-spending on it) or
+    // require un-redacting the persisted artifact, reopening exactly the
+    // redaction-bypass surface the spec promises not to add (issue #825
+    // review findings). Every genuinely passing task has a real terminal
+    // trajectory on disk — reconstructing from it is always sufficient and
+    // never depends on redaction-sensitive content.
     let mut map = HashMap::new();
     for task in tasks {
         let traj_path = suite_dir.join(format!("{}.traj.json", task.id));
@@ -405,7 +411,19 @@ fn load_prior_suite_state(
             );
         }
     }
-    if map.is_empty() { None } else { Some(map) }
+    if !map.is_empty() {
+        return Some(map);
+    }
+    // No task in the current pack has a reconstructable trajectory. If
+    // `suite-results.json` exists at all, this suite has still run before
+    // (e.g. every task was skipped before writing a trajectory, or the pack
+    // was edited enough that none of its ids match prior trajectory files)
+    // — report "has run before, but nothing verifiable is passing" (every
+    // task selected for rerun) rather than the stronger "never run" error.
+    if suite_dir.join("suite-results.json").exists() {
+        return Some(map);
+    }
+    None
 }
 
 /// Returns the prior passing result for `task_id`, marked `carried_over:
@@ -709,7 +727,12 @@ pub async fn run(args: SuiteArgs) -> Result<ExitCode, Error> {
                 cost_usd: None,
                 duration_secs: None,
                 failure_category: Some(FailureCategory::AgentInternal),
-                trajectory_path: traj_path.display().to_string(),
+                // Deliberately not `traj_path` — that file is confirmed to
+                // still exist with stale prior-run content (that's why this
+                // branch was reached), so publishing it here would let
+                // anyone following the path see the old trajectory as if it
+                // belonged to this invocation (issue #825 review finding).
+                trajectory_path: String::new(),
                 attempt_count: 0,
                 unchanged_failure_count: 0,
                 verifier_delta: None,
@@ -993,20 +1016,12 @@ fn write_suite_results(
 ) -> Result<(), Error> {
     let mut json_val = serde_json::to_value(results).map_err(Error::Json)?;
     redact_json_strings(&mut json_val, redactor);
-    // A task `id` is an operator-chosen structural identifier, not sensitive
-    // content, and `--rerun-failed` matches it verbatim against the current
-    // pack file on the next invocation. Restore the pristine id after the
-    // blanket redaction pass above so a broad redaction pattern that
-    // happens to match part of an id string can never desync task
-    // selection from the pack (issue #825 review finding) — an
-    // already-passing task would otherwise silently re-run at full cost.
-    if let Some(arr) = json_val.get_mut("tasks").and_then(|v| v.as_array_mut()) {
-        for (task_val, task) in arr.iter_mut().zip(&results.tasks) {
-            if let Some(obj) = task_val.as_object_mut() {
-                obj.insert("id".to_owned(), serde_json::Value::String(task.id.clone()));
-            }
-        }
-    }
+    // `id` is deliberately left subject to the same blanket redaction as
+    // every other string here — restoring it would reopen exactly the
+    // redaction-bypass surface the spec promises not to add for a suite
+    // whose operator-chosen ids happen to contain sensitive content
+    // (issue #825 review finding). `--rerun-failed` selection never reads
+    // `id` back out of this file; see `load_prior_suite_state`.
     let json = crate::artifact::to_string_pretty(ArtifactKind::SuiteResults, &json_val)
         .map_err(Error::Json)?;
     atomic_write(path, json.as_bytes())?;
@@ -1566,6 +1581,25 @@ mod tests {
         }
     }
 
+    /// Write a real, terminal, passing `.traj.json` for `id` into
+    /// `suite_dir`. `load_prior_suite_state` only recognizes a task as
+    /// passing via a real trajectory file on disk — never via
+    /// `suite-results.json`'s own (possibly redacted) content — so any test
+    /// that wants `--rerun-failed` to carry a task forward must provide one.
+    fn write_passing_trajectory(suite_dir: &Path, id: &str) {
+        let mut t = Trajectory::new();
+        t.info.task = Some(format!("do {id}"));
+        t.info.outcome = Some(crate::trajectory::outcome::SUBMITTED.to_owned());
+        t.info.verification_status =
+            Some(crate::trajectory::verification_status::VERIFIED.to_owned());
+        t.info.partial = false;
+        std::fs::write(
+            suite_dir.join(format!("{id}.traj.json")),
+            serde_json::to_string(&t).unwrap(),
+        )
+        .unwrap();
+    }
+
     // ── RED: `tasks_needing_rerun` (issue #825) ────────────────────────────
 
     #[test]
@@ -1610,8 +1644,13 @@ mod tests {
     // ── RED: `load_prior_suite_state` (issue #825) ─────────────────────────
 
     #[test]
-    fn load_prior_suite_state_prefers_suite_results_json() {
+    fn load_prior_suite_state_ignores_suite_results_json_id_and_uses_real_trajectories() {
+        // suite-results.json's own `id` field is deliberately never trusted
+        // for matching (it may have been redacted on write) — simulate that
+        // here with a row whose id does not match the current pack at all.
         let dir = tempfile::tempdir().unwrap();
+        let mut mismatched = passing_result("t1");
+        mismatched.id = "[REDACTED:custom_pattern:short:deadbeef]".to_owned();
         let results = SuiteResults {
             suite_name: "s".into(),
             task_count: 1,
@@ -1621,14 +1660,29 @@ mod tests {
             total_duration_secs: 1.0,
             started_at: "2026-01-01T00:00:00Z".into(),
             finished_at: "2026-01-01T00:00:01Z".into(),
-            tasks: vec![passing_result("t1")],
+            tasks: vec![mismatched],
         };
         let json = crate::artifact::to_string_pretty(ArtifactKind::SuiteResults, &results).unwrap();
         std::fs::write(dir.path().join("suite-results.json"), json).unwrap();
 
+        // The real, on-disk trajectory is what must be trusted instead.
+        let mut traj = Trajectory::new();
+        traj.info.outcome = Some(crate::trajectory::outcome::SUBMITTED.to_owned());
+        traj.info.verification_status =
+            Some(crate::trajectory::verification_status::VERIFIED.to_owned());
+        traj.info.partial = false;
+        std::fs::write(
+            dir.path().join("t1.traj.json"),
+            serde_json::to_string(&traj).unwrap(),
+        )
+        .unwrap();
+
         let tasks = vec![spec("t1", "do a")];
         let prior = load_prior_suite_state(dir.path(), &tasks).unwrap();
-        assert!(prior.contains_key("t1"));
+        assert!(
+            prior.contains_key("t1"),
+            "must be keyed by the pack's real id, not suite-results.json's: {prior:?}"
+        );
         assert_eq!(prior["t1"].verification_status, "verified");
     }
 
@@ -1828,6 +1882,7 @@ mod tests {
         };
         let json = crate::artifact::to_string_pretty(ArtifactKind::SuiteResults, &prior).unwrap();
         std::fs::write(suite_dir.join("suite-results.json"), json).unwrap();
+        write_passing_trajectory(&suite_dir, "task-z");
 
         let pack = work.path().join("tasks.yaml");
         std::fs::write(
@@ -1915,6 +1970,7 @@ mod tests {
         };
         let json = crate::artifact::to_string_pretty(ArtifactKind::SuiteResults, &prior).unwrap();
         std::fs::write(suite_dir.join("suite-results.json"), json).unwrap();
+        write_passing_trajectory(&suite_dir, "task-y");
 
         // Force task-x's mini run to hard-fail with an I/O error before any
         // trajectory is written, by pre-occupying its trajectory path with a
@@ -2085,6 +2141,7 @@ mod tests {
         };
         let json = crate::artifact::to_string_pretty(ArtifactKind::SuiteResults, &prior).unwrap();
         std::fs::write(suite_dir.join("suite-results.json"), json).unwrap();
+        write_passing_trajectory(&suite_dir, "task-a");
 
         // task-a's verify entry in the *current* pack is malformed (no
         // `NAME:COMMAND` colon) — it must never be parsed since task-a is
@@ -2313,6 +2370,10 @@ mod tests {
             "the cleanup failure must be surfaced with its own distinct stop_reason, \
              proving mini::run was never dispatched for this task: {x}"
         );
+        assert_eq!(
+            x["trajectory_path"], "",
+            "must not publish a path to the confirmed-stale, still-present file: {x}"
+        );
     }
 
     /// Regression for a review finding: `write_suite_results` redacts every
@@ -2322,7 +2383,7 @@ mod tests {
     /// map by the redacted string, fail to match the pack's real id, and
     /// silently re-run an already-passing task at full cost.
     #[tokio::test]
-    async fn rerun_failed_matches_prior_results_even_when_id_would_be_redacted() {
+    async fn rerun_failed_never_unredacts_task_id_but_selection_still_works() {
         let work = tempfile::tempdir().unwrap();
         let output_dir = work.path().join("runs");
         let suite_name = "redact-id-suite";
@@ -2365,13 +2426,17 @@ mod tests {
 
         run(base_args(pack_v1, false)).await.unwrap();
 
-        // The written artifact's id must be the pristine string, not a
-        // `[REDACTED:...]` placeholder, even though "secret" is configured
-        // as a redaction pattern and is a substring of the task id.
+        // The persisted artifact must NOT bypass redaction for `id` — a
+        // suite whose operator-chosen ids happen to contain sensitive
+        // content gets the same guarantee as every other field. The
+        // *filename* on disk (checked below) is unaffected by this, since
+        // redaction only ever touches JSON string content, never filenames.
         let results_text = std::fs::read_to_string(suite_dir.join("suite-results.json")).unwrap();
+        let results_val: serde_json::Value = serde_json::from_str(&results_text).unwrap();
+        let persisted_a_id = results_val["tasks"][0]["id"].as_str().unwrap();
         assert!(
-            results_text.contains("task-secret-rotation"),
-            "the on-disk id must not be redacted: {results_text}"
+            persisted_a_id.contains("REDACTED"),
+            "the persisted id must remain redacted like any other field: {results_text}"
         );
 
         let task_a_traj_before =
@@ -2394,16 +2459,15 @@ mod tests {
         assert_eq!(
             task_a_traj_before, task_a_traj_after,
             "the passing task must be carried forward unchanged — a redaction \
-             collision on its id must not cause it to be silently re-run"
+             collision on its id must not cause it to be silently re-run, even \
+             though its persisted id is redacted"
         );
 
         let merged_text = std::fs::read_to_string(suite_dir.join("suite-results.json")).unwrap();
         let merged: serde_json::Value = serde_json::from_str(&merged_text).unwrap();
-        let tasks_arr = merged["tasks"].as_array().unwrap();
-        let a = tasks_arr
-            .iter()
-            .find(|t| t["id"] == "task-secret-rotation")
-            .unwrap();
+        // Matched by pack order (task-secret-rotation is always index 0),
+        // not by id — the persisted id is redacted and unusable for lookup.
+        let a = &merged["tasks"][0];
         assert_eq!(a["carried_over"], true, "task-a: {a}");
     }
 }
