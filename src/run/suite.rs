@@ -8,8 +8,8 @@
 //! `--rerun-failed` (issue #825) re-runs only the tasks whose last recorded
 //! result was non-passing, carrying every already-passing result forward
 //! unchanged (zero model calls, zero fresh cost) into a freshly merged
-//! `suite-results.json`. See [`tasks_needing_rerun`] and
-//! [`load_prior_suite_state`].
+//! `suite-results.json`. See `tasks_needing_rerun` and
+//! `load_prior_suite_state`.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
