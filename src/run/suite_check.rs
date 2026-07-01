@@ -5,11 +5,12 @@
 //! paid agent loop: the pack parses, every task has a non-empty `id`/`task`
 //! and unique id, every `--verify`/per-task `verify` entry is well-formed and
 //! its command is statically launchable, configured MCP servers and hooks
-//! start (reusing the `scriptability-check` probe), and the resolved suite
-//! config carries no silent clap-default override hazard (reusing the
-//! `agent config resolve` hazard detector). No model calls and no agent loop
-//! are ever started; no files are written (this module takes no output
-//! directory).
+//! start (reusing the `scriptability-check` probe), the `[policy]` config
+//! builds a valid `PolicyEngine`, every task's configured skills resolve
+//! cleanly, and the resolved suite config carries no silent clap-default
+//! override hazard (reusing the `agent config resolve` hazard detector). No
+//! model calls and no agent loop are ever started; no files are written
+//! (this module takes no output directory).
 
 use std::path::{Path, PathBuf};
 
@@ -18,6 +19,7 @@ use serde::{Deserialize, Serialize};
 use crate::config::Config;
 use crate::config::schema::EnvKind;
 use crate::error::Error;
+use crate::policy::PolicyEngine;
 use crate::run::agent_doctor::{is_executable, resolve_on_path};
 use crate::run::config_resolve::{ConfigResolveArgs, OverrideHazard, run_config_resolve};
 use crate::run::scriptability_check;
@@ -25,6 +27,7 @@ use crate::run::suite::{
     SuiteTaskSpec, TaskFileFormat, collect_task_validation_issues, parse_task_file,
     parse_verify_checks, validate_suite_name,
 };
+use crate::skills;
 
 /// Schema version for [`SuiteCheckReport`]'s machine-readable form.
 pub const SUITE_CHECK_SCHEMA_VERSION: u32 = 1;
@@ -219,6 +222,16 @@ pub async fn run(args: &SuiteCheckArgs) -> Result<SuiteCheckReport, Error> {
         Err(msg) => checks.push(CheckItem::fail("suite_name_safe", None, msg)),
     }
 
+    // `DefaultAgent` builds `PolicyEngine::from_cfg(&config.root.policy)`
+    // before running the first task; an unknown `[policy] profile` or an
+    // invalid extra allow/deny regex fails there, after this preflight
+    // would otherwise have reported PASS. `from_cfg` is pure config
+    // validation (no I/O), so it's safe and cheap to run here too.
+    match PolicyEngine::from_cfg(&args.config.root.policy) {
+        Ok(_) => checks.push(CheckItem::pass("policy_config", None)),
+        Err(e) => checks.push(CheckItem::fail("policy_config", None, e.to_string())),
+    }
+
     // With `--env docker`, verify commands, MCP servers, and hooks all run
     // inside the container image in a live run — not on this host. A
     // host-side probe/PATH lookup can't authoritatively validate them (a
@@ -297,6 +310,25 @@ pub async fn run(args: &SuiteCheckArgs) -> Result<SuiteCheckReport, Error> {
                     spec,
                     skip_launchability,
                 ));
+            }
+
+            // `mini::run` resolves skills for the task before building the
+            // agent — a malformed `SKILL.md` or a duplicate skill name in a
+            // configured registry fails there, before any model call. Run
+            // the same (pure filesystem read, no model call) resolution
+            // here so that failure surfaces as a preflight check instead of
+            // reporting PASS for a suite that halts on its first task.
+            match skills::resolve_for_task(
+                &args.config.root.skills,
+                &task.task,
+                task.extra_context.clone(),
+            ) {
+                Ok(_) => checks.push(CheckItem::pass("skills_resolve", Some(task.id.clone()))),
+                Err(e) => checks.push(CheckItem::fail(
+                    "skills_resolve",
+                    Some(task.id.clone()),
+                    e.to_string(),
+                )),
             }
         }
     }
@@ -1488,6 +1520,97 @@ mod tests {
                 .checks
                 .iter()
                 .any(|c| c.check == "hazard:model.name" && c.status == CheckStatus::Fail)
+        );
+    }
+
+    #[tokio::test]
+    async fn invalid_policy_profile_fails_preflight() {
+        // `DefaultAgent` builds `PolicyEngine::from_cfg` before running the
+        // first task; an unknown `[policy] profile` fails there, after a
+        // live run has already spent on task setup. Regression test for a
+        // gap found in review (issue #821): --check never validated the
+        // policy config and would report PASS.
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_tasks(&dir, "tasks.yaml", "- id: t1\n  task: fix it\n");
+        let mut args = base_args(path);
+        args.config.root.policy.profile = "bogus".to_owned();
+        let report = run(&args).await.unwrap();
+        assert!(!report.ok, "checks: {:?}", report.checks);
+        assert!(
+            report
+                .checks
+                .iter()
+                .any(|c| c.check == "policy_config" && c.status == CheckStatus::Fail)
+        );
+    }
+
+    #[tokio::test]
+    async fn invalid_policy_regex_fails_preflight() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_tasks(&dir, "tasks.yaml", "- id: t1\n  task: fix it\n");
+        let mut args = base_args(path);
+        args.config.root.policy.extra_deny_patterns = vec!["[unterminated".to_owned()];
+        let report = run(&args).await.unwrap();
+        assert!(!report.ok, "checks: {:?}", report.checks);
+        assert!(
+            report
+                .checks
+                .iter()
+                .any(|c| c.check == "policy_config" && c.status == CheckStatus::Fail)
+        );
+    }
+
+    #[tokio::test]
+    async fn valid_policy_config_passes_preflight() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_tasks(&dir, "tasks.yaml", "- id: t1\n  task: fix it\n");
+        let report = run(&base_args(path)).await.unwrap();
+        assert!(report.ok, "checks: {:?}", report.checks);
+        assert!(
+            report
+                .checks
+                .iter()
+                .any(|c| c.check == "policy_config" && c.status == CheckStatus::Pass)
+        );
+    }
+
+    #[tokio::test]
+    async fn malformed_skill_file_fails_preflight() {
+        // `mini::run` resolves skills for the task before building the
+        // agent — a `SKILL.md` missing its YAML frontmatter fails there,
+        // after a live run has already spent on task setup. Regression
+        // test for a gap found in review (issue #821): --check never
+        // resolved configured skills and would report PASS.
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_tasks(&dir, "tasks.yaml", "- id: t1\n  task: fix it\n");
+        let skills_dir = dir.path().join("skills");
+        std::fs::create_dir_all(&skills_dir).unwrap();
+        std::fs::write(skills_dir.join("SKILL.md"), "not frontmatter\n").unwrap();
+
+        let mut args = base_args(path);
+        args.config.root.skills.enabled = true;
+        args.config.root.skills.paths = vec![skills_dir.to_string_lossy().into_owned()];
+        let report = run(&args).await.unwrap();
+        assert!(!report.ok, "checks: {:?}", report.checks);
+        assert!(
+            report
+                .checks
+                .iter()
+                .any(|c| c.check == "skills_resolve" && c.status == CheckStatus::Fail)
+        );
+    }
+
+    #[tokio::test]
+    async fn skills_disabled_by_default_passes_preflight() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_tasks(&dir, "tasks.yaml", "- id: t1\n  task: fix it\n");
+        let report = run(&base_args(path)).await.unwrap();
+        assert!(report.ok, "checks: {:?}", report.checks);
+        assert!(
+            report
+                .checks
+                .iter()
+                .any(|c| c.check == "skills_resolve" && c.status == CheckStatus::Pass)
         );
     }
 
