@@ -835,6 +835,24 @@ fn verify_command_inconclusive_reason(command: &str) -> Option<&'static str> {
         if !is_wrapper_command(&token) {
             return None;
         }
+        // `builtin NAME` is stricter than the other wrappers: bash's
+        // `builtin` skips command/PATH lookup entirely and fails if NAME
+        // isn't in its builtin table — unlike `time`/`exec`/`command`/`eval`/
+        // `env`, an external command is never a valid payload.
+        // `SHELL_BUILTINS_AND_KEYWORDS` is a best-effort subset of bash's
+        // actual builtins (not exhaustive), so a payload we don't recognize
+        // could be a real builtin we're missing (false Fail) or a genuinely
+        // invalid one (false Pass) — admit uncertainty instead of guessing
+        // either way.
+        if token.rsplit('/').next().unwrap_or(&token) == "builtin"
+            && matches!(next_shell_word(remainder), Some((next, _)) if !next.starts_with('-') && !is_shell_builtin_or_keyword(&next))
+        {
+            return Some(
+                "`builtin NAME` requires NAME to be a real shell builtin (bash skips \
+                 command/PATH lookup entirely), which this static check cannot fully verify \
+                 against its own builtins list",
+            );
+        }
         if matches!(next_shell_word(remainder), Some((next, _)) if next.starts_with('-')) {
             // A wrapper followed by what looks like an option flag (`time
             // -p`, `command -v`, `env -i`) may take that flag's own
@@ -2264,6 +2282,29 @@ mod tests {
         assert!(verify_command_inconclusive_reason("command -v cargo").is_some());
         assert!(verify_command_inconclusive_reason("env -i FOO=bar cargo test").is_some());
         assert!(verify_command_inconclusive_reason("time exec -a name cargo").is_some());
+    }
+
+    #[test]
+    fn verify_command_inconclusive_reason_detects_builtin_with_external_payload() {
+        // Unlike `time`/`exec`/`command`/`eval`/`env`, bash's `builtin`
+        // skips command/PATH lookup entirely and fails if its payload isn't
+        // a real shell builtin — `builtin cargo --version` resolves
+        // `cargo` on PATH here but fails live because `cargo` is an
+        // external command, not a builtin. Regression test for a gap found
+        // in review (issue #821): the generic wrapper-unwrap treated
+        // `builtin` the same as the other wrappers and reported PASS.
+        assert!(verify_command_inconclusive_reason("builtin cargo --version").is_some());
+        assert!(verify_command_inconclusive_reason("builtin __no_such_builtin__").is_some());
+        // Nested behind another wrapper too.
+        assert!(verify_command_inconclusive_reason("time builtin cargo --version").is_some());
+    }
+
+    #[test]
+    fn verify_command_inconclusive_reason_none_for_builtin_with_real_builtin_payload() {
+        // A real shell builtin as the payload is unambiguous — `builtin`
+        // will find it without touching PATH, same result either way.
+        assert!(verify_command_inconclusive_reason("builtin cd /tmp").is_none());
+        assert!(verify_command_inconclusive_reason("builtin true").is_none());
     }
 
     #[test]
