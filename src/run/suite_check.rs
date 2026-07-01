@@ -140,6 +140,13 @@ pub struct SuiteCheckArgs {
     /// `--model` override doesn't get flagged as a silent config-file
     /// override hazard.
     pub model_flag: Option<String>,
+    /// Mirrors `agent suite --detect-stagnation`. Forwarded to the hazard
+    /// detector's stagnation-bounds validation so `--check` sees the same
+    /// effective `detect_stagnation` the live run resolves — otherwise a
+    /// config file that disables stagnation (masking invalid thresholds)
+    /// could pass preflight while an explicit `--detect-stagnation` on the
+    /// live invocation re-enables it and `DefaultAgent` rejects the task.
+    pub detect_stagnation_flag: Option<bool>,
     pub strict: bool,
 }
 
@@ -217,6 +224,23 @@ pub async fn run(args: &SuiteCheckArgs) -> Result<SuiteCheckReport, Error> {
     // in that case (format is still validated); MCP/hook probe failures are
     // downgraded to warnings instead of fatal (see below).
     let is_docker = matches!(args.config.root.environment.kind, EnvKind::Docker);
+
+    // `mini::build_docker_env` unconditionally requires `docker_image` and
+    // errors before any task runs; catch that statically here rather than
+    // reporting PASS for a suite that cannot start. This does not probe the
+    // Docker daemon itself or pull the image — run `agent doctor` for full
+    // host readiness.
+    if is_docker {
+        match &args.config.root.environment.docker_image {
+            Some(_) => checks.push(CheckItem::pass("docker_image_configured", None)),
+            None => checks.push(CheckItem::fail(
+                "docker_image_configured",
+                None,
+                "environment.kind=docker requires environment.docker_image; run `agent doctor` \
+                 to also verify the Docker daemon is reachable",
+            )),
+        }
+    }
     let skip_launchability = is_docker;
 
     // ── Non-empty pack + per-task field/id validation ──────────────────
@@ -305,7 +329,11 @@ pub async fn run(args: &SuiteCheckArgs) -> Result<SuiteCheckReport, Error> {
         hide_budget_from_agent_flag: false,
         env_flag: None,
         workdir_flag: None,
-        detect_stagnation_flag: None,
+        // `agent suite` has no `--stagnation-repeat-threshold`/`--stagnation-window`
+        // flags of its own (only `--detect-stagnation`), so those two mirror
+        // that same gap in the live run path — not something --check can
+        // close on its own.
+        detect_stagnation_flag: args.detect_stagnation_flag,
         stagnation_repeat_threshold_flag: None,
         stagnation_window_flag: None,
     };
@@ -314,12 +342,22 @@ pub async fn run(args: &SuiteCheckArgs) -> Result<SuiteCheckReport, Error> {
     // `forecast`/`doctor`, not `agent suite`, which honors a config-file
     // step_limit when `--step-limit` is absent). Only surface hazards that
     // actually affect `agent suite`.
-    let hazards: Vec<OverrideHazard> = run_config_resolve(&hazard_args)
-        .map_err(Error::Config)?
-        .hazards
-        .into_iter()
-        .filter(|h| h.commands_affected.iter().any(|c| c == "agent suite"))
-        .collect();
+    //
+    // `run_config_resolve` can itself return `Err` (e.g. invalid stagnation
+    // bounds when detection is effectively enabled) — report that as a
+    // fatal check rather than aborting `run` with an unstructured error, so
+    // `--check` always produces a full report with the documented exit code.
+    let hazards: Vec<OverrideHazard> = match run_config_resolve(&hazard_args) {
+        Ok(resolved) => resolved
+            .hazards
+            .into_iter()
+            .filter(|h| h.commands_affected.iter().any(|c| c == "agent suite"))
+            .collect(),
+        Err(e) => {
+            checks.push(CheckItem::fail("config_resolve", None, e.to_string()));
+            Vec::new()
+        }
+    };
     for hazard in &hazards {
         let target = Some(hazard.field.clone());
         if args.strict {
@@ -659,6 +697,7 @@ mod tests {
             per_task_budget_usd: None,
             step_limit_flag: None,
             model_flag: None,
+            detect_stagnation_flag: None,
             strict: false,
         }
     }
@@ -762,6 +801,60 @@ mod tests {
                 .checks
                 .iter()
                 .any(|c| c.check == "suite_name_safe" && c.status == CheckStatus::Pass)
+        );
+    }
+
+    #[tokio::test]
+    async fn docker_env_without_image_fails_preflight() {
+        // `mini::build_docker_env` unconditionally requires
+        // `environment.docker_image` and errors before any task can run;
+        // --check must catch this instead of reporting PASS for a suite
+        // that cannot start. Regression test for a gap found in review
+        // (issue #821).
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_tasks(&dir, "tasks.yaml", "- id: t1\n  task: fix it\n");
+        let mut config = Config::defaults().unwrap();
+        config.root.environment.kind = EnvKind::Docker;
+        let mut args = base_args(path);
+        args.config = config;
+        let report = run(&args).await.unwrap();
+        assert!(!report.ok, "checks: {:?}", report.checks);
+        assert!(
+            report
+                .checks
+                .iter()
+                .any(|c| c.check == "docker_image_configured" && c.status == CheckStatus::Fail)
+        );
+    }
+
+    #[tokio::test]
+    async fn docker_env_with_image_passes_that_check() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_tasks(&dir, "tasks.yaml", "- id: t1\n  task: fix it\n");
+        let mut config = Config::defaults().unwrap();
+        config.root.environment.kind = EnvKind::Docker;
+        config.root.environment.docker_image = Some("my-image:latest".to_owned());
+        let mut args = base_args(path);
+        args.config = config;
+        let report = run(&args).await.unwrap();
+        assert!(
+            report
+                .checks
+                .iter()
+                .any(|c| c.check == "docker_image_configured" && c.status == CheckStatus::Pass)
+        );
+    }
+
+    #[tokio::test]
+    async fn local_env_has_no_docker_image_check() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_tasks(&dir, "tasks.yaml", "- id: t1\n  task: fix it\n");
+        let report = run(&base_args(path)).await.unwrap();
+        assert!(
+            !report
+                .checks
+                .iter()
+                .any(|c| c.check == "docker_image_configured")
         );
     }
 
@@ -870,6 +963,7 @@ mod tests {
         );
         let mut config = Config::defaults().unwrap();
         config.root.environment.kind = EnvKind::Docker;
+        config.root.environment.docker_image = Some("my-image:latest".to_owned());
         let mut args = base_args(path);
         args.config = config;
         let report = run(&args).await.unwrap();
@@ -892,6 +986,7 @@ mod tests {
         let path = write_tasks(&dir, "tasks.yaml", "- id: t1\n  task: fix it\n");
         let mut config = Config::defaults().unwrap();
         config.root.environment.kind = EnvKind::Docker;
+        config.root.environment.docker_image = Some("my-image:latest".to_owned());
         config
             .root
             .agent
@@ -1086,6 +1181,58 @@ mod tests {
             "checks: {:?}",
             report.checks
         );
+    }
+
+    #[tokio::test]
+    async fn explicit_detect_stagnation_flag_surfaces_invalid_config_bounds() {
+        // The config file disables stagnation detection, which masks an
+        // otherwise-invalid `stagnation_window < stagnation_repeat_threshold`.
+        // An explicit `--detect-stagnation` on the live `agent suite`
+        // invocation re-enables it, and `DefaultAgent` would reject the
+        // task before running. --check must forward the flag and surface
+        // this instead of reporting PASS — regression test for a gap found
+        // in review (issue #821).
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_tasks(&dir, "tasks.yaml", "- id: t1\n  task: fix it\n");
+        let config_path = dir.path().join("config.toml");
+        std::fs::write(
+            &config_path,
+            "[agent]\ndetect_stagnation = false\nstagnation_repeat_threshold = 5\nstagnation_window = 1\n",
+        )
+        .unwrap();
+
+        let mut args = base_args(path);
+        args.config_path = Some(config_path);
+        args.detect_stagnation_flag = Some(true);
+        let report = run(&args).await.unwrap();
+        assert!(!report.ok, "checks: {:?}", report.checks);
+        assert!(
+            report
+                .checks
+                .iter()
+                .any(|c| c.check == "config_resolve" && c.status == CheckStatus::Fail)
+        );
+    }
+
+    #[tokio::test]
+    async fn invalid_stagnation_bounds_do_not_block_when_detection_stays_disabled() {
+        // Same broken bounds as above, but nothing re-enables detection
+        // (neither the config file nor a --detect-stagnation flag), so the
+        // live run never hits the bounds check either — --check must not
+        // false-fail here.
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_tasks(&dir, "tasks.yaml", "- id: t1\n  task: fix it\n");
+        let config_path = dir.path().join("config.toml");
+        std::fs::write(
+            &config_path,
+            "[agent]\ndetect_stagnation = false\nstagnation_repeat_threshold = 5\nstagnation_window = 1\n",
+        )
+        .unwrap();
+
+        let mut args = base_args(path);
+        args.config_path = Some(config_path);
+        let report = run(&args).await.unwrap();
+        assert!(report.ok, "checks: {:?}", report.checks);
     }
 
     // ── RED: worst-case cost summary ────────────────────────────────────

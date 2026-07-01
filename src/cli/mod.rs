@@ -7656,6 +7656,7 @@ async fn agent_suite_cmd(s: args::SuiteCmd) -> Result<(), Error> {
             per_task_budget_usd: s.per_task_budget_usd,
             step_limit_flag: s.step_limit,
             model_flag: s.model.clone(),
+            detect_stagnation_flag: s.detect_stagnation,
             strict: s.strict,
         };
         let report = crate::run::suite_check::run(&check_args).await?;
