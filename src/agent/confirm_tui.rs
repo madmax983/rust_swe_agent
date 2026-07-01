@@ -446,9 +446,52 @@ impl Drop for RatatuiDashboardHandle {
     }
 }
 
+/// Wraps `tokio::sync::Notify` with a monotonic version counter bumped on
+/// every `notify_waiters()` call (issue #734 review). `Notify` alone can
+/// only tell `renderer_loop` "wake up", not "did state actually change since
+/// I last drew" — and those aren't the same question once a redraw can be
+/// conditionally skipped (as the mouse-motion redraw-skip does): a
+/// `notify_waiters()` call from another task (e.g. a fresh confirm prompt or
+/// log line) can land in the same `select!` poll as an ignored mouse event,
+/// or in the narrow window between one loop iteration finishing and the
+/// next one's `Notified` being (re)registered, and `Notify` stores no permit
+/// to recover it either way. Comparing this counter — bumped with `Release`
+/// before the wakeup is even delivered, read with `Acquire` — lets
+/// `renderer_loop` detect "something changed since my last draw" regardless
+/// of exactly which `select!` branch happened to win, closing that class of
+/// lost-redraw race without touching any of the ~60 existing
+/// `notify_waiters()` call sites (the method name/signature are unchanged).
+struct RedrawNotify {
+    inner: Notify,
+    version: std::sync::atomic::AtomicU64,
+}
+
+impl RedrawNotify {
+    fn new() -> Self {
+        Self {
+            inner: Notify::new(),
+            version: std::sync::atomic::AtomicU64::new(0),
+        }
+    }
+
+    fn notify_waiters(&self) {
+        self.version
+            .fetch_add(1, std::sync::atomic::Ordering::Release);
+        self.inner.notify_waiters();
+    }
+
+    fn notified(&self) -> tokio::sync::futures::Notified<'_> {
+        self.inner.notified()
+    }
+
+    fn version(&self) -> u64 {
+        self.version.load(std::sync::atomic::Ordering::Acquire)
+    }
+}
+
 pub struct RatatuiDashboard {
     state: Mutex<DashboardState>,
-    notify: Notify,
+    notify: RedrawNotify,
     cancel_tx: Option<watch::Sender<bool>>,
     /// Out-of-band attention signal (issue #648). Rings on modal raise and
     /// run completion; muted when `--no-bell`/`NO_BELL` is set or there is no
@@ -507,7 +550,7 @@ impl RatatuiDashboard {
                 mouse_scroll_step: mouse_scroll_step_from_env(),
                 ..DashboardState::default()
             }),
-            notify: Notify::new(),
+            notify: RedrawNotify::new(),
             cancel_tx,
             bell: Bell::to_stdout(bell_enabled),
         });
@@ -870,6 +913,12 @@ async fn renderer_loop(
     // pointer-move event, turning idle mouse motion into a redraw storm
     // (issue #734 review).
     let mut redraw = true;
+    // The `RedrawNotify` version as of our last actual draw. The mouse arm
+    // ORs its `handle_mouse` result with "has this changed since", so an
+    // ignored mouse event can only suppress the next redraw when nothing
+    // else needed one either — closing the lost-redraw race a bare `redraw`
+    // bool can't (issue #734 review; see `RedrawNotify`'s doc comment).
+    let mut last_drawn_version = dash.notify.version();
     loop {
         // Register interest in the next state change *before* reading state and
         // drawing. `Notify::notify_waiters()` only wakes waiters already
@@ -900,6 +949,7 @@ async fn renderer_loop(
             if let Err(err) = draw_frame(&dash, &mut terminal) {
                 tracing::warn!(?err, "ratatui draw failed");
             }
+            last_drawn_version = dash.notify.version();
         }
         redraw = true;
         tokio::select! {
@@ -921,7 +971,10 @@ async fn renderer_loop(
             ev = events.next() => {
                 match ev {
                     Some(Ok(Event::Key(key))) => handle_key(&dash, key),
-                    Some(Ok(Event::Mouse(mouse))) => redraw = handle_mouse(&dash, mouse),
+                    Some(Ok(Event::Mouse(mouse))) => {
+                        redraw = handle_mouse(&dash, mouse)
+                            || dash.notify.version() != last_drawn_version;
+                    }
                     Some(Ok(Event::Paste(text))) => handle_paste(&dash, &text),
                     Some(Err(err)) => {
                         tracing::warn!(?err, "ratatui event stream error");
@@ -1828,23 +1881,27 @@ fn handle_mouse(dash: &Arc<RatatuiDashboard>, mouse: MouseEvent) -> bool {
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
 
-    // `pending` alone doesn't own focus when `detail_open` is also true:
-    // opening the detail inspector (Enter) while a confirm prompt is pending
-    // hides the modal behind it (`draw` skips `draw_modal` whenever
-    // `detail_open`) and `handle_key` already routes scroll keys to the
-    // detail pane in that state — see the `s.detail_open` arm nested inside
-    // `s.pending.take()` below. Mouse wheel must match, or it silently does
-    // nothing over a pane that's visibly scrollable by keyboard (issue #734
-    // review). `feedback_input`/`edit_input` still win unconditionally: they
-    // can only be set while `!detail_open` (`n`/`e` are only reachable from
-    // the non-detail-open branch of `handle_key`), so this never lets mouse
-    // input reach an active feedback/edit text buffer.
+    // Neither `pending` nor a leftover `search` owns focus when `detail_open`
+    // is also true: opening the detail inspector (Enter) hides both the
+    // confirm modal and the search bar behind it (`draw` skips them whenever
+    // `detail_open`), and `handle_key` already routes scroll keys to the
+    // detail pane in that state regardless of `pending`/`search` — see the
+    // `s.detail_open` arm nested inside `s.pending.take()` below, and the
+    // "no modal open" branch's `if s.detail_open { .. } else { <search
+    // routing> }` structure, neither of which ever consults `search` while
+    // `detail_open` is true. `confirm()` doesn't clear an active `/` search,
+    // so `pending` and `search` can both be `Some` at once while `detail_open`
+    // is true; the mouse wheel must match keyboard behavior there too, or it
+    // silently does nothing over a pane that's visibly scrollable (issue
+    // #734 review). `feedback_input`/`edit_input` still win unconditionally:
+    // they can only be set while `!detail_open` (`n`/`e` are only reachable
+    // from the non-detail-open branch of `handle_key`), so this never lets
+    // mouse input reach an active feedback/edit text buffer.
     let modal_owns_focus = s.help_open
         || s.stop_pending
-        || (s.pending.is_some() && !s.detail_open)
         || s.feedback_input.is_some()
         || s.edit_input.is_some()
-        || s.search.is_some();
+        || (!s.detail_open && (s.pending.is_some() || s.search.is_some()));
     if modal_owns_focus {
         return false;
     }
@@ -3340,6 +3397,21 @@ mod tests {
         assert!(!state.should_exit);
     }
 
+    /// `renderer_loop` uses this counter (rather than trusting whichever
+    /// `select!` branch happens to win) to detect "did state change since my
+    /// last draw," closing the mouse-motion redraw-skip's lost-notification
+    /// race regardless of timing (issue #734 review).
+    #[test]
+    fn redraw_notify_version_increments_on_notify_waiters() {
+        let n = RedrawNotify::new();
+        assert_eq!(n.version(), 0);
+        n.notify_waiters();
+        assert_eq!(n.version(), 1);
+        n.notify_waiters();
+        n.notify_waiters();
+        assert_eq!(n.version(), 3);
+    }
+
     #[test]
     fn test_count_wrapped_lines_greedy() {
         assert_eq!(count_wrapped_lines("", 10), 1);
@@ -3732,7 +3804,7 @@ mod tests {
     fn make_dashboard() -> Arc<RatatuiDashboard> {
         Arc::new(RatatuiDashboard {
             state: Mutex::new(DashboardState::default()),
-            notify: Notify::new(),
+            notify: RedrawNotify::new(),
             cancel_tx: None,
             bell: Bell::silent(),
         })
@@ -3773,7 +3845,7 @@ mod tests {
         let sink = ByteSink::default();
         let dash = Arc::new(RatatuiDashboard {
             state: Mutex::new(DashboardState::default()),
-            notify: Notify::new(),
+            notify: RedrawNotify::new(),
             cancel_tx: None,
             bell: Bell::to_writer(enabled, Box::new(sink.clone())),
         });
@@ -5280,7 +5352,7 @@ mod tests {
         let (tx, rx) = tokio::sync::watch::channel(false);
         let d = Arc::new(RatatuiDashboard {
             state: Mutex::new(DashboardState::default()),
-            notify: Notify::new(),
+            notify: RedrawNotify::new(),
             cancel_tx: Some(tx),
             bell: Bell::silent(),
         });
@@ -6289,7 +6361,7 @@ mod tests {
         let (tx, rx) = tokio::sync::watch::channel(false);
         let d = Arc::new(RatatuiDashboard {
             state: Mutex::new(DashboardState::default()),
-            notify: Notify::new(),
+            notify: RedrawNotify::new(),
             cancel_tx: Some(tx),
             bell: Bell::silent(),
         });
@@ -7298,6 +7370,38 @@ mod tests {
             mouse_event(MouseEventKind::Down(MouseButton::Left), 10, 6),
         );
         assert_eq!(snap(&d).selected_index, Some(0));
+    }
+
+    /// `confirm()` doesn't clear an active `/` search, so a prompt can
+    /// arrive while `s.search` is still `Some`; opening the detail inspector
+    /// with Enter in that state hides both the modal and the search bar
+    /// behind it, and keyboard scroll keys still reach the detail pane. The
+    /// mouse wheel must match — `search.is_some()` alone must not block it
+    /// once `detail_open` is true (issue #734 review).
+    #[test]
+    fn test_mouse_wheel_scrolls_detail_inspector_with_pending_and_search_active() {
+        let d = make_dashboard();
+        let multiline_text = (0..10)
+            .map(|i| format!("line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        d.append(LineKind::Info, "summary", Some(multiline_text));
+        let _rx = make_pending(&d);
+        {
+            let mut s = d.state.lock().unwrap();
+            s.search = Some(SearchState::new());
+            s.detail_open = true;
+            s.detail_viewport_height = 3;
+        }
+        assert_eq!(snap(&d).detail_scroll_top, 0);
+
+        assert!(handle_mouse(
+            &d,
+            mouse_event(MouseEventKind::ScrollDown, 0, 0)
+        ));
+        assert_eq!(snap(&d).detail_scroll_top, 3);
+        assert!(snap(&d).pending.is_some());
+        assert!(snap(&d).search.is_some());
     }
 
     #[test]
