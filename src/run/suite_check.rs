@@ -536,36 +536,14 @@ fn check_verify_spec(target: Option<String>, spec: &str, skip_launchability: boo
                      the container image, not on this host",
                 );
             }
-            if has_leading_path_assignment(&check.command) {
-                // A command that sets its own PATH (e.g. `PATH=./venv/bin:$PATH
-                // pytest`) is resolved by the shell against that assigned
-                // value, not this process's PATH — resolving the program
-                // token against our own PATH could produce either a
-                // false-fail (only reachable via the assignment) or a
-                // false-pass (the assignment would actually hide it).
-                // Emulating shell variable expansion is out of scope; be
-                // honest that this can't be statically determined.
-                return CheckItem::warn(
-                    check_id,
-                    target,
-                    "launchability not checked: verify command sets PATH itself, which this \
-                     static check does not emulate",
-                );
-            }
-            if has_ambiguous_wrapper_option(&check.command) {
-                // A wrapper (time/exec/command/env/...) followed by what
-                // looks like an option flag (`time -p`, `command -v`,
-                // `env -i`) may take that flag's own argument before the
-                // real payload (e.g. `exec -a name cmd`), which this
-                // checker doesn't model per-wrapper. Guessing wrong in
-                // either direction is worse than admitting uncertainty.
-                return CheckItem::warn(
-                    check_id,
-                    target,
-                    "launchability not checked: a wrapper command (time/exec/command/eval/\
-                     builtin/env) is followed by what looks like an option flag, which this \
-                     static check does not parse",
-                );
+            if let Some(reason) = verify_command_inconclusive_reason(&check.command) {
+                // A PATH override or an ambiguous wrapper option could sit
+                // behind any number of unwrapped layers (e.g. `env
+                // PATH=/tmp/empty cargo` — the outermost token is `env`,
+                // not `PATH=...`), so this is checked at every layer as
+                // wrapper commands are unwrapped, not just the outermost
+                // command string.
+                return CheckItem::warn(check_id, target, reason);
             }
             match check_command_launchable(&check.command) {
                 Ok(()) => CheckItem::pass(check_id, target),
@@ -624,23 +602,42 @@ fn check_command_launchable(command: &str) -> Result<(), String> {
 /// wrapper shape: `env [OPTION]... [NAME=VALUE]... [COMMAND [ARG]...]`.
 const WRAPPER_COMMANDS: &[&str] = &["time", "exec", "command", "eval", "builtin", "env"];
 
-/// Whether `command`, after unwrapping any [`WRAPPER_COMMANDS`] prefixes, is
-/// followed by a token that looks like an option flag (`-...`) for that
-/// wrapper. Each wrapper has its own option grammar — some flags take their
-/// own argument (e.g. `exec -a name`) — which this checker doesn't model,
-/// so treat the launchability as inconclusive rather than misresolving the
-/// flag (or its argument) as the payload.
-fn has_ambiguous_wrapper_option(command: &str) -> bool {
+/// Reasons `check_command_launchable` can't be trusted to resolve `command`
+/// statically, checked at every layer as [`WRAPPER_COMMANDS`] are unwrapped
+/// — not just the outermost command string. A `PATH=` assignment or an
+/// ambiguous option can appear behind any number of wrapper layers (e.g.
+/// `env PATH=/tmp/empty cargo` — the outermost token is `env`, not
+/// `PATH=...`), so checking only the original string would miss it.
+fn verify_command_inconclusive_reason(command: &str) -> Option<&'static str> {
     let mut rest = command;
     loop {
-        let Some((token, remainder)) = split_off_program_token(rest) else {
-            return false;
-        };
+        if has_leading_path_assignment(rest) {
+            // A command that sets its own PATH (e.g. `PATH=./venv/bin:$PATH
+            // pytest`, or `env PATH=/tmp/empty cargo`) is resolved by the
+            // shell against that assigned value, not this process's PATH —
+            // resolving the program token against our own PATH could
+            // produce either a false-fail (only reachable via the
+            // assignment) or a false-pass (the assignment would actually
+            // hide it). Emulating shell variable expansion is out of scope;
+            // be honest that this can't be statically determined.
+            return Some(
+                "verify command sets PATH itself, which this static check does not emulate",
+            );
+        }
+        let (token, remainder) = split_off_program_token(rest)?;
         if !WRAPPER_COMMANDS.contains(&token.as_str()) {
-            return false;
+            return None;
         }
         if matches!(next_shell_word(remainder), Some((next, _)) if next.starts_with('-')) {
-            return true;
+            // A wrapper followed by what looks like an option flag (`time
+            // -p`, `command -v`, `env -i`) may take that flag's own
+            // argument before the real payload (e.g. `exec -a name cmd`),
+            // which this checker doesn't model per-wrapper. Guessing wrong
+            // in either direction is worse than admitting uncertainty.
+            return Some(
+                "a wrapper command (time/exec/command/eval/builtin/env) is followed by what \
+                 looks like an option flag, which this static check does not parse",
+            );
         }
         rest = remainder;
     }
@@ -1791,7 +1788,7 @@ mod tests {
     }
 
     #[test]
-    fn has_ambiguous_wrapper_option_detects_option_after_wrapper() {
+    fn verify_command_inconclusive_reason_detects_option_after_wrapper() {
         // `time -p`, `command -v`, `env -i` etc. are valid shell/coreutils
         // invocations, but this checker doesn't model each wrapper's own
         // option grammar (some flags take an argument, e.g. `exec -a
@@ -1799,17 +1796,29 @@ mod tests {
         // would misresolve either way. Regression test for a false-fail
         // found in review (issue #821): `time -p cargo test` previously
         // tried (and failed) to resolve "-p" as an executable.
-        assert!(has_ambiguous_wrapper_option("time -p cargo test"));
-        assert!(has_ambiguous_wrapper_option("command -v cargo"));
-        assert!(has_ambiguous_wrapper_option("env -i FOO=bar cargo test"));
-        assert!(has_ambiguous_wrapper_option("time exec -a name cargo"));
+        assert!(verify_command_inconclusive_reason("time -p cargo test").is_some());
+        assert!(verify_command_inconclusive_reason("command -v cargo").is_some());
+        assert!(verify_command_inconclusive_reason("env -i FOO=bar cargo test").is_some());
+        assert!(verify_command_inconclusive_reason("time exec -a name cargo").is_some());
     }
 
     #[test]
-    fn has_ambiguous_wrapper_option_false_for_ordinary_commands() {
-        assert!(!has_ambiguous_wrapper_option("time cargo test"));
-        assert!(!has_ambiguous_wrapper_option("cargo -v test"));
-        assert!(!has_ambiguous_wrapper_option("env PYTHONPATH=. cargo test"));
+    fn verify_command_inconclusive_reason_detects_path_behind_env_wrapper() {
+        // `env PATH=/tmp/empty cargo` sets its own PATH from *behind* the
+        // `env` wrapper layer, not at the very start of the command string
+        // — checking only the outermost command for a leading PATH=
+        // assignment misses it. Regression test for a gap found in review
+        // (issue #821).
+        assert!(
+            verify_command_inconclusive_reason("env PATH=/tmp/empty cargo --version").is_some()
+        );
+    }
+
+    #[test]
+    fn verify_command_inconclusive_reason_none_for_ordinary_commands() {
+        assert!(verify_command_inconclusive_reason("time cargo test").is_none());
+        assert!(verify_command_inconclusive_reason("cargo -v test").is_none());
+        assert!(verify_command_inconclusive_reason("env PYTHONPATH=. cargo test").is_none());
     }
 
     #[tokio::test]
@@ -1819,6 +1828,28 @@ mod tests {
             &dir,
             "tasks.yaml",
             "- id: t1\n  task: fix it\n  verify:\n    - tests:time -p cargo --version\n",
+        );
+        let report = run(&base_args(path)).await.unwrap();
+        assert!(report.ok, "checks: {:?}", report.checks);
+        let checked = report
+            .checks
+            .iter()
+            .find(|c| c.check == "verify:tests")
+            .unwrap();
+        assert_eq!(checked.status, CheckStatus::Warn);
+    }
+
+    #[tokio::test]
+    async fn verify_command_with_path_behind_env_wrapper_is_inconclusive() {
+        // Exact scenario from review (issue #821): `env PATH=/tmp/empty
+        // cargo --version` sets PATH from behind the `env` wrapper, so a
+        // host-PATH resolution of `cargo` could false-pass even though the
+        // live verifier (restricted to /tmp/empty) would fail to find it.
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_tasks(
+            &dir,
+            "tasks.yaml",
+            "- id: t1\n  task: fix it\n  verify:\n    - tests:env PATH=/tmp/empty cargo --version\n",
         );
         let report = run(&base_args(path)).await.unwrap();
         assert!(report.ok, "checks: {:?}", report.checks);
