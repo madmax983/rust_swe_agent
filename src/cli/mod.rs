@@ -4415,6 +4415,12 @@ fn bench_du(c: args::DuCmd) -> Result<(), Error> {
         )));
     }
 
+    if c.prune && c.keep_last == Some(0) {
+        return Err(Error::Config(crate::error::ConfigError::Invalid(
+            "du: --keep-last must be at least 1 (0 retains nothing, silently turning every non-in-progress sweep into a candidate and defeating the --apply selector requirement)".into(),
+        )));
+    }
+
     let older_than = c
         .older_than
         .as_deref()
@@ -4458,7 +4464,7 @@ fn bench_du(c: args::DuCmd) -> Result<(), Error> {
     if report.prune.as_ref().is_some_and(|p| p.blocked) {
         exit_with_outcome(
             crate::exit_code::ExitCode::DiskUsagePruneBlocked,
-            "du: --prune --apply skipped at least one sweep that could not be proven idle (see `protected` in the report)",
+            "du: --prune --apply skipped at least one sweep not confirmed idle within --in-progress-window, or failed to delete a candidate (see `protected`/`deletion_failed` in the report)",
         );
     }
 

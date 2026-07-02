@@ -224,11 +224,14 @@ pub enum ExitCode {
     /// exhaustion. Distinct from `budget_halt` (5) which is a forecast/sweep
     /// cap, not a post-hoc accounting check.
     LedgerBudgetExceeded = 49,
-    /// 50 — `bench du --prune --apply` matched at least one sweep against the
-    /// given selectors that could not be proven idle (a partial trajectory
-    /// checkpoint was touched within `--in-progress-window`). That sweep was
-    /// skipped and reported as `protected`; every other matching sweep was
-    /// still deleted. The report is printed before exit.
+    /// 50 — `bench du --prune --apply` skipped at least one sweep that
+    /// matched the given selectors: either its partial trajectory checkpoint
+    /// was touched within `--in-progress-window` (not confirmed idle — this
+    /// is an mtime-freshness heuristic, not a lock/PID liveness check, see
+    /// `docs/spec-disk-usage.md`), or `std::fs::remove_dir_all` itself
+    /// failed. That sweep was left on disk and reported under `protected`/
+    /// `deletion_failed`; every other matching sweep was still deleted. The
+    /// report is printed before exit.
     DiskUsagePruneBlocked = 50,
     /// 130 — user interruption (graceful SIGINT / Ctrl-C; 128 + SIGINT(2)).
     Interrupted = 130,

@@ -14,7 +14,9 @@ silently accumulates into many GB with no first-class way to see where the
 disk went, or to reclaim it without risking deletion of a sweep that is
 still running. `bench du` turns `du -sh runs/*` and hand-picked `rm -rf`
 into one lifecycle-aware, artifact-attributed command with a guardrail
-against deleting anything it cannot prove is idle.
+that skips anything it cannot confirm is idle within a configured freshness
+window — see "Lifecycle states" below for exactly what this guardrail can
+and cannot guarantee.
 
 ## Usage
 
@@ -36,7 +38,7 @@ bench du --root <DIR> [OPTIONS]
 | `--prune` | off | Evaluate (and, with `--apply`, delete) stale sweeps. **Dry-run unless combined with `--apply`.** |
 | `--apply` | off | Actually delete the sweeps selected by `--prune`. Requires `--prune` and at least one selector. |
 | `--older-than <DURATION>` | — | Selector: only sweeps whose most recent on-disk activity is at least this old. Accepts `<N>d`, `<N>h`, `<N>m`, `<N>s`, or a plain integer (seconds). |
-| `--keep-last <N>` | — | Selector: never delete the N most recently modified sweeps, regardless of the other selectors. |
+| `--keep-last <N>` | — | Selector: never delete the N most recently modified sweeps, regardless of the other selectors. `N` must be `>= 1`; `--keep-last 0` is rejected as a usage error rather than silently treated as "keep nothing" (see "Selector semantics"). |
 | `--incomplete-only` | off | Selector: only consider sweeps classified `incomplete` or `interrupted` (never `complete`). |
 | `--in-progress-window <SECONDS>` | `900` | A sweep with a partial trajectory checkpoint touched within this many seconds of "now" is classified `in-progress` and is never a prune candidate. |
 
@@ -97,18 +99,50 @@ Each sweep is classified into exactly one state, in this priority order:
    other signal, including an existing `results.json` (a `bench retry` can
    resume writing fresh checkpoints into a directory that already has a
    stale `results.json` from an earlier pass).
-2. **`complete`** — `results.json` exists directly under the sweep
-   directory, and no fresh checkpoint is present.
+2. **`complete`** — a non-symlinked `results.json` exists directly under the
+   sweep directory, and no fresh checkpoint is present. A *symlinked*
+   `results.json` does not count (see below).
 3. **`interrupted`** — no `results.json`, but at least one (stale) partial
    checkpoint exists — the process was killed without a clean shutdown.
 4. **`incomplete`** — neither `results.json` nor any checkpoint. Includes
    empty or freshly-created sweep directories.
 
+The `results.json` check deliberately does not follow symlinks, matching the
+byte-accounting walk (which also skips symlinks): a symlinked `results.json`
+contributes zero bytes to any category, so treating it as evidence of
+`complete` would make lifecycle and byte accounting disagree about the same
+sweep.
+
+#### What "in-progress" detection can and cannot guarantee
+
 There is no lockfile, PID file, or heartbeat mechanism in this codebase (see
 `docs/spec-checkpointing.md`); `in_progress` detection reuses the existing
 mid-run checkpoint signal (`info.partial: true`, rewritten atomically after
 every agent turn) plus mtime freshness — the same signal `bench tail`/`bench
-watch` already use to detect a live run.
+watch` already use to detect a live run. **This is a freshness heuristic, not
+a liveness proof.** Concretely:
+
+- If the writing process is paused (e.g. `SIGSTOP`, a paused container) or a
+  single agent step (a slow test suite, a slow docker build, a slow model
+  call) runs longer than `--in-progress-window` without an intervening
+  checkpoint write, the sweep's mtime goes stale and it is **not** classified
+  `in_progress` even though the process is still alive. Widen
+  `--in-progress-window` if your workload has long steps.
+- `--prune --apply` mitigates, but cannot fully close, the gap between "scan
+  time" and "delete time": immediately before deleting each candidate it
+  re-scans that single sweep directory and re-checks freshness (see
+  "Deletion semantics"), so a sweep that resumes checkpointing partway
+  through a long `bench du` run is still caught. A checkpoint written in the
+  narrow window between that re-check and the actual `remove_dir_all` call
+  is the one race this cannot close without a lock/PID mechanism.
+- A future or clock-skewed mtime (NFS/container clock drift, a stray
+  `touch -d future`) is logged to stderr as a warning and treated as age `0`
+  — the affected sweep simply becomes ineligible for `--older-than`-based
+  pruning until the clock catches up; it is never a false *reclaim*.
+
+In short: `bench du` will never delete a sweep whose checkpoint looks fresh,
+but "looks fresh" is a time-window heuristic, not a guarantee that the
+writing process is actually still running.
 
 ### `--older-than` / age selector
 
@@ -137,7 +171,11 @@ everything".
   any state); the N most recent are retained and removed from the candidate
   set regardless of whether they matched the other selectors. Reported
   separately as `retained_by_keep_last`, distinct from the safety-driven
-  `protected` bucket.
+  `protected` bucket. **`N` must be `>= 1`.** `--keep-last 0` is rejected as
+  a usage error: it would retain nothing, silently making every
+  non-in-progress sweep a candidate — exactly the "no selector means select
+  everything" outcome `--apply`'s selector requirement exists to prevent —
+  while still technically satisfying "at least one selector was given".
 
 An `in_progress` sweep is **never** a candidate. If it would otherwise have
 matched every given selector, it is reported under `protected` instead
@@ -149,13 +187,27 @@ neither as a candidate nor as protected.
 
 `--prune` alone (no `--apply`) is a dry run: it computes and reports exactly
 which sweeps would be deleted and how many bytes would be reclaimed, and
-deletes nothing. `--prune --apply` deletes every sweep in the `candidates`
-set (`std::fs::remove_dir_all`) and leaves every sweep in `protected`
-untouched — a candidate that fails deletion (e.g. permission error) is
-logged to stderr and left in place; it is not counted in `deleted` or
-`reclaimed_bytes`. Partial success (some sweeps deleted, one skipped as
-`protected`) is reported in full, and the process still exits non-zero to
-flag that not everything requested was reclaimed.
+deletes nothing.
+
+`--prune --apply` walks the `candidates` set one at a time. For each one, it
+first **re-scans that single sweep directory** with a fresh timestamp and
+re-checks freshness — narrowing (not eliminating; see "Lifecycle states"
+above) the gap between the initial full-`--root` scan and the moment of
+deletion, since a large `--root` can take real time to scan and a
+resumed/retried process could start checkpointing again during that window.
+A candidate caught in-progress by this re-check is moved into `protected`
+and left untouched, exactly like a sweep that was already in-progress at the
+initial scan. Otherwise the sweep is deleted (`std::fs::remove_dir_all`); a
+candidate whose deletion fails (permission error, or a non-UTF-8-named
+directory it could not resolve) is logged to stderr and added to
+`deletion_failed`, not `deleted`.
+
+Partial success (some sweeps deleted, one skipped as `protected`, one
+failing to delete) is reported in full, and the process exits non-zero
+(`blocked: true`, exit code 50) whenever `protected` or `deletion_failed` is
+non-empty after an `--apply` run — flagging that not everything requested
+was actually reclaimed, even though every deletion that *did* succeed still
+happened.
 
 ## JSON Schema
 
@@ -198,6 +250,7 @@ flag that not everything requested was reclaimed.
     "protected": [],
     "retained_by_keep_last": [],
     "deleted": [],
+    "deletion_failed": [],
     "would_reclaim_bytes": 10485760,
     "reclaimed_bytes": 0,
     "blocked": false
@@ -207,6 +260,11 @@ flag that not everything requested was reclaimed.
 
 `prune` is `null`/omitted when `--prune` was not passed. `lifecycle_state`
 is one of `complete`, `interrupted`, `incomplete`, `in_progress`.
+`deletion_failed` is omitted when empty; it lists candidates where
+`std::fs::remove_dir_all` itself returned an error (permission error, a
+non-UTF-8-named directory, etc.) — distinct from `protected`, which lists
+candidates skipped because they were not confirmed idle. Both populate
+`blocked`.
 
 ### Schema version
 
@@ -226,9 +284,9 @@ operator-chosen and may themselves be sensitive.
 
 | Code | Meaning |
 |---|---|
-| 0 | Success: a clean report, a dry-run `--prune`, or an `--apply` that deleted every matching candidate with nothing protected |
-| 2 | Usage or configuration error: bad `--format`, `--root` not a directory, unparseable `--older-than`, `--apply` without `--prune`, or `--apply` without any of `--older-than`/`--keep-last`/`--incomplete-only` |
-| 50 | `disk_usage_prune_blocked` — `--prune --apply` skipped at least one sweep that matched the selectors but could not be proven idle. See `docs/exit-codes.md`. |
+| 0 | Success: a clean report, a dry-run `--prune`, or an `--apply` that deleted every matching candidate with nothing protected and no deletion failure |
+| 2 | Usage or configuration error: bad `--format`, `--root` not a directory, unparseable `--older-than`, `--keep-last 0`, `--apply` without `--prune`, or `--apply` without any of `--older-than`/`--keep-last`/`--incomplete-only` |
+| 50 | `disk_usage_prune_blocked` — `--prune --apply` skipped at least one matching sweep, either not confirmed idle or because deletion itself failed. See `docs/exit-codes.md`. |
 
 ## Examples
 

@@ -475,8 +475,8 @@ pub fn entries() -> &'static [ExplainEntry] {
             code: Some(50),
             outcome_class: "disk_usage_prune_blocked",
             families: EXIT_ONLY,
-            meaning: "`bench du --prune --apply` matched at least one sweep against the given selectors that could not be proven idle (a partial checkpoint was touched within `--in-progress-window`). That sweep was skipped and reported `protected`; every other matching sweep was still deleted.",
-            remediation: "Re-run once the live sweep finishes, or narrow the selectors to exclude it. The report lists exactly which sweep was protected.",
+            meaning: "`bench du --prune --apply` skipped at least one matching sweep: its checkpoint was touched within `--in-progress-window` (not confirmed idle) or its deletion failed. That sweep was left on disk and reported under `protected`/`deletion_failed`; every other matching sweep was still deleted.",
+            remediation: "Re-run once the live sweep finishes, narrow the selectors to exclude it, or investigate the deletion failure. The report lists exactly which sweep was skipped and why.",
             docs_ref: EXIT_DOC,
         },
         ExplainEntry {

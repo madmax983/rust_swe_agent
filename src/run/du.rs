@@ -11,6 +11,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 
 use crate::error::{ConfigError, Error};
+use crate::run::bundle::BUNDLE_MANIFEST_PATH;
 
 // ── public data types ───────────────────────────────────────────────────────
 
@@ -75,7 +76,17 @@ impl CategoryBytes {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SweepReport {
     pub id: String,
+    /// Human-readable, JSON-safe path. On Unix this is a **lossy** UTF-8
+    /// rendering (`Path::display`) — invalid byte sequences in a non-UTF-8
+    /// directory name are replaced with U+FFFD. Never used for filesystem
+    /// operations; see `path_buf`.
     pub path: String,
+    /// The exact on-disk path, byte-for-byte. Not serialized (JSON cannot
+    /// losslessly represent arbitrary non-UTF-8 paths); used for every
+    /// actual filesystem operation (deletion, re-scan) so a non-UTF-8
+    /// sweep name is never mistargeted via a lossy string round-trip.
+    #[serde(skip)]
+    pub path_buf: PathBuf,
     pub total_bytes: u64,
     pub lifecycle_state: LifecycleState,
     pub last_modified: String,
@@ -94,7 +105,11 @@ pub struct PruneSelectors {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PruneEntry {
     pub id: String,
+    /// See `SweepReport::path` — lossy, display-only.
     pub path: String,
+    /// See `SweepReport::path_buf` — exact, used for filesystem operations.
+    #[serde(skip)]
+    pub path_buf: PathBuf,
     pub bytes: u64,
     pub lifecycle_state: LifecycleState,
 }
@@ -105,14 +120,24 @@ pub struct PruneReport {
     pub dry_run: bool,
     pub selectors: PruneSelectors,
     pub candidates: Vec<PruneEntry>,
+    /// Sweeps skipped as unsafe to delete: either already `in_progress` at
+    /// scan time, or caught in-progress by the immediately-before-delete
+    /// re-check (see `build_prune_report`).
     pub protected: Vec<PruneEntry>,
     pub retained_by_keep_last: Vec<PruneEntry>,
     pub deleted: Vec<PruneEntry>,
+    /// Candidates where `std::fs::remove_dir_all` itself failed (permission
+    /// error, non-UTF-8 path mismatch, etc.). Also drives `blocked` — a
+    /// failed deletion means the reclaim was not fully carried out, which is
+    /// as much a reason to exit non-zero as an unsafe-to-delete candidate.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub deletion_failed: Vec<PruneEntry>,
     pub would_reclaim_bytes: u64,
     pub reclaimed_bytes: u64,
     /// `true` when `--apply` was requested and at least one sweep that
-    /// otherwise matched the selectors could not be proven idle and was
-    /// therefore skipped. Drives exit code 50 (`disk_usage_prune_blocked`).
+    /// otherwise matched the selectors was skipped (`protected`) or failed
+    /// to delete (`deletion_failed`). Drives exit code 50
+    /// (`disk_usage_prune_blocked`).
     pub blocked: bool,
 }
 
@@ -178,13 +203,35 @@ pub fn run(args: &DuArgs) -> Result<DuReport, Error> {
     };
 
     if let Some(prune_args) = &args.prune {
-        report.prune = Some(build_prune_report(&report.sweeps, prune_args));
+        report.prune = Some(build_prune_report(
+            &report.sweeps,
+            prune_args,
+            args.in_progress_window,
+        ));
     }
 
     Ok(report)
 }
 
-fn build_prune_report(sweeps: &[SweepReport], prune_args: &PruneRequest) -> PruneReport {
+/// Evaluate selectors, then (with `--apply`) delete every resulting
+/// candidate — re-checking each one's liveness with a fresh, single-sweep
+/// scan immediately beforehand.
+///
+/// The initial full-`--root` scan that produced `sweeps` can be arbitrarily
+/// stale by the time a given candidate is actually reached in the deletion
+/// loop (a `--root` with many/large sweeps takes real time to scan — see
+/// `docs/spec-disk-usage.md`'s Performance Notes). A sweep correctly
+/// classified `interrupted` at scan-start could receive a fresh checkpoint
+/// from a resumed/retried process before its turn to be deleted comes up.
+/// Re-scanning right before deleting narrows that window from
+/// "the whole scan" down to "one directory stat", though it cannot eliminate
+/// it entirely without a lock/PID mechanism this codebase does not have —
+/// see the "Lifecycle states" caveat in `docs/spec-disk-usage.md`.
+pub fn build_prune_report(
+    sweeps: &[SweepReport],
+    prune_args: &PruneRequest,
+    in_progress_window: Duration,
+) -> PruneReport {
     let selectors = PruneSelectors {
         older_than_secs: prune_args.older_than.map(|d| d.as_secs()),
         keep_last: prune_args.keep_last,
@@ -194,11 +241,22 @@ fn build_prune_report(sweeps: &[SweepReport], prune_args: &PruneRequest) -> Prun
 
     let would_reclaim_bytes: u64 = eval.candidates.iter().map(|c| c.bytes).sum();
     let mut deleted: Vec<PruneEntry> = Vec::new();
+    let mut deletion_failed: Vec<PruneEntry> = Vec::new();
+    let mut protected = eval.protected;
     let mut reclaimed_bytes = 0u64;
 
     if prune_args.apply {
         for candidate in &eval.candidates {
-            match std::fs::remove_dir_all(&candidate.path) {
+            let recheck = scan_sweep(&candidate.path_buf, SystemTime::now(), in_progress_window);
+            if recheck.lifecycle_state == LifecycleState::InProgress {
+                eprintln!(
+                    "warning: bench du: {} became in-progress since the initial scan; skipping deletion",
+                    candidate.path
+                );
+                protected.push(candidate.clone());
+                continue;
+            }
+            match std::fs::remove_dir_all(&candidate.path_buf) {
                 Ok(()) => {
                     reclaimed_bytes += candidate.bytes;
                     deleted.push(candidate.clone());
@@ -208,21 +266,23 @@ fn build_prune_report(sweeps: &[SweepReport], prune_args: &PruneRequest) -> Prun
                         "warning: bench du: could not delete {}: {e}",
                         candidate.path
                     );
+                    deletion_failed.push(candidate.clone());
                 }
             }
         }
     }
 
-    let blocked = prune_args.apply && !eval.protected.is_empty();
+    let blocked = prune_args.apply && (!protected.is_empty() || !deletion_failed.is_empty());
 
     PruneReport {
         apply: prune_args.apply,
         dry_run: !prune_args.apply,
         selectors,
         candidates: eval.candidates,
-        protected: eval.protected,
+        protected,
         retained_by_keep_last: eval.retained,
         deleted,
+        deletion_failed,
         would_reclaim_bytes,
         reclaimed_bytes,
         blocked,
@@ -314,7 +374,7 @@ fn render_prune_text(out: &mut String, prune: &PruneReport) {
     if !prune.protected.is_empty() {
         let _ = writeln!(
             out,
-            "Protected (cannot prove idle, skipped): {}",
+            "Protected (not confirmed idle within --in-progress-window, skipped): {}",
             prune.protected.len()
         );
         for c in &prune.protected {
@@ -336,10 +396,16 @@ fn render_prune_text(out: &mut String, prune: &PruneReport) {
             human_bytes(prune.reclaimed_bytes)
         );
     }
+    if !prune.deletion_failed.is_empty() {
+        let _ = writeln!(out, "Deletion failed: {}", prune.deletion_failed.len());
+        for c in &prune.deletion_failed {
+            let _ = writeln!(out, "  - {} ({})", c.id, human_bytes(c.bytes));
+        }
+    }
     if prune.blocked {
         let _ = writeln!(
             out,
-            "\nBLOCKED: at least one matching sweep could not be proven idle and was skipped."
+            "\nBLOCKED: at least one matching sweep was skipped as not confirmed idle, or failed to delete."
         );
     }
 }
@@ -416,7 +482,7 @@ pub fn classify_category(file_name: &str, traj_partial: Option<bool>) -> Categor
     if file_name.ends_with(".tar.gz")
         || file_name.ends_with(".tgz")
         || file_name.ends_with(".zip")
-        || file_name == "BUNDLE.json"
+        || file_name == BUNDLE_MANIFEST_PATH
     {
         return Category::Bundles;
     }
@@ -555,6 +621,7 @@ fn entry_for(s: &SweepReport) -> PruneEntry {
     PruneEntry {
         id: s.id.clone(),
         path: s.path.clone(),
+        path_buf: s.path_buf.clone(),
         bytes: s.total_bytes,
         lifecycle_state: s.lifecycle_state,
     }
@@ -563,11 +630,14 @@ fn entry_for(s: &SweepReport) -> PruneEntry {
 // ── internals ────────────────────────────────────────────────────────────────
 
 fn scan_sweep(path: &Path, now: SystemTime, in_progress_window: Duration) -> SweepReport {
+    // Lossy on non-UTF-8 names, but unlike a blanket `unwrap_or_default()`
+    // this doesn't collapse every non-UTF-8 name to the same empty string —
+    // two differently-named non-UTF-8 sweeps stay distinguishable for the
+    // `--keep-last` retained-set membership check in `evaluate_prune_candidates`.
     let id = path
         .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or_default()
-        .to_owned();
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
 
     let mut categories = CategoryBytes::default();
     let mut total_bytes = 0u64;
@@ -605,17 +675,30 @@ fn scan_sweep(path: &Path, now: SystemTime, in_progress_window: Duration) -> Swe
 
     let last_modified = newest_file_mtime.unwrap_or_else(|| fs_mtime(path).unwrap_or(UNIX_EPOCH));
 
-    let has_results_json = path.join("results.json").is_file();
+    // Must agree with walk_sweep's symlink-skipping convention: a symlinked
+    // `results.json` contributes zero bytes to the byte walk (symlinks are
+    // skipped there), so it must not independently flip lifecycle to
+    // `complete` via a stat call that silently follows the symlink.
+    let results_path = path.join("results.json");
+    let has_results_json = !results_path.is_symlink() && results_path.is_file();
     let lifecycle_state = classify_lifecycle(
         has_results_json,
         has_partial_checkpoint,
         has_fresh_partial_checkpoint,
     );
 
-    let age_seconds = now
-        .duration_since(last_modified)
-        .unwrap_or(Duration::ZERO)
-        .as_secs();
+    let age_seconds = if let Ok(d) = now.duration_since(last_modified) {
+        d.as_secs()
+    } else {
+        // A future mtime (clock skew, NFS/container drift, a stray
+        // `touch -d future`) would otherwise clamp age to 0 and silently
+        // make this sweep un-prunable via --older-than forever.
+        eprintln!(
+            "warning: bench du: {} has a file with an mtime in the future relative to this host's clock; treating age as 0s (clock skew?)",
+            path.display()
+        );
+        0
+    };
     let last_modified_unix = last_modified
         .duration_since(UNIX_EPOCH)
         .unwrap_or(Duration::ZERO)
@@ -624,6 +707,7 @@ fn scan_sweep(path: &Path, now: SystemTime, in_progress_window: Duration) -> Swe
     SweepReport {
         id,
         path: path.display().to_string(),
+        path_buf: path.to_path_buf(),
         total_bytes,
         lifecycle_state,
         last_modified: rfc3339(last_modified),
@@ -635,12 +719,11 @@ fn scan_sweep(path: &Path, now: SystemTime, in_progress_window: Duration) -> Swe
 
 /// Recursively visits every regular file under `dir` (skipping symlinks),
 /// invoking `visit(path, size_bytes, mtime)` for each. Unreadable
-/// subdirectories are skipped silently, matching `agent_runs::walk_children`.
+/// subdirectories are skipped silently via the shared
+/// `agent_runs::read_dir_or_empty` primitive, the same one
+/// `agent_runs::walk_children` uses.
 fn walk_sweep(dir: &Path, visit: &mut impl FnMut(&Path, u64, SystemTime)) {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return;
-    };
-    for entry in entries.flatten() {
+    for entry in crate::run::agent_runs::read_dir_or_empty(dir) {
         let p = entry.path();
         if p.is_symlink() {
             continue;

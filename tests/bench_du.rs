@@ -12,8 +12,9 @@ mod support;
 // ── unit tests for pure helper functions ──────────────────────────────────────
 
 use maxwells_daemon::run::du::{
-    Category, CategoryBytes, LifecycleState, PruneSelectors, SweepReport, classify_category,
-    classify_lifecycle, evaluate_prune_candidates, parse_age_selector, recursive_size_walk,
+    Category, CategoryBytes, LifecycleState, PruneRequest, PruneSelectors, SweepReport,
+    build_prune_report, classify_category, classify_lifecycle, evaluate_prune_candidates,
+    parse_age_selector, recursive_size_walk,
 };
 
 // classify_lifecycle (AC3: complete / interrupted / incomplete / in-progress)
@@ -184,6 +185,7 @@ fn fixture_sweep(id: &str, bytes: u64, state: LifecycleState, age_secs: u64) -> 
     SweepReport {
         id: id.to_owned(),
         path: format!("/runs/{id}"),
+        path_buf: PathBuf::from(format!("/runs/{id}")),
         total_bytes: bytes,
         lifecycle_state: state,
         last_modified: "2024-01-01T00:00:00Z".to_owned(),
@@ -956,4 +958,301 @@ fn success_metric_ten_plus_mixed_sweeps_full_attribution_and_zero_false_reclaims
         0,
         "blocked apply (a protected candidate existed) must exit non-zero"
     );
+}
+
+// ── code-review fixes ────────────────────────────────────────────────────────
+// Regression coverage for the findings from the /code-review pass on the
+// original implementation (see conversation history / issue #533 follow-up).
+
+// Fix #1: a failed remove_dir_all must be surfaced in the report and must
+// block the exit code, not just eprintln! a warning that gets lost.
+#[test]
+fn deletion_failure_is_reported_and_blocks() {
+    // path_buf points at a directory that does not exist by the time
+    // deletion runs — deterministic and portable, unlike relying on OS
+    // permission bits (this suite runs as root, where chmod-based "denied"
+    // scenarios don't hold). Also a realistic real-world trigger: something
+    // else (an operator, a concurrent cleanup) removed the sweep first.
+    let missing = std::env::temp_dir().join("bench-du-test-missing-sweep-does-not-exist");
+    let _ = std::fs::remove_dir_all(&missing);
+    assert!(!missing.exists());
+
+    let mut sweep = fixture_sweep("ghost", 100, LifecycleState::Complete, 100);
+    sweep.path = missing.display().to_string();
+    sweep.path_buf = missing;
+
+    let report = build_prune_report(
+        &[sweep],
+        &PruneRequest {
+            apply: true,
+            older_than: Some(Duration::from_secs(1)),
+            keep_last: None,
+            incomplete_only: false,
+        },
+        Duration::from_secs(900),
+    );
+
+    assert!(report.deleted.is_empty());
+    assert_eq!(report.deletion_failed.len(), 1);
+    assert_eq!(report.deletion_failed[0].id, "ghost");
+    assert!(
+        report.blocked,
+        "a failed deletion must set blocked, not just warn silently"
+    );
+}
+
+// Fix #2: --keep-last 0 must not silently satisfy the "at least one
+// selector" safety gate while functionally deleting everything.
+#[test]
+fn keep_last_zero_is_rejected_as_usage_error() {
+    let root = tempfile::tempdir().unwrap();
+    let sweep = make_complete_sweep(root.path(), "sweep-a");
+    let output = run_du(&[
+        "--root",
+        root.path().to_str().unwrap(),
+        "--prune",
+        "--apply",
+        "--keep-last",
+        "0",
+    ]);
+    assert_eq!(output.status.code().unwrap(), 2);
+    assert!(
+        sweep.exists(),
+        "must not delete anything when --keep-last 0 is rejected"
+    );
+}
+
+#[test]
+fn keep_last_one_is_still_accepted() {
+    // Guards against an off-by-one in the fix: only 0 is special-cased.
+    let root = tempfile::tempdir().unwrap();
+    let sweep = make_complete_sweep(root.path(), "sweep-a");
+    let output = run_du(&[
+        "--root",
+        root.path().to_str().unwrap(),
+        "--prune",
+        "--apply",
+        "--keep-last",
+        "1",
+    ]);
+    assert!(output.status.success());
+    assert!(
+        sweep.exists(),
+        "the only sweep is retained by --keep-last 1"
+    );
+}
+
+// Fix #3: the scan-to-delete TOCTOU window. build_prune_report re-scans each
+// candidate immediately before deleting it; a sweep that started
+// checkpointing again since the (simulated, stale) initial scan must be
+// caught and protected rather than deleted.
+#[test]
+fn toctou_recheck_protects_sweep_that_resumed_since_the_initial_scan() {
+    let dir = tempfile::tempdir().unwrap();
+    let sweep_path = dir.path().join("resumed-sweep");
+    // On disk, right now: a fresh partial checkpoint — this sweep really is
+    // in-progress at the moment build_prune_report runs.
+    let traj_path = sweep_path.join("inst-1").join("run-0.traj.json");
+    write_file(&traj_path, &traj_bytes(true));
+
+    // The caller's view (as if from an earlier, now-stale full-root scan)
+    // claims this sweep is old and complete.
+    let mut stale_view =
+        fixture_sweep("resumed-sweep", 12345, LifecycleState::Complete, 30 * 86400);
+    stale_view.path = sweep_path.display().to_string();
+    stale_view.path_buf = sweep_path.clone();
+
+    let report = build_prune_report(
+        &[stale_view],
+        &PruneRequest {
+            apply: true,
+            older_than: Some(Duration::from_secs(86400)),
+            keep_last: None,
+            incomplete_only: false,
+        },
+        Duration::from_secs(900),
+    );
+
+    assert!(
+        sweep_path.exists(),
+        "the re-check must save the now-live sweep from deletion"
+    );
+    assert!(report.deleted.is_empty());
+    assert_eq!(
+        report.protected.len(),
+        1,
+        "re-check must move it into protected, not delete it"
+    );
+    assert_eq!(report.protected[0].id, "resumed-sweep");
+    assert!(report.blocked);
+}
+
+// Fix #5: has_results_json must not follow symlinks, matching the
+// byte-accounting walk (which skips all symlinks) — a symlinked
+// `results.json` must not flip lifecycle to `complete`.
+#[cfg(unix)]
+#[test]
+fn symlinked_results_json_does_not_count_as_complete() {
+    let root = tempfile::tempdir().unwrap();
+    let sweep = root.path().join("symlink-sweep");
+    std::fs::create_dir_all(&sweep).unwrap();
+    let target = root.path().join("elsewhere.json");
+    std::fs::write(&target, b"{}").unwrap();
+    std::os::unix::fs::symlink(&target, sweep.join("results.json")).unwrap();
+
+    let report = run_du_json(&["--root", root.path().to_str().unwrap()]);
+    let sweeps = report["sweeps"].as_array().unwrap();
+    let s = sweeps
+        .iter()
+        .find(|s| s["id"] == serde_json::json!("symlink-sweep"))
+        .unwrap();
+    assert_eq!(
+        s["lifecycle_state"],
+        serde_json::json!("incomplete"),
+        "a symlinked results.json must not count as evidence of completion"
+    );
+    assert_eq!(
+        s["total_bytes"].as_u64().unwrap(),
+        0,
+        "the symlink itself must contribute no bytes, matching the byte walk"
+    );
+}
+
+// Fix #6: SweepReport/PruneEntry must carry the exact on-disk path (not a
+// lossy display string) so a non-UTF-8-named sweep directory is actually
+// deletable via --apply.
+#[cfg(unix)]
+#[test]
+fn non_utf8_named_sweep_directory_is_deletable_via_apply() {
+    use std::ffi::OsString;
+    use std::os::unix::ffi::OsStringExt as _;
+
+    let root = tempfile::tempdir().unwrap();
+    // 0xFF/0xFE are not valid UTF-8 in this position; both are legal bytes
+    // in a Unix filename.
+    let raw_name = OsString::from_vec(vec![b's', b'w', b'-', 0xFF, 0xFE]);
+    let sweep_path = root.path().join(&raw_name);
+    let traj_path = sweep_path.join("inst-1").join("run-0.traj.json");
+    write_file(&traj_path, &traj_bytes(false));
+    write_results_json(&sweep_path);
+    let old = SystemTime::now() - Duration::from_secs(30 * 86400);
+    set_mtime(&traj_path, old);
+    set_mtime(&sweep_path.join("results.json"), old);
+    assert!(sweep_path.exists());
+
+    let output = run_du(&[
+        "--root",
+        root.path().to_str().unwrap(),
+        "--prune",
+        "--apply",
+        "--older-than",
+        "7d",
+        "--format",
+        "json",
+    ]);
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        !sweep_path.exists(),
+        "a non-UTF-8-named sweep directory must actually be deletable by --apply"
+    );
+}
+
+// Fix #7: two distinct non-UTF-8-named sweeps must not collapse to the same
+// empty-string id and cross-contaminate --keep-last retention.
+#[cfg(unix)]
+#[test]
+fn non_utf8_named_sweeps_keep_last_does_not_cross_contaminate() {
+    use std::ffi::OsString;
+    use std::os::unix::ffi::OsStringExt as _;
+
+    let root = tempfile::tempdir().unwrap();
+    let name_a = OsString::from_vec(vec![b'a', 0xFF]);
+    let name_b = OsString::from_vec(vec![b'b', 0xFF]);
+    let sweep_a = root.path().join(&name_a);
+    let sweep_b = root.path().join(&name_b);
+
+    write_file(
+        &sweep_a.join("inst-1").join("run-0.traj.json"),
+        &traj_bytes(false),
+    );
+    write_results_json(&sweep_a);
+    set_mtime(
+        &sweep_a.join("inst-1").join("run-0.traj.json"),
+        SystemTime::now() - Duration::from_secs(300),
+    );
+    set_mtime(
+        &sweep_a.join("results.json"),
+        SystemTime::now() - Duration::from_secs(300),
+    );
+
+    write_file(
+        &sweep_b.join("inst-1").join("run-0.traj.json"),
+        &traj_bytes(false),
+    );
+    write_results_json(&sweep_b);
+    set_mtime(
+        &sweep_b.join("inst-1").join("run-0.traj.json"),
+        SystemTime::now() - Duration::from_secs(10),
+    );
+    set_mtime(
+        &sweep_b.join("results.json"),
+        SystemTime::now() - Duration::from_secs(10),
+    );
+
+    let output = run_du(&[
+        "--root",
+        root.path().to_str().unwrap(),
+        "--prune",
+        "--apply",
+        "--keep-last",
+        "1",
+        "--format",
+        "json",
+    ]);
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    assert!(
+        !sweep_a.exists(),
+        "the older non-UTF-8-named sweep should be pruned"
+    );
+    assert!(
+        sweep_b.exists(),
+        "the newer non-UTF-8-named sweep must be retained by --keep-last 1"
+    );
+}
+
+// Fix #8: a future/clock-skewed mtime must surface a warning rather than
+// silently and permanently exempting the sweep from --older-than.
+#[test]
+fn future_mtime_emits_clock_skew_warning_and_clamps_age_to_zero() {
+    let root = tempfile::tempdir().unwrap();
+    let sweep = make_complete_sweep(root.path(), "future-sweep");
+    let future = SystemTime::now() + Duration::from_secs(365 * 86400);
+    set_mtime(&sweep.join("inst-1").join("run-0.traj.json"), future);
+    set_mtime(&sweep.join("results.json"), future);
+
+    let output = run_du(&["--root", root.path().to_str().unwrap(), "--format", "json"]);
+    assert!(output.status.success());
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("clock skew") || stderr.to_lowercase().contains("future"),
+        "expected a clock-skew warning on stderr\nstderr: {stderr}"
+    );
+
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let sweeps = report["sweeps"].as_array().unwrap();
+    let s = sweeps
+        .iter()
+        .find(|s| s["id"] == serde_json::json!("future-sweep"))
+        .unwrap();
+    assert_eq!(s["age_seconds"].as_u64().unwrap(), 0);
 }

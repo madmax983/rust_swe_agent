@@ -234,10 +234,7 @@ pub(crate) fn collect_traj_paths(dir: &Path, recursive: bool) -> Result<Vec<Path
 /// Recursively collect `.traj.json` files under `dir`, silently skipping
 /// subdirectories that cannot be read (permission errors, etc.).
 fn walk_children(dir: &Path, out: &mut Vec<PathBuf>) {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return;
-    };
-    for entry in entries.flatten() {
+    for entry in read_dir_or_empty(dir) {
         let p = entry.path();
         // Skip symlinks to directories to prevent infinite recursion from cycles.
         if p.is_dir() && !p.is_symlink() {
@@ -245,6 +242,17 @@ fn walk_children(dir: &Path, out: &mut Vec<PathBuf>) {
         } else if is_traj_file(&p) {
             out.push(p);
         }
+    }
+}
+
+/// `std::fs::read_dir`, silently skipping directories that cannot be read
+/// (permission errors, etc.) rather than propagating the error — the shared
+/// "unreadable subdirectory" convention behind every recursive artifact
+/// walker in this module family, including `du::walk_sweep`.
+pub(crate) fn read_dir_or_empty(dir: &Path) -> Vec<std::fs::DirEntry> {
+    match std::fs::read_dir(dir) {
+        Ok(entries) => entries.flatten().collect(),
+        Err(_) => Vec::new(),
     }
 }
 
