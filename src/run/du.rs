@@ -214,19 +214,26 @@ pub fn run(args: &DuArgs) -> Result<DuReport, Error> {
 }
 
 /// Evaluate selectors, then (with `--apply`) delete every resulting
-/// candidate — re-checking each one's liveness with a fresh, single-sweep
-/// scan immediately beforehand.
+/// candidate — re-checking each one immediately beforehand with a fresh,
+/// single-sweep scan re-evaluated against the same selectors.
 ///
 /// The initial full-`--root` scan that produced `sweeps` can be arbitrarily
 /// stale by the time a given candidate is actually reached in the deletion
 /// loop (a `--root` with many/large sweeps takes real time to scan — see
-/// `docs/spec-disk-usage.md`'s Performance Notes). A sweep correctly
-/// classified `interrupted` at scan-start could receive a fresh checkpoint
-/// from a resumed/retried process before its turn to be deleted comes up.
-/// Re-scanning right before deleting narrows that window from
-/// "the whole scan" down to "one directory stat", though it cannot eliminate
-/// it entirely without a lock/PID mechanism this codebase does not have —
-/// see the "Lifecycle states" caveat in `docs/spec-disk-usage.md`.
+/// `docs/spec-disk-usage.md`'s Performance Notes). Two things can have
+/// changed by then: the sweep can have become actively in-progress again (a
+/// resumed/retried process checkpointing), or it can have simply *finished*
+/// — no longer in-progress, but also no longer old enough for
+/// `--older-than`, and no longer `incomplete`/`interrupted` for
+/// `--incomplete-only` now that it has a fresh `results.json`. Both cases
+/// re-scan to `protected` rather than deleted. Re-scanning right before
+/// deleting narrows the race window from "the whole scan" down to "one
+/// directory stat", though it cannot eliminate it entirely without a
+/// lock/PID mechanism this codebase does not have — see the "Lifecycle
+/// states" caveat in `docs/spec-disk-usage.md`. `--keep-last` is not
+/// re-evaluated here: it ranks a sweep against every other sweep's recency,
+/// not a static property of the sweep itself, so it isn't something a
+/// single-sweep re-check can meaningfully redo in isolation.
 pub fn build_prune_report(
     sweeps: &[SweepReport],
     prune_args: &PruneRequest,
@@ -252,6 +259,23 @@ pub fn build_prune_report(
                 eprintln!(
                     "warning: bench du: {} became in-progress since the initial scan; skipping deletion",
                     candidate.path
+                );
+                protected.push(candidate.clone());
+                continue;
+            }
+            // A sweep that isn't in-progress can still have changed enough
+            // to no longer match the selectors that made it a candidate in
+            // the first place — most notably, a sweep that *finished*
+            // between the initial scan and this recheck: its fresh mtime
+            // means it no longer satisfies --older-than, and its fresh
+            // `results.json` means it's no longer `incomplete`/`interrupted`
+            // for --incomplete-only. Deleting it anyway would reclaim a
+            // just-completed sweep the operator's own selectors say to keep.
+            if !matches_age_and_incomplete_selectors(&recheck, &selectors) {
+                eprintln!(
+                    "warning: bench du: {} no longer matches the prune selectors since the initial scan (now {}); skipping deletion",
+                    candidate.path,
+                    lifecycle_label(recheck.lifecycle_state)
                 );
                 protected.push(candidate.clone());
                 continue;
@@ -548,6 +572,26 @@ pub fn recursive_size_walk(root: &Path) -> u64 {
     total
 }
 
+/// Whether `sweep` matches the non-ranking selectors (`--older-than`,
+/// `--incomplete-only`). Deliberately excludes `--keep-last`, which ranks a
+/// sweep against every *other* sweep's recency rather than testing a static
+/// property of the sweep itself — not something a single-sweep re-check (see
+/// `build_prune_report`) can re-evaluate in isolation. Also excludes the
+/// `in_progress` check itself: callers combine this with a separate
+/// lifecycle-state check so the two reasons a sweep is skipped (never
+/// matched vs. no longer matches after a state change) can be told apart.
+fn matches_age_and_incomplete_selectors(sweep: &SweepReport, selectors: &PruneSelectors) -> bool {
+    let matches_age = selectors
+        .older_than_secs
+        .is_none_or(|secs| sweep.age_seconds >= secs);
+    let matches_incomplete = !selectors.incomplete_only
+        || matches!(
+            sweep.lifecycle_state,
+            LifecycleState::Incomplete | LifecycleState::Interrupted
+        );
+    matches_age && matches_incomplete
+}
+
 pub struct PruneEvaluation {
     pub candidates: Vec<PruneEntry>,
     pub protected: Vec<PruneEntry>,
@@ -580,17 +624,9 @@ pub fn evaluate_prune_candidates(
     let mut retained = Vec::new();
 
     for s in sweeps {
-        let matches_age = selectors
-            .older_than_secs
-            .is_none_or(|secs| s.age_seconds >= secs);
-        let matches_incomplete = !selectors.incomplete_only
-            || matches!(
-                s.lifecycle_state,
-                LifecycleState::Incomplete | LifecycleState::Interrupted
-            );
         let kept_by_keep_last = retained_ids.contains(s.id.as_str());
 
-        if !(matches_age && matches_incomplete) {
+        if !matches_age_and_incomplete_selectors(s, selectors) {
             continue;
         }
         if kept_by_keep_last {
@@ -740,10 +776,24 @@ fn walk_sweep(dir: &Path, visit: &mut impl FnMut(&Path, u64, SystemTime)) {
     }
 }
 
+/// Deserializes only the `info.partial` field via a buffered reader instead
+/// of reading the whole file into a `String` and building a generic
+/// `serde_json::Value` DOM — trajectory files can carry large message
+/// histories and tool outputs that this check has no use for.
 fn parse_traj_partial(path: &Path) -> Option<bool> {
-    let raw = std::fs::read_to_string(path).ok()?;
-    let value: serde_json::Value = serde_json::from_str(&raw).ok()?;
-    value.get("info")?.get("partial")?.as_bool()
+    #[derive(Deserialize)]
+    struct TrajInfo {
+        info: Option<Info>,
+    }
+    #[derive(Deserialize)]
+    struct Info {
+        partial: Option<bool>,
+    }
+
+    let file = std::fs::File::open(path).ok()?;
+    let reader = std::io::BufReader::new(file);
+    let traj: TrajInfo = serde_json::from_reader(reader).ok()?;
+    traj.info?.partial
 }
 
 fn fs_mtime(path: &Path) -> Option<SystemTime> {

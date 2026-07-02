@@ -4438,7 +4438,7 @@ fn bench_du(c: args::DuCmd) -> Result<(), Error> {
         )));
     }
 
-    let prune = c.prune.then(|| crate::run::du::PruneRequest {
+    let prune = c.prune.then_some(crate::run::du::PruneRequest {
         apply: c.apply,
         older_than,
         keep_last: c.keep_last,

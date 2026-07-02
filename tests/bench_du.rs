@@ -1087,6 +1087,60 @@ fn toctou_recheck_protects_sweep_that_resumed_since_the_initial_scan() {
     assert!(report.blocked);
 }
 
+// Recheck must also catch a candidate that *finished* (not just resumed
+// checkpointing) between the initial scan and the recheck: it is no longer
+// `in_progress`, but its fresh mtime/results.json mean it no longer matches
+// the selectors (`--older-than`/`--incomplete-only`) that made it a
+// candidate in the first place. Deleting it anyway would reclaim a
+// just-completed sweep. (Reported by chatgpt-codex-connector on PR #994.)
+#[test]
+fn toctou_recheck_protects_sweep_that_finished_since_the_initial_scan() {
+    let dir = tempfile::tempdir().unwrap();
+    let sweep_path = dir.path().join("finished-sweep");
+    // On disk, right now: the sweep just finished — a final (non-partial)
+    // trajectory and a fresh results.json, both with "now" mtimes.
+    write_file(
+        &sweep_path.join("inst-1").join("run-0.traj.json"),
+        &traj_bytes(false),
+    );
+    write_results_json(&sweep_path);
+
+    // The caller's view (as if from an earlier, now-stale full-root scan)
+    // claims this sweep was interrupted and stale — matching --older-than 7d.
+    let mut stale_view = fixture_sweep(
+        "finished-sweep",
+        12345,
+        LifecycleState::Interrupted,
+        30 * 86400,
+    );
+    stale_view.path = sweep_path.display().to_string();
+    stale_view.path_buf = sweep_path.clone();
+
+    let report = build_prune_report(
+        &[stale_view],
+        &PruneRequest {
+            apply: true,
+            older_than: Some(Duration::from_secs(7 * 86400)),
+            keep_last: None,
+            incomplete_only: false,
+        },
+        Duration::from_secs(900),
+    );
+
+    assert!(
+        sweep_path.exists(),
+        "a sweep that just finished must not be deleted merely because it's no longer in-progress"
+    );
+    assert!(report.deleted.is_empty());
+    assert_eq!(
+        report.protected.len(),
+        1,
+        "re-check must catch the selector mismatch, not just the in-progress case"
+    );
+    assert_eq!(report.protected[0].id, "finished-sweep");
+    assert!(report.blocked);
+}
+
 // Fix #5: has_results_json must not follow symlinks, matching the
 // byte-accounting walk (which skips all symlinks) — a symlinked
 // `results.json` must not flip lifecycle to `complete`.
