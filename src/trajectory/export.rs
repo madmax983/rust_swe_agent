@@ -487,8 +487,11 @@ impl TrajectoryExporter for TableExporter {
 
 #[cfg(test)]
 mod table_tests {
+    #[cfg(feature = "table-export")]
     use super::*;
+    #[cfg(feature = "table-export")]
     use crate::model::Message;
+    #[cfg(feature = "table-export")]
     use crate::trajectory::outcome;
 
     #[cfg(feature = "table-export")]
