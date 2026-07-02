@@ -472,6 +472,14 @@ pub fn entries() -> &'static [ExplainEntry] {
             docs_ref: EXIT_DOC,
         },
         ExplainEntry {
+            code: Some(50),
+            outcome_class: "disk_usage_prune_blocked",
+            families: EXIT_ONLY,
+            meaning: "`bench du --prune --apply` matched at least one sweep against the given selectors that could not be proven idle (a partial checkpoint was touched within `--in-progress-window`). That sweep was skipped and reported `protected`; every other matching sweep was still deleted.",
+            remediation: "Re-run once the live sweep finishes, or narrow the selectors to exclude it. The report lists exactly which sweep was protected.",
+            docs_ref: EXIT_DOC,
+        },
+        ExplainEntry {
             code: Some(130),
             outcome_class: "interrupted",
             families: EXIT_ONLY,

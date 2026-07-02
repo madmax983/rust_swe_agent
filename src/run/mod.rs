@@ -29,6 +29,7 @@ pub mod dataset;
 pub mod dataset_stats;
 pub mod dataset_verify;
 pub mod diff_config;
+pub mod du;
 pub mod env_preview;
 pub mod eval_flake;
 pub mod eval_parity;

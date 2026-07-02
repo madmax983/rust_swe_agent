@@ -74,6 +74,7 @@ fn all_exit_codes() -> Vec<ExitCode> {
             | ExitCode::ArtifactCheckFailure
             | ExitCode::HostNotReady
             | ExitCode::LedgerBudgetExceeded
+            | ExitCode::DiskUsagePruneBlocked
             | ExitCode::Interrupted
             | ExitCode::Killed => e,
         }
@@ -130,6 +131,7 @@ fn all_exit_codes() -> Vec<ExitCode> {
         ExitCode::ArtifactCheckFailure,
         ExitCode::HostNotReady,
         ExitCode::LedgerBudgetExceeded,
+        ExitCode::DiskUsagePruneBlocked,
         ExitCode::Interrupted,
         ExitCode::Killed,
     ]

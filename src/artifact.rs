@@ -81,6 +81,7 @@ pub enum ArtifactKind {
     TrajectoryAnnotation,
     ContextPressureReport,
     LedgerReport,
+    DiskUsageReport,
 }
 
 impl ArtifactKind {
@@ -119,6 +120,7 @@ impl ArtifactKind {
             Self::TrajectoryAnnotation => "trajectory_annotation",
             Self::ContextPressureReport => "context_pressure_report",
             Self::LedgerReport => "ledger_report",
+            Self::DiskUsageReport => "disk_usage_report",
         }
     }
 }
