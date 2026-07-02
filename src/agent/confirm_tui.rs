@@ -711,8 +711,20 @@ impl StreamSink for RatatuiDashboard {
                         .state
                         .lock()
                         .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    // `cost_usd` here is this single response's cost
+                    // (`resp.usage.cost_usd`, computed per-call from that
+                    // response's token usage — see `DefaultAgent::step` and
+                    // `ModelUsage`), not a running total, so it must
+                    // accumulate rather than overwrite. Overwriting made the
+                    // header's cost display silently regress to the last
+                    // turn's cost on every assistant message; harmless when
+                    // only a raw "cost $X" was shown, but it under-reports
+                    // budget usage against the burn-down's `%`/warning
+                    // threshold on any run that doesn't hit another confirm
+                    // prompt (e.g. auto-approved bash) to re-sync it from
+                    // the agent's true cumulative total (PR #992 review).
                     if let Some(cost) = cost_usd {
-                        s.cost_usd = cost;
+                        s.cost_usd += cost;
                     }
                     s.step = step;
                     // The model has returned: the thinking window closes. The
@@ -4497,6 +4509,69 @@ mod tests {
         let s = snap(&d);
         assert_eq!(s.step, 2);
         assert!((s.cost_usd - 0.5).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn emit_assistant_message_accumulates_per_turn_cost_into_cumulative_spend() {
+        // Regression for PR #992 review: `cost_usd` on `AssistantMessage` is
+        // this response's own cost, not a running total (see
+        // `DefaultAgent::step`'s `resp.usage.cost_usd`). Two $0.04 turns with
+        // no intervening confirm prompt (e.g. auto-approved bash) must read
+        // as $0.08 cumulative, not silently regress to the last turn's $0.04.
+        let d = make_dashboard();
+        d.emit(StreamEvent::AssistantMessage {
+            step: 1,
+            content: "x".into(),
+            cost_usd: Some(0.04),
+            timestamp: "t".into(),
+        });
+        d.emit(StreamEvent::AssistantMessage {
+            step: 2,
+            content: "y".into(),
+            cost_usd: Some(0.04),
+            timestamp: "t".into(),
+        });
+        let s = snap(&d);
+        assert!(
+            (s.cost_usd - 0.08).abs() < f64::EPSILON,
+            "expected cumulative $0.08 after two $0.04 turns, got {}",
+            s.cost_usd
+        );
+    }
+
+    #[test]
+    fn header_burn_down_reflects_cumulative_spend_across_turns_without_a_confirm_prompt() {
+        // End-to-end version of the above through the actual header render:
+        // two $0.04 assistant turns against a $0.10 cap, with no confirm
+        // prompt in between, must show 80% (and the warning color it
+        // crosses at), not 40%.
+        let d = make_dashboard();
+        {
+            let mut s = d.state.lock().unwrap();
+            s.cost_cap_usd = Some(0.10);
+        }
+        d.emit(StreamEvent::AssistantMessage {
+            step: 1,
+            content: "x".into(),
+            cost_usd: Some(0.04),
+            timestamp: "t".into(),
+        });
+        d.emit(StreamEvent::AssistantMessage {
+            step: 2,
+            content: "y".into(),
+            cost_usd: Some(0.04),
+            timestamp: "t".into(),
+        });
+        let buf = render_to_buffer(&snap(&d), 80, 12);
+        let text = buffer_text(&buf);
+        assert!(
+            text.contains("cost $0.0800 / $0.10 (80%)"),
+            "should show cumulative 80% consumed, not 40%; got:\n{text}"
+        );
+        assert!(
+            header_has_fg(&buf, Color::Red),
+            "80% consumed should already be at the warning threshold; got:\n{text}"
+        );
     }
 
     #[test]
