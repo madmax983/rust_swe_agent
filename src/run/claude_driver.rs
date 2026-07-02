@@ -448,13 +448,10 @@ pub async fn drive(
     // Honor the operator's configured spend cap by forwarding it to Claude
     // Code's own `--max-budget-usd`; an over-budget result is also downgraded
     // post-hoc in `finalize` so spend controls hold even if the cap is fuzzy.
-    let cost_cap = [
+    let cost_cap = crate::agent::effective_cost_cap_usd(
         agent.config.root.agent.cost_limit_usd,
         agent.config.root.agent.per_task_budget_usd,
-    ]
-    .into_iter()
-    .flatten()
-    .min_by(f64::total_cmp);
+    );
 
     // Cancellation token (sweep Ctrl-C) shared by the agent; cloned so we can
     // race it against the child without holding a borrow on `agent`.

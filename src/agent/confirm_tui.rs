@@ -154,11 +154,12 @@ fn truncate_to_cap(mut s: String) -> String {
 struct DashboardState {
     task: Option<String>,
     model: Option<String>,
-    started_at: Option<String>,
-    /// Monotonic anchor for `started_at`, captured locally when `RunStarted`
-    /// arrives (issue #640). Used to render the live elapsed wall-clock;
-    /// kept separate from the RFC3339 `started_at` string so the header
-    /// never has to parse/re-derive a `Duration` from wall-clock text.
+    /// Monotonic anchor captured locally when `RunStarted` arrives (issue
+    /// #640), used to render the live elapsed wall-clock. A monotonic
+    /// `Instant` rather than the RFC3339 `started_at` string carried by
+    /// `StreamEvent::RunStarted` — the dashboard never needs to parse or
+    /// re-derive a `Duration` from wall-clock text, and (unlike a wall-clock
+    /// timestamp) it can't be skewed by clock adjustments during the run.
     started_at_instant: Option<Instant>,
     cost_usd: f64,
     /// Effective per-task cost ceiling for the header burn-down (issue
@@ -233,7 +234,6 @@ impl Default for DashboardState {
         Self {
             task: None,
             model: None,
-            started_at: None,
             started_at_instant: None,
             cost_usd: 0.0,
             cost_cap_usd: None,
@@ -544,11 +544,19 @@ impl RatatuiDashboard {
     /// header burn-down (issue #640) — see [`effective_cost_cap_usd`]. Pass
     /// `None` when no cap is configured, or for surfaces (e.g. the
     /// `--yolo` monitor) that don't render one.
+    ///
+    /// `step_limit` is `config.agent.step_limit`, seeded into the header
+    /// from construction (issue #640 review) rather than left at its
+    /// `Default` of `0` until the first operator confirm prompt populates
+    /// it — a run with no confirm prompts (e.g. every command auto-approved)
+    /// would otherwise never show a real step count or trip the step-limit
+    /// warning color.
     pub fn start(
         is_monitor: bool,
         cancel_tx: Option<watch::Sender<bool>>,
         bell_enabled: bool,
         cost_cap_usd: Option<f64>,
+        step_limit: u32,
     ) -> std::io::Result<RatatuiDashboardHandle> {
         enable_raw_mode()?;
         let mut stdout = std::io::stdout();
@@ -587,6 +595,7 @@ impl RatatuiDashboard {
                 stall_threshold: stall_threshold_from_env(),
                 mouse_scroll_step: mouse_scroll_step_from_env(),
                 cost_cap_usd,
+                step_limit,
                 ..DashboardState::default()
             }),
             notify: RedrawNotify::new(),
@@ -668,7 +677,7 @@ impl StreamSink for RatatuiDashboard {
             StreamEvent::RunStarted {
                 task,
                 model,
-                started_at,
+                started_at: _,
             } => {
                 {
                     let mut s = self
@@ -677,7 +686,6 @@ impl StreamSink for RatatuiDashboard {
                         .unwrap_or_else(std::sync::PoisonError::into_inner);
                     s.task = Some(task.clone());
                     s.model = Some(model.clone());
-                    s.started_at = Some(started_at);
                     s.started_at_instant = Some(Instant::now());
                     // The step-1 model call begins now (issue #649): there is
                     // no `model-call-started` event, so the first model-thinking
@@ -2108,7 +2116,10 @@ fn draw_frame(
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(3),
+            // 2 content rows (issue #640 review): step/cost/elapsed on one
+            // line, model/task on the next, so neither can crowd the other
+            // off-screen. Must stay in sync with `draw`'s identical layout.
+            Constraint::Length(4),
             Constraint::Min(0),
             Constraint::Length(3),
         ])
@@ -2251,7 +2262,10 @@ fn draw(frame: &mut ratatui::Frame, dash: &Arc<RatatuiDashboard>, snap: &Dashboa
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(3),
+            // 2 content rows (issue #640 review): step/cost/elapsed on one
+            // line, model/task on the next, so neither can crowd the other
+            // off-screen. Must stay in sync with `draw`'s identical layout.
+            Constraint::Length(4),
             Constraint::Min(0),
             Constraint::Length(3),
         ])
@@ -2377,13 +2391,23 @@ fn header_paragraph(snap: &DashboardSnapshot) -> Paragraph<'_> {
         Style::default().fg(Color::Cyan)
     };
 
-    // Cost burn-down (issue #640, AC1): when a cap is configured, show
-    // spend/cap/percent and escalate to a warning style at >=80% consumed.
-    // With no cap configured, fall back to the plain "cost $X" form — no
-    // "/ $0" artifact and no division by zero.
+    // Cost burn-down (issue #640, AC1): when a cap is configured — including
+    // a $0.00 "no spend allowed" kill switch, or (nonsensically but safely) a
+    // negative one — show spend/cap/percent and escalate to a warning style
+    // at >=80% consumed. A zero-or-negative cap can't drive the normal
+    // spend/cap*100 division (it would divide by zero or go negative), so it
+    // is treated as already fully consumed the moment any spend has
+    // occurred. With no cap configured, fall back to the plain "cost $X"
+    // form — no "/ $0" artifact and no division by zero.
     let cost_span = match snap.cost_cap_usd {
-        Some(cap) if cap > 0.0 => {
-            let pct = (snap.cost_usd / cap * 100.0).max(0.0);
+        Some(cap) => {
+            let pct = if cap > 0.0 {
+                (snap.cost_usd / cap * 100.0).max(0.0)
+            } else if snap.cost_usd > 0.0 {
+                100.0
+            } else {
+                0.0
+            };
             let style = if pct >= BUDGET_WARNING_PCT {
                 budget_warning_style()
             } else {
@@ -2394,13 +2418,13 @@ fn header_paragraph(snap: &DashboardSnapshot) -> Paragraph<'_> {
                 style,
             )
         }
-        _ => Span::styled(
+        None => Span::styled(
             format!("cost ${:.4}  ", snap.cost_usd),
             Style::default().fg(Color::Yellow),
         ),
     };
 
-    let mut spans = vec![
+    let mut top_spans = vec![
         Span::styled(
             format!("step {}/{}  ", snap.step, snap.step_limit),
             step_style,
@@ -2410,20 +2434,27 @@ fn header_paragraph(snap: &DashboardSnapshot) -> Paragraph<'_> {
     // Live elapsed wall-clock since the run started (issue #640, AC3); absent
     // until the first `RunStarted` event lands.
     if let Some(elapsed) = snap.elapsed {
-        spans.push(Span::styled(
-            format!("elapsed {}  ", format_elapsed(elapsed)),
+        top_spans.push(Span::styled(
+            format!("elapsed {}", format_elapsed(elapsed)),
             Style::default().fg(Color::Gray),
         ));
     }
-    spans.push(Span::styled(
-        format!("model: {model}  "),
-        Style::default().fg(Color::Green),
-    ));
-    spans.push(Span::styled(
-        format!("task: {title}"),
-        Style::default().add_modifier(Modifier::DIM),
-    ));
-    let line = Line::from(spans);
+    // Model/task get their own line (issue #640 review): the burn-down and
+    // elapsed spans above can run long (a configured cap plus an hours-long
+    // elapsed time), and packing everything onto one row risked silently
+    // clipping the model name and task title — the fields an operator most
+    // needs to identify the run — off the edge of a normal-width terminal.
+    let bottom_spans = vec![
+        Span::styled(
+            format!("model: {model}  "),
+            Style::default().fg(Color::Green),
+        ),
+        Span::styled(
+            format!("task: {title}"),
+            Style::default().add_modifier(Modifier::DIM),
+        ),
+    ];
+    let lines = vec![Line::from(top_spans), Line::from(bottom_spans)];
     let block_title = if snap.is_monitor {
         " maxwell's daemon — monitor ".to_string()
     } else if snap.active_rules.is_empty() {
@@ -2434,7 +2465,7 @@ fn header_paragraph(snap: &DashboardSnapshot) -> Paragraph<'_> {
             snap.active_rules.join(", ")
         )
     };
-    Paragraph::new(line).block(Block::default().borders(Borders::ALL).title(block_title))
+    Paragraph::new(lines).block(Block::default().borders(Borders::ALL).title(block_title))
 }
 
 fn line_base_style(kind: LineKind) -> Style {
@@ -4274,6 +4305,102 @@ mod tests {
         assert!(
             !text.contains("/ $0"),
             "must not render a cap/percent artifact with no cap configured; got:\n{text}"
+        );
+    }
+
+    #[test]
+    fn header_shows_burn_down_for_a_zero_cost_cap_kill_switch() {
+        // A $0.00 cap (e.g. `cost_limit_usd = 0.0`) is a legal "no spend
+        // allowed" config, not "no cap configured" — code-review fix: the
+        // old `cap > 0.0` guard silently hid it behind the plain fallback
+        // right as the run was about to terminate on it.
+        let d = make_dashboard();
+        {
+            let mut s = d.state.lock().unwrap();
+            s.cost_usd = 0.01;
+            s.cost_cap_usd = Some(0.0);
+        }
+        let buf = render_to_buffer(&snap(&d), 80, 12);
+        let text = buffer_text(&buf);
+        assert!(
+            text.contains("cost $0.0100 / $0.00 (100%)"),
+            "a $0 cap with any spend should show as fully consumed; got:\n{text}"
+        );
+        assert!(
+            header_has_fg(&buf, Color::Red),
+            "a $0 cap with any spend should escalate to the warning style; got:\n{text}"
+        );
+    }
+
+    #[test]
+    fn header_shows_zero_percent_for_a_zero_cost_cap_before_any_spend() {
+        let d = make_dashboard();
+        {
+            let mut s = d.state.lock().unwrap();
+            s.cost_usd = 0.0;
+            s.cost_cap_usd = Some(0.0);
+        }
+        let buf = render_to_buffer(&snap(&d), 80, 12);
+        let text = buffer_text(&buf);
+        assert!(
+            text.contains("cost $0.0000 / $0.00 (0%)"),
+            "a $0 cap with no spend yet should show 0%, not crash/NaN/inf; got:\n{text}"
+        );
+    }
+
+    #[test]
+    fn header_shows_burn_down_for_a_negative_cost_cap_without_crashing() {
+        // Negative caps are nonsensical but not rejected by config
+        // validation; the header must degrade gracefully rather than
+        // divide by a negative number or format NaN/inf.
+        let d = make_dashboard();
+        {
+            let mut s = d.state.lock().unwrap();
+            s.cost_usd = 0.01;
+            s.cost_cap_usd = Some(-1.0);
+        }
+        let buf = render_to_buffer(&snap(&d), 80, 12);
+        let text = buffer_text(&buf);
+        assert!(
+            !text.contains("NaN") && !text.contains("inf"),
+            "must not render NaN/inf for a negative cap; got:\n{text}"
+        );
+    }
+
+    #[test]
+    fn header_keeps_model_and_task_visible_alongside_a_full_burn_down_and_elapsed_clock() {
+        // Code-review fix: packing cost-cap/percent and elapsed onto the
+        // same line as model/task could silently clip the latter off an
+        // 80-column terminal. Model/task now get their own header line.
+        let d = make_dashboard();
+        d.emit(StreamEvent::RunStarted {
+            task: "fix the flaky retry test".into(),
+            model: "claude-opus-4-7".into(),
+            started_at: "2026-05-18T12:00:00Z".into(),
+        });
+        {
+            let mut s = d.state.lock().unwrap();
+            s.cost_usd = 12.3456;
+            s.cost_cap_usd = Some(15.0);
+            s.started_at_instant = Some(ago(3 * 3600 + 45 * 60 + 12)); // 3h45m12s
+        }
+        let buf = render_to_buffer(&snap(&d), 80, 12);
+        let text = buffer_text(&buf);
+        assert!(
+            text.contains("cost $12.3456 / $15.00"),
+            "burn-down should still render; got:\n{text}"
+        );
+        assert!(
+            text.contains("elapsed 3h45m12s"),
+            "elapsed should still render; got:\n{text}"
+        );
+        assert!(
+            text.contains("claude-opus-4-7"),
+            "model must not be clipped off-screen; got:\n{text}"
+        );
+        assert!(
+            text.contains("fix the flaky retry test"),
+            "task title must not be clipped off-screen; got:\n{text}"
         );
     }
 
