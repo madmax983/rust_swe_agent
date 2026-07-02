@@ -118,6 +118,26 @@ pub fn bell_enabled(
     !no_bell_flag && !env_suppresses && stdout_is_tty
 }
 
+/// Resolve the effective per-task cost cap to show in the header burn-down
+/// (issue #640) from the two independently-enforced budget caps
+/// (`agent.cost_limit_usd`, `agent.per_task_budget_usd`). Both are checked
+/// against cumulative spend every step (see `DefaultAgent::step`), so
+/// whichever is smaller fires first; the smaller of the two configured
+/// values is therefore the cap that actually governs the run and is what
+/// the operator needs to watch. `None` when neither is configured.
+#[must_use]
+pub fn effective_cost_cap_usd(
+    cost_limit_usd: Option<f64>,
+    per_task_budget_usd: Option<f64>,
+) -> Option<f64> {
+    match (cost_limit_usd, per_task_budget_usd) {
+        (Some(a), Some(b)) => Some(a.min(b)),
+        (Some(a), None) => Some(a),
+        (None, Some(b)) => Some(b),
+        (None, None) => None,
+    }
+}
+
 fn truncate_to_cap(mut s: String) -> String {
     if s.len() > MAX_RETAINED_ENTRY_BYTES {
         let mut cut = MAX_RETAINED_ENTRY_BYTES;
@@ -135,7 +155,17 @@ struct DashboardState {
     task: Option<String>,
     model: Option<String>,
     started_at: Option<String>,
+    /// Monotonic anchor for `started_at`, captured locally when `RunStarted`
+    /// arrives (issue #640). Used to render the live elapsed wall-clock;
+    /// kept separate from the RFC3339 `started_at` string so the header
+    /// never has to parse/re-derive a `Duration` from wall-clock text.
+    started_at_instant: Option<Instant>,
     cost_usd: f64,
+    /// Effective per-task cost ceiling for the header burn-down (issue
+    /// #640): `min(cost_limit_usd, per_task_budget_usd)` over whichever of
+    /// the two is configured, resolved once at dashboard construction (see
+    /// [`effective_cost_cap_usd`]). `None` when neither cap is configured.
+    cost_cap_usd: Option<f64>,
     step: u32,
     step_limit: u32,
     log: VecDeque<LogLine>,
@@ -204,7 +234,9 @@ impl Default for DashboardState {
             task: None,
             model: None,
             started_at: None,
+            started_at_instant: None,
             cost_usd: 0.0,
+            cost_cap_usd: None,
             step: 0,
             step_limit: 0,
             log: VecDeque::new(),
@@ -507,10 +539,16 @@ impl RatatuiDashboard {
     /// alt-screen mode. On failure the terminal is restored to cooked
     /// mode and the alt-screen is left, so the caller never observes a
     /// half-initialised terminal.
+    ///
+    /// `cost_cap_usd` is the effective per-task cost ceiling to show in the
+    /// header burn-down (issue #640) — see [`effective_cost_cap_usd`]. Pass
+    /// `None` when no cap is configured, or for surfaces (e.g. the
+    /// `--yolo` monitor) that don't render one.
     pub fn start(
         is_monitor: bool,
         cancel_tx: Option<watch::Sender<bool>>,
         bell_enabled: bool,
+        cost_cap_usd: Option<f64>,
     ) -> std::io::Result<RatatuiDashboardHandle> {
         enable_raw_mode()?;
         let mut stdout = std::io::stdout();
@@ -548,6 +586,7 @@ impl RatatuiDashboard {
                 is_monitor,
                 stall_threshold: stall_threshold_from_env(),
                 mouse_scroll_step: mouse_scroll_step_from_env(),
+                cost_cap_usd,
                 ..DashboardState::default()
             }),
             notify: RedrawNotify::new(),
@@ -639,6 +678,7 @@ impl StreamSink for RatatuiDashboard {
                     s.task = Some(task.clone());
                     s.model = Some(model.clone());
                     s.started_at = Some(started_at);
+                    s.started_at_instant = Some(Instant::now());
                     // The step-1 model call begins now (issue #649): there is
                     // no `model-call-started` event, so the first model-thinking
                     // window opens at run start and closes at `AssistantMessage`.
@@ -2139,6 +2179,8 @@ fn draw_frame(
             step: s.step,
             step_limit: s.step_limit,
             cost_usd: s.cost_usd,
+            cost_cap_usd: s.cost_cap_usd,
+            elapsed: s.started_at_instant.map(|since| since.elapsed()),
             finished: s.finished.clone(),
             log: s.log.iter().cloned().collect(),
             pending: s.pending.as_ref().map(|p| p.ctx.clone()),
@@ -2174,6 +2216,12 @@ struct DashboardSnapshot {
     step: u32,
     step_limit: u32,
     cost_usd: f64,
+    /// See [`DashboardState::cost_cap_usd`].
+    cost_cap_usd: Option<f64>,
+    /// Wall-clock elapsed since `RunStarted`, resolved from
+    /// `DashboardState::started_at_instant` at snapshot time (issue #640).
+    /// `None` before the run has started.
+    elapsed: Option<Duration>,
     finished: Option<String>,
     log: Vec<LogLine>,
     pending: Option<ConfirmContext>,
@@ -2278,6 +2326,36 @@ fn draw(frame: &mut ratatui::Frame, dash: &Arc<RatatuiDashboard>, snap: &Dashboa
     }
 }
 
+/// Percent-of-cap consumed at or above which a budget indicator escalates to
+/// [`budget_warning_style`] (issue #640, AC2).
+const BUDGET_WARNING_PCT: f64 = 80.0;
+
+/// Style for a budget indicator (cost or step) that has crossed
+/// [`BUDGET_WARNING_PCT`]. Reuses the dashboard's existing danger color
+/// (`Color::Red`, already used by `LineKind::BashErr` and the stop-run
+/// confirmation) rather than `Color::Yellow`, since cost's normal color is
+/// already yellow and wouldn't visibly change.
+fn budget_warning_style() -> Style {
+    Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)
+}
+
+/// Format a `Duration` as a compact elapsed-time string: `"45s"`,
+/// `"2m14s"`, or `"1h02m03s"`. Sub-minute values omit the minutes field
+/// entirely rather than rendering `"0m45s"`.
+fn format_elapsed(d: Duration) -> String {
+    let total = d.as_secs();
+    let hours = total / 3600;
+    let minutes = (total % 3600) / 60;
+    let seconds = total % 60;
+    if hours > 0 {
+        format!("{hours}h{minutes:02}m{seconds:02}s")
+    } else if minutes > 0 {
+        format!("{minutes}m{seconds:02}s")
+    } else {
+        format!("{seconds}s")
+    }
+}
+
 fn header_paragraph(snap: &DashboardSnapshot) -> Paragraph<'_> {
     let title = snap
         .task
@@ -2287,24 +2365,65 @@ fn header_paragraph(snap: &DashboardSnapshot) -> Paragraph<'_> {
         .next()
         .unwrap_or("");
     let model = snap.model.as_deref().unwrap_or("(no model)");
-    let line = Line::from(vec![
-        Span::styled(
-            format!("step {}/{}  ", snap.step, snap.step_limit),
-            Style::default().fg(Color::Cyan),
-        ),
-        Span::styled(
+
+    let step_pct = if snap.step_limit > 0 {
+        f64::from(snap.step) / f64::from(snap.step_limit) * 100.0
+    } else {
+        0.0
+    };
+    let step_style = if step_pct >= BUDGET_WARNING_PCT {
+        budget_warning_style()
+    } else {
+        Style::default().fg(Color::Cyan)
+    };
+
+    // Cost burn-down (issue #640, AC1): when a cap is configured, show
+    // spend/cap/percent and escalate to a warning style at >=80% consumed.
+    // With no cap configured, fall back to the plain "cost $X" form — no
+    // "/ $0" artifact and no division by zero.
+    let cost_span = match snap.cost_cap_usd {
+        Some(cap) if cap > 0.0 => {
+            let pct = (snap.cost_usd / cap * 100.0).max(0.0);
+            let style = if pct >= BUDGET_WARNING_PCT {
+                budget_warning_style()
+            } else {
+                Style::default().fg(Color::Yellow)
+            };
+            Span::styled(
+                format!("cost ${:.4} / ${cap:.2} ({pct:.0}%)  ", snap.cost_usd),
+                style,
+            )
+        }
+        _ => Span::styled(
             format!("cost ${:.4}  ", snap.cost_usd),
             Style::default().fg(Color::Yellow),
         ),
+    };
+
+    let mut spans = vec![
         Span::styled(
-            format!("model: {model}  "),
-            Style::default().fg(Color::Green),
+            format!("step {}/{}  ", snap.step, snap.step_limit),
+            step_style,
         ),
-        Span::styled(
-            format!("task: {title}"),
-            Style::default().add_modifier(Modifier::DIM),
-        ),
-    ]);
+        cost_span,
+    ];
+    // Live elapsed wall-clock since the run started (issue #640, AC3); absent
+    // until the first `RunStarted` event lands.
+    if let Some(elapsed) = snap.elapsed {
+        spans.push(Span::styled(
+            format!("elapsed {}  ", format_elapsed(elapsed)),
+            Style::default().fg(Color::Gray),
+        ));
+    }
+    spans.push(Span::styled(
+        format!("model: {model}  "),
+        Style::default().fg(Color::Green),
+    ));
+    spans.push(Span::styled(
+        format!("task: {title}"),
+        Style::default().add_modifier(Modifier::DIM),
+    ));
+    let line = Line::from(spans);
     let block_title = if snap.is_monitor {
         " maxwell's daemon — monitor ".to_string()
     } else if snap.active_rules.is_empty() {
@@ -3997,6 +4116,8 @@ mod tests {
             step: s.step,
             step_limit: s.step_limit,
             cost_usd: s.cost_usd,
+            cost_cap_usd: s.cost_cap_usd,
+            elapsed: s.started_at_instant.map(|since| since.elapsed()),
             finished: s.finished.clone(),
             log: s.log.iter().cloned().collect(),
             pending: s.pending.as_ref().map(|p| p.ctx.clone()),
@@ -4039,6 +4160,163 @@ mod tests {
             out.push('\n');
         }
         out
+    }
+
+    // ---- budget burn-down and elapsed clock (issue #640) ----
+
+    /// True if any cell in the top 3 rows (the header) carries `color` as
+    /// its foreground — mirrors `footer_has_fg` below for header assertions.
+    fn header_has_fg(buf: &Buffer, color: Color) -> bool {
+        for y in 0..buf.area.height.min(3) {
+            for x in 0..buf.area.width {
+                if buf[(x, y)].style().fg == Some(color) {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    #[test]
+    fn format_elapsed_formats_seconds_minutes_and_hours() {
+        assert_eq!(format_elapsed(Duration::from_secs(0)), "0s");
+        assert_eq!(format_elapsed(Duration::from_secs(45)), "45s");
+        assert_eq!(format_elapsed(Duration::from_secs(60)), "1m00s");
+        assert_eq!(format_elapsed(Duration::from_secs(134)), "2m14s");
+        assert_eq!(format_elapsed(Duration::from_secs(3661)), "1h01m01s");
+    }
+
+    #[test]
+    fn effective_cost_cap_prefers_the_tighter_configured_cap() {
+        assert_eq!(effective_cost_cap_usd(None, None), None);
+        assert_eq!(effective_cost_cap_usd(Some(1.0), None), Some(1.0));
+        assert_eq!(effective_cost_cap_usd(None, Some(0.5)), Some(0.5));
+        // Both configured: the smaller one is what actually fires first.
+        assert_eq!(effective_cost_cap_usd(Some(1.0), Some(0.5)), Some(0.5));
+        assert_eq!(effective_cost_cap_usd(Some(0.5), Some(1.0)), Some(0.5));
+    }
+
+    #[test]
+    fn header_shows_cost_burn_down_when_cap_configured() {
+        let d = make_dashboard();
+        {
+            let mut s = d.state.lock().unwrap();
+            s.cost_usd = 0.042;
+            s.cost_cap_usd = Some(0.50);
+        }
+        let buf = render_to_buffer(&snap(&d), 80, 12);
+        let text = buffer_text(&buf);
+        assert!(
+            text.contains("cost $0.0420 / $0.50 (8%)"),
+            "burn-down should show spend, cap, and percent; got:\n{text}"
+        );
+    }
+
+    #[test]
+    fn header_cost_indicator_warns_at_80_percent_consumed() {
+        let d = make_dashboard();
+        {
+            let mut s = d.state.lock().unwrap();
+            s.cost_usd = 0.42;
+            s.cost_cap_usd = Some(0.50); // 84% consumed
+        }
+        let buf = render_to_buffer(&snap(&d), 80, 12);
+        assert!(
+            header_has_fg(&buf, Color::Red),
+            "cost indicator should escalate to warning style at >=80% consumed"
+        );
+    }
+
+    #[test]
+    fn header_cost_indicator_stays_normal_style_below_warning_threshold() {
+        let d = make_dashboard();
+        {
+            let mut s = d.state.lock().unwrap();
+            s.cost_usd = 0.042;
+            s.cost_cap_usd = Some(0.50); // 8% consumed
+        }
+        let buf = render_to_buffer(&snap(&d), 80, 12);
+        assert!(
+            !header_has_fg(&buf, Color::Red),
+            "cost indicator should not warn well below the threshold"
+        );
+    }
+
+    #[test]
+    fn header_step_indicator_warns_at_80_percent_of_step_limit() {
+        let d = make_dashboard();
+        {
+            let mut s = d.state.lock().unwrap();
+            s.step = 8;
+            s.step_limit = 10; // 80% of step limit consumed
+        }
+        let buf = render_to_buffer(&snap(&d), 80, 12);
+        assert!(
+            header_has_fg(&buf, Color::Red),
+            "step indicator should escalate to warning style at >=80% of step_limit"
+        );
+    }
+
+    #[test]
+    fn header_falls_back_to_raw_cost_when_no_cap_configured() {
+        let d = make_dashboard();
+        {
+            let mut s = d.state.lock().unwrap();
+            s.cost_usd = 0.042;
+            s.cost_cap_usd = None;
+        }
+        let buf = render_to_buffer(&snap(&d), 80, 12);
+        let text = buffer_text(&buf);
+        assert!(
+            text.contains("cost $0.0420"),
+            "should fall back to the raw cost form; got:\n{text}"
+        );
+        assert!(
+            !text.contains("/ $0"),
+            "must not render a cap/percent artifact with no cap configured; got:\n{text}"
+        );
+    }
+
+    #[test]
+    fn header_shows_elapsed_wall_clock_since_run_started() {
+        let d = make_dashboard();
+        {
+            let mut s = d.state.lock().unwrap();
+            s.started_at_instant = Some(ago(134));
+        }
+        let buf = render_to_buffer(&snap(&d), 80, 12);
+        let text = buffer_text(&buf);
+        assert!(
+            text.contains("elapsed 2m14s"),
+            "header should show live elapsed wall-clock; got:\n{text}"
+        );
+    }
+
+    #[test]
+    fn header_omits_elapsed_before_run_started() {
+        let d = make_dashboard();
+        // Default state: no RunStarted event has landed yet.
+        let buf = render_to_buffer(&snap(&d), 80, 12);
+        let text = buffer_text(&buf);
+        assert!(
+            !text.contains("elapsed"),
+            "elapsed should not render before the run has started; got:\n{text}"
+        );
+    }
+
+    #[test]
+    fn emit_run_started_captures_started_at_instant() {
+        let d = make_dashboard();
+        d.emit(StreamEvent::RunStarted {
+            task: "t".into(),
+            model: "m".into(),
+            started_at: "2026-05-18T12:00:00Z".into(),
+        });
+        let s = snap(&d);
+        assert!(
+            s.elapsed.is_some(),
+            "RunStarted should populate the elapsed anchor"
+        );
     }
 
     #[test]

@@ -974,8 +974,15 @@ pub async fn run(args: MiniArgs) -> Result<(), Error> {
     } else {
         None
     };
+    // Effective cap for the dashboard's budget burn-down (issue #640): the
+    // tighter of the two independently-enforced cost caps, since that's the
+    // one that actually governs when the run terminates.
+    let cost_cap_usd = crate::agent::effective_cost_cap_usd(
+        args.config.root.agent.cost_limit_usd,
+        args.config.root.agent.per_task_budget_usd,
+    );
     let (confirm_callback, dashboard) =
-        build_interactive_pieces(args.interactive_mode, cancel_tx, args.no_bell)?;
+        build_interactive_pieces(args.interactive_mode, cancel_tx, args.no_bell, cost_cap_usd)?;
 
     // Redact the webhook sink so secrets are stripped before each POST.
     let webhook_sink_redacted: Option<Arc<dyn StreamSink>> = webhook_sink_opt.map(|ws| {
@@ -1458,6 +1465,7 @@ fn build_interactive_pieces(
     mode: InteractiveMode,
     cancel_tx: Option<tokio::sync::watch::Sender<bool>>,
     no_bell: bool,
+    cost_cap_usd: Option<f64>,
 ) -> Result<InteractivePieces, Error> {
     match mode {
         InteractiveMode::Off | InteractiveMode::YoloStatusOnly => Ok((None, None)),
@@ -1488,9 +1496,10 @@ fn build_interactive_pieces(
                 std::io::IsTerminal::is_terminal(&std::io::stdout()),
             );
             let handle =
-                crate::agent::RatatuiDashboard::start(false, cancel_tx, bell_on).map_err(|e| {
-                    Error::Trajectory(format!("failed to start ratatui dashboard: {e}"))
-                })?;
+                crate::agent::RatatuiDashboard::start(false, cancel_tx, bell_on, cost_cap_usd)
+                    .map_err(|e| {
+                        Error::Trajectory(format!("failed to start ratatui dashboard: {e}"))
+                    })?;
             let cb = handle.confirm_callback();
             Ok((Some(cb), Some(handle)))
         }
@@ -1506,8 +1515,11 @@ fn build_interactive_pieces(
             }
             // The read-only --yolo monitor never blocks on a confirm modal, so
             // attention bells are out of scope here (issue #648); always muted.
-            let handle =
-                crate::agent::RatatuiDashboard::start(true, cancel_tx, false).map_err(|e| {
+            // The budget burn-down (issue #640) likewise targets the
+            // interactive header only — the monitor gets no cap here, though
+            // the same header helper can be reused for it later.
+            let handle = crate::agent::RatatuiDashboard::start(true, cancel_tx, false, None)
+                .map_err(|e| {
                     Error::Trajectory(format!("failed to start ratatui dashboard: {e}"))
                 })?;
             Ok((None, Some(handle)))
@@ -2222,7 +2234,7 @@ mod tests {
 
     #[test]
     fn build_interactive_pieces_off_yields_no_callback() {
-        let (cb, dash) = build_interactive_pieces(InteractiveMode::Off, None, false).unwrap();
+        let (cb, dash) = build_interactive_pieces(InteractiveMode::Off, None, false, None).unwrap();
         assert!(cb.is_none());
         assert!(dash.is_none());
     }
@@ -2230,7 +2242,7 @@ mod tests {
     #[test]
     fn build_interactive_pieces_yolo_status_only_yields_no_callback() {
         let (cb, dash) =
-            build_interactive_pieces(InteractiveMode::YoloStatusOnly, None, false).unwrap();
+            build_interactive_pieces(InteractiveMode::YoloStatusOnly, None, false, None).unwrap();
         assert!(cb.is_none());
         assert!(dash.is_none());
     }
