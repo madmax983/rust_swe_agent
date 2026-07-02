@@ -551,12 +551,24 @@ impl RatatuiDashboard {
     /// it — a run with no confirm prompts (e.g. every command auto-approved)
     /// would otherwise never show a real step count or trip the step-limit
     /// warning color.
+    ///
+    /// `initial_cost_usd` seeds the running cost total shown by the burn-down
+    /// (PR #992 review). It's `0.0` for a fresh run, but on `mini --resume`/
+    /// `--continue` the agent's `RunStarted` event fires *before*
+    /// `ResumeState.total_cost_usd` is folded into `DefaultAgent`, so no
+    /// stream event ever carries the prior spend to the dashboard — every
+    /// subsequent `AssistantMessage` accumulates on top of whatever this
+    /// starts at (see the `RunStarted`/`AssistantMessage` handlers below), so
+    /// omitting it would under-report a resumed run's true spend by its
+    /// entire pre-resume cost until a confirm prompt or `RunEnded`
+    /// happened to re-sync it from the agent's authoritative total.
     pub fn start(
         is_monitor: bool,
         cancel_tx: Option<watch::Sender<bool>>,
         bell_enabled: bool,
         cost_cap_usd: Option<f64>,
         step_limit: u32,
+        initial_cost_usd: f64,
     ) -> std::io::Result<RatatuiDashboardHandle> {
         enable_raw_mode()?;
         let mut stdout = std::io::stdout();
@@ -596,6 +608,7 @@ impl RatatuiDashboard {
                 mouse_scroll_step: mouse_scroll_step_from_env(),
                 cost_cap_usd,
                 step_limit,
+                cost_usd: initial_cost_usd,
                 ..DashboardState::default()
             }),
             notify: RedrawNotify::new(),
@@ -4571,6 +4584,35 @@ mod tests {
         assert!(
             header_has_fg(&buf, Color::Red),
             "80% consumed should already be at the warning threshold; got:\n{text}"
+        );
+    }
+
+    #[test]
+    fn resumed_prior_spend_seeded_at_construction_accumulates_with_new_turns() {
+        // Regression for PR #992 review: `mini --resume`/`--continue` emits
+        // `RunStarted` before folding `ResumeState.total_cost_usd` in, so no
+        // stream event carries prior spend — `RatatuiDashboard::start` now
+        // seeds `DashboardState.cost_usd` directly (simulated here since
+        // `start()` needs a real terminal). Confirms it composes correctly
+        // with the accumulate-not-overwrite fix above: new turns must add to
+        // the resumed total, not replace it.
+        let d = make_dashboard();
+        {
+            let mut s = d.state.lock().unwrap();
+            s.cost_usd = 0.30; // simulates a resumed run's prior spend
+            s.cost_cap_usd = Some(0.50);
+        }
+        d.emit(StreamEvent::AssistantMessage {
+            step: 1,
+            content: "x".into(),
+            cost_usd: Some(0.04),
+            timestamp: "t".into(),
+        });
+        let s = snap(&d);
+        assert!(
+            (s.cost_usd - 0.34).abs() < f64::EPSILON,
+            "expected resumed $0.30 + new $0.04 = $0.34, got {}",
+            s.cost_usd
         );
     }
 
