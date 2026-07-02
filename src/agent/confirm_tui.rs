@@ -962,6 +962,16 @@ impl ConfirmCallback for RatatuiDashboard {
     }
 }
 
+/// Whether `renderer_loop`'s elapsed-clock tick should be armed this
+/// iteration (issue #640 review): the run has started and hasn't finished
+/// yet. Extracted as a pure predicate — separate from the spinner's `active`
+/// gate — so the elapsed clock keeps advancing once a second even while
+/// `Activity::Idle` (e.g. sitting at a confirm prompt), without reaching
+/// into the async `renderer_loop` itself to test the gating logic.
+fn elapsed_tick_should_arm(started_at_instant: Option<Instant>, finished: Option<&str>) -> bool {
+    started_at_instant.is_some() && finished.is_none()
+}
+
 async fn renderer_loop(
     dash: Arc<RatatuiDashboard>,
     mut terminal: Terminal<CrosstermBackend<Stdout>>,
@@ -976,6 +986,19 @@ async fn renderer_loop(
     // idle gap during which the interval was never awaited.
     let mut tick = tokio::time::interval(Duration::from_millis(100));
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    // Elapsed-clock cadence (issue #640 review): the header's live "elapsed"
+    // value is recomputed only when a frame is actually drawn, but the spinner
+    // tick above only fires `if active` (Thinking/Running) — so sitting at a
+    // confirm prompt (`Activity::Idle`) would otherwise freeze the elapsed
+    // clock at the moment the modal opened until a keystroke/mouse event,
+    // then jump forward, defeating the point of a *live* clock during exactly
+    // the wait the operator most needs it accurate for. A separate, much
+    // cheaper 1s tick (vs. the spinner's 100ms) keeps it ticking for the
+    // whole run — gated on the run having started and not yet finished, so
+    // it costs nothing before `RunStarted` or after the dashboard goes
+    // permanently idle at run end.
+    let mut elapsed_tick = tokio::time::interval(Duration::from_secs(1));
+    elapsed_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     // Whether the *next* loop iteration should redraw. Defaults true (every
     // event redraws, as before); the mouse arm below can clear it. Needed
     // because `EnableMouseCapture` requests any-event motion tracking, so a
@@ -1007,12 +1030,16 @@ async fn renderer_loop(
         tokio::pin!(notified);
         notified.as_mut().enable();
 
-        let (exit, active) = {
+        let (exit, active, elapsed_live) = {
             let s = dash
                 .state
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            (s.should_exit, s.activity.is_active())
+            (
+                s.should_exit,
+                s.activity.is_active(),
+                elapsed_tick_should_arm(s.started_at_instant, s.finished.as_deref()),
+            )
         };
         if exit {
             break;
@@ -1041,6 +1068,7 @@ async fn renderer_loop(
             _ = &mut shutdown => break,
             () = &mut notified => {}
             _ = tick.tick(), if active => {}
+            _ = elapsed_tick.tick(), if elapsed_live && !active => {}
             ev = events.next() => {
                 match ev {
                     Some(Ok(Event::Key(key))) => handle_key(&dash, key),
@@ -4241,6 +4269,23 @@ mod tests {
         assert_eq!(format_elapsed(Duration::from_secs(60)), "1m00s");
         assert_eq!(format_elapsed(Duration::from_secs(134)), "2m14s");
         assert_eq!(format_elapsed(Duration::from_secs(3661)), "1h01m01s");
+    }
+
+    #[test]
+    fn elapsed_tick_arms_once_started_and_disarms_once_finished() {
+        // Regression for PR #992 review: confirm() leaves Activity::Idle, so
+        // the elapsed clock must keep ticking from `started_at_instant`
+        // alone — independent of the spinner's `active` gate — for the
+        // entire in-progress run, and stop once the run has actually ended.
+        assert!(!elapsed_tick_should_arm(None, None), "not yet started");
+        assert!(
+            elapsed_tick_should_arm(Some(Instant::now()), None),
+            "started and still in progress (including idle waits, e.g. a confirm prompt)"
+        );
+        assert!(
+            !elapsed_tick_should_arm(Some(Instant::now()), Some("submitted")),
+            "run has finished; no need to keep ticking a static elapsed time"
+        );
     }
 
     #[test]
