@@ -819,10 +819,16 @@ fn check_retry_cap_overrides(sweep_dir: &Path) -> Result<(), Error> {
         .unwrap_or(cli_default_step_limit);
     let orig_timeout: Option<f64> =
         argv_f64("--task-timeout-secs").or_else(|| toml_f64("task_timeout_secs"));
-    // per_task_budget_usd and cost_limit_usd are mutually exclusive per-instance cost
-    // caps (mixed use is already rejected earlier in compute_budget_fit).  Track both
-    // here so that a retry that omits the cost cap is caught regardless of which key
-    // the original manifest used.
+    // per_task_budget_usd and cost_limit_usd are NOT mutually exclusive at the
+    // config level — the agent enforces both independently, and whichever is
+    // numerically tighter fires first (see `effective_cost_cap_usd` in
+    // agent/confirm_tui.rs for the general "resolve to one effective cap"
+    // logic used elsewhere). `compute_budget_fit` above rejects setting both
+    // only when the cost_usd axis is actually being analyzed (an ambiguous
+    // single-cap percentile isn't meaningful when two different caps could
+    // have fired); `--axis steps`/`--axis wall_clock_s` runs can still have
+    // both set. Track both here so that a retry that omits the cost cap is
+    // caught regardless of which key the original manifest used.
     let orig_budget: Option<f64> =
         argv_f64("--per-task-budget-usd").or_else(|| toml_f64("per_task_budget_usd"));
     let orig_cost_limit: Option<f64> = toml_f64("cost_limit_usd");

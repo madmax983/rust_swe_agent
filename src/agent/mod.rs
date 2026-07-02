@@ -18,7 +18,9 @@ pub mod parse;
 
 pub use confirm::{ConfirmCallback, ConfirmContext, ConfirmDecision, ScriptedConfirmer};
 pub use confirm_cli::StderrCliConfirmer;
-pub use confirm_tui::{RatatuiDashboard, RatatuiDashboardHandle, bell_enabled};
+pub use confirm_tui::{
+    RatatuiDashboard, RatatuiDashboardHandle, bell_enabled, effective_cost_cap_usd,
+};
 
 pub use default::DefaultAgent;
 pub use interactive::InteractiveAgent;

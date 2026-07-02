@@ -974,8 +974,28 @@ pub async fn run(args: MiniArgs) -> Result<(), Error> {
     } else {
         None
     };
-    let (confirm_callback, dashboard) =
-        build_interactive_pieces(args.interactive_mode, cancel_tx, args.no_bell)?;
+    // Effective cap for the dashboard's budget burn-down (issue #640): the
+    // tighter of the two independently-enforced cost caps, since that's the
+    // one that actually governs when the run terminates.
+    let cost_cap_usd = crate::agent::effective_cost_cap_usd(
+        args.config.root.agent.cost_limit_usd,
+        args.config.root.agent.per_task_budget_usd,
+    );
+    // On `mini --resume`/`--continue`, `DefaultAgent::build` emits
+    // `RunStarted` before folding `ResumeState.total_cost_usd` into its own
+    // running total, so no stream event ever carries the prior spend to the
+    // dashboard (PR #992 review) — every `AssistantMessage` afterward would
+    // accumulate on top of $0.00 instead of the resumed total. Seed it here,
+    // from the same `resume_state` `DefaultAgentBuilder` is about to consume.
+    let initial_cost_usd = resume_state.as_ref().map_or(0.0, |r| r.total_cost_usd);
+    let (confirm_callback, dashboard) = build_interactive_pieces(
+        args.interactive_mode,
+        cancel_tx,
+        args.no_bell,
+        cost_cap_usd,
+        args.config.root.agent.step_limit,
+        initial_cost_usd,
+    )?;
 
     // Redact the webhook sink so secrets are stripped before each POST.
     let webhook_sink_redacted: Option<Arc<dyn StreamSink>> = webhook_sink_opt.map(|ws| {
@@ -1458,6 +1478,9 @@ fn build_interactive_pieces(
     mode: InteractiveMode,
     cancel_tx: Option<tokio::sync::watch::Sender<bool>>,
     no_bell: bool,
+    cost_cap_usd: Option<f64>,
+    step_limit: u32,
+    initial_cost_usd: f64,
 ) -> Result<InteractivePieces, Error> {
     match mode {
         InteractiveMode::Off | InteractiveMode::YoloStatusOnly => Ok((None, None)),
@@ -1487,10 +1510,15 @@ fn build_interactive_pieces(
                 std::env::var_os("NO_BELL"),
                 std::io::IsTerminal::is_terminal(&std::io::stdout()),
             );
-            let handle =
-                crate::agent::RatatuiDashboard::start(false, cancel_tx, bell_on).map_err(|e| {
-                    Error::Trajectory(format!("failed to start ratatui dashboard: {e}"))
-                })?;
+            let handle = crate::agent::RatatuiDashboard::start(
+                false,
+                cancel_tx,
+                bell_on,
+                cost_cap_usd,
+                step_limit,
+                initial_cost_usd,
+            )
+            .map_err(|e| Error::Trajectory(format!("failed to start ratatui dashboard: {e}")))?;
             let cb = handle.confirm_callback();
             Ok((Some(cb), Some(handle)))
         }
@@ -1506,10 +1534,22 @@ fn build_interactive_pieces(
             }
             // The read-only --yolo monitor never blocks on a confirm modal, so
             // attention bells are out of scope here (issue #648); always muted.
-            let handle =
-                crate::agent::RatatuiDashboard::start(true, cancel_tx, false).map_err(|e| {
-                    Error::Trajectory(format!("failed to start ratatui dashboard: {e}"))
-                })?;
+            // The budget burn-down (issue #640) likewise targets the
+            // interactive header only — the monitor gets no cap here, though
+            // the same header helper can be reused for it later. The step
+            // limit and initial (resumed) cost, unlike the cost cap, are
+            // pre-existing monitor-mode display (the "step N/M"/"cost $X"
+            // counters) and get the same seeded-at-construction fix as the
+            // interactive path.
+            let handle = crate::agent::RatatuiDashboard::start(
+                true,
+                cancel_tx,
+                false,
+                None,
+                step_limit,
+                initial_cost_usd,
+            )
+            .map_err(|e| Error::Trajectory(format!("failed to start ratatui dashboard: {e}")))?;
             Ok((None, Some(handle)))
         }
     }
@@ -2222,7 +2262,8 @@ mod tests {
 
     #[test]
     fn build_interactive_pieces_off_yields_no_callback() {
-        let (cb, dash) = build_interactive_pieces(InteractiveMode::Off, None, false).unwrap();
+        let (cb, dash) =
+            build_interactive_pieces(InteractiveMode::Off, None, false, None, 5, 0.0).unwrap();
         assert!(cb.is_none());
         assert!(dash.is_none());
     }
@@ -2230,7 +2271,8 @@ mod tests {
     #[test]
     fn build_interactive_pieces_yolo_status_only_yields_no_callback() {
         let (cb, dash) =
-            build_interactive_pieces(InteractiveMode::YoloStatusOnly, None, false).unwrap();
+            build_interactive_pieces(InteractiveMode::YoloStatusOnly, None, false, None, 5, 0.0)
+                .unwrap();
         assert!(cb.is_none());
         assert!(dash.is_none());
     }
