@@ -4195,10 +4195,11 @@ mod tests {
 
     // ---- budget burn-down and elapsed clock (issue #640) ----
 
-    /// True if any cell in the top 3 rows (the header) carries `color` as
-    /// its foreground — mirrors `footer_has_fg` below for header assertions.
+    /// True if any cell in the top 4 rows (the header, now 2 content rows
+    /// plus borders — issue #640 review) carries `color` as its foreground —
+    /// mirrors `footer_has_fg` below for header assertions.
     fn header_has_fg(buf: &Buffer, color: Color) -> bool {
-        for y in 0..buf.area.height.min(3) {
+        for y in 0..buf.area.height.min(4) {
             for x in 0..buf.area.width {
                 if buf[(x, y)].style().fg == Some(color) {
                     return true;
