@@ -455,28 +455,28 @@ mod tests {
         // Synthetic env var picked up automatically by from_config_lossy.
         let unique_val = format!("sk-deadbeef-sweep-wh-{}", addr.port());
         let env_name = format!("FAKE_API_KEY_SWH_{}", addr.port());
-        // SAFETY: single-threaded test context; no concurrent env reads.
-        unsafe { std::env::set_var(&env_name, &unique_val) };
-        let redactor = Redactor::default_enabled();
 
-        let sink = SweepWebhookSink::new(url, &[], redactor, "sweep-redact".to_owned()).unwrap();
-        sink.emit(SweepNotificationEvent::InstanceCompleted {
-            instance_id: unique_val.clone(),
-            resolved: false,
-            failure_category: None,
-            cost_usd: None,
-            duration_secs: None,
-        });
+        #[allow(clippy::large_futures)]
+        temp_env::async_with_vars([(env_name, Some(unique_val.clone()))], async {
+            let redactor = Redactor::default_enabled();
 
-        let socket = accept(&listener).await;
-        let req = read_http(socket).await;
-        // SAFETY: single-threaded test context; no concurrent env reads.
-        unsafe { std::env::remove_var(&env_name) };
+            let sink = SweepWebhookSink::new(url, &[], redactor, "sweep-redact".to_owned()).unwrap();
+            sink.emit(SweepNotificationEvent::InstanceCompleted {
+                instance_id: unique_val.clone(),
+                resolved: false,
+                failure_category: None,
+                cost_usd: None,
+                duration_secs: None,
+            });
 
-        assert!(
-            !req.contains(&unique_val),
-            "sensitive env var value must not appear verbatim in posted payload"
-        );
+            let socket = accept(&listener).await;
+            let req = read_http(socket).await;
+
+            assert!(
+                !req.contains(&unique_val),
+                "sensitive env var value must not appear verbatim in posted payload"
+            );
+        }).await;
     }
 
     // ── RED: drop counting ─────────────────────────────────────────────────
