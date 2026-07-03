@@ -91,6 +91,15 @@ pub struct SweepReport {
     pub lifecycle_state: LifecycleState,
     pub last_modified: String,
     pub last_modified_unix: u64,
+    /// Sub-second remainder (0..1_000_000_000) of the same mtime as
+    /// `last_modified_unix`. `last_modified_unix` alone truncates to whole
+    /// seconds, which collapses distinct mtimes together on filesystems with
+    /// sub-second resolution (common for artifacts finished within the same
+    /// batch); `--keep-last` ranking and the pre-delete recency re-check
+    /// both compare the `(last_modified_unix, last_modified_nanos)` pair so
+    /// two sweeps modified in the same second still rank by actual recency
+    /// rather than falling through to an alphabetical `id` tiebreak.
+    pub last_modified_nanos: u32,
     pub age_seconds: u64,
     pub categories: CategoryBytes,
 }
@@ -112,11 +121,13 @@ pub struct PruneEntry {
     pub path_buf: PathBuf,
     pub bytes: u64,
     pub lifecycle_state: LifecycleState,
-    /// The `SweepReport::last_modified_unix` this entry was ranked against
-    /// when `--keep-last` retention was computed. Used by the pre-delete
-    /// recheck in `build_prune_report` to detect that a candidate's own
-    /// recency has changed since ranking — see that function's doc comment.
+    /// The `SweepReport::last_modified_unix`/`last_modified_nanos` this
+    /// entry was ranked against when `--keep-last` retention was computed.
+    /// Used by the pre-delete recheck in `build_prune_report` to detect that
+    /// a candidate's own recency has changed since ranking — see that
+    /// function's doc comment.
     pub last_modified_unix: u64,
+    pub last_modified_nanos: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -298,7 +309,8 @@ pub fn build_prune_report(
             // conservatively protect it rather than risk deleting a sweep
             // that would now rank inside --keep-last's protected window.
             if selectors.keep_last.is_some()
-                && recheck.last_modified_unix != candidate.last_modified_unix
+                && (recheck.last_modified_unix, recheck.last_modified_nanos)
+                    != (candidate.last_modified_unix, candidate.last_modified_nanos)
             {
                 eprintln!(
                     "warning: bench du: {} was modified since the --keep-last ranking was computed; skipping deletion",
@@ -637,8 +649,8 @@ pub fn evaluate_prune_candidates(
 ) -> PruneEvaluation {
     let mut by_recency: Vec<&SweepReport> = sweeps.iter().collect();
     by_recency.sort_by(|a, b| {
-        b.last_modified_unix
-            .cmp(&a.last_modified_unix)
+        (b.last_modified_unix, b.last_modified_nanos)
+            .cmp(&(a.last_modified_unix, a.last_modified_nanos))
             .then_with(|| a.id.cmp(&b.id))
     });
     let retained_ids: HashSet<&str> = match selectors.keep_last {
@@ -688,6 +700,7 @@ fn entry_for(s: &SweepReport) -> PruneEntry {
         bytes: s.total_bytes,
         lifecycle_state: s.lifecycle_state,
         last_modified_unix: s.last_modified_unix,
+        last_modified_nanos: s.last_modified_nanos,
     }
 }
 
@@ -763,10 +776,11 @@ fn scan_sweep(path: &Path, now: SystemTime, in_progress_window: Duration) -> Swe
         );
         0
     };
-    let last_modified_unix = last_modified
+    let since_epoch = last_modified
         .duration_since(UNIX_EPOCH)
-        .unwrap_or(Duration::ZERO)
-        .as_secs();
+        .unwrap_or(Duration::ZERO);
+    let last_modified_unix = since_epoch.as_secs();
+    let last_modified_nanos = since_epoch.subsec_nanos();
 
     SweepReport {
         id,
@@ -776,6 +790,7 @@ fn scan_sweep(path: &Path, now: SystemTime, in_progress_window: Duration) -> Swe
         lifecycle_state,
         last_modified: rfc3339(last_modified),
         last_modified_unix,
+        last_modified_nanos,
         age_seconds,
         categories,
     }

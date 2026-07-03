@@ -190,6 +190,7 @@ fn fixture_sweep(id: &str, bytes: u64, state: LifecycleState, age_secs: u64) -> 
         lifecycle_state: state,
         last_modified: "2024-01-01T00:00:00Z".to_owned(),
         last_modified_unix: 1_704_067_200 - age_secs,
+        last_modified_nanos: 0,
         age_seconds: age_secs,
         categories: CategoryBytes::default(),
     }
@@ -271,6 +272,42 @@ fn evaluate_prune_keep_last_retains_most_recent() {
     assert_eq!(ids, vec!["middle", "oldest"], "newest is retained");
     let retained_ids: Vec<&str> = eval.retained.iter().map(|c| c.id.as_str()).collect();
     assert_eq!(retained_ids, vec!["newest"]);
+}
+
+// last_modified_unix alone truncates to whole seconds; two sweeps that
+// finish within the same second (common for batch-created artifacts on
+// filesystems with sub-second mtime resolution) must still be ranked by
+// their actual recency (via last_modified_nanos), not fall through to an
+// alphabetical id tiebreak that has nothing to do with recency.
+// (Reported by chatgpt-codex-connector on PR #994.)
+#[test]
+fn evaluate_prune_keep_last_breaks_same_second_ties_by_nanos_not_id() {
+    let mut older_but_alpha_first = fixture_sweep("a-older", 100, LifecycleState::Complete, 10);
+    older_but_alpha_first.last_modified_unix = 1_000;
+    older_but_alpha_first.last_modified_nanos = 100;
+
+    let mut newer_but_alpha_last = fixture_sweep("z-newer", 100, LifecycleState::Complete, 10);
+    newer_but_alpha_last.last_modified_unix = 1_000;
+    newer_but_alpha_last.last_modified_nanos = 900_000_000;
+
+    let selectors = PruneSelectors {
+        older_than_secs: None,
+        keep_last: Some(1),
+        incomplete_only: false,
+    };
+    let eval = evaluate_prune_candidates(
+        &[older_but_alpha_first, newer_but_alpha_last],
+        &selectors,
+    );
+
+    let retained_ids: Vec<&str> = eval.retained.iter().map(|c| c.id.as_str()).collect();
+    assert_eq!(
+        retained_ids,
+        vec!["z-newer"],
+        "the truly more recent sweep (by nanos) must be retained, not the alphabetically-first one"
+    );
+    let candidate_ids: Vec<&str> = eval.candidates.iter().map(|c| c.id.as_str()).collect();
+    assert_eq!(candidate_ids, vec!["a-older"]);
 }
 
 #[test]

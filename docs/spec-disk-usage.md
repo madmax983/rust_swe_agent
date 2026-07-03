@@ -176,6 +176,12 @@ everything".
   non-in-progress sweep a candidate — exactly the "no selector means select
   everything" outcome `--apply`'s selector requirement exists to prevent —
   while still technically satisfying "at least one selector was given".
+  Ranking compares the full `(last_modified_unix, last_modified_nanos)` pair,
+  not just whole seconds — on filesystems with sub-second mtime resolution,
+  several sweeps commonly finish within the same Unix second (a batch of
+  small `mini` runs, for example), and truncating to seconds alone would
+  make the tie fall through to an alphabetical `id` comparison that has
+  nothing to do with actual recency.
 
 An `in_progress` sweep is **never** a candidate. If it would otherwise have
 matched every given selector, it is reported under `protected` instead
@@ -241,6 +247,7 @@ happened.
       "lifecycle_state": "complete",
       "last_modified": "2025-12-20T10:00:00Z",
       "last_modified_unix": 1766224800,
+      "last_modified_nanos": 0,
       "age_seconds": 950400,
       "categories": {
         "trajectories": 9000000,
