@@ -16,7 +16,7 @@
 
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::Frame;
@@ -51,9 +51,12 @@ pub(crate) struct DetailState {
     emitted_steps: usize,
     cached_path: Option<PathBuf>,
     last_file_len: u64,
+    last_file_mtime: Option<SystemTime>,
     /// True once the followed trajectory reports a terminal outcome.
     pub(crate) terminal: bool,
-    /// True while no trajectory file has been found yet for the selection.
+    /// True while no trajectory file has been found yet for the selection,
+    /// or a previously-found one has since become unreadable (deleted,
+    /// pruned, moved) — see `refresh_detail`.
     pub(crate) not_found: bool,
 }
 
@@ -67,6 +70,7 @@ impl DetailState {
             emitted_steps: 0,
             cached_path: None,
             last_file_len: 0,
+            last_file_mtime: None,
             terminal: false,
             not_found: true,
         }
@@ -101,11 +105,30 @@ impl DashboardState {
     }
 
     /// Replace the aggregate snapshot and instance rows with a freshly
-    /// polled read, clamping the selection into the new row count so a
-    /// shrinking/growing list never leaves `selected` out of bounds.
+    /// polled read. `rows` is rebuilt from scratch every tick (it's derived
+    /// from a `BTreeMap` sorted by `(instance_id, run_index)` — see
+    /// `tail::instance_rows`), so its order shifts whenever an instance
+    /// earlier in sort order starts or finishes between polls. Re-locate the
+    /// previously-selected instance by identity rather than trusting the raw
+    /// index to still point at the same row (issue #641 review) — falling
+    /// back to clamping only when that instance is no longer present.
     pub(crate) fn apply_refresh(&mut self, snapshot: TailSnapshot, rows: Vec<InstanceRow>) {
+        let selected_identity = self
+            .rows
+            .get(self.selected)
+            .map(|row| (row.instance_id.clone(), row.run_index));
         self.snapshot = Some(snapshot);
         self.rows = rows;
+        if let Some((id, run_index)) = selected_identity {
+            if let Some(new_index) = self
+                .rows
+                .iter()
+                .position(|row| row.instance_id == id && row.run_index == run_index)
+            {
+                self.selected = new_index;
+                return;
+            }
+        }
         if self.rows.is_empty() {
             self.selected = 0;
         } else if self.selected >= self.rows.len() {
@@ -211,6 +234,17 @@ pub(crate) fn list_scroll_top(selected: usize, len: usize, viewport: usize) -> u
         .min(max_top)
 }
 
+/// Whether the followed file can be treated as unchanged since the last
+/// successful read — both length AND mtime must match, mirroring
+/// `watch::run`'s `skippable` check. Pure so the mtime requirement is
+/// directly unit-testable without real file timestamps.
+fn file_unchanged(detail: &DetailState, len: u64, mtime: Option<SystemTime>) -> bool {
+    detail.emitted_steps > 0
+        && len == detail.last_file_len
+        && mtime.is_some()
+        && mtime == detail.last_file_mtime
+}
+
 /// Poll the selected instance's trajectory file for new turns, mirroring
 /// `bench watch`'s follow loop (`crate::run::watch::run`) but appending
 /// plain-text lines to `detail.lines` instead of writing to stdout.
@@ -221,16 +255,32 @@ fn refresh_detail(detail: &mut DetailState, sweep_dir: &Path, redactor: &Redacto
         .or_else(|| resolve_watch_path(sweep_dir, &detail.instance_id, detail.run_index));
     let Some(path) = path else {
         detail.not_found = true;
+        detail.cached_path = None;
+        return;
+    };
+
+    // Only treated as "found" once `metadata` confirms the file is still
+    // there — a path that was resolved on a prior tick but has since been
+    // deleted/pruned (e.g. `bench du --prune` against the same sweep dir)
+    // must fall back to "waiting for trajectory file…" instead of leaving
+    // stale content on screen forever (issue #641 review). Forgetting
+    // `cached_path` here also lets the next tick re-resolve it, self-healing
+    // if the file reappears under a different path.
+    let Ok(metadata) = std::fs::metadata(&path) else {
+        detail.not_found = true;
+        detail.cached_path = None;
         return;
     };
     detail.cached_path = Some(path.clone());
     detail.not_found = false;
 
-    let Ok(metadata) = std::fs::metadata(&path) else {
-        return;
-    };
     let len = metadata.len();
-    if len == detail.last_file_len && detail.emitted_steps > 0 {
+    let mtime = metadata.modified().ok();
+    // Require both length AND mtime to be unchanged before skipping a
+    // re-read, mirroring `watch::run`'s `skippable` check — a length-only
+    // check misses an in-place rewrite whose new content happens to be the
+    // same byte length as the last checkpoint (issue #641 review).
+    if file_unchanged(detail, len, mtime) {
         return;
     }
     let Ok(text) = std::fs::read_to_string(&path) else {
@@ -240,6 +290,7 @@ fn refresh_detail(detail: &mut DetailState, sweep_dir: &Path, redactor: &Redacto
         return;
     };
     detail.last_file_len = len;
+    detail.last_file_mtime = mtime;
     redact_trajectory_for_inspect(&mut traj, redactor);
     let steps = build_inspect_steps_with_max(&traj, false, 4096);
     if steps.len() < detail.emitted_steps {
@@ -257,15 +308,15 @@ fn refresh_detail(detail: &mut DetailState, sweep_dir: &Path, redactor: &Redacto
             use std::fmt::Write as _;
             let _ = write!(summary, " (exit {code})");
         }
-        push_capped(&mut detail.lines, summary);
+        push_capped(detail, summary);
         if let Some(stdout) = &step.stdout {
             for line in stdout.lines().take(20) {
-                push_capped(&mut detail.lines, format!("  {line}"));
+                push_capped(detail, format!("  {line}"));
             }
         }
         if let Some(stderr) = &step.stderr {
             for line in stderr.lines().take(20) {
-                push_capped(&mut detail.lines, format!("  ! {line}"));
+                push_capped(detail, format!("  ! {line}"));
             }
         }
     }
@@ -281,11 +332,17 @@ fn write_first_line(out: &mut String, text: &str) -> std::fmt::Result {
     Ok(())
 }
 
-fn push_capped(lines: &mut VecDeque<String>, line: String) {
-    if lines.len() >= MAX_DETAIL_LINES {
-        lines.pop_front();
+/// Append a line to `detail.lines`, evicting the oldest one once the buffer
+/// is at capacity. Popping the front element shifts every remaining line's
+/// logical index back by one, so `scroll_top` is decremented in lockstep —
+/// otherwise a scrolled-up viewport would silently drift toward newer
+/// content on every eviction with no user input (issue #641 review).
+fn push_capped(detail: &mut DetailState, line: String) {
+    if detail.lines.len() >= MAX_DETAIL_LINES {
+        detail.lines.pop_front();
+        detail.scroll_top = detail.scroll_top.saturating_sub(1);
     }
-    lines.push_back(line);
+    detail.lines.push_back(line);
 }
 
 /// Refresh the aggregate/list data and, when a drill-down is open, the
@@ -293,8 +350,10 @@ fn push_capped(lines: &mut VecDeque<String>, line: String) {
 /// once per tick.
 pub(crate) fn refresh(state: &mut DashboardState, redactor: &Redactor) -> Result<(), Error> {
     let options = SnapshotOptions::default();
-    let snapshot = crate::run::tail::snapshot(&state.sweep_dir, &options)?;
-    let rows = crate::run::tail::instance_rows(&state.sweep_dir)?;
+    // `snapshot_and_rows` shares one `results.json` read between the
+    // aggregate snapshot and the instance list instead of each reading it
+    // independently (issue #641 review).
+    let (snapshot, rows) = crate::run::tail::snapshot_and_rows(&state.sweep_dir, &options)?;
     state.apply_refresh(snapshot, rows);
     if let Some(detail) = state.detail.as_mut() {
         refresh_detail(detail, &state.sweep_dir, redactor);
@@ -332,12 +391,16 @@ pub(crate) fn draw(frame: &mut Frame, state: &DashboardState) {
 }
 
 fn aggregate_panel_height(state: &DashboardState) -> u16 {
-    let base = 6;
-    if state.snapshot.as_ref().is_some_and(|s| s.is_complete) {
-        base + 1
-    } else {
-        base
+    let mut height = 6;
+    if let Some(snap) = state.snapshot.as_ref() {
+        if snap.is_complete {
+            height += 1;
+        }
+        if !snap.warnings.is_empty() {
+            height += 1;
+        }
     }
+    height
 }
 
 fn aggregate_paragraph(state: &DashboardState) -> Paragraph<'_> {
@@ -394,6 +457,22 @@ fn aggregate_paragraph(state: &DashboardState) -> Paragraph<'_> {
         lines.push(Line::from(format!("circuit breaker: {cb}")));
     } else {
         lines.push(Line::from(format!("status: {}", snap.status)));
+    }
+
+    // Parse/schema-compat warnings from `results.json`/trajectory files:
+    // `bench tail`'s plain-text output surfaces these under "Warning:" lines,
+    // but the interactive dashboard had no rendering path for them at all,
+    // leaving an operator relying solely on it flying blind on partial/stale
+    // data (issue #641 review). Kept compact (a count, not the full list) to
+    // respect the panel's fixed-height budget.
+    if !snap.warnings.is_empty() {
+        lines.push(Line::from(Span::styled(
+            format!(
+                "{} warning(s) — see `bench tail --format text` for details",
+                snap.warnings.len()
+            ),
+            Style::default().fg(Color::Yellow),
+        )));
     }
 
     Paragraph::new(lines)
@@ -472,11 +551,21 @@ fn render_detail(frame: &mut Frame, state: &DashboardState, area: Rect) {
     if detail.not_found {
         lines.push(Line::from("waiting for trajectory file…"));
     } else {
+        // Reserve one line for the "[instance complete]" banner so it's
+        // never pushed past the pane's rendered height: `Paragraph` (with no
+        // `.scroll()` set) silently clips anything beyond `inner_height`, so
+        // appending the banner *after* an already-full content window drops
+        // it with no on-screen indication (issue #641 review).
+        let content_height = if detail.terminal {
+            inner_height.saturating_sub(1)
+        } else {
+            inner_height
+        };
         for line in detail
             .lines
             .iter()
             .skip(detail.scroll_top)
-            .take(inner_height)
+            .take(content_height)
         {
             lines.push(Line::from(line.as_str()));
         }
@@ -967,5 +1056,155 @@ mod tests {
             "{:?}",
             detail.lines
         );
+    }
+
+    #[test]
+    fn refresh_detail_resets_not_found_when_file_disappears() {
+        let dir = tempfile::tempdir().unwrap();
+        let instance_dir = dir.path().join("alpha");
+        std::fs::create_dir_all(&instance_dir).unwrap();
+        let mut traj = Trajectory::new();
+        traj.info.steps = Some(1);
+        let traj_path = instance_dir.join("run-1.traj.json");
+        std::fs::write(&traj_path, serde_json::to_string_pretty(&traj).unwrap()).unwrap();
+
+        let mut detail = DetailState::new("alpha".into(), 1);
+        let redactor = Redactor::default_enabled();
+        refresh_detail(&mut detail, dir.path(), &redactor);
+        assert!(!detail.not_found, "file exists; should be found");
+
+        std::fs::remove_file(&traj_path).unwrap();
+        refresh_detail(&mut detail, dir.path(), &redactor);
+        assert!(
+            detail.not_found,
+            "not_found must reset to true once the cached path disappears"
+        );
+    }
+
+    #[test]
+    fn file_unchanged_requires_both_length_and_mtime_match() {
+        let mut detail = DetailState::new("x".into(), 1);
+        detail.emitted_steps = 3;
+        detail.last_file_len = 100;
+        let t0 = SystemTime::now();
+        detail.last_file_mtime = Some(t0);
+
+        assert!(file_unchanged(&detail, 100, Some(t0)));
+
+        let t1 = t0 + Duration::from_secs(1);
+        assert!(
+            !file_unchanged(&detail, 100, Some(t1)),
+            "same length but different mtime must not be treated as unchanged"
+        );
+        assert!(
+            !file_unchanged(&detail, 101, Some(t0)),
+            "different length must not be treated as unchanged"
+        );
+        assert!(
+            !file_unchanged(&detail, 100, None),
+            "an unavailable mtime must not be treated as unchanged"
+        );
+    }
+
+    #[test]
+    fn push_capped_decrements_scroll_top_when_evicting() {
+        let mut detail = DetailState::new("x".into(), 1);
+        for i in 0..MAX_DETAIL_LINES {
+            push_capped(&mut detail, format!("line-{i}"));
+        }
+        detail.scroll_top = 5;
+
+        push_capped(&mut detail, "new-line".into());
+
+        assert_eq!(detail.lines.len(), MAX_DETAIL_LINES);
+        assert_eq!(
+            detail.scroll_top, 4,
+            "scroll_top must shift down in lockstep with the evicted front line"
+        );
+    }
+
+    #[test]
+    fn push_capped_does_not_move_scroll_top_below_the_cap() {
+        let mut detail = DetailState::new("x".into(), 1);
+        detail.scroll_top = 2;
+        push_capped(&mut detail, "first".into());
+        assert_eq!(
+            detail.scroll_top, 2,
+            "no eviction happened yet; scroll_top must be untouched"
+        );
+    }
+
+    #[test]
+    fn apply_refresh_preserves_selected_instance_identity_across_reorder() {
+        let mut state = state_with_rows(vec![
+            row("bravo", InstanceStatus::Terminal),
+            row("charlie", InstanceStatus::Terminal),
+        ]);
+        state.selected = 0; // "bravo"
+
+        // A new instance "alpha" sorts ahead of "bravo" and appears between
+        // polls, shifting every subsequent row's index down by one.
+        state.apply_refresh(
+            test_snapshot(),
+            vec![
+                row("alpha", InstanceStatus::InFlight),
+                row("bravo", InstanceStatus::Terminal),
+                row("charlie", InstanceStatus::Terminal),
+            ],
+        );
+
+        assert_eq!(
+            state.rows[state.selected].instance_id, "bravo",
+            "selection must follow the instance the operator was looking at, not the raw index"
+        );
+    }
+
+    #[test]
+    fn apply_refresh_falls_back_to_clamping_when_selected_instance_vanishes() {
+        let mut state = state_with_rows(vec![
+            row("bravo", InstanceStatus::Terminal),
+            row("charlie", InstanceStatus::Terminal),
+        ]);
+        state.selected = 1; // "charlie"
+
+        state.apply_refresh(
+            test_snapshot(),
+            vec![row("bravo", InstanceStatus::Terminal)],
+        );
+
+        assert_eq!(state.selected, 0);
+    }
+
+    #[test]
+    fn draw_shows_completion_banner_even_when_pane_is_full() {
+        let mut state = state_with_rows(vec![row("a", InstanceStatus::Terminal)]);
+        state.snapshot = Some(test_snapshot());
+        handle_key(&mut state, key(KeyCode::Enter));
+        {
+            let detail = state.detail.as_mut().unwrap();
+            // Fill well past any reasonable pane height with real content.
+            for i in 0..50 {
+                detail.lines.push_back(format!("line {i}"));
+            }
+            detail.terminal = true;
+            detail.not_found = false;
+        }
+        let buf = render_to_buffer(&state, 120, 20);
+        let text = buffer_text(&buf);
+        assert!(
+            text.contains("instance complete"),
+            "completion banner must not be clipped when the pane is full: {text}"
+        );
+    }
+
+    #[test]
+    fn draw_shows_warning_count_when_snapshot_has_warnings() {
+        let mut state = state_with_rows(vec![]);
+        let mut snap = test_snapshot();
+        snap.warnings = vec!["some-file.traj.json: partial or invalid JSON".into()];
+        state.snapshot = Some(snap);
+        let buf = render_to_buffer(&state, 120, 20);
+        let text = buffer_text(&buf);
+        assert!(text.contains("1 warning(s)"), "{text}");
     }
 }

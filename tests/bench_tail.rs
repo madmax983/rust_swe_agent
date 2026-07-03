@@ -808,3 +808,53 @@ fn instance_rows_has_no_pending_rows_without_explicit_instance_ids() {
     assert!(rows.iter().all(|r| r.status != InstanceStatus::Pending));
     assert_eq!(rows.len(), 1);
 }
+
+#[test]
+fn snapshot_counts_partial_trajectories_across_multiple_instances() {
+    let dir = tempfile::tempdir().unwrap();
+    let now = Utc.with_ymd_and_hms(2026, 1, 1, 12, 0, 0).unwrap();
+
+    for name in ["golf", "hotel"] {
+        let instance_dir = dir.path().join(name);
+        std::fs::create_dir_all(&instance_dir).unwrap();
+        write_partial_traj(&instance_dir, "run-1.traj.json", 2);
+    }
+    let terminal_dir = dir.path().join("india");
+    std::fs::create_dir_all(&terminal_dir).unwrap();
+    let mut traj = Trajectory::new();
+    traj.info.outcome = Some(outcome::SUBMITTED.into());
+    traj.info.exit_reason = Some(outcome::SUBMITTED.into());
+    std::fs::write(
+        terminal_dir.join("run-1.traj.json"),
+        serde_json::to_string_pretty(&traj).unwrap(),
+    )
+    .unwrap();
+
+    let snap = snapshot(dir.path(), &opts_at(now)).unwrap();
+    assert_eq!(snap.partial_persisted, 2, "{snap:#?}");
+}
+
+#[test]
+fn instance_rows_prefers_nested_layout_over_legacy_flat_file_deterministically() {
+    let dir = tempfile::tempdir().unwrap();
+    // A legacy flat file (run 1, terminal/error) coexists with a freshly
+    // resumed nested run-1.traj.json (in-flight) for the same instance —
+    // the nested (current) layout must always win, regardless of directory
+    // iteration order.
+    let mut legacy = Trajectory::new();
+    legacy.info.outcome = Some(outcome::ERROR.into());
+    legacy.info.exit_reason = Some(outcome::ERROR.into());
+    std::fs::write(
+        dir.path().join("juliet.traj.json"),
+        serde_json::to_string_pretty(&legacy).unwrap(),
+    )
+    .unwrap();
+    let instance_dir = dir.path().join("juliet");
+    std::fs::create_dir_all(&instance_dir).unwrap();
+    write_partial_traj(&instance_dir, "run-1.traj.json", 5);
+
+    let rows = instance_rows(dir.path()).unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].status, InstanceStatus::InFlight);
+    assert_eq!(rows[0].current_step, Some(5));
+}
