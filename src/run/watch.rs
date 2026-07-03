@@ -160,7 +160,11 @@ pub async fn run(args: &WatchArgs) -> Result<(), Error> {
 /// For run_index > 1, only the nested `<sweep>/<instance>/run-N.traj.json` path is
 /// checked. For run_index == 1 the legacy flat layout is also accepted so that
 /// hello-world and pre-rerun sweep outputs work without a `--run-index` flag.
-fn resolve_watch_path(sweep: &Path, instance_id: &str, run_index: u32) -> Option<PathBuf> {
+pub(crate) fn resolve_watch_path(
+    sweep: &Path,
+    instance_id: &str,
+    run_index: u32,
+) -> Option<PathBuf> {
     let nested = sweep
         .join(instance_id)
         .join(format!("run-{run_index}.traj.json"));
@@ -236,7 +240,7 @@ fn maybe_warn_stall(last_activity: Option<&Instant>, stall_warned: &mut bool, du
     }
 }
 
-fn is_terminal_outcome(traj: &Trajectory) -> bool {
+pub(crate) fn is_terminal_outcome(traj: &Trajectory) -> bool {
     traj.info.outcome.is_some() || traj.info.exit_reason.is_some()
 }
 

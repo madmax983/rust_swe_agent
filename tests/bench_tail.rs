@@ -7,7 +7,9 @@ use std::path::Path;
 use std::process::Command;
 
 use chrono::{TimeZone, Utc};
-use maxwells_daemon::run::tail::{SnapshotOptions, render_text, snapshot};
+use maxwells_daemon::run::tail::{
+    InstanceStatus, SnapshotOptions, instance_rows, render_text, snapshot,
+};
 use maxwells_daemon::trajectory::{
     FailureCategory, FallbackAttemptRecord, FallbackSummary, TokenUsage, Trajectory, outcome,
 };
@@ -655,5 +657,230 @@ fn all_failed_trajectory_excluded_from_model_mix() {
         snap.model_mix.is_empty(),
         "all_failed trajectories should not appear in model_mix: {:?}",
         snap.model_mix
+    );
+}
+
+// ---- instance_rows() — per-instance rows for the sweep dashboard (issue #641) ----
+
+fn write_partial_traj(dir: &Path, filename: &str, steps: u32) {
+    let mut traj = Trajectory::new();
+    traj.info.partial = true;
+    traj.info.partial_reason = Some("in_progress".into());
+    traj.info.steps = Some(steps);
+    std::fs::write(
+        dir.join(filename),
+        serde_json::to_string_pretty(&traj).unwrap(),
+    )
+    .unwrap();
+}
+
+#[test]
+fn instance_rows_errors_when_sweep_dir_missing() {
+    let dir = tempfile::tempdir().unwrap();
+    let missing = dir.path().join("does-not-exist");
+    assert!(instance_rows(&missing).is_err());
+}
+
+#[test]
+fn instance_rows_reports_terminal_instance_from_flat_trajectory() {
+    let dir = tempfile::tempdir().unwrap();
+    write_traj(
+        dir.path(),
+        "alpha",
+        outcome::SUBMITTED,
+        None,
+        0.5,
+        "2026-04-30T01:00:00Z",
+        "2026-04-30T01:05:00Z",
+    );
+
+    let rows = instance_rows(dir.path()).unwrap();
+    assert_eq!(rows.len(), 1);
+    let row = &rows[0];
+    assert_eq!(row.instance_id, "alpha");
+    assert_eq!(row.run_index, 1);
+    assert_eq!(row.status, InstanceStatus::Terminal);
+    assert_eq!(row.outcome.as_deref(), Some(outcome::SUBMITTED));
+}
+
+#[test]
+fn instance_rows_reports_in_flight_instance_from_partial_nested_trajectory() {
+    let dir = tempfile::tempdir().unwrap();
+    let instance_dir = dir.path().join("bravo");
+    std::fs::create_dir_all(&instance_dir).unwrap();
+    write_partial_traj(&instance_dir, "run-1.traj.json", 4);
+
+    let rows = instance_rows(dir.path()).unwrap();
+    assert_eq!(rows.len(), 1);
+    let row = &rows[0];
+    assert_eq!(row.instance_id, "bravo");
+    assert_eq!(row.run_index, 1);
+    assert_eq!(row.status, InstanceStatus::InFlight);
+    assert_eq!(row.current_step, Some(4));
+    assert!(row.outcome.is_none());
+}
+
+#[test]
+fn instance_rows_distinguishes_run_index_for_reruns() {
+    let dir = tempfile::tempdir().unwrap();
+    let instance_dir = dir.path().join("charlie");
+    std::fs::create_dir_all(&instance_dir).unwrap();
+    // run 1 already finished; run 2 is still in flight.
+    let mut traj1 = Trajectory::new();
+    traj1.info.outcome = Some(outcome::SUBMITTED.into());
+    traj1.info.exit_reason = Some(outcome::SUBMITTED.into());
+    traj1.info.steps = Some(9);
+    std::fs::write(
+        instance_dir.join("run-1.traj.json"),
+        serde_json::to_string_pretty(&traj1).unwrap(),
+    )
+    .unwrap();
+    write_partial_traj(&instance_dir, "run-2.traj.json", 3);
+
+    let mut rows = instance_rows(dir.path()).unwrap();
+    rows.sort_by_key(|r| r.run_index);
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0].run_index, 1);
+    assert_eq!(rows[0].status, InstanceStatus::Terminal);
+    assert_eq!(rows[0].current_step, Some(9));
+    assert_eq!(rows[1].run_index, 2);
+    assert_eq!(rows[1].status, InstanceStatus::InFlight);
+    assert_eq!(rows[1].current_step, Some(3));
+}
+
+#[test]
+fn instance_rows_reports_pending_instance_when_filter_spec_names_it() {
+    let dir = tempfile::tempdir().unwrap();
+    write_results(
+        dir.path(),
+        &serde_json::json!({
+            "total": 2,
+            "submitted": 1,
+            "skipped": 0,
+            "errored": 0,
+            "budget_halted": 0,
+            "with_patch": 1,
+            "filter_spec": {
+                "original_count": 2,
+                "selected_count": 2,
+                "instance_ids": ["delta", "echo"]
+            },
+            "instances": [{
+                "instance_id": "delta",
+                "exit_reason": "submitted",
+                "outcome": "submitted"
+            }]
+        }),
+    );
+
+    let rows = instance_rows(dir.path()).unwrap();
+    let echo = rows.iter().find(|r| r.instance_id == "echo").unwrap();
+    assert_eq!(echo.status, InstanceStatus::Pending);
+    assert!(echo.outcome.is_none());
+    assert!(echo.current_step.is_none());
+
+    let delta = rows.iter().find(|r| r.instance_id == "delta").unwrap();
+    assert_eq!(delta.status, InstanceStatus::Terminal);
+    assert_eq!(delta.outcome.as_deref(), Some("submitted"));
+}
+
+#[test]
+fn instance_rows_has_no_pending_rows_without_explicit_instance_ids() {
+    let dir = tempfile::tempdir().unwrap();
+    write_results(
+        dir.path(),
+        &serde_json::json!({
+            "total": 5,
+            "submitted": 1,
+            "skipped": 0,
+            "errored": 0,
+            "budget_halted": 0,
+            "with_patch": 1,
+            "instances": [{
+                "instance_id": "foxtrot",
+                "exit_reason": "submitted",
+                "outcome": "submitted"
+            }]
+        }),
+    );
+
+    let rows = instance_rows(dir.path()).unwrap();
+    assert!(rows.iter().all(|r| r.status != InstanceStatus::Pending));
+    assert_eq!(rows.len(), 1);
+}
+
+#[test]
+fn snapshot_counts_partial_trajectories_across_multiple_instances() {
+    let dir = tempfile::tempdir().unwrap();
+    let now = Utc.with_ymd_and_hms(2026, 1, 1, 12, 0, 0).unwrap();
+
+    for name in ["golf", "hotel"] {
+        let instance_dir = dir.path().join(name);
+        std::fs::create_dir_all(&instance_dir).unwrap();
+        write_partial_traj(&instance_dir, "run-1.traj.json", 2);
+    }
+    let terminal_dir = dir.path().join("india");
+    std::fs::create_dir_all(&terminal_dir).unwrap();
+    let mut traj = Trajectory::new();
+    traj.info.outcome = Some(outcome::SUBMITTED.into());
+    traj.info.exit_reason = Some(outcome::SUBMITTED.into());
+    std::fs::write(
+        terminal_dir.join("run-1.traj.json"),
+        serde_json::to_string_pretty(&traj).unwrap(),
+    )
+    .unwrap();
+
+    let snap = snapshot(dir.path(), &opts_at(now)).unwrap();
+    assert_eq!(snap.partial_persisted, 2, "{snap:#?}");
+}
+
+#[test]
+fn instance_rows_prefers_nested_layout_over_legacy_flat_file_deterministically() {
+    let dir = tempfile::tempdir().unwrap();
+    // A legacy flat file (run 1, terminal/error) coexists with a freshly
+    // resumed nested run-1.traj.json (in-flight) for the same instance —
+    // the nested (current) layout must always win, regardless of directory
+    // iteration order.
+    let mut legacy = Trajectory::new();
+    legacy.info.outcome = Some(outcome::ERROR.into());
+    legacy.info.exit_reason = Some(outcome::ERROR.into());
+    std::fs::write(
+        dir.path().join("juliet.traj.json"),
+        serde_json::to_string_pretty(&legacy).unwrap(),
+    )
+    .unwrap();
+    let instance_dir = dir.path().join("juliet");
+    std::fs::create_dir_all(&instance_dir).unwrap();
+    write_partial_traj(&instance_dir, "run-1.traj.json", 5);
+
+    let rows = instance_rows(dir.path()).unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].status, InstanceStatus::InFlight);
+    assert_eq!(rows[0].current_step, Some(5));
+}
+
+#[test]
+fn instance_rows_does_not_fall_back_to_legacy_flat_when_nested_file_is_unreadable() {
+    let dir = tempfile::tempdir().unwrap();
+    // Legacy flat file with a real (stale) terminal outcome.
+    let mut legacy = Trajectory::new();
+    legacy.info.outcome = Some(outcome::ERROR.into());
+    legacy.info.exit_reason = Some(outcome::ERROR.into());
+    std::fs::write(
+        dir.path().join("kilo.traj.json"),
+        serde_json::to_string_pretty(&legacy).unwrap(),
+    )
+    .unwrap();
+    // A nested file exists for the same instance/run (current layout takes
+    // precedence) but is mid-write / corrupt and fails to parse.
+    let instance_dir = dir.path().join("kilo");
+    std::fs::create_dir_all(&instance_dir).unwrap();
+    std::fs::write(instance_dir.join("run-1.traj.json"), "{not valid json").unwrap();
+
+    let rows = instance_rows(dir.path()).unwrap();
+    assert!(
+        rows.iter().all(|r| r.instance_id != "kilo"),
+        "must not resurrect the stale legacy flat row when the nested file exists but is \
+         unreadable: {rows:?}"
     );
 }

@@ -2651,6 +2651,33 @@ fn reject_json_with_ratatui(
     Ok(())
 }
 
+/// Reject `bench tail --ui ratatui` combined with flags it can't coexist
+/// with (issue #641).
+///
+/// `--once` is a contradiction: the dashboard is inherently long-running and
+/// interactive. `--format json` is a contradiction for the same reason
+/// `reject_json_with_ratatui` rejects it for `mini` — the dashboard owns the
+/// alternate screen and stdout, which would corrupt a JSON snapshot stream.
+fn reject_incompatible_tail_ratatui_ui(once: bool, format: TailFormat) -> Result<(), Error> {
+    if once {
+        return Err(Error::Config(crate::error::ConfigError::Invalid(
+            "bench tail --ui ratatui cannot be combined with --once; the dashboard is \
+             inherently interactive and long-running. Omit --ui ratatui for a one-shot \
+             snapshot."
+                .into(),
+        )));
+    }
+    if format == TailFormat::Json {
+        return Err(Error::Config(crate::error::ConfigError::Invalid(
+            "bench tail --ui ratatui cannot be combined with --format json; the dashboard \
+             renders to the alternate screen and would corrupt a JSON snapshot stream. Use \
+             the default --format text, or omit --ui ratatui for JSON output."
+                .into(),
+        )));
+    }
+    Ok(())
+}
+
 /// Lightweight view over a trajectory file that deserializes only the `info`
 /// block. A trajectory carries the full message history and tool outputs
 /// (potentially megabytes) that `emit_mini_result` never reads.
@@ -6067,6 +6094,29 @@ async fn bench_tail(t: args::TailCmd) -> Result<(), Error> {
             ))));
         }
     };
+
+    if t.ui == args::TailUiKind::Ratatui {
+        reject_incompatible_tail_ratatui_ui(t.once, format)?;
+        if !std::io::IsTerminal::is_terminal(&std::io::stdin())
+            || !std::io::IsTerminal::is_terminal(&std::io::stdout())
+        {
+            return Err(Error::Config(crate::error::ConfigError::Invalid(
+                "bench tail --ui ratatui requires a TTY on stdin and stdout; omit --ui ratatui \
+                 (or use --format json) for unattended sweeps"
+                    .into(),
+            )));
+        }
+        let dashboard_args = crate::run::sweep_dashboard::DashboardArgs {
+            sweep: t.sweep,
+            interval_ms: t.interval_ms,
+        };
+        return tokio::task::spawn_blocking(move || {
+            crate::run::sweep_dashboard::run(&dashboard_args)
+        })
+        .await
+        .map_err(|e| Error::Trajectory(format!("sweep dashboard task panicked: {e}")))?;
+    }
+
     let mut stdout = std::io::stdout();
     let clear_tty = format == TailFormat::Text && !t.once && stdout.is_terminal();
     loop {

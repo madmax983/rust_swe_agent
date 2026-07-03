@@ -3498,6 +3498,17 @@ pub struct InspectCmd {
     pub flake_report: Option<PathBuf>,
 }
 
+/// `bench tail --ui` selector (issue #641).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum TailUiKind {
+    /// Default: print periodic snapshots to stdout (see `--format`).
+    Text,
+    /// Full-screen interactive dashboard: aggregate progress, a navigable
+    /// instance list, and a per-instance drill-down. Mutually exclusive with
+    /// `--once` and `--format json`; requires a TTY on stdin and stdout.
+    Ratatui,
+}
+
 #[derive(Debug, Args)]
 pub struct TailCmd {
     /// Sweep output directory produced by `bench swebench`.
@@ -3515,6 +3526,11 @@ pub struct TailCmd {
     /// Output format: `text` (default) or `json`.
     #[arg(long, default_value = "text")]
     pub format: String,
+
+    /// UI: `text` (default, periodic snapshots) or `ratatui` (full-screen
+    /// interactive dashboard, issue #641).
+    #[arg(long, value_enum, default_value_t = TailUiKind::Text)]
+    pub ui: TailUiKind,
 }
 
 /// `bench watch` — attach to a single in-flight instance and stream turns live.
