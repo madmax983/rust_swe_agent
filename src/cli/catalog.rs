@@ -248,6 +248,12 @@ pub fn entries() -> &'static [CatalogEntry] {
             stage: "analyze",
         },
         CatalogEntry {
+            path: "bench du",
+            summary: "Report run-directory disk footprint per sweep/category and safely reclaim stale sweeps",
+            cost_tier: "free",
+            stage: "analyze",
+        },
+        CatalogEntry {
             path: "bench context-pressure",
             summary: "Report context-window pressure telemetry per sweep",
             cost_tier: "free",

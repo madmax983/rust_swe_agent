@@ -224,6 +224,15 @@ pub enum ExitCode {
     /// exhaustion. Distinct from `budget_halt` (5) which is a forecast/sweep
     /// cap, not a post-hoc accounting check.
     LedgerBudgetExceeded = 49,
+    /// 50 — `bench du --prune --apply` skipped at least one sweep that
+    /// matched the given selectors: either its partial trajectory checkpoint
+    /// was touched within `--in-progress-window` (not confirmed idle — this
+    /// is an mtime-freshness heuristic, not a lock/PID liveness check, see
+    /// `docs/spec-disk-usage.md`), or `std::fs::remove_dir_all` itself
+    /// failed. That sweep was left on disk and reported under `protected`/
+    /// `deletion_failed`; every other matching sweep was still deleted. The
+    /// report is printed before exit.
+    DiskUsagePruneBlocked = 50,
     /// 130 — user interruption (graceful SIGINT / Ctrl-C; 128 + SIGINT(2)).
     Interrupted = 130,
     /// 137 — forced kill (SIGKILL escalation after graceful-cancel deadline; 128 + SIGKILL(9)).
@@ -294,6 +303,7 @@ impl ExitCode {
             Self::ArtifactCheckFailure => "artifact_check_failure",
             Self::HostNotReady => "host_not_ready",
             Self::LedgerBudgetExceeded => "ledger_budget_exceeded",
+            Self::DiskUsagePruneBlocked => "disk_usage_prune_blocked",
             Self::Interrupted => "interrupted",
             Self::Killed => "killed",
         }
@@ -613,6 +623,15 @@ mod tests {
         assert_eq!(
             ExitCode::LedgerBudgetExceeded.outcome_class(),
             "ledger_budget_exceeded"
+        );
+    }
+
+    #[test]
+    fn disk_usage_prune_blocked_exit_code_is_50() {
+        assert_eq!(ExitCode::DiskUsagePruneBlocked.as_i32(), 50);
+        assert_eq!(
+            ExitCode::DiskUsagePruneBlocked.outcome_class(),
+            "disk_usage_prune_blocked"
         );
     }
 }

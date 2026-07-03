@@ -150,6 +150,7 @@ pub async fn run() -> Result<(), Error> {
             args::BenchCmd::Merge(m) => bench_merge(&m),
             args::BenchCmd::Shard(s) => bench_shard(s),
             args::BenchCmd::Ledger(l) => bench_ledger(l),
+            args::BenchCmd::Du(d) => bench_du(d),
         },
         Command::Agent { cmd } => match *cmd {
             args::AgentCmd::SkillsPreview(s) => agent_skills_preview_cmd(&s),
@@ -4394,6 +4395,79 @@ fn bench_ledger(c: args::LedgerCmd) -> Result<(), Error> {
             ),
         );
     }
+    Ok(())
+}
+
+fn bench_du(c: args::DuCmd) -> Result<(), Error> {
+    let is_json = match c.format.as_str() {
+        "text" => false,
+        "json" => true,
+        other => {
+            return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+                "du: unknown --format `{other}` (expected `text` or `json`)"
+            ))));
+        }
+    };
+
+    if c.apply && !c.prune {
+        return Err(Error::Config(crate::error::ConfigError::Invalid(
+            "du: --apply requires --prune".into(),
+        )));
+    }
+
+    if c.prune && c.keep_last == Some(0) {
+        return Err(Error::Config(crate::error::ConfigError::Invalid(
+            "du: --keep-last must be at least 1 (0 retains nothing, silently turning every non-in-progress sweep into a candidate and defeating the --apply selector requirement)".into(),
+        )));
+    }
+
+    let older_than = c
+        .older_than
+        .as_deref()
+        .map(crate::run::du::parse_age_selector)
+        .transpose()
+        .map_err(|e| {
+            Error::Config(crate::error::ConfigError::Invalid(format!(
+                "du: --older-than: {e}"
+            )))
+        })?;
+
+    if c.apply && older_than.is_none() && c.keep_last.is_none() && !c.incomplete_only {
+        return Err(Error::Config(crate::error::ConfigError::Invalid(
+            "du: --apply refuses to run without at least one of --older-than, --keep-last, or --incomplete-only".into(),
+        )));
+    }
+
+    let prune = c.prune.then_some(crate::run::du::PruneRequest {
+        apply: c.apply,
+        older_than,
+        keep_last: c.keep_last,
+        incomplete_only: c.incomplete_only,
+    });
+
+    let report = crate::run::du::run(&crate::run::du::DuArgs {
+        root: c.root,
+        in_progress_window: std::time::Duration::from_secs(c.in_progress_window_secs),
+        prune,
+    })?;
+
+    if is_json {
+        let json = crate::artifact::to_string_pretty(
+            crate::artifact::ArtifactKind::DiskUsageReport,
+            &report,
+        )?;
+        println!("{json}");
+    } else {
+        print!("{}", crate::run::du::render_text(&report));
+    }
+
+    if report.prune.as_ref().is_some_and(|p| p.blocked) {
+        exit_with_outcome(
+            crate::exit_code::ExitCode::DiskUsagePruneBlocked,
+            "du: --prune --apply skipped at least one sweep not confirmed idle within --in-progress-window, or failed to delete a candidate (see `protected`/`deletion_failed` in the report)",
+        );
+    }
+
     Ok(())
 }
 

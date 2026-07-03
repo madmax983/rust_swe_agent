@@ -1536,6 +1536,8 @@ pub enum BenchCmd {
     ContextPressure(ContextPressureCmd),
     /// Roll up cumulative actual spend across runs/sweeps by model, dataset, and day (zero-cost: reads only on-disk artifacts).
     Ledger(LedgerCmd),
+    /// Report run-directory disk footprint per sweep/category and safely reclaim stale sweeps (zero-cost: reads only on-disk artifacts).
+    Du(DuCmd),
 }
 
 /// `bench merge` — combine completed sharded sweep directories into one canonical aggregate.
@@ -2287,6 +2289,57 @@ pub struct LedgerCmd {
     /// (`ledger_budget_exceeded`).
     #[arg(long, value_name = "USD")]
     pub budget_usd: Option<f64>,
+}
+
+/// `bench du` — report run-directory disk footprint per sweep/category and
+/// safely reclaim stale sweeps (zero-cost: reads only on-disk artifacts).
+#[derive(Debug, Args)]
+pub struct DuCmd {
+    /// Runs directory to scan. Each immediate subdirectory is treated as one
+    /// sweep; files directly under `--root` are counted as `unattributed`.
+    #[arg(long, value_name = "DIR")]
+    pub root: std::path::PathBuf,
+
+    /// Output format: `text` (default) or `json`.
+    #[arg(long, default_value = "text", value_name = "FMT")]
+    pub format: String,
+
+    /// Evaluate (and, with `--apply`, delete) stale sweeps. Dry-run unless
+    /// combined with `--apply`.
+    #[arg(long)]
+    pub prune: bool,
+
+    /// Actually delete the sweeps selected by `--prune`. Requires `--prune`
+    /// and at least one of `--older-than`, `--keep-last`, or
+    /// `--incomplete-only`.
+    #[arg(long)]
+    pub apply: bool,
+
+    /// Only consider sweeps whose most recent on-disk activity is at least
+    /// this old. Accepts `<N>d`, `<N>h`, `<N>m`, `<N>s`, or a plain integer
+    /// number of seconds.
+    #[arg(long, value_name = "DURATION")]
+    pub older_than: Option<String>,
+
+    /// Never delete the N most recently modified sweeps, regardless of the
+    /// other selectors.
+    #[arg(long, value_name = "N")]
+    pub keep_last: Option<usize>,
+
+    /// Only consider sweeps classified `incomplete` or `interrupted` (never
+    /// `complete`).
+    #[arg(long)]
+    pub incomplete_only: bool,
+
+    /// A sweep with a partial trajectory checkpoint touched within this many
+    /// seconds of "now" is classified `in-progress` and is never a prune
+    /// candidate.
+    #[arg(
+        long = "in-progress-window",
+        default_value_t = 900,
+        value_name = "SECONDS"
+    )]
+    pub in_progress_window_secs: u64,
 }
 
 /// `bench budget-fit` — right-size step, cost, and wallclock caps (zero-cost: reads only on-disk artifacts).
