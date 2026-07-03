@@ -4,9 +4,9 @@
 //! Read-only, $0, zero network: every answer comes from the compiled-in
 //! [`crate::explain`] registry. Mirrors `rustc --explain E0382`.
 
-use super::args::ExplainCmd;
 use crate::error::{ConfigError, Error};
 use crate::explain::{self, EXPLAIN_SCHEMA_VERSION, ExplainEntry};
+use crate::run::args::ExplainCmd;
 use comfy_table::{Table, modifiers::UTF8_ROUND_CORNERS, presets::UTF8_FULL};
 
 /// Run `max explain`. With a selector, explain that code/class/category; without

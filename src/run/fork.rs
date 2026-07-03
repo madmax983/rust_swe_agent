@@ -9,7 +9,6 @@ use async_trait::async_trait;
 use sha2::Digest;
 
 use crate::agent::{Agent, DefaultAgent, default::DefaultAgentBuilder};
-use crate::cli::args::ForkCmd;
 use crate::config::{Config, EnvKind, McpServerCfg};
 #[cfg(feature = "docker")]
 use crate::env::DockerEnvironment;
@@ -21,6 +20,7 @@ use crate::model::{
     DeterministicModel, FallbackModel, Message, Model, ModelResponse, ModelUsage, QueryOpts,
 };
 use crate::redaction::Redactor;
+use crate::run::args::ForkCmd;
 use crate::run::reproduce::{
     DriftSeverity, compare_manifests, filter_hard_drifts, load_manifest_from_sweep,
 };

@@ -1,5 +1,5 @@
-use super::args::CatalogCmd;
 use crate::error::Error;
+use crate::run::args::CatalogCmd;
 use comfy_table::{Table, modifiers::UTF8_ROUND_CORNERS, presets::UTF8_FULL};
 use serde::Serialize;
 

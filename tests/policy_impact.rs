@@ -7,7 +7,7 @@
 #[test]
 fn test_cli_parsing_policy_impact() {
     use clap::Parser;
-    use maxwells_daemon::cli::args::BenchCmd;
+    use maxwells_daemon::run::args::BenchCmd;
     use maxwells_daemon::cli::{Cli, Command};
 
     let args = Cli::try_parse_from(["max", "bench", "policy-impact", "--sweep", "some_sweep_dir"]);

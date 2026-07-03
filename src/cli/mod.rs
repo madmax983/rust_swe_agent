@@ -15,7 +15,6 @@ use crate::config::Config;
 use crate::error::Error;
 use crate::exit_code::ExitCode;
 
-pub mod args;
 pub mod catalog;
 pub mod explain;
 
@@ -38,29 +37,29 @@ pub struct Cli {
 #[allow(clippy::large_enum_variant)]
 pub enum Command {
     /// Run one task end-to-end and write a trajectory.
-    Mini(Box<args::MiniCmd>),
+    Mini(Box<crate::run::args::MiniCmd>),
     /// Smoke-test: scripted model + local env writes a trajectory.
-    HelloWorld(args::HelloWorldCmd),
+    HelloWorld(crate::run::args::HelloWorldCmd),
     /// Replay an existing trajectory using a deterministic model.
-    Replay(Box<args::ReplayCmd>),
+    Replay(Box<crate::run::args::ReplayCmd>),
     /// SWE-bench parallel sweep.
     Bench {
         #[command(subcommand)]
-        cmd: Box<args::BenchCmd>,
+        cmd: Box<crate::run::args::BenchCmd>,
     },
     /// Agent inspection and preview utilities.
     Agent {
         #[command(subcommand)]
-        cmd: Box<args::AgentCmd>,
+        cmd: Box<crate::run::args::AgentCmd>,
     },
     /// Serve a read-only local sweep browser (requires the `ui-server` feature).
-    Ui(args::UiCmd),
+    Ui(crate::run::args::UiCmd),
     /// Self-describing command catalog for operator discoverability.
-    Catalog(args::CatalogCmd),
+    Catalog(crate::run::args::CatalogCmd),
     /// Explain an exit code, outcome class, or failure category offline.
-    Explain(args::ExplainCmd),
+    Explain(crate::run::args::ExplainCmd),
     /// Generate shell completion scripts.
-    Completions(args::CompletionsCmd),
+    Completions(crate::run::args::CompletionsCmd),
     /// Reap leftover Maxwell's Daemon containers, including legacy labels.
     Cleanup,
 }
@@ -87,93 +86,95 @@ pub async fn run() -> Result<(), Error> {
         }
         Command::Replay(r) => Box::pin(replay_cmd(*r)).await,
         Command::Bench { cmd } => match *cmd {
-            args::BenchCmd::Swebench(s) => Box::pin(bench_swebench(*s)).await,
-            args::BenchCmd::Rehearsal(mut s) => {
+            crate::run::args::BenchCmd::Swebench(s) => Box::pin(bench_swebench(*s)).await,
+            crate::run::args::BenchCmd::Rehearsal(mut s) => {
                 s.rehearse = true;
                 Box::pin(bench_swebench(*s)).await
             }
-            args::BenchCmd::Forecast(s) => Box::pin(bench_forecast(*s)).await,
-            args::BenchCmd::Calibrate(c) => bench_calibrate(c),
-            args::BenchCmd::Doctor(s) => Box::pin(bench_doctor(*s)).await,
-            args::BenchCmd::Compare(c) => bench_compare(c),
-            args::BenchCmd::DiffConfig(c) => bench_diff_config(c),
-            args::BenchCmd::Evaluate(e) => bench_evaluate(e),
-            args::BenchCmd::Inspect(i) => bench_inspect(i),
-            args::BenchCmd::Tail(t) => bench_tail(t).await,
-            args::BenchCmd::Watch(w) => bench_watch(w).await,
-            args::BenchCmd::Triage(t) => bench_triage(t),
-            args::BenchCmd::TriageDiff(t) => bench_triage_diff(t),
-            args::BenchCmd::CommandStats(c) => bench_command_stats(c),
-            args::BenchCmd::Grep(g) => bench_grep(g),
-            args::BenchCmd::Events(e) => bench_events(e),
-            args::BenchCmd::Frontier(f) => bench_frontier(f),
-            args::BenchCmd::Reproduce(r) => Box::pin(bench_reproduce(r)).await,
-            args::BenchCmd::Bundle(b) => bench_bundle(b),
-            args::BenchCmd::Matrix(m) => Box::pin(bench_matrix(m)).await,
-            args::BenchCmd::EvaluatorSelftest(s) => bench_evaluator_selftest(s),
-            args::BenchCmd::Report(r) => bench_report(r),
-            args::BenchCmd::Retry(r) => Box::pin(bench_retry(r)).await,
-            args::BenchCmd::Behavior(b) => bench_behavior(b),
-            args::BenchCmd::ToolCoverage(t) => bench_tool_coverage(t),
-            args::BenchCmd::SkillCoverage(t) => bench_skill_coverage(t),
-            args::BenchCmd::PolicyImpact(p) => bench_policy_impact(p),
-            args::BenchCmd::InstanceHistory(h) => bench_instance_history(h),
-            args::BenchCmd::CacheStats(c) => bench_cache_stats(c),
-            args::BenchCmd::ContextPressure(c) => bench_context_pressure(c),
-            args::BenchCmd::BudgetFit(b) => bench_budget_fit(b),
-            args::BenchCmd::ToolAblation(t) => Box::pin(bench_tool_ablation(t)).await,
-            args::BenchCmd::Ladder(l) => bench_ladder(l),
-            args::BenchCmd::Cascade(c) => Box::pin(bench_cascade(c)).await,
-            args::BenchCmd::TestProgress(t) => bench_test_progress(t),
-            args::BenchCmd::Fork(f) => Box::pin(crate::run::fork::run(f)).await,
-            args::BenchCmd::Power(p) => bench_power(&p),
-            args::BenchCmd::DatasetStats(s) => bench_dataset_stats(s),
-            args::BenchCmd::DatasetVerify(s) => bench_dataset_verify(s),
-            args::BenchCmd::Bisect(b) => Box::pin(bench_bisect(b)).await,
-            args::BenchCmd::Audit(a) => bench_audit(a),
-            args::BenchCmd::FailureDigest(f) => bench_failure_digest(f),
-            args::BenchCmd::EvalFlake(f) => bench_eval_flake(f),
-            args::BenchCmd::Annotate(a) => bench_annotate(a),
-            args::BenchCmd::StagnationReport(s) => bench_stagnation_report(s),
-            args::BenchCmd::SelfCheck(s) => bench_self_check(s),
-            args::BenchCmd::Import(i) => bench_import(i),
-            args::BenchCmd::ExportCi(c) => bench_export_ci(c),
-            args::BenchCmd::ContaminationCheck(c) => bench_contamination_check(c),
-            args::BenchCmd::ScriptabilityCheck(s) => Box::pin(bench_scriptability_check(s)).await,
-            args::BenchCmd::NearMiss(n) => bench_near_miss(n),
-            args::BenchCmd::Assert(a) => bench_assert(a),
-            args::BenchCmd::Subset(s) => bench_subset(s),
-            args::BenchCmd::EvalParity(p) => bench_eval_parity(p),
-            args::BenchCmd::Utilization(u) => bench_utilization(u),
-            args::BenchCmd::ExportOtlp(c) => Box::pin(bench_export_otlp(c)).await,
-            args::BenchCmd::Variance(v) => bench_variance(v),
-            args::BenchCmd::Merge(m) => bench_merge(&m),
-            args::BenchCmd::Shard(s) => bench_shard(s),
-            args::BenchCmd::Ledger(l) => bench_ledger(l),
-            args::BenchCmd::Du(d) => bench_du(d),
+            crate::run::args::BenchCmd::Forecast(s) => Box::pin(bench_forecast(*s)).await,
+            crate::run::args::BenchCmd::Calibrate(c) => bench_calibrate(c),
+            crate::run::args::BenchCmd::Doctor(s) => Box::pin(bench_doctor(*s)).await,
+            crate::run::args::BenchCmd::Compare(c) => bench_compare(c),
+            crate::run::args::BenchCmd::DiffConfig(c) => bench_diff_config(c),
+            crate::run::args::BenchCmd::Evaluate(e) => bench_evaluate(e),
+            crate::run::args::BenchCmd::Inspect(i) => bench_inspect(i),
+            crate::run::args::BenchCmd::Tail(t) => bench_tail(t).await,
+            crate::run::args::BenchCmd::Watch(w) => bench_watch(w).await,
+            crate::run::args::BenchCmd::Triage(t) => bench_triage(t),
+            crate::run::args::BenchCmd::TriageDiff(t) => bench_triage_diff(t),
+            crate::run::args::BenchCmd::CommandStats(c) => bench_command_stats(c),
+            crate::run::args::BenchCmd::Grep(g) => bench_grep(g),
+            crate::run::args::BenchCmd::Events(e) => bench_events(e),
+            crate::run::args::BenchCmd::Frontier(f) => bench_frontier(f),
+            crate::run::args::BenchCmd::Reproduce(r) => Box::pin(bench_reproduce(r)).await,
+            crate::run::args::BenchCmd::Bundle(b) => bench_bundle(b),
+            crate::run::args::BenchCmd::Matrix(m) => Box::pin(bench_matrix(m)).await,
+            crate::run::args::BenchCmd::EvaluatorSelftest(s) => bench_evaluator_selftest(s),
+            crate::run::args::BenchCmd::Report(r) => bench_report(r),
+            crate::run::args::BenchCmd::Retry(r) => Box::pin(bench_retry(r)).await,
+            crate::run::args::BenchCmd::Behavior(b) => bench_behavior(b),
+            crate::run::args::BenchCmd::ToolCoverage(t) => bench_tool_coverage(t),
+            crate::run::args::BenchCmd::SkillCoverage(t) => bench_skill_coverage(t),
+            crate::run::args::BenchCmd::PolicyImpact(p) => bench_policy_impact(p),
+            crate::run::args::BenchCmd::InstanceHistory(h) => bench_instance_history(h),
+            crate::run::args::BenchCmd::CacheStats(c) => bench_cache_stats(c),
+            crate::run::args::BenchCmd::ContextPressure(c) => bench_context_pressure(c),
+            crate::run::args::BenchCmd::BudgetFit(b) => bench_budget_fit(b),
+            crate::run::args::BenchCmd::ToolAblation(t) => Box::pin(bench_tool_ablation(t)).await,
+            crate::run::args::BenchCmd::Ladder(l) => bench_ladder(l),
+            crate::run::args::BenchCmd::Cascade(c) => Box::pin(bench_cascade(c)).await,
+            crate::run::args::BenchCmd::TestProgress(t) => bench_test_progress(t),
+            crate::run::args::BenchCmd::Fork(f) => Box::pin(crate::run::fork::run(f)).await,
+            crate::run::args::BenchCmd::Power(p) => bench_power(&p),
+            crate::run::args::BenchCmd::DatasetStats(s) => bench_dataset_stats(s),
+            crate::run::args::BenchCmd::DatasetVerify(s) => bench_dataset_verify(s),
+            crate::run::args::BenchCmd::Bisect(b) => Box::pin(bench_bisect(b)).await,
+            crate::run::args::BenchCmd::Audit(a) => bench_audit(a),
+            crate::run::args::BenchCmd::FailureDigest(f) => bench_failure_digest(f),
+            crate::run::args::BenchCmd::EvalFlake(f) => bench_eval_flake(f),
+            crate::run::args::BenchCmd::Annotate(a) => bench_annotate(a),
+            crate::run::args::BenchCmd::StagnationReport(s) => bench_stagnation_report(s),
+            crate::run::args::BenchCmd::SelfCheck(s) => bench_self_check(s),
+            crate::run::args::BenchCmd::Import(i) => bench_import(i),
+            crate::run::args::BenchCmd::ExportCi(c) => bench_export_ci(c),
+            crate::run::args::BenchCmd::ContaminationCheck(c) => bench_contamination_check(c),
+            crate::run::args::BenchCmd::ScriptabilityCheck(s) => {
+                Box::pin(bench_scriptability_check(s)).await
+            }
+            crate::run::args::BenchCmd::NearMiss(n) => bench_near_miss(n),
+            crate::run::args::BenchCmd::Assert(a) => bench_assert(a),
+            crate::run::args::BenchCmd::Subset(s) => bench_subset(s),
+            crate::run::args::BenchCmd::EvalParity(p) => bench_eval_parity(p),
+            crate::run::args::BenchCmd::Utilization(u) => bench_utilization(u),
+            crate::run::args::BenchCmd::ExportOtlp(c) => Box::pin(bench_export_otlp(c)).await,
+            crate::run::args::BenchCmd::Variance(v) => bench_variance(v),
+            crate::run::args::BenchCmd::Merge(m) => bench_merge(&m),
+            crate::run::args::BenchCmd::Shard(s) => bench_shard(s),
+            crate::run::args::BenchCmd::Ledger(l) => bench_ledger(l),
+            crate::run::args::BenchCmd::Du(d) => bench_du(d),
         },
         Command::Agent { cmd } => match *cmd {
-            args::AgentCmd::SkillsPreview(s) => agent_skills_preview_cmd(&s),
-            args::AgentCmd::RedactCheck(r) => agent_redact_check_cmd(&r),
-            args::AgentCmd::RedactAudit(a) => agent_redact_audit_cmd(&a),
-            args::AgentCmd::InjectionAudit(a) => agent_injection_audit_cmd(&a),
-            args::AgentCmd::Env {
-                cmd: args::AgentEnvCmd::Preview(ref p),
+            crate::run::args::AgentCmd::SkillsPreview(s) => agent_skills_preview_cmd(&s),
+            crate::run::args::AgentCmd::RedactCheck(r) => agent_redact_check_cmd(&r),
+            crate::run::args::AgentCmd::RedactAudit(a) => agent_redact_audit_cmd(&a),
+            crate::run::args::AgentCmd::InjectionAudit(a) => agent_injection_audit_cmd(&a),
+            crate::run::args::AgentCmd::Env {
+                cmd: crate::run::args::AgentEnvCmd::Preview(ref p),
             } => agent_env_preview_cmd(p),
-            args::AgentCmd::Config {
-                cmd: args::AgentConfigCmd::Resolve(ref r),
+            crate::run::args::AgentCmd::Config {
+                cmd: crate::run::args::AgentConfigCmd::Resolve(ref r),
             } => agent_config_resolve_cmd(r),
-            args::AgentCmd::Stability(s) => Box::pin(agent_stability_cmd(*s)).await,
-            args::AgentCmd::Suite(s) => Box::pin(agent_suite_cmd(*s)).await,
-            args::AgentCmd::PolicyCheck(p) => agent_policy_check_cmd(&p),
-            args::AgentCmd::Apply(a) => agent_apply_cmd(&a),
-            args::AgentCmd::BestOf(b) => Box::pin(agent_best_of_cmd(*b)).await,
-            args::AgentCmd::Profile(p) => agent_profile_cmd(&p),
-            args::AgentCmd::Runs(r) => agent_runs_cmd(&r),
-            args::AgentCmd::FsAudit(a) => agent_fs_audit_cmd(&a),
-            args::AgentCmd::ArtifactCheck(a) => agent_artifact_check_cmd(&a),
-            args::AgentCmd::Doctor(d) => agent_doctor_cmd(&d),
-            args::AgentCmd::Annotate(a) => agent_annotate_cmd(&a),
+            crate::run::args::AgentCmd::Stability(s) => Box::pin(agent_stability_cmd(*s)).await,
+            crate::run::args::AgentCmd::Suite(s) => Box::pin(agent_suite_cmd(*s)).await,
+            crate::run::args::AgentCmd::PolicyCheck(p) => agent_policy_check_cmd(&p),
+            crate::run::args::AgentCmd::Apply(a) => agent_apply_cmd(&a),
+            crate::run::args::AgentCmd::BestOf(b) => Box::pin(agent_best_of_cmd(*b)).await,
+            crate::run::args::AgentCmd::Profile(p) => agent_profile_cmd(&p),
+            crate::run::args::AgentCmd::Runs(r) => agent_runs_cmd(&r),
+            crate::run::args::AgentCmd::FsAudit(a) => agent_fs_audit_cmd(&a),
+            crate::run::args::AgentCmd::ArtifactCheck(a) => agent_artifact_check_cmd(&a),
+            crate::run::args::AgentCmd::Doctor(d) => agent_doctor_cmd(&d),
+            crate::run::args::AgentCmd::Annotate(a) => agent_annotate_cmd(&a),
         },
         Command::Catalog(c) => catalog::run_catalog(c),
         Command::Explain(c) => explain::run_explain(&c),
@@ -196,7 +197,7 @@ pub async fn run() -> Result<(), Error> {
     }
 }
 
-fn agent_env_preview_cmd(p: &args::EnvPreviewCmd) -> Result<(), Error> {
+fn agent_env_preview_cmd(p: &crate::run::args::EnvPreviewCmd) -> Result<(), Error> {
     let cfg = match &p.config {
         Some(path) => Config::load(path)?,
         None => Config::defaults()?,
@@ -208,7 +209,7 @@ fn agent_env_preview_cmd(p: &args::EnvPreviewCmd) -> Result<(), Error> {
         show_values: p.show_values,
     };
     let preview = crate::run::env_preview::run_env_preview(&cfg, &opts);
-    if p.format == args::PreviewFormatArg::Json {
+    if p.format == crate::run::args::PreviewFormatArg::Json {
         let wrapped = serde_json::json!({ "env_preview": &preview });
         println!(
             "{}",
@@ -228,7 +229,7 @@ fn agent_env_preview_cmd(p: &args::EnvPreviewCmd) -> Result<(), Error> {
     Ok(())
 }
 
-fn agent_doctor_cmd(d: &args::AgentDoctorCmd) -> Result<(), Error> {
+fn agent_doctor_cmd(d: &crate::run::args::AgentDoctorCmd) -> Result<(), Error> {
     use crate::run::agent_doctor::{DoctorOpts, run_doctor};
 
     let cfg = match &d.config {
@@ -243,8 +244,8 @@ fn agent_doctor_cmd(d: &args::AgentDoctorCmd) -> Result<(), Error> {
     // resolved from config so a docker-backed config is not silently validated
     // as local (which would skip the Docker daemon check).
     let env_kind = match d.env {
-        Some(args::EnvTypeArg::Local) => crate::config::schema::EnvKind::Local,
-        Some(args::EnvTypeArg::Docker) => crate::config::schema::EnvKind::Docker,
+        Some(crate::run::args::EnvTypeArg::Local) => crate::config::schema::EnvKind::Local,
+        Some(crate::run::args::EnvTypeArg::Docker) => crate::config::schema::EnvKind::Docker,
         None => cfg.root.environment.kind,
     };
     let opts = DoctorOpts {
@@ -259,7 +260,7 @@ fn agent_doctor_cmd(d: &args::AgentDoctorCmd) -> Result<(), Error> {
 
     let report = run_doctor(&opts);
 
-    if d.format == args::PreviewFormatArg::Json {
+    if d.format == crate::run::args::PreviewFormatArg::Json {
         println!(
             "{}",
             serde_json::to_string_pretty(&report).map_err(|e| {
@@ -296,7 +297,7 @@ fn print_doctor_text(report: &crate::run::agent_doctor::DoctorReport) {
     println!("[agent doctor] host is {verdict}.");
 }
 
-fn agent_config_resolve_cmd(r: &args::ConfigResolveCmd) -> Result<(), Error> {
+fn agent_config_resolve_cmd(r: &crate::run::args::ConfigResolveCmd) -> Result<(), Error> {
     use crate::run::config_resolve::{ConfigResolveArgs, format_text, run_config_resolve};
 
     if let Some(v) = r.observation_head_ratio {
@@ -374,7 +375,7 @@ fn agent_config_resolve_cmd(r: &args::ConfigResolveCmd) -> Result<(), Error> {
     Ok(())
 }
 
-fn agent_redact_check_cmd(r: &args::RedactCheckCmd) -> Result<(), Error> {
+fn agent_redact_check_cmd(r: &crate::run::args::RedactCheckCmd) -> Result<(), Error> {
     use crate::run::redact_check::{
         RedactCheckFormat, RedactCheckOpts, RedactCheckSource, format_human, format_json,
         run_redact_check,
@@ -452,7 +453,7 @@ fn agent_redact_check_cmd(r: &args::RedactCheckCmd) -> Result<(), Error> {
     Ok(())
 }
 
-fn agent_redact_audit_cmd(a: &args::RedactAuditCmd) -> Result<(), Error> {
+fn agent_redact_audit_cmd(a: &crate::run::args::RedactAuditCmd) -> Result<(), Error> {
     use crate::run::redact_audit::{
         AuditFormat, AuditOpts, format_human, format_json, is_audited_file, mask_report_path,
         output_aliases_scanned_artifact, parse_format, run_redact_audit,
@@ -545,7 +546,7 @@ fn agent_redact_audit_cmd(a: &args::RedactAuditCmd) -> Result<(), Error> {
     Ok(())
 }
 
-fn agent_injection_audit_cmd(a: &args::InjectionAuditCmd) -> Result<(), Error> {
+fn agent_injection_audit_cmd(a: &crate::run::args::InjectionAuditCmd) -> Result<(), Error> {
     use crate::run::injection_audit::{
         AuditFormat, AuditOpts, format_json, format_jsonl, format_text, parse_fail_on,
         parse_format, run_injection_audit,
@@ -636,7 +637,7 @@ fn agent_injection_audit_cmd(a: &args::InjectionAuditCmd) -> Result<(), Error> {
     Ok(())
 }
 
-fn agent_policy_check_cmd(p: &args::PolicyCheckCmd) -> Result<(), Error> {
+fn agent_policy_check_cmd(p: &crate::run::args::PolicyCheckCmd) -> Result<(), Error> {
     use crate::run::policy_check::{
         ExpectAssertion, PolicyCheckOpts, PolicyCheckSource, VerdictKind, format_json, format_text,
         run_policy_check,
@@ -693,11 +694,11 @@ fn agent_policy_check_cmd(p: &args::PolicyCheckCmd) -> Result<(), Error> {
     let output = run_policy_check(&cfg, &opts)?;
 
     let formatted = match p.format {
-        args::PolicyCheckFormatArg::Json => {
+        crate::run::args::PolicyCheckFormatArg::Json => {
             let json_val = format_json(&output).map_err(Error::Json)?;
             serde_json::to_string_pretty(&json_val).map_err(Error::Json)?
         }
-        args::PolicyCheckFormatArg::Text => format_text(&output),
+        crate::run::args::PolicyCheckFormatArg::Text => format_text(&output),
     };
 
     if let Some(out_path) = &p.output {
@@ -769,7 +770,7 @@ fn resolve_and_validate_workdir(
     }
 }
 
-fn agent_apply_cmd(a: &args::AgentApplyCmd) -> Result<(), Error> {
+fn agent_apply_cmd(a: &crate::run::args::AgentApplyCmd) -> Result<(), Error> {
     use crate::run::apply::{AgentApplyOpts, PatchSelector, exit_code_for, run_agent_apply};
 
     // Resolve selector
@@ -858,7 +859,7 @@ fn agent_apply_cmd(a: &args::AgentApplyCmd) -> Result<(), Error> {
 }
 
 #[allow(clippy::too_many_lines)]
-async fn mini_cmd(m: args::MiniCmd) -> Result<(), Error> {
+async fn mini_cmd(m: crate::run::args::MiniCmd) -> Result<(), Error> {
     let mut issue_provenance = None;
     let sources_count = [
         m.task.is_some(),
@@ -1223,7 +1224,7 @@ async fn mini_cmd(m: args::MiniCmd) -> Result<(), Error> {
     Ok(())
 }
 
-fn agent_skills_preview_cmd(s: &args::SkillsPreviewCmd) -> Result<(), Error> {
+fn agent_skills_preview_cmd(s: &crate::run::args::SkillsPreviewCmd) -> Result<(), Error> {
     let cfg = match &s.config {
         Some(p) => crate::config::Config::load(p)?,
         None => crate::config::Config::defaults()?,
@@ -1360,7 +1361,7 @@ fn redact_json_strings(v: &mut serde_json::Value, redactor: &crate::redaction::R
 }
 
 fn mini_render_only_cmd(
-    m: args::MiniCmd,
+    m: crate::run::args::MiniCmd,
     task: String,
     cfg: crate::config::Config,
 ) -> Result<(), Error> {
@@ -1453,7 +1454,7 @@ fn validate_resume_or_exit(traj: &crate::trajectory::Trajectory, path: &std::pat
 
 /// Enforce that no cap flags were raised without `--resume-allow-step-bump`.
 /// Exits if any disallowed flag is present.
-fn reject_cap_bump_without_flag(m: &args::MiniCmd) {
+fn reject_cap_bump_without_flag(m: &crate::run::args::MiniCmd) {
     let bumped: Vec<&str> = [
         (m.step_limit.is_some(), "--step-limit"),
         (m.task_timeout_secs.is_some(), "--task-timeout-secs"),
@@ -1480,7 +1481,7 @@ fn reject_cap_bump_without_flag(m: &args::MiniCmd) {
 /// continues from the last persisted step without replaying the prefix (AC #3).
 #[allow(clippy::too_many_lines)]
 async fn mini_resume_cmd(
-    m: args::MiniCmd,
+    m: crate::run::args::MiniCmd,
     mut cfg: Config,
     resume_path: std::path::PathBuf,
 ) -> Result<(), Error> {
@@ -1692,7 +1693,7 @@ fn validate_continue_or_exit(traj: &crate::trajectory::Trajectory, path: &std::p
 }
 
 /// Enforce that no cap flags were raised without `--continue-allow-step-bump`.
-fn reject_cap_bump_without_flag_continue(m: &args::MiniCmd) {
+fn reject_cap_bump_without_flag_continue(m: &crate::run::args::MiniCmd) {
     let bumped: Vec<&str> = [
         (m.step_limit.is_some(), "--step-limit"),
         (m.task_timeout_secs.is_some(), "--task-timeout-secs"),
@@ -1720,7 +1721,7 @@ fn reject_cap_bump_without_flag_continue(m: &args::MiniCmd) {
 /// written to a new trajectory file that records the parent lineage.
 #[allow(clippy::too_many_lines)]
 async fn mini_continue_cmd(
-    m: args::MiniCmd,
+    m: crate::run::args::MiniCmd,
     mut cfg: Config,
     continue_path: std::path::PathBuf,
     follow_up_task: String,
@@ -1951,7 +1952,7 @@ async fn mini_continue_cmd(
     run_result
 }
 
-fn apply_read_only_policy(m: &args::MiniCmd, cfg: &Config) -> Result<(), Error> {
+fn apply_read_only_policy(m: &crate::run::args::MiniCmd, cfg: &Config) -> Result<(), Error> {
     if !m.read_only {
         return Ok(());
     }
@@ -1971,7 +1972,7 @@ fn apply_read_only_policy(m: &args::MiniCmd, cfg: &Config) -> Result<(), Error> 
     Ok(())
 }
 
-fn bench_swebench_render_only(s: &args::SwebenchCmd) -> Result<(), Error> {
+fn bench_swebench_render_only(s: &crate::run::args::SwebenchCmd) -> Result<(), Error> {
     crate::run::render_only::reject_incompatible_flags(
         &crate::run::render_only::IncompatibleFlags {
             per_task_budget_usd: s.per_task_budget_usd,
@@ -1992,14 +1993,16 @@ fn bench_swebench_render_only(s: &args::SwebenchCmd) -> Result<(), Error> {
     let instances = crate::run::swebench::load_dataset_from_bytes_pub(&dataset_bytes)?;
 
     let stratify_by = s.stratify_by.map(|v| match v {
-        args::StratifyByArg::Repo => crate::run::swebench::StratifyBy::Repo,
+        crate::run::args::StratifyByArg::Repo => crate::run::swebench::StratifyBy::Repo,
     });
     let stratify_mode = match s
         .stratify_mode
-        .unwrap_or(args::StratifyModeArg::Proportional)
+        .unwrap_or(crate::run::args::StratifyModeArg::Proportional)
     {
-        args::StratifyModeArg::Proportional => crate::run::swebench::StratifyMode::Proportional,
-        args::StratifyModeArg::Balanced => crate::run::swebench::StratifyMode::Balanced,
+        crate::run::args::StratifyModeArg::Proportional => {
+            crate::run::swebench::StratifyMode::Proportional
+        }
+        crate::run::args::StratifyModeArg::Balanced => crate::run::swebench::StratifyMode::Balanced,
     };
 
     let (instances, _filter_spec) = crate::run::swebench::apply_subset(
@@ -2047,7 +2050,7 @@ fn bench_swebench_render_only(s: &args::SwebenchCmd) -> Result<(), Error> {
     Ok(())
 }
 
-async fn replay_cmd(r: args::ReplayCmd) -> Result<(), Error> {
+async fn replay_cmd(r: crate::run::args::ReplayCmd) -> Result<(), Error> {
     let mut cfg = match &r.config {
         Some(p) => Config::load(p)?,
         None => Config::defaults()?,
@@ -2078,7 +2081,7 @@ async fn replay_cmd(r: args::ReplayCmd) -> Result<(), Error> {
 }
 
 #[allow(clippy::too_many_lines)]
-pub async fn bench_swebench(s: args::SwebenchCmd) -> Result<(), Error> {
+pub async fn bench_swebench(s: crate::run::args::SwebenchCmd) -> Result<(), Error> {
     let mut sweep_cmd = s;
 
     if sweep_cmd.rehearse {
@@ -2300,7 +2303,7 @@ pub async fn bench_swebench(s: args::SwebenchCmd) -> Result<(), Error> {
     Ok(())
 }
 
-async fn bench_doctor(mut s: args::SwebenchCmd) -> Result<(), Error> {
+async fn bench_doctor(mut s: crate::run::args::SwebenchCmd) -> Result<(), Error> {
     if s.render_only {
         return Err(Error::Config(crate::error::ConfigError::Invalid(
             "--render-only is not supported for `bench doctor`; \
@@ -2372,7 +2375,7 @@ async fn bench_doctor(mut s: args::SwebenchCmd) -> Result<(), Error> {
     Ok(())
 }
 
-async fn bench_forecast(s: args::SwebenchCmd) -> Result<(), Error> {
+async fn bench_forecast(s: crate::run::args::SwebenchCmd) -> Result<(), Error> {
     if s.render_only {
         return Err(Error::Config(crate::error::ConfigError::Invalid(
             "--render-only is not supported for `bench forecast`; \
@@ -2444,7 +2447,7 @@ fn exit_if_systemic_halt_sweep(results: &crate::run::swebench::SweepResults) {
 }
 
 async fn run_forecast_from_cmd(
-    mut s: args::SwebenchCmd,
+    mut s: crate::run::args::SwebenchCmd,
 ) -> Result<crate::run::forecast::ForecastOutcome, Error> {
     if s.rehearse {
         return Err(Error::Config(crate::error::ConfigError::Invalid(
@@ -2499,7 +2502,7 @@ fn print_forecast_report(
     }
 }
 
-fn bench_calibrate(c: args::CalibrateCmd) -> Result<(), Error> {
+fn bench_calibrate(c: crate::run::args::CalibrateCmd) -> Result<(), Error> {
     let report = crate::run::calibrate::compute(&crate::run::calibrate::CalibrationArgs {
         forecast_path: c.forecast.clone(),
         results_path: c.results.clone(),
@@ -2539,7 +2542,7 @@ fn bench_calibrate(c: args::CalibrateCmd) -> Result<(), Error> {
     Ok(())
 }
 
-fn swebench_config_from_cmd(s: &args::SwebenchCmd) -> Result<Config, Error> {
+fn swebench_config_from_cmd(s: &crate::run::args::SwebenchCmd) -> Result<Config, Error> {
     if s.stratify_by.is_none() && s.stratify_mode.is_some() {
         return Err(Error::Config(crate::error::ConfigError::Invalid(
             "`--stratify-mode` requires `--stratify-by`".into(),
@@ -2768,7 +2771,7 @@ fn build_patch_capture_spec(
 }
 
 fn mini_github_pr_options(
-    m: &args::MiniCmd,
+    m: &crate::run::args::MiniCmd,
     cfg: &Config,
     trajectory_name: &str,
 ) -> Result<Option<crate::run::github_pr::GithubPrOptions>, Error> {
@@ -2803,7 +2806,7 @@ fn mini_github_pr_options(
 }
 
 fn swebench_github_pr_config(
-    github: &args::SwebenchGithubPrArgs,
+    github: &crate::run::args::SwebenchGithubPrArgs,
 ) -> Option<crate::run::github_pr::GithubPrSweepConfig> {
     if !github.open_prs && !github.github_pr_dry_run {
         return None;
@@ -2824,7 +2827,9 @@ fn swebench_github_pr_config(
     })
 }
 
-fn validate_swebench_github_pr_args(github: &args::SwebenchGithubPrArgs) -> Result<(), Error> {
+fn validate_swebench_github_pr_args(
+    github: &crate::run::args::SwebenchGithubPrArgs,
+) -> Result<(), Error> {
     if !github.open_prs && !github.github_pr_dry_run {
         return Ok(());
     }
@@ -2896,7 +2901,7 @@ fn github_pr_failure_count(results: &crate::run::swebench::SweepResults) -> usiz
 }
 
 fn parse_dataset_source(
-    s: &args::SwebenchCmd,
+    s: &crate::run::args::SwebenchCmd,
 ) -> Result<(crate::run::dataset::DatasetSource, std::path::PathBuf), Error> {
     let cache_dir = s
         .dataset_cache_dir
@@ -2931,7 +2936,7 @@ fn parse_dataset_source(
 }
 
 fn swebench_args_from_cmd(
-    s: args::SwebenchCmd,
+    s: crate::run::args::SwebenchCmd,
     cfg: Config,
     preflight_mode: &str,
 ) -> Result<crate::run::swebench::SwebenchArgs, Error> {
@@ -2954,14 +2959,18 @@ fn swebench_args_from_cmd(
         sample: s.sample,
         seed: s.seed,
         stratify_by: s.stratify_by.map(|v| match v {
-            args::StratifyByArg::Repo => crate::run::swebench::StratifyBy::Repo,
+            crate::run::args::StratifyByArg::Repo => crate::run::swebench::StratifyBy::Repo,
         }),
         stratify_mode: match s
             .stratify_mode
-            .unwrap_or(args::StratifyModeArg::Proportional)
+            .unwrap_or(crate::run::args::StratifyModeArg::Proportional)
         {
-            args::StratifyModeArg::Proportional => crate::run::swebench::StratifyMode::Proportional,
-            args::StratifyModeArg::Balanced => crate::run::swebench::StratifyMode::Balanced,
+            crate::run::args::StratifyModeArg::Proportional => {
+                crate::run::swebench::StratifyMode::Proportional
+            }
+            crate::run::args::StratifyModeArg::Balanced => {
+                crate::run::swebench::StratifyMode::Balanced
+            }
         },
         max_retries: s.max_retries,
         retry_on: s.retry_on,
@@ -3007,18 +3016,18 @@ fn swebench_args_from_cmd(
 fn resolve_interactive_mode(
     interactive: bool,
     yolo: bool,
-    ui: args::UiKind,
+    ui: crate::run::args::UiKind,
 ) -> crate::run::mini::InteractiveMode {
     use crate::run::mini::InteractiveMode;
     match (interactive, yolo) {
         (false, false) => InteractiveMode::Off,
         (_, true) => match ui {
-            args::UiKind::Stderr => InteractiveMode::YoloStatusOnly,
-            args::UiKind::Ratatui => InteractiveMode::RatatuiMonitor,
+            crate::run::args::UiKind::Stderr => InteractiveMode::YoloStatusOnly,
+            crate::run::args::UiKind::Ratatui => InteractiveMode::RatatuiMonitor,
         },
         (true, false) => match ui {
-            args::UiKind::Stderr => InteractiveMode::StderrPrompt,
-            args::UiKind::Ratatui => InteractiveMode::Ratatui,
+            crate::run::args::UiKind::Stderr => InteractiveMode::StderrPrompt,
+            crate::run::args::UiKind::Ratatui => InteractiveMode::Ratatui,
         },
     }
 }
@@ -3050,7 +3059,7 @@ fn parse_verify_checks(
 }
 
 #[allow(clippy::too_many_lines)]
-fn bench_compare(c: args::CompareCmd) -> Result<(), Error> {
+fn bench_compare(c: crate::run::args::CompareCmd) -> Result<(), Error> {
     if c.inspect_diff.is_some() && c.emit_diff_script.is_some() {
         return Err(Error::Config(crate::error::ConfigError::Invalid(
             "compare: pass only one of --inspect-diff or --emit-diff-script".into(),
@@ -3079,7 +3088,7 @@ fn bench_compare(c: args::CompareCmd) -> Result<(), Error> {
         max_patch_size_regression_pct: c.max_patch_size_regression,
         breakdown,
         min_delta_pp: c.breakdown_min_delta_pp / 100.0,
-        cost_attribution: matches!(c.cost_attribution, args::OnOffArg::On),
+        cost_attribution: matches!(c.cost_attribution, crate::run::args::OnOffArg::On),
         cost_attribution_min_delta_usd: c.cost_attribution_min_delta_usd,
         min_significance: c.min_significance,
         regression_significance: c.regression_significance,
@@ -3279,7 +3288,7 @@ fn print_contamination_adjusted_rate(
 }
 
 #[allow(clippy::needless_pass_by_value)]
-fn bench_diff_config(c: args::DiffConfigCmd) -> Result<(), Error> {
+fn bench_diff_config(c: crate::run::args::DiffConfigCmd) -> Result<(), Error> {
     let args = crate::run::diff_config::DiffConfigArgs {
         baseline: c.baseline,
         candidate: c.candidate,
@@ -3414,7 +3423,7 @@ fn print_trajectory_diff(
 }
 
 #[cfg(feature = "ui-server")]
-async fn ui_cmd(u: args::UiCmd) -> Result<(), Error> {
+async fn ui_cmd(u: crate::run::args::UiCmd) -> Result<(), Error> {
     crate::run::ui::run(crate::run::ui::UiArgs {
         sweep: u.sweep,
         port: u.port,
@@ -3426,7 +3435,7 @@ async fn ui_cmd(u: args::UiCmd) -> Result<(), Error> {
 
 #[cfg(not(feature = "ui-server"))]
 #[allow(clippy::unused_async)]
-async fn ui_cmd(_u: args::UiCmd) -> Result<(), Error> {
+async fn ui_cmd(_u: crate::run::args::UiCmd) -> Result<(), Error> {
     exit_with_outcome(
         ExitCode::FeatureUnavailable,
         "the `ui` command requires the `ui-server` Cargo feature, which was not compiled in. \
@@ -3453,7 +3462,7 @@ fn cleanup_cmd() -> Result<(), Error> {
 }
 
 #[allow(clippy::too_many_lines)]
-fn bench_evaluate(e: args::EvaluateCmd) -> Result<(), Error> {
+fn bench_evaluate(e: crate::run::args::EvaluateCmd) -> Result<(), Error> {
     let backend = match e.backend.as_str() {
         "sb-cli" => crate::run::evaluate::EvaluateBackend::SbCli,
         "none" => crate::run::evaluate::EvaluateBackend::None,
@@ -3477,7 +3486,7 @@ fn bench_evaluate(e: args::EvaluateCmd) -> Result<(), Error> {
         sb_split: e.sb_split,
         run_id: e.run_id,
         breakdown,
-        cost_attribution: matches!(e.cost_attribution, args::OnOffArg::On),
+        cost_attribution: matches!(e.cost_attribution, crate::run::args::OnOffArg::On),
         force: e.force,
     };
     let eval = crate::run::evaluate::run(&args)?;
@@ -3566,7 +3575,7 @@ fn bench_evaluate(e: args::EvaluateCmd) -> Result<(), Error> {
     Ok(())
 }
 
-async fn bench_reproduce(r: args::ReproduceCmd) -> Result<(), Error> {
+async fn bench_reproduce(r: crate::run::args::ReproduceCmd) -> Result<(), Error> {
     use crate::run::reproduce::{
         compare_manifests, filter_hard_drifts, load_manifest_from_sweep, render_summary,
         write_report,
@@ -3813,7 +3822,7 @@ fn hash_manifest(manifest: &crate::run::swebench::ProvenanceManifest) -> String 
 
 #[allow(clippy::too_many_lines)]
 fn reproduce_swebench_args(
-    r: &args::ReproduceCmd,
+    r: &crate::run::args::ReproduceCmd,
     manifest: &crate::run::swebench::ProvenanceManifest,
     source_results: &crate::run::swebench::SweepResults,
     source_manifest_hash: &str,
@@ -3945,7 +3954,7 @@ fn reproduce_swebench_args(
 }
 
 fn bundle_reproduce_dataset_path(
-    r: &args::ReproduceCmd,
+    r: &crate::run::args::ReproduceCmd,
     manifest: &crate::run::swebench::ProvenanceManifest,
 ) -> Result<Option<std::path::PathBuf>, Error> {
     if !r
@@ -3972,7 +3981,7 @@ fn bundle_reproduce_dataset_path(
     ))))
 }
 
-fn bench_frontier(f: args::FrontierCmd) -> Result<(), Error> {
+fn bench_frontier(f: crate::run::args::FrontierCmd) -> Result<(), Error> {
     let format = f.format;
     let report =
         crate::run::frontier::compute(&crate::run::frontier::FrontierArgs { dirs: f.dirs })?;
@@ -4015,7 +4024,7 @@ fn parse_breakdown_selection(
     Ok(crate::run::evaluate::BreakdownSelection { axes })
 }
 
-fn bench_inspect(i: args::InspectCmd) -> Result<(), Error> {
+fn bench_inspect(i: crate::run::args::InspectCmd) -> Result<(), Error> {
     if i.list_formats {
         use crate::trajectory::export::registry;
         for fmt in registry() {
@@ -4096,7 +4105,7 @@ fn bench_inspect(i: args::InspectCmd) -> Result<(), Error> {
     Ok(())
 }
 
-fn bench_inspect_export(i: args::InspectCmd) -> Result<(), Error> {
+fn bench_inspect_export(i: crate::run::args::InspectCmd) -> Result<(), Error> {
     if i.filter.is_some() {
         return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
             "inspect: --format {} cannot be combined with --filter; use --instance",
@@ -4180,7 +4189,7 @@ fn bench_inspect_export(i: args::InspectCmd) -> Result<(), Error> {
     Ok(())
 }
 
-fn bench_command_stats(c: args::CommandStatsCmd) -> Result<(), Error> {
+fn bench_command_stats(c: crate::run::args::CommandStatsCmd) -> Result<(), Error> {
     let format = match c.format.as_str() {
         "text" => CommandStatsFormat::Text,
         "json" => CommandStatsFormat::Json,
@@ -4209,7 +4218,7 @@ fn bench_command_stats(c: args::CommandStatsCmd) -> Result<(), Error> {
     Ok(())
 }
 
-fn bench_test_progress(t: args::TestProgressCmd) -> Result<(), Error> {
+fn bench_test_progress(t: crate::run::args::TestProgressCmd) -> Result<(), Error> {
     let is_json = match t.format.as_str() {
         "text" => false,
         "json" => true,
@@ -4238,7 +4247,7 @@ fn bench_test_progress(t: args::TestProgressCmd) -> Result<(), Error> {
     Ok(())
 }
 
-fn bench_power(p: &args::PowerCmd) -> Result<(), Error> {
+fn bench_power(p: &crate::run::args::PowerCmd) -> Result<(), Error> {
     let is_json = match p.format.as_str() {
         "text" => false,
         "json" => true,
@@ -4257,7 +4266,7 @@ fn bench_power(p: &args::PowerCmd) -> Result<(), Error> {
     Ok(())
 }
 
-fn bench_behavior(b: args::BehaviorCmd) -> Result<(), Error> {
+fn bench_behavior(b: crate::run::args::BehaviorCmd) -> Result<(), Error> {
     let is_json = match b.format.as_str() {
         "text" => false,
         "json" => true,
@@ -4289,7 +4298,7 @@ fn bench_behavior(b: args::BehaviorCmd) -> Result<(), Error> {
     Ok(())
 }
 
-fn bench_instance_history(h: args::InstanceHistoryCmd) -> Result<(), Error> {
+fn bench_instance_history(h: crate::run::args::InstanceHistoryCmd) -> Result<(), Error> {
     // Threshold must be in (0.5, 1.0] — values outside this range produce
     // nonsensical or misleading stability labels.
     if h.stable_threshold <= 0.5 || h.stable_threshold > 1.0 || !h.stable_threshold.is_finite() {
@@ -4362,7 +4371,7 @@ fn bench_instance_history(h: args::InstanceHistoryCmd) -> Result<(), Error> {
     Ok(())
 }
 
-fn bench_cache_stats(c: args::CacheStatsCmd) -> Result<(), Error> {
+fn bench_cache_stats(c: crate::run::args::CacheStatsCmd) -> Result<(), Error> {
     let is_json = match c.format.as_str() {
         "text" => false,
         "json" => true,
@@ -4389,7 +4398,7 @@ fn bench_cache_stats(c: args::CacheStatsCmd) -> Result<(), Error> {
     Ok(())
 }
 
-fn bench_ledger(c: args::LedgerCmd) -> Result<(), Error> {
+fn bench_ledger(c: crate::run::args::LedgerCmd) -> Result<(), Error> {
     let is_json = match c.format.as_str() {
         "text" => false,
         "json" => true,
@@ -4425,7 +4434,7 @@ fn bench_ledger(c: args::LedgerCmd) -> Result<(), Error> {
     Ok(())
 }
 
-fn bench_du(c: args::DuCmd) -> Result<(), Error> {
+fn bench_du(c: crate::run::args::DuCmd) -> Result<(), Error> {
     let is_json = match c.format.as_str() {
         "text" => false,
         "json" => true,
@@ -4498,7 +4507,7 @@ fn bench_du(c: args::DuCmd) -> Result<(), Error> {
     Ok(())
 }
 
-fn bench_context_pressure(c: args::ContextPressureCmd) -> Result<(), Error> {
+fn bench_context_pressure(c: crate::run::args::ContextPressureCmd) -> Result<(), Error> {
     let is_json = match c.format.as_str() {
         "text" => false,
         "json" => true,
@@ -4524,7 +4533,7 @@ fn bench_context_pressure(c: args::ContextPressureCmd) -> Result<(), Error> {
     Ok(())
 }
 
-fn bench_budget_fit(b: args::BudgetFitCmd) -> Result<(), Error> {
+fn bench_budget_fit(b: crate::run::args::BudgetFitCmd) -> Result<(), Error> {
     if !(0.0..=0.5).contains(&b.at_cap_tolerance) {
         return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
             "budget-fit: --at-cap-tolerance must be in [0.0, 0.5], got {}",
@@ -4570,7 +4579,7 @@ fn bench_budget_fit(b: args::BudgetFitCmd) -> Result<(), Error> {
     Ok(())
 }
 
-fn bench_variance(v: args::BenchVarianceCmd) -> Result<(), Error> {
+fn bench_variance(v: crate::run::args::BenchVarianceCmd) -> Result<(), Error> {
     let is_json = match v.format.as_str() {
         "text" => false,
         "json" => true,
@@ -4602,7 +4611,7 @@ fn bench_variance(v: args::BenchVarianceCmd) -> Result<(), Error> {
 }
 
 #[allow(clippy::too_many_lines)]
-async fn bench_tool_ablation(t: args::ToolAblationCmd) -> Result<(), Error> {
+async fn bench_tool_ablation(t: crate::run::args::ToolAblationCmd) -> Result<(), Error> {
     let cache_dir = t
         .dataset_cache_dir
         .clone()
@@ -4771,7 +4780,7 @@ async fn bench_tool_ablation(t: args::ToolAblationCmd) -> Result<(), Error> {
     Ok(())
 }
 
-fn bench_ladder(l: args::LadderCmd) -> Result<(), Error> {
+fn bench_ladder(l: crate::run::args::LadderCmd) -> Result<(), Error> {
     let format = l
         .format
         .parse::<crate::run::ladder::LadderFormat>()
@@ -4798,7 +4807,7 @@ fn bench_ladder(l: args::LadderCmd) -> Result<(), Error> {
     Ok(())
 }
 
-fn bench_stagnation_report(s: args::StagnationReportCmd) -> Result<(), Error> {
+fn bench_stagnation_report(s: crate::run::args::StagnationReportCmd) -> Result<(), Error> {
     let format = s
         .format
         .parse::<crate::run::stagnation_report::StagnationReportFormat>()
@@ -4824,7 +4833,7 @@ fn bench_stagnation_report(s: args::StagnationReportCmd) -> Result<(), Error> {
     Ok(())
 }
 
-fn bench_self_check(s: args::SelfCheckCmd) -> Result<(), Error> {
+fn bench_self_check(s: crate::run::args::SelfCheckCmd) -> Result<(), Error> {
     let args = crate::run::self_check::SelfCheckArgs {
         sweep_dir: s.sweep,
         format: s.format.clone(),
@@ -4851,13 +4860,13 @@ fn bench_self_check(s: args::SelfCheckCmd) -> Result<(), Error> {
     Ok(())
 }
 
-fn bench_export_ci(c: args::ExportCiCmd) -> Result<(), Error> {
+fn bench_export_ci(c: crate::run::args::ExportCiCmd) -> Result<(), Error> {
     use crate::run::export_ci::{ExportCiArgs, ExportCiFormat};
 
     let format = match c.format {
-        args::ExportCiFormatArg::Junit => ExportCiFormat::Junit,
-        args::ExportCiFormatArg::GithubAnnotations => ExportCiFormat::GithubAnnotations,
-        args::ExportCiFormatArg::Both => ExportCiFormat::Both,
+        crate::run::args::ExportCiFormatArg::Junit => ExportCiFormat::Junit,
+        crate::run::args::ExportCiFormatArg::GithubAnnotations => ExportCiFormat::GithubAnnotations,
+        crate::run::args::ExportCiFormatArg::Both => ExportCiFormat::Both,
     };
 
     let result = crate::run::export_ci::run(&ExportCiArgs {
@@ -4885,7 +4894,7 @@ fn bench_export_ci(c: args::ExportCiCmd) -> Result<(), Error> {
     Ok(())
 }
 
-fn bench_contamination_check(c: args::ContaminationCheckCmd) -> Result<(), Error> {
+fn bench_contamination_check(c: crate::run::args::ContaminationCheckCmd) -> Result<(), Error> {
     use crate::run::contamination_check::{ContaminationCheckArgs, ContaminationReport};
 
     if let Some(threshold) = c.fail_on_high {
@@ -4939,7 +4948,9 @@ fn bench_contamination_check(c: args::ContaminationCheckCmd) -> Result<(), Error
     Ok(())
 }
 
-async fn bench_scriptability_check(cmd: args::ScriptabilityCheckCmd) -> Result<(), Error> {
+async fn bench_scriptability_check(
+    cmd: crate::run::args::ScriptabilityCheckCmd,
+) -> Result<(), Error> {
     use crate::run::scriptability_check::{ScriptabilityCheckArgs, render_text};
 
     // value_parser = ["text", "json"] on the arg ensures only valid values reach here.
@@ -4973,7 +4984,7 @@ async fn bench_scriptability_check(cmd: args::ScriptabilityCheckCmd) -> Result<(
     Ok(())
 }
 
-fn bench_near_miss(n: args::NearMissCmd) -> Result<(), Error> {
+fn bench_near_miss(n: crate::run::args::NearMissCmd) -> Result<(), Error> {
     use crate::run::near_miss::{NearMissArgs, NearMissFormat, render_json, render_text, run};
 
     let format: NearMissFormat = n.format.parse().map_err(|e| {
@@ -5007,7 +5018,7 @@ fn bench_near_miss(n: args::NearMissCmd) -> Result<(), Error> {
 }
 
 #[allow(clippy::unnecessary_wraps)]
-fn bench_assert(a: args::AssertCmd) -> Result<(), Error> {
+fn bench_assert(a: crate::run::args::AssertCmd) -> Result<(), Error> {
     use crate::run::assert::{AssertArgs, run_assert};
 
     let args = AssertArgs {
@@ -5037,7 +5048,7 @@ fn bench_assert(a: args::AssertCmd) -> Result<(), Error> {
     Ok(())
 }
 
-fn bench_import(i: args::ImportCmd) -> Result<(), Error> {
+fn bench_import(i: crate::run::args::ImportCmd) -> Result<(), Error> {
     let format = match i.format.as_str() {
         "json" => crate::run::import::ImportFormat::Json,
         "text" => crate::run::import::ImportFormat::Text,
@@ -5113,7 +5124,7 @@ fn bench_import(i: args::ImportCmd) -> Result<(), Error> {
     Ok(())
 }
 
-async fn bench_cascade(c: args::CascadeCmd) -> Result<(), Error> {
+async fn bench_cascade(c: crate::run::args::CascadeCmd) -> Result<(), Error> {
     let cache_dir = c
         .dataset_cache_dir
         .clone()
@@ -5164,14 +5175,18 @@ async fn bench_cascade(c: args::CascadeCmd) -> Result<(), Error> {
         sample: c.sample,
         seed: c.seed,
         stratify_by: c.stratify_by.map(|v| match v {
-            args::StratifyByArg::Repo => crate::run::swebench::StratifyBy::Repo,
+            crate::run::args::StratifyByArg::Repo => crate::run::swebench::StratifyBy::Repo,
         }),
         stratify_mode: match c
             .stratify_mode
-            .unwrap_or(args::StratifyModeArg::Proportional)
+            .unwrap_or(crate::run::args::StratifyModeArg::Proportional)
         {
-            args::StratifyModeArg::Proportional => crate::run::swebench::StratifyMode::Proportional,
-            args::StratifyModeArg::Balanced => crate::run::swebench::StratifyMode::Balanced,
+            crate::run::args::StratifyModeArg::Proportional => {
+                crate::run::swebench::StratifyMode::Proportional
+            }
+            crate::run::args::StratifyModeArg::Balanced => {
+                crate::run::swebench::StratifyMode::Balanced
+            }
         },
         sweep_cost_limit_usd: c.sweep_cost_limit_usd,
         resume: c.resume,
@@ -5193,7 +5208,7 @@ async fn bench_cascade(c: args::CascadeCmd) -> Result<(), Error> {
     Ok(())
 }
 
-fn bench_tool_coverage(t: args::ToolCoverageCmd) -> Result<(), Error> {
+fn bench_tool_coverage(t: crate::run::args::ToolCoverageCmd) -> Result<(), Error> {
     let is_json = match t.format.as_str() {
         "text" => false,
         "json" => true,
@@ -5222,7 +5237,7 @@ fn bench_tool_coverage(t: args::ToolCoverageCmd) -> Result<(), Error> {
     Ok(())
 }
 
-fn bench_skill_coverage(t: args::SkillCoverageCmd) -> Result<(), Error> {
+fn bench_skill_coverage(t: crate::run::args::SkillCoverageCmd) -> Result<(), Error> {
     let is_json = match t.format.as_str() {
         "text" => false,
         "json" => true,
@@ -5254,7 +5269,7 @@ fn bench_skill_coverage(t: args::SkillCoverageCmd) -> Result<(), Error> {
     Ok(())
 }
 
-fn bench_policy_impact(t: args::PolicyImpactCmd) -> Result<(), Error> {
+fn bench_policy_impact(t: crate::run::args::PolicyImpactCmd) -> Result<(), Error> {
     let is_json = match t.format.as_str() {
         "text" => false,
         "json" => true,
@@ -5275,7 +5290,7 @@ fn bench_policy_impact(t: args::PolicyImpactCmd) -> Result<(), Error> {
     Ok(())
 }
 
-fn bench_grep(g: args::GrepCmd) -> Result<(), Error> {
+fn bench_grep(g: crate::run::args::GrepCmd) -> Result<(), Error> {
     let format = match g.format.as_str() {
         "text" => GrepOutputFormat::Text,
         "json" => GrepOutputFormat::Json,
@@ -5327,7 +5342,7 @@ fn bench_grep(g: args::GrepCmd) -> Result<(), Error> {
     Ok(())
 }
 
-fn bench_events(e: args::EventsCmd) -> Result<(), Error> {
+fn bench_events(e: crate::run::args::EventsCmd) -> Result<(), Error> {
     use crate::run::events;
     let format = match e.format.as_str() {
         "table" => EventsOutputFormat::Table,
@@ -5442,7 +5457,7 @@ fn events_recorded_config_dirs(path: &std::path::Path) -> Vec<std::path::PathBuf
     dirs
 }
 
-fn bench_triage(t: args::TriageCmd) -> Result<(), Error> {
+fn bench_triage(t: crate::run::args::TriageCmd) -> Result<(), Error> {
     let format = match t.format.as_str() {
         "text" => TriageFormat::Text,
         "json" => TriageFormat::Json,
@@ -5470,7 +5485,7 @@ fn bench_triage(t: args::TriageCmd) -> Result<(), Error> {
     }
 }
 
-fn bench_triage_diff(t: args::TriageDiffCmd) -> Result<(), Error> {
+fn bench_triage_diff(t: crate::run::args::TriageDiffCmd) -> Result<(), Error> {
     let is_json = match t.format.as_str() {
         "text" => false,
         "json" => true,
@@ -5511,7 +5526,7 @@ fn bench_triage_diff(t: args::TriageDiffCmd) -> Result<(), Error> {
     Ok(())
 }
 
-fn bench_bundle(b: args::BundleCmd) -> Result<(), Error> {
+fn bench_bundle(b: crate::run::args::BundleCmd) -> Result<(), Error> {
     if let Some(archive) = b.verify {
         let report = crate::run::bundle::verify_bundle(&archive).map_err(bundle_error_to_error)?;
         if report.problems.is_empty() {
@@ -5559,7 +5574,7 @@ fn bench_bundle(b: args::BundleCmd) -> Result<(), Error> {
 }
 
 #[allow(clippy::too_many_lines)]
-async fn bench_matrix(m: args::MatrixCmd) -> Result<(), Error> {
+async fn bench_matrix(m: crate::run::args::MatrixCmd) -> Result<(), Error> {
     let cache_dir = m
         .dataset_cache_dir
         .clone()
@@ -5599,14 +5614,18 @@ async fn bench_matrix(m: args::MatrixCmd) -> Result<(), Error> {
         sample: m.sample,
         seed: m.seed,
         stratify_by: m.stratify_by.map(|v| match v {
-            args::StratifyByArg::Repo => crate::run::swebench::StratifyBy::Repo,
+            crate::run::args::StratifyByArg::Repo => crate::run::swebench::StratifyBy::Repo,
         }),
         stratify_mode: match m
             .stratify_mode
-            .unwrap_or(args::StratifyModeArg::Proportional)
+            .unwrap_or(crate::run::args::StratifyModeArg::Proportional)
         {
-            args::StratifyModeArg::Proportional => crate::run::swebench::StratifyMode::Proportional,
-            args::StratifyModeArg::Balanced => crate::run::swebench::StratifyMode::Balanced,
+            crate::run::args::StratifyModeArg::Proportional => {
+                crate::run::swebench::StratifyMode::Proportional
+            }
+            crate::run::args::StratifyModeArg::Balanced => {
+                crate::run::swebench::StratifyMode::Balanced
+            }
         },
         sweep_cost_limit_usd: m.sweep_cost_limit_usd,
         matrix_parallelism: m.matrix_parallelism,
@@ -5644,7 +5663,7 @@ async fn bench_matrix(m: args::MatrixCmd) -> Result<(), Error> {
 }
 
 #[allow(clippy::unnecessary_wraps)]
-fn bench_evaluator_selftest(s: args::EvaluatorSelftestCmd) -> Result<(), Error> {
+fn bench_evaluator_selftest(s: crate::run::args::EvaluatorSelftestCmd) -> Result<(), Error> {
     let selftest_args = crate::run::evaluator_selftest::SelftestArgs {
         dataset_path: s.dataset_path,
         output_dir: s.output,
@@ -5681,7 +5700,7 @@ fn bench_evaluator_selftest(s: args::EvaluatorSelftestCmd) -> Result<(), Error> 
     Ok(())
 }
 
-fn bench_report(r: args::ReportCmd) -> Result<(), Error> {
+fn bench_report(r: crate::run::args::ReportCmd) -> Result<(), Error> {
     let format = match r.format.as_str() {
         "markdown" | "md" => crate::run::report::ReportFormat::Markdown,
         "html" => crate::run::report::ReportFormat::Html,
@@ -5701,7 +5720,7 @@ fn bench_report(r: args::ReportCmd) -> Result<(), Error> {
 }
 
 #[allow(clippy::too_many_lines)]
-async fn bench_retry(r: args::RetryCmd) -> Result<(), Error> {
+async fn bench_retry(r: crate::run::args::RetryCmd) -> Result<(), Error> {
     use crate::run::retry::{
         archive_trajectories, build_history_entry, detect_harness_mismatch, generate_retry_id,
         load_sweep_results, merge_retry_results, resolve_selection, restore_archived_trajectories,
@@ -5886,7 +5905,7 @@ async fn bench_retry(r: args::RetryCmd) -> Result<(), Error> {
 
 #[allow(clippy::too_many_lines)]
 fn retry_swebench_args(
-    r: &args::RetryCmd,
+    r: &crate::run::args::RetryCmd,
     results: &crate::run::swebench::SweepResults,
     instance_ids_csv: &str,
 ) -> Result<crate::run::swebench::SwebenchArgs, Error> {
@@ -6079,7 +6098,7 @@ enum EventsOutputFormat {
     Jsonl,
 }
 
-async fn bench_tail(t: args::TailCmd) -> Result<(), Error> {
+async fn bench_tail(t: crate::run::args::TailCmd) -> Result<(), Error> {
     if t.interval_ms == 0 {
         return Err(Error::Config(crate::error::ConfigError::Invalid(
             "tail: --interval-ms must be greater than 0".into(),
@@ -6095,7 +6114,7 @@ async fn bench_tail(t: args::TailCmd) -> Result<(), Error> {
         }
     };
 
-    if t.ui == args::TailUiKind::Ratatui {
+    if t.ui == crate::run::args::TailUiKind::Ratatui {
         reject_incompatible_tail_ratatui_ui(t.once, format)?;
         if !std::io::IsTerminal::is_terminal(&std::io::stdin())
             || !std::io::IsTerminal::is_terminal(&std::io::stdout())
@@ -6145,7 +6164,7 @@ async fn bench_tail(t: args::TailCmd) -> Result<(), Error> {
     }
 }
 
-async fn bench_watch(w: args::WatchCmd) -> Result<(), Error> {
+async fn bench_watch(w: crate::run::args::WatchCmd) -> Result<(), Error> {
     crate::run::watch::run(&crate::run::watch::WatchArgs {
         sweep: w.sweep,
         instance: w.instance,
@@ -6235,7 +6254,7 @@ fn print_doctor_skills_preview(cfg: &crate::config::Config) {
 }
 
 #[allow(clippy::needless_pass_by_value)]
-fn bench_dataset_stats(s: args::DatasetStatsCmd) -> Result<(), Error> {
+fn bench_dataset_stats(s: crate::run::args::DatasetStatsCmd) -> Result<(), Error> {
     if s.format != "text" && s.format != "json" {
         return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
             "dataset-stats: unknown --format `{}`; valid values: text, json",
@@ -6248,14 +6267,16 @@ fn bench_dataset_stats(s: args::DatasetStatsCmd) -> Result<(), Error> {
     let full_instances = crate::run::swebench::load_dataset_from_bytes_pub(&dataset_bytes)?;
 
     let stratify_by = s.stratify_by.map(|v| match v {
-        args::StratifyByArg::Repo => crate::run::swebench::StratifyBy::Repo,
+        crate::run::args::StratifyByArg::Repo => crate::run::swebench::StratifyBy::Repo,
     });
     let stratify_mode = match s
         .stratify_mode
-        .unwrap_or(args::StratifyModeArg::Proportional)
+        .unwrap_or(crate::run::args::StratifyModeArg::Proportional)
     {
-        args::StratifyModeArg::Proportional => crate::run::swebench::StratifyMode::Proportional,
-        args::StratifyModeArg::Balanced => crate::run::swebench::StratifyMode::Balanced,
+        crate::run::args::StratifyModeArg::Proportional => {
+            crate::run::swebench::StratifyMode::Proportional
+        }
+        crate::run::args::StratifyModeArg::Balanced => crate::run::swebench::StratifyMode::Balanced,
     };
 
     let params = crate::run::swebench::ApplySubsetParams {
@@ -6301,16 +6322,16 @@ fn bench_dataset_stats(s: args::DatasetStatsCmd) -> Result<(), Error> {
         .instance_ids
         .clone_from(&s.instance_ids);
     stats.subset_selector.stratify_by = s.stratify_by.map(|v| match v {
-        args::StratifyByArg::Repo => "repo".to_owned(),
+        crate::run::args::StratifyByArg::Repo => "repo".to_owned(),
     });
     stats.subset_selector.stratify_mode = if s.stratify_by.is_some() {
         Some(
             match s
                 .stratify_mode
-                .unwrap_or(args::StratifyModeArg::Proportional)
+                .unwrap_or(crate::run::args::StratifyModeArg::Proportional)
             {
-                args::StratifyModeArg::Proportional => "proportional".to_owned(),
-                args::StratifyModeArg::Balanced => "balanced".to_owned(),
+                crate::run::args::StratifyModeArg::Proportional => "proportional".to_owned(),
+                crate::run::args::StratifyModeArg::Balanced => "balanced".to_owned(),
             },
         )
     } else {
@@ -6329,7 +6350,7 @@ fn bench_dataset_stats(s: args::DatasetStatsCmd) -> Result<(), Error> {
 }
 
 #[allow(clippy::needless_pass_by_value, clippy::too_many_lines)]
-fn bench_subset(s: args::SubsetCmd) -> Result<(), Error> {
+fn bench_subset(s: crate::run::args::SubsetCmd) -> Result<(), Error> {
     use crate::run::dataset::DatasetSource;
     use crate::run::subset::{SubsetArgs, manifest_path_for, run_subset};
 
@@ -6367,14 +6388,16 @@ fn bench_subset(s: args::SubsetCmd) -> Result<(), Error> {
     let all_instances = crate::run::swebench::load_dataset_from_bytes_pub(&dataset_bytes)?;
 
     let stratify_by = s.stratify_by.map(|v| match v {
-        args::StratifyByArg::Repo => crate::run::swebench::StratifyBy::Repo,
+        crate::run::args::StratifyByArg::Repo => crate::run::swebench::StratifyBy::Repo,
     });
     let stratify_mode = match s
         .stratify_mode
-        .unwrap_or(args::StratifyModeArg::Proportional)
+        .unwrap_or(crate::run::args::StratifyModeArg::Proportional)
     {
-        args::StratifyModeArg::Proportional => crate::run::swebench::StratifyMode::Proportional,
-        args::StratifyModeArg::Balanced => crate::run::swebench::StratifyMode::Balanced,
+        crate::run::args::StratifyModeArg::Proportional => {
+            crate::run::swebench::StratifyMode::Proportional
+        }
+        crate::run::args::StratifyModeArg::Balanced => crate::run::swebench::StratifyMode::Balanced,
     };
 
     let params = crate::run::swebench::ApplySubsetParams {
@@ -6466,7 +6489,7 @@ fn bench_subset(s: args::SubsetCmd) -> Result<(), Error> {
 }
 
 #[allow(clippy::needless_pass_by_value)]
-fn bench_dataset_verify(s: args::DatasetVerifyCmd) -> Result<(), Error> {
+fn bench_dataset_verify(s: crate::run::args::DatasetVerifyCmd) -> Result<(), Error> {
     use crate::run::dataset::DatasetSource;
 
     if s.format != "text" && s.format != "json" {
@@ -6559,17 +6582,17 @@ fn bench_dataset_verify(s: args::DatasetVerifyCmd) -> Result<(), Error> {
     Ok(())
 }
 
-async fn bench_bisect(b: args::BisectCmd) -> Result<(), Error> {
+async fn bench_bisect(b: crate::run::args::BisectCmd) -> Result<(), Error> {
     crate::run::bisect::run(&b).await
 }
 
 #[allow(clippy::needless_pass_by_value)]
-fn bench_audit(a: args::AuditCmd) -> Result<(), Error> {
+fn bench_audit(a: crate::run::args::AuditCmd) -> Result<(), Error> {
     crate::run::audit::run(&a)
 }
 
-fn bench_merge(m: &args::MergeCmd) -> Result<(), Error> {
-    let is_json = matches!(m.format, args::MergeFormat::Json);
+fn bench_merge(m: &crate::run::args::MergeCmd) -> Result<(), Error> {
+    let is_json = matches!(m.format, crate::run::args::MergeFormat::Json);
     let report = crate::run::merge::run(m)?;
     if is_json {
         println!("{}", serde_json::to_string_pretty(&report)?);
@@ -6580,7 +6603,7 @@ fn bench_merge(m: &args::MergeCmd) -> Result<(), Error> {
 }
 
 #[allow(clippy::needless_pass_by_value)]
-fn bench_shard(s: args::ShardCmd) -> Result<(), Error> {
+fn bench_shard(s: crate::run::args::ShardCmd) -> Result<(), Error> {
     use crate::run::dataset::DatasetSource;
     use crate::run::shard::{ShardArgs, run_shard};
 
@@ -6649,11 +6672,16 @@ fn bench_shard(s: args::ShardCmd) -> Result<(), Error> {
     }
 
     let stratify_by = s.stratify_by.map(|v| match v {
-        args::StratifyByArg::Repo => crate::run::swebench::StratifyBy::Repo,
+        crate::run::args::StratifyByArg::Repo => crate::run::swebench::StratifyBy::Repo,
     });
-    let stratify_mode = match s.stratify_mode.unwrap_or(args::StratifyModeArg::Balanced) {
-        args::StratifyModeArg::Proportional => crate::run::swebench::StratifyMode::Proportional,
-        args::StratifyModeArg::Balanced => crate::run::swebench::StratifyMode::Balanced,
+    let stratify_mode = match s
+        .stratify_mode
+        .unwrap_or(crate::run::args::StratifyModeArg::Balanced)
+    {
+        crate::run::args::StratifyModeArg::Proportional => {
+            crate::run::swebench::StratifyMode::Proportional
+        }
+        crate::run::args::StratifyModeArg::Balanced => crate::run::swebench::StratifyMode::Balanced,
     };
 
     let alias_str = match &dataset_source {
@@ -6682,10 +6710,10 @@ fn bench_shard(s: args::ShardCmd) -> Result<(), Error> {
     })?;
 
     match s.format {
-        args::ShardFormat::Json => {
+        crate::run::args::ShardFormat::Json => {
             println!("{}", serde_json::to_string_pretty(&report)?);
         }
-        args::ShardFormat::Text => {
+        crate::run::args::ShardFormat::Text => {
             report.render_text();
         }
     }
@@ -6693,7 +6721,7 @@ fn bench_shard(s: args::ShardCmd) -> Result<(), Error> {
     Ok(())
 }
 
-fn bench_failure_digest(f: args::FailureDigestCmd) -> Result<(), Error> {
+fn bench_failure_digest(f: crate::run::args::FailureDigestCmd) -> Result<(), Error> {
     let format = match f.format.as_str() {
         "markdown" => crate::run::failure_digest::DigestFormat::Markdown,
         "json" => crate::run::failure_digest::DigestFormat::Json,
@@ -6726,7 +6754,7 @@ fn bench_failure_digest(f: args::FailureDigestCmd) -> Result<(), Error> {
     }
 }
 
-fn bench_eval_flake(f: args::EvalFlakeCmd) -> Result<(), Error> {
+fn bench_eval_flake(f: crate::run::args::EvalFlakeCmd) -> Result<(), Error> {
     let args = crate::run::eval_flake::EvalFlakeArgs {
         sweep_dir: f.sweep,
         replays: f.replays,
@@ -6750,7 +6778,7 @@ fn bench_eval_flake(f: args::EvalFlakeCmd) -> Result<(), Error> {
     Ok(())
 }
 
-fn bench_eval_parity(p: args::EvalParityCmd) -> Result<(), Error> {
+fn bench_eval_parity(p: crate::run::args::EvalParityCmd) -> Result<(), Error> {
     if let Some(min) = p.min_agreement {
         if min.is_nan() || !(0.0..=1.0).contains(&min) {
             return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
@@ -6791,7 +6819,7 @@ fn bench_eval_parity(p: args::EvalParityCmd) -> Result<(), Error> {
     Ok(())
 }
 
-fn bench_utilization(u: args::UtilizationCmd) -> Result<(), Error> {
+fn bench_utilization(u: crate::run::args::UtilizationCmd) -> Result<(), Error> {
     let is_json = match u.format.as_str() {
         "text" => false,
         "json" => true,
@@ -6836,7 +6864,7 @@ fn bench_utilization(u: args::UtilizationCmd) -> Result<(), Error> {
     Ok(())
 }
 
-async fn bench_export_otlp(c: args::ExportOtlpCmd) -> Result<(), Error> {
+async fn bench_export_otlp(c: crate::run::args::ExportOtlpCmd) -> Result<(), Error> {
     let summary = crate::run::export_otlp::run(&crate::run::export_otlp::ExportOtlpArgs {
         sweep_dir: c.sweep,
         otlp_endpoint: c.otlp_endpoint,
@@ -6847,13 +6875,13 @@ async fn bench_export_otlp(c: args::ExportOtlpCmd) -> Result<(), Error> {
     Ok(())
 }
 
-fn bench_annotate(a: args::AnnotateCmd) -> Result<(), Error> {
+fn bench_annotate(a: crate::run::args::AnnotateCmd) -> Result<(), Error> {
     use crate::run::annotate::{
         AnnotateAddArgs, AnnotateListArgs, AnnotateRmArgs, render_add_text, render_list_text,
         render_rm_text, run_add, run_list, run_rm,
     };
     match a.cmd {
-        args::AnnotateSubCmd::Add(cmd) => {
+        crate::run::args::AnnotateSubCmd::Add(cmd) => {
             let args = AnnotateAddArgs {
                 instance_id: cmd.instance_id,
                 tags: cmd.tag,
@@ -6864,7 +6892,7 @@ fn bench_annotate(a: args::AnnotateCmd) -> Result<(), Error> {
             eprint!("{}", render_add_text(&report));
             Ok(())
         }
-        args::AnnotateSubCmd::List(cmd) => {
+        crate::run::args::AnnotateSubCmd::List(cmd) => {
             let args = AnnotateListArgs {
                 instance: cmd.instance,
                 tag: cmd.tag,
@@ -6889,7 +6917,7 @@ fn bench_annotate(a: args::AnnotateCmd) -> Result<(), Error> {
             }
             Ok(())
         }
-        args::AnnotateSubCmd::Rm(cmd) => {
+        crate::run::args::AnnotateSubCmd::Rm(cmd) => {
             let args = AnnotateRmArgs {
                 instance_id: cmd.instance_id,
                 tag: cmd.tag,
@@ -6903,7 +6931,7 @@ fn bench_annotate(a: args::AnnotateCmd) -> Result<(), Error> {
 }
 
 fn parse_dataset_source_stats(
-    s: &args::DatasetStatsCmd,
+    s: &crate::run::args::DatasetStatsCmd,
 ) -> Result<(crate::run::dataset::DatasetSource, std::path::PathBuf), Error> {
     let cache_dir = s
         .dataset_cache_dir
@@ -7165,7 +7193,7 @@ pub fn compare_rehearsals(
 // ── agent suite ───────────────────────────────────────────────────────────────
 
 #[allow(clippy::too_many_lines)]
-async fn agent_stability_cmd(s: args::StabilityCmd) -> Result<(), Error> {
+async fn agent_stability_cmd(s: crate::run::args::StabilityCmd) -> Result<(), Error> {
     // ── Validate --runs ───────────────────────────────────────────────────────
     if let Err(msg) = crate::run::stability::validate_runs(s.runs) {
         return Err(Error::Config(crate::error::ConfigError::Invalid(msg)));
@@ -7271,13 +7299,13 @@ async fn agent_stability_cmd(s: args::StabilityCmd) -> Result<(), Error> {
         per_task_budget_usd: s.per_task_budget_usd,
         deterministic_responses: None,
         deterministic_usage_per_call: None,
-        print_summary: s.format != Some(args::StabilityFormatArg::Json),
+        print_summary: s.format != Some(crate::run::args::StabilityFormatArg::Json),
     };
 
     let exit_code = crate::run::stability::run(stability_args).await?;
 
     // ── --format json: print artifact to stdout ───────────────────────────────
-    if s.format == Some(args::StabilityFormatArg::Json) {
+    if s.format == Some(crate::run::args::StabilityFormatArg::Json) {
         let result_dir = s.output.join(&stability_name_for_json);
         let result_path = result_dir.join("stability-results.json");
         if let Ok(json_text) = std::fs::read_to_string(&result_path) {
@@ -7292,7 +7320,7 @@ async fn agent_stability_cmd(s: args::StabilityCmd) -> Result<(), Error> {
 }
 
 #[allow(clippy::too_many_lines)]
-async fn agent_best_of_cmd(b: args::BestOfCmd) -> Result<(), Error> {
+async fn agent_best_of_cmd(b: crate::run::args::BestOfCmd) -> Result<(), Error> {
     // ── Validate --runs ───────────────────────────────────────────────────────
     if let Err(msg) = crate::run::best_of::validate_runs(b.runs) {
         return Err(Error::Config(crate::error::ConfigError::Invalid(msg)));
@@ -7410,13 +7438,13 @@ async fn agent_best_of_cmd(b: args::BestOfCmd) -> Result<(), Error> {
         allow_no_pass: b.allow_no_pass,
         deterministic_responses: None,
         deterministic_usage_per_call: None,
-        print_summary: b.format != Some(args::BestOfFormatArg::Json),
+        print_summary: b.format != Some(crate::run::args::BestOfFormatArg::Json),
     };
 
     let exit_code = crate::run::best_of::run(best_of_args).await?;
 
     // ── --format json: print artifact to stdout ───────────────────────────────
-    if b.format == Some(args::BestOfFormatArg::Json) {
+    if b.format == Some(crate::run::args::BestOfFormatArg::Json) {
         let result_dir = b.output.join(&best_of_name_for_json);
         let result_path = result_dir.join("best-of-results.json");
         if let Ok(json_text) = std::fs::read_to_string(&result_path) {
@@ -7430,7 +7458,7 @@ async fn agent_best_of_cmd(b: args::BestOfCmd) -> Result<(), Error> {
     Ok(())
 }
 
-fn agent_profile_cmd(p: &args::AgentProfileCmd) -> Result<(), Error> {
+fn agent_profile_cmd(p: &crate::run::args::AgentProfileCmd) -> Result<(), Error> {
     use crate::run::agent_profile::{
         AgentProfileOpts, ProfileFormat, format_text, run_agent_profile,
     };
@@ -7467,7 +7495,7 @@ fn agent_profile_cmd(p: &args::AgentProfileCmd) -> Result<(), Error> {
     Ok(())
 }
 
-fn agent_annotate_cmd(a: &args::AgentAnnotateCmd) -> Result<(), Error> {
+fn agent_annotate_cmd(a: &crate::run::args::AgentAnnotateCmd) -> Result<(), Error> {
     use crate::run::agent_annotate::{
         AnnotateFormat, AnnotateOpts, ShowOpts, StepNoteInput, Verdict, instance_id_from_path,
         render_show_text, render_write_text, run_annotate, run_show, sidecar_path,
@@ -7571,7 +7599,7 @@ fn agent_annotate_cmd(a: &args::AgentAnnotateCmd) -> Result<(), Error> {
     Ok(())
 }
 
-fn agent_runs_cmd(r: &args::AgentRunsCmd) -> Result<(), Error> {
+fn agent_runs_cmd(r: &crate::run::args::AgentRunsCmd) -> Result<(), Error> {
     use crate::run::agent_runs::{
         AgentRunsOpts, RunsFilter, RunsFormat, RunsSort, format_text, run_agent_runs,
     };
@@ -7618,7 +7646,7 @@ fn agent_runs_cmd(r: &args::AgentRunsCmd) -> Result<(), Error> {
     Ok(())
 }
 
-fn agent_fs_audit_cmd(a: &args::FsAuditCmd) -> Result<(), Error> {
+fn agent_fs_audit_cmd(a: &crate::run::args::FsAuditCmd) -> Result<(), Error> {
     use crate::run::fs_audit::{
         FsAuditFormat, FsAuditOpts, FsAuditSource, format_json, format_text, parse_format,
         run_fs_audit,
@@ -7681,7 +7709,7 @@ fn agent_fs_audit_cmd(a: &args::FsAuditCmd) -> Result<(), Error> {
     Ok(())
 }
 
-fn agent_artifact_check_cmd(a: &args::ArtifactCheckCmd) -> Result<(), Error> {
+fn agent_artifact_check_cmd(a: &crate::run::args::ArtifactCheckCmd) -> Result<(), Error> {
     use crate::error::ConfigError;
     use crate::run::artifact_check::{
         ArtifactCheckOpts, ArtifactCheckSource, format_json, format_text, run_artifact_check,
@@ -7723,7 +7751,7 @@ fn agent_artifact_check_cmd(a: &args::ArtifactCheckCmd) -> Result<(), Error> {
     Ok(())
 }
 
-async fn agent_suite_cmd(s: args::SuiteCmd) -> Result<(), Error> {
+async fn agent_suite_cmd(s: crate::run::args::SuiteCmd) -> Result<(), Error> {
     let mut cfg = match &s.config {
         Some(p) => Config::load(p)?,
         None => Config::defaults()?,
@@ -7832,7 +7860,7 @@ async fn agent_suite_cmd(s: args::SuiteCmd) -> Result<(), Error> {
 mod tests {
     #![allow(clippy::unwrap_used)]
     use super::{
-        Cli, args, cancellation_exit_code, maybe_publish_mini_github_pr, mini_github_pr_options,
+        Cli, cancellation_exit_code, maybe_publish_mini_github_pr, mini_github_pr_options,
         parse_verify_checks, required_github_arg, resolve_interactive_mode, swebench_args_from_cmd,
         swebench_github_pr_config, trajectory_submitted, validate_observation_head_ratio,
         validate_swebench_github_pr_args,
@@ -7936,7 +7964,7 @@ mod tests {
 
     #[test]
     fn swebench_github_pr_validation_rejects_empty_slug_branch_prefix() {
-        let err = validate_swebench_github_pr_args(&args::SwebenchGithubPrArgs {
+        let err = validate_swebench_github_pr_args(&crate::run::args::SwebenchGithubPrArgs {
             open_prs: true,
             target_repo: Some("madmax983/maxwells-daemon".into()),
             target_branch: Some("trunk".into()),
@@ -8152,7 +8180,7 @@ mod tests {
         let crate::cli::Command::Bench { cmd } = cli.command else {
             panic!("expected bench swebench command");
         };
-        let args::BenchCmd::Swebench(cmd) = *cmd else {
+        let crate::run::args::BenchCmd::Swebench(cmd) = *cmd else {
             panic!("expected bench swebench command");
         };
 
@@ -8166,8 +8194,8 @@ mod tests {
         );
     }
 
-    fn mini_cmd(open_pr: bool, dry_run: bool) -> args::MiniCmd {
-        args::MiniCmd {
+    fn mini_cmd(open_pr: bool, dry_run: bool) -> crate::run::args::MiniCmd {
+        crate::run::args::MiniCmd {
             task: Some("Fix it".into()),
             task_file: None,
             driver: crate::run::mini::RunDriver::Builtin,
@@ -8207,7 +8235,7 @@ mod tests {
             event_log: None,
             verify: vec![],
             verify_timeout_secs: 60,
-            github_pr: args::MiniGithubPrArgs {
+            github_pr: crate::run::args::MiniGithubPrArgs {
                 open_pr,
                 target_repo: Some("madmax983/maxwells-daemon".into()),
                 target_branch: Some("trunk".into()),
@@ -8222,7 +8250,7 @@ mod tests {
             format: "text".into(),
             interactive: false,
             yolo: false,
-            ui: args::UiKind::Stderr,
+            ui: crate::run::args::UiKind::Stderr,
             no_bell: false,
             webhook_url: None,
             webhook_headers: vec![],
@@ -8288,8 +8316,8 @@ mod tests {
         }
     }
 
-    fn swebench_github(open_prs: bool, dry_run: bool) -> args::SwebenchGithubPrArgs {
-        args::SwebenchGithubPrArgs {
+    fn swebench_github(open_prs: bool, dry_run: bool) -> crate::run::args::SwebenchGithubPrArgs {
+        crate::run::args::SwebenchGithubPrArgs {
             open_prs,
             target_repo: Some("madmax983/maxwells-daemon".into()),
             target_branch: Some("trunk".into()),
@@ -8336,24 +8364,24 @@ mod tests {
 
     #[test]
     fn resolve_interactive_mode_off_when_neither_flag_set() {
-        let m = resolve_interactive_mode(false, false, args::UiKind::Stderr);
+        let m = resolve_interactive_mode(false, false, crate::run::args::UiKind::Stderr);
         assert_eq!(m, crate::run::mini::InteractiveMode::Off);
     }
 
     #[test]
     fn resolve_interactive_mode_yolo_alone_is_status_only() {
-        let m = resolve_interactive_mode(false, true, args::UiKind::Stderr);
+        let m = resolve_interactive_mode(false, true, crate::run::args::UiKind::Stderr);
         assert_eq!(m, crate::run::mini::InteractiveMode::YoloStatusOnly);
     }
 
     #[test]
     fn resolve_interactive_mode_interactive_picks_ui() {
         assert_eq!(
-            resolve_interactive_mode(true, false, args::UiKind::Stderr),
+            resolve_interactive_mode(true, false, crate::run::args::UiKind::Stderr),
             crate::run::mini::InteractiveMode::StderrPrompt
         );
         assert_eq!(
-            resolve_interactive_mode(true, false, args::UiKind::Ratatui),
+            resolve_interactive_mode(true, false, crate::run::args::UiKind::Ratatui),
             crate::run::mini::InteractiveMode::Ratatui
         );
     }
@@ -8363,11 +8391,11 @@ mod tests {
         // `--interactive --yolo` short-circuits to status-line mode for
         // operators who want live progress but no prompts.
         assert_eq!(
-            resolve_interactive_mode(true, true, args::UiKind::Stderr),
+            resolve_interactive_mode(true, true, crate::run::args::UiKind::Stderr),
             crate::run::mini::InteractiveMode::YoloStatusOnly
         );
         assert_eq!(
-            resolve_interactive_mode(true, true, args::UiKind::Ratatui),
+            resolve_interactive_mode(true, true, crate::run::args::UiKind::Ratatui),
             crate::run::mini::InteractiveMode::RatatuiMonitor
         );
     }
@@ -8375,7 +8403,7 @@ mod tests {
     #[test]
     fn resolve_interactive_mode_yolo_with_ratatui_ui_resolves_to_monitor() {
         assert_eq!(
-            resolve_interactive_mode(false, true, args::UiKind::Ratatui),
+            resolve_interactive_mode(false, true, crate::run::args::UiKind::Ratatui),
             crate::run::mini::InteractiveMode::RatatuiMonitor
         );
     }
@@ -8415,7 +8443,7 @@ mod tests {
 
     #[test]
     fn bench_dataset_stats_rejects_invalid_format() {
-        let cmd = args::DatasetStatsCmd {
+        let cmd = crate::run::args::DatasetStatsCmd {
             dataset_path: Some(PathBuf::from("dummy.jsonl")),
             dataset: None,
             split: None,
@@ -8557,7 +8585,7 @@ mod tests {
     #[test]
     fn test_bench_dataset_verify_cli_missing_reference() {
         let temp = tempfile::tempdir().unwrap();
-        let cmd = args::DatasetVerifyCmd {
+        let cmd = crate::run::args::DatasetVerifyCmd {
             dataset_path: Some(temp.path().join("candidate.jsonl")),
             dataset: Some("lite".to_string()),
             split: Some("test".to_string()),
@@ -8595,7 +8623,7 @@ mod tests {
         let reference_path = canonical_dir.join("test.jsonl");
         std::fs::write(&reference_path, &line).unwrap();
 
-        let cmd = args::DatasetVerifyCmd {
+        let cmd = crate::run::args::DatasetVerifyCmd {
             dataset_path: Some(candidate_path),
             dataset: Some("lite".to_string()),
             split: Some("test".to_string()),
@@ -8632,7 +8660,7 @@ mod tests {
     #[test]
     fn bench_subset_requires_dataset_source() {
         let temp = tempfile::tempdir().unwrap();
-        let cmd = args::SubsetCmd {
+        let cmd = crate::run::args::SubsetCmd {
             dataset_path: None,
             dataset: None,
             split: Some("test".to_owned()),
@@ -8658,7 +8686,7 @@ mod tests {
     fn bench_subset_rejects_mutually_exclusive_sources() {
         let temp = tempfile::tempdir().unwrap();
         let dataset_path = make_subset_dataset(&temp, 3);
-        let cmd = args::SubsetCmd {
+        let cmd = crate::run::args::SubsetCmd {
             dataset_path: Some(dataset_path),
             dataset: Some("lite".to_owned()),
             split: Some("test".to_owned()),
@@ -8682,7 +8710,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let dataset_path = make_subset_dataset(&temp, 5);
         let output = temp.path().join("slice.jsonl");
-        let cmd = args::SubsetCmd {
+        let cmd = crate::run::args::SubsetCmd {
             dataset_path: Some(dataset_path),
             dataset: None,
             split: None,
@@ -8724,7 +8752,7 @@ mod tests {
     fn bench_subset_sample_larger_than_available_is_error() {
         let temp = tempfile::tempdir().unwrap();
         let dataset_path = make_subset_dataset(&temp, 3);
-        let cmd = args::SubsetCmd {
+        let cmd = crate::run::args::SubsetCmd {
             dataset_path: Some(dataset_path),
             dataset: None,
             split: None,
@@ -8751,7 +8779,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let dataset_path = make_subset_dataset(&temp, 3);
         // Request an instance ID that doesn't exist → zero rows
-        let cmd = args::SubsetCmd {
+        let cmd = crate::run::args::SubsetCmd {
             dataset_path: Some(dataset_path),
             dataset: None,
             split: None,
@@ -8779,7 +8807,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let dataset_path = make_subset_dataset(&temp, 3);
         // Output == source: should be rejected before any write occurs.
-        let cmd = args::SubsetCmd {
+        let cmd = crate::run::args::SubsetCmd {
             dataset_path: Some(dataset_path.clone()),
             dataset: None,
             split: None,
