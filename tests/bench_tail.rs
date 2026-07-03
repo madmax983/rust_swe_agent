@@ -738,7 +738,7 @@ fn instance_rows_distinguishes_run_index_for_reruns() {
     write_partial_traj(&instance_dir, "run-2.traj.json", 3);
 
     let mut rows = instance_rows(dir.path()).unwrap();
-    rows.sort_by(|a, b| a.run_index.cmp(&b.run_index));
+    rows.sort_by_key(|r| r.run_index);
     assert_eq!(rows.len(), 2);
     assert_eq!(rows[0].run_index, 1);
     assert_eq!(rows[0].status, InstanceStatus::Terminal);
@@ -857,4 +857,30 @@ fn instance_rows_prefers_nested_layout_over_legacy_flat_file_deterministically()
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].status, InstanceStatus::InFlight);
     assert_eq!(rows[0].current_step, Some(5));
+}
+
+#[test]
+fn instance_rows_does_not_fall_back_to_legacy_flat_when_nested_file_is_unreadable() {
+    let dir = tempfile::tempdir().unwrap();
+    // Legacy flat file with a real (stale) terminal outcome.
+    let mut legacy = Trajectory::new();
+    legacy.info.outcome = Some(outcome::ERROR.into());
+    legacy.info.exit_reason = Some(outcome::ERROR.into());
+    std::fs::write(
+        dir.path().join("kilo.traj.json"),
+        serde_json::to_string_pretty(&legacy).unwrap(),
+    )
+    .unwrap();
+    // A nested file exists for the same instance/run (current layout takes
+    // precedence) but is mid-write / corrupt and fails to parse.
+    let instance_dir = dir.path().join("kilo");
+    std::fs::create_dir_all(&instance_dir).unwrap();
+    std::fs::write(instance_dir.join("run-1.traj.json"), "{not valid json").unwrap();
+
+    let rows = instance_rows(dir.path()).unwrap();
+    assert!(
+        rows.iter().all(|r| r.instance_id != "kilo"),
+        "must not resurrect the stale legacy flat row when the nested file exists but is \
+         unreadable: {rows:?}"
+    );
 }

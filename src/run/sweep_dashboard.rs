@@ -58,6 +58,14 @@ pub(crate) struct DetailState {
     /// or a previously-found one has since become unreadable (deleted,
     /// pruned, moved) — see `refresh_detail`.
     pub(crate) not_found: bool,
+    /// True while the pane should track the live tail of the trajectory as
+    /// new turns stream in (the default). Pressing Up/k to look at earlier
+    /// output disables it; scrolling back down to the end re-enables it —
+    /// see `scroll_detail_up`/`scroll_detail_down` and `render_detail` (PR
+    /// #999 review: without this, `scroll_top` never advances on its own, so
+    /// a trajectory longer than the pane stays pinned to its earliest steps
+    /// while fresh output appends below the visible window).
+    pub(crate) auto_follow: bool,
 }
 
 impl DetailState {
@@ -73,6 +81,7 @@ impl DetailState {
             last_file_mtime: None,
             terminal: false,
             not_found: true,
+            auto_follow: true,
         }
     }
 }
@@ -198,19 +207,37 @@ fn move_selection_down(state: &mut DashboardState) {
     state.selected = (state.selected + 1).min(max);
 }
 
+/// Scroll toward earlier output. The first press while auto-following
+/// anchors near the current tail (rather than jumping to `scroll_top`'s
+/// stale value, which isn't updated while following) before disabling
+/// follow, so the pane doesn't visibly jump when the operator starts
+/// scrolling back.
 fn scroll_detail_up(state: &mut DashboardState) {
     let Some(detail) = state.detail.as_mut() else {
         return;
     };
+    if detail.auto_follow {
+        detail.auto_follow = false;
+        detail.scroll_top = detail.lines.len().saturating_sub(1);
+    }
     detail.scroll_top = detail.scroll_top.saturating_sub(1);
 }
 
+/// Scroll toward the live tail; re-enables auto-follow once the operator has
+/// scrolled all the way back down, so the pane resumes tracking new output
+/// without needing a separate keybinding (PR #999 review).
 fn scroll_detail_down(state: &mut DashboardState) {
     let Some(detail) = state.detail.as_mut() else {
         return;
     };
+    if detail.auto_follow {
+        return;
+    }
     let max = detail.lines.len().saturating_sub(1);
     detail.scroll_top = (detail.scroll_top + 1).min(max);
+    if detail.scroll_top >= max {
+        detail.auto_follow = true;
+    }
 }
 
 fn open_detail(state: &mut DashboardState) {
@@ -232,6 +259,19 @@ pub(crate) fn list_scroll_top(selected: usize, len: usize, viewport: usize) -> u
     selected
         .saturating_sub(viewport.saturating_sub(1))
         .min(max_top)
+}
+
+/// The detail pane's effective scroll offset for this draw: while
+/// auto-following, always show the freshest `content_height` lines
+/// regardless of the stored (stale, unused-while-following) `scroll_top`;
+/// once the operator has scrolled away, honor their absolute position (PR
+/// #999 review). Pure so it's directly unit-testable without rendering.
+pub(crate) fn detail_scroll_top(detail: &DetailState, content_height: usize) -> usize {
+    if detail.auto_follow {
+        detail.lines.len().saturating_sub(content_height)
+    } else {
+        detail.scroll_top
+    }
 }
 
 /// Whether the followed file can be treated as unchanged since the last
@@ -294,7 +334,17 @@ fn refresh_detail(detail: &mut DetailState, sweep_dir: &Path, redactor: &Redacto
     redact_trajectory_for_inspect(&mut traj, redactor);
     let steps = build_inspect_steps_with_max(&traj, false, 4096);
     if steps.len() < detail.emitted_steps {
+        // The trajectory shrank — a worker restart or retry rewrote the file
+        // with fewer steps than we'd already rendered. Re-reading from step 0
+        // without clearing the buffer would append the (now stale) old run's
+        // lines ahead of the fresh ones, corrupting the log; drop everything
+        // and start over, and resume auto-follow so the operator sees the new
+        // run's output rather than being pinned to a scroll position that no
+        // longer means anything (PR #999 review).
         detail.emitted_steps = 0;
+        detail.lines.clear();
+        detail.scroll_top = 0;
+        detail.auto_follow = true;
     }
     for step in &steps[detail.emitted_steps..] {
         let mut summary = format!("step {} {}", step.index, step.role);
@@ -561,12 +611,8 @@ fn render_detail(frame: &mut Frame, state: &DashboardState, area: Rect) {
         } else {
             inner_height
         };
-        for line in detail
-            .lines
-            .iter()
-            .skip(detail.scroll_top)
-            .take(content_height)
-        {
+        let scroll_top = detail_scroll_top(detail, content_height);
+        for line in detail.lines.iter().skip(scroll_top).take(content_height) {
             lines.push(Line::from(line.as_str()));
         }
         if detail.terminal {
@@ -1206,5 +1252,124 @@ mod tests {
         let buf = render_to_buffer(&state, 120, 20);
         let text = buffer_text(&buf);
         assert!(text.contains("1 warning(s)"), "{text}");
+    }
+
+    fn assistant_message(content: &str) -> crate::trajectory::MessageRecord {
+        crate::trajectory::MessageRecord {
+            role: "assistant".into(),
+            content: content.into(),
+            extra: crate::model::MessageExtra::default(),
+        }
+    }
+
+    #[test]
+    fn refresh_detail_clears_stale_lines_when_step_count_shrinks() {
+        let dir = tempfile::tempdir().unwrap();
+        let instance_dir = dir.path().join("alpha");
+        std::fs::create_dir_all(&instance_dir).unwrap();
+        let traj_path = instance_dir.join("run-1.traj.json");
+
+        let mut traj = Trajectory::new();
+        traj.messages.push(assistant_message("first step"));
+        traj.messages.push(assistant_message("second step"));
+        std::fs::write(&traj_path, serde_json::to_string_pretty(&traj).unwrap()).unwrap();
+
+        let mut detail = DetailState::new("alpha".into(), 1);
+        let redactor = Redactor::default_enabled();
+        refresh_detail(&mut detail, dir.path(), &redactor);
+        assert_eq!(detail.emitted_steps, 2);
+        assert!(detail.lines.iter().any(|l| l.contains("second step")));
+
+        // A worker restart/retry rewrites the file with fewer, different steps.
+        let mut restarted = Trajectory::new();
+        restarted.messages.push(assistant_message("restarted step"));
+        std::fs::write(
+            &traj_path,
+            serde_json::to_string_pretty(&restarted).unwrap(),
+        )
+        .unwrap();
+
+        refresh_detail(&mut detail, dir.path(), &redactor);
+
+        assert_eq!(detail.emitted_steps, 1);
+        assert_eq!(detail.scroll_top, 0);
+        assert!(
+            !detail.lines.iter().any(|l| l.contains("second step")),
+            "stale lines from the old (longer) run must be cleared, not appended to: {:?}",
+            detail.lines
+        );
+        assert!(detail.lines.iter().any(|l| l.contains("restarted step")));
+    }
+
+    #[test]
+    fn detail_scroll_top_follows_tail_by_default_and_honors_manual_position_otherwise() {
+        let mut detail = DetailState::new("x".into(), 1);
+        for i in 0..50 {
+            detail.lines.push_back(format!("l{i}"));
+        }
+        assert_eq!(
+            detail_scroll_top(&detail, 10),
+            40,
+            "auto-follow must show the freshest content_height lines"
+        );
+
+        detail.auto_follow = false;
+        detail.scroll_top = 5;
+        assert_eq!(
+            detail_scroll_top(&detail, 10),
+            5,
+            "manual position must be honored once auto-follow is off"
+        );
+    }
+
+    #[test]
+    fn scroll_detail_up_disables_auto_follow_then_scrolling_back_down_re_enables_it() {
+        let mut state = state_with_rows(vec![row("a", InstanceStatus::Terminal)]);
+        handle_key(&mut state, key(KeyCode::Enter));
+        {
+            let detail = state.detail.as_mut().unwrap();
+            for i in 0..10 {
+                detail.lines.push_back(format!("line {i}"));
+            }
+        }
+        assert!(state.detail.as_ref().unwrap().auto_follow);
+
+        handle_key(&mut state, key(KeyCode::Up));
+        assert!(
+            !state.detail.as_ref().unwrap().auto_follow,
+            "scrolling up must disable auto-follow"
+        );
+
+        for _ in 0..20 {
+            handle_key(&mut state, key(KeyCode::Down));
+        }
+        assert!(
+            state.detail.as_ref().unwrap().auto_follow,
+            "scrolling back down to the end must re-enable auto-follow"
+        );
+    }
+
+    #[test]
+    fn draw_detail_pane_follows_the_tail_by_default() {
+        let mut state = state_with_rows(vec![row("a", InstanceStatus::InFlight)]);
+        state.snapshot = Some(test_snapshot());
+        handle_key(&mut state, key(KeyCode::Enter));
+        {
+            let detail = state.detail.as_mut().unwrap();
+            detail.not_found = false;
+            for i in 0..100 {
+                detail.lines.push_back(format!("line-{i}"));
+            }
+        }
+        let buf = render_to_buffer(&state, 120, 20);
+        let text = buffer_text(&buf);
+        assert!(
+            text.contains("line-99"),
+            "must show the latest line by default: {text}"
+        );
+        assert!(
+            !text.contains("line-0"),
+            "must not stay pinned to the earliest line: {text}"
+        );
     }
 }

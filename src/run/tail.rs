@@ -493,8 +493,16 @@ fn instance_rows_from_value(
         .partition(|f| !f.is_legacy_flat);
     let mut seen: std::collections::HashSet<(String, u32)> = std::collections::HashSet::new();
     for file in nested_files {
+        // Mark the key seen because the nested file *exists*, not only when
+        // it parses successfully — otherwise a nested file that's
+        // transiently unreadable (mid-write, momentarily corrupt) would fall
+        // through to the flat-file loop below and resurrect a stale legacy
+        // row for the same instance/run, violating nested-over-flat
+        // precedence (PR #999 review). Leaving the key out of `rows`
+        // entirely for this tick (rather than showing stale data) is the
+        // safer default; it self-heals on the next successful poll.
+        seen.insert((file.instance_id.clone(), file.run_index));
         if let Some(traj) = parse_trajectory_checked(&file.path) {
-            seen.insert((file.instance_id.clone(), file.run_index));
             rows.insert(
                 (file.instance_id.clone(), file.run_index),
                 instance_row_from_trajectory(file.instance_id, file.run_index, traj),
