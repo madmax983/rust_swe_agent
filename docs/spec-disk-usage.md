@@ -190,17 +190,29 @@ which sweeps would be deleted and how many bytes would be reclaimed, and
 deletes nothing.
 
 `--prune --apply` walks the `candidates` set one at a time. For each one, it
-first **re-scans that single sweep directory** with a fresh timestamp and
-re-checks freshness — narrowing (not eliminating; see "Lifecycle states"
-above) the gap between the initial full-`--root` scan and the moment of
-deletion, since a large `--root` can take real time to scan and a
-resumed/retried process could start checkpointing again during that window.
-A candidate caught in-progress by this re-check is moved into `protected`
-and left untouched, exactly like a sweep that was already in-progress at the
-initial scan. Otherwise the sweep is deleted (`std::fs::remove_dir_all`); a
-candidate whose deletion fails (permission error, or a non-UTF-8-named
-directory it could not resolve) is logged to stderr and added to
-`deletion_failed`, not `deleted`.
+first **re-scans that single sweep directory** with a fresh timestamp — 
+narrowing (not eliminating; see "Lifecycle states" above) the gap between the
+initial full-`--root` scan and the moment of deletion, since a large `--root`
+can take real time to scan and a candidate's on-disk state can change during
+that window. Three outcomes move a candidate to `protected` instead of
+deleting it:
+
+1. The re-check shows it's now `in_progress` (a resumed/retried process
+   started checkpointing again).
+2. The re-check shows it no longer matches `--older-than`/`--incomplete-only`
+   — most commonly because it simply *finished*: a fresh `results.json`
+   means it's no longer `incomplete`/`interrupted`, and the fresh mtime means
+   it's no longer old enough.
+3. When `--keep-last` is one of the selectors, the re-check's mtime differs
+   from the mtime it was originally ranked against — its own recency
+   changed since the "not among the N most recent" verdict was computed, so
+   that verdict can no longer be trusted. (The full ranking against every
+   *other* sweep is not recomputed — only this self-recency check.)
+
+Otherwise the sweep is deleted (`std::fs::remove_dir_all`); a candidate whose
+deletion fails (permission error, or a non-UTF-8-named directory it could
+not resolve) is logged to stderr and added to `deletion_failed`, not
+`deleted`.
 
 Partial success (some sweeps deleted, one skipped as `protected`, one
 failing to delete) is reported in full, and the process exits non-zero

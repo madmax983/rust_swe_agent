@@ -112,6 +112,11 @@ pub struct PruneEntry {
     pub path_buf: PathBuf,
     pub bytes: u64,
     pub lifecycle_state: LifecycleState,
+    /// The `SweepReport::last_modified_unix` this entry was ranked against
+    /// when `--keep-last` retention was computed. Used by the pre-delete
+    /// recheck in `build_prune_report` to detect that a candidate's own
+    /// recency has changed since ranking — see that function's doc comment.
+    pub last_modified_unix: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -230,10 +235,13 @@ pub fn run(args: &DuArgs) -> Result<DuReport, Error> {
 /// deleting narrows the race window from "the whole scan" down to "one
 /// directory stat", though it cannot eliminate it entirely without a
 /// lock/PID mechanism this codebase does not have — see the "Lifecycle
-/// states" caveat in `docs/spec-disk-usage.md`. `--keep-last` is not
-/// re-evaluated here: it ranks a sweep against every other sweep's recency,
-/// not a static property of the sweep itself, so it isn't something a
-/// single-sweep re-check can meaningfully redo in isolation.
+/// states" caveat in `docs/spec-disk-usage.md`. `--keep-last`'s full N-most-
+/// recent ranking is not recomputed here — it ranks a sweep against every
+/// *other* sweep's recency, not a static property of the sweep itself, so a
+/// single-sweep re-check can't fully redo it in isolation — but a candidate
+/// whose *own* recency changed since it was ranked (e.g. it finished and
+/// wrote a fresh `results.json`, which could well put it inside the
+/// retained window now) is conservatively protected rather than risked.
 pub fn build_prune_report(
     sweeps: &[SweepReport],
     prune_args: &PruneRequest,
@@ -276,6 +284,25 @@ pub fn build_prune_report(
                     "warning: bench du: {} no longer matches the prune selectors since the initial scan (now {}); skipping deletion",
                     candidate.path,
                     lifecycle_label(recheck.lifecycle_state)
+                );
+                protected.push(candidate.clone());
+                continue;
+            }
+            // --keep-last ranks a sweep against every other sweep's recency,
+            // so it can't be re-evaluated in isolation the way age/lifecycle
+            // can (see the function doc comment). But if THIS candidate's
+            // own recency changed since it was ranked — e.g. it finished and
+            // wrote a fresh results.json while a large --root was still
+            // being pruned — the "not among the N most recent" verdict that
+            // made it a candidate is stale and can no longer be trusted:
+            // conservatively protect it rather than risk deleting a sweep
+            // that would now rank inside --keep-last's protected window.
+            if selectors.keep_last.is_some()
+                && recheck.last_modified_unix != candidate.last_modified_unix
+            {
+                eprintln!(
+                    "warning: bench du: {} was modified since the --keep-last ranking was computed; skipping deletion",
+                    candidate.path
                 );
                 protected.push(candidate.clone());
                 continue;
@@ -660,6 +687,7 @@ fn entry_for(s: &SweepReport) -> PruneEntry {
         path_buf: s.path_buf.clone(),
         bytes: s.total_bytes,
         lifecycle_state: s.lifecycle_state,
+        last_modified_unix: s.last_modified_unix,
     }
 }
 

@@ -1141,6 +1141,61 @@ fn toctou_recheck_protects_sweep_that_finished_since_the_initial_scan() {
     assert!(report.blocked);
 }
 
+// When --keep-last is the active selector, a candidate that ranked outside
+// the N-most-recent window at scan time can have its OWN recency change
+// (e.g. finishing and writing a fresh file) before its turn in the delete
+// loop — the "not among the N most recent" verdict that made it a candidate
+// is then stale. matches_age_and_incomplete_selectors alone can't catch
+// this (it deliberately ignores keep_last), so the recheck must separately
+// compare the candidate's fresh mtime against the mtime it was ranked
+// against. (Reported by chatgpt-codex-connector on PR #994.)
+#[test]
+fn keep_last_recheck_protects_candidate_whose_recency_changed_since_ranking() {
+    let dir = tempfile::tempdir().unwrap();
+    let candidate_path = dir.path().join("candidate-sweep");
+    // On disk, right now: freshly touched (simulating "it just finished").
+    write_file(
+        &candidate_path.join("inst-1").join("run-0.traj.json"),
+        &traj_bytes(false),
+    );
+
+    // The caller's view (as if from an earlier full-root scan): candidate
+    // was ranked older than kept-sweep, so with --keep-last 1 only
+    // kept-sweep was retained and candidate-sweep became a deletion
+    // candidate.
+    let mut candidate_view = fixture_sweep("candidate-sweep", 100, LifecycleState::Complete, 1000);
+    candidate_view.path = candidate_path.display().to_string();
+    candidate_view.path_buf = candidate_path.clone();
+    candidate_view.last_modified_unix = 1_000_000; // stale, as ranked at scan time
+
+    let mut kept_view = fixture_sweep("kept-sweep", 100, LifecycleState::Complete, 10);
+    kept_view.last_modified_unix = 2_000_000; // newer than candidate at scan time
+
+    let report = build_prune_report(
+        &[kept_view, candidate_view],
+        &PruneRequest {
+            apply: true,
+            older_than: None,
+            keep_last: Some(1),
+            incomplete_only: false,
+        },
+        Duration::from_secs(900),
+    );
+
+    assert!(
+        candidate_path.exists(),
+        "a candidate whose own recency changed since --keep-last ranking must not be deleted"
+    );
+    assert!(report.deleted.is_empty());
+    assert_eq!(
+        report.protected.len(),
+        1,
+        "re-check must catch the stale keep-last ranking"
+    );
+    assert_eq!(report.protected[0].id, "candidate-sweep");
+    assert!(report.blocked);
+}
+
 // Fix #5: has_results_json must not follow symlinks, matching the
 // byte-accounting walk (which skips all symlinks) — a symlinked
 // `results.json` must not flip lifecycle to `complete`.
