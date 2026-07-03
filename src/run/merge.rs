@@ -260,26 +260,63 @@ pub fn run(args: &MergeCmd) -> Result<MergeReport, Error> {
 
 impl MergeReport {
     pub fn render_text(&self) {
-        println!("Shards merged: {}", self.shards.len());
+        use comfy_table::Table;
+        use comfy_table::modifiers::UTF8_ROUND_CORNERS;
+        use comfy_table::presets::UTF8_FULL;
+
+        println!("=== bench merge ===");
+
+        let mut shard_table = Table::new();
+        shard_table
+            .load_preset(UTF8_FULL)
+            .apply_modifier(UTF8_ROUND_CORNERS)
+            .set_header(vec!["Label", "Instances", "Directory"]);
+
         for s in &self.shards {
-            println!(
-                "  {:20}  {:6} instances  {}",
-                s.label, s.instance_count, s.dir
-            );
+            shard_table.add_row(vec![
+                s.label.clone(),
+                s.instance_count.to_string(),
+                s.dir.clone(),
+            ]);
         }
-        println!();
-        println!(
-            "Total instances: {} ({} duplicates resolved via {})",
-            self.total_instances, self.duplicates, self.collision_policy
-        );
-        println!("Output: {}", self.output_dir);
-        println!();
-        println!("Top-line metrics:");
-        println!("  total_cost_usd : {:.6}", self.total_cost_usd);
-        println!("  submitted      : {}", self.submitted);
-        println!("  errored        : {}", self.errored);
-        println!("  resolved       : {}", self.resolved);
-        println!("  pass_at_k      : {:.4}", self.pass_at_k);
+        println!("{shard_table}");
+
+        let mut metrics_table = Table::new();
+        metrics_table
+            .load_preset(UTF8_FULL)
+            .apply_modifier(UTF8_ROUND_CORNERS)
+            .set_header(vec!["Metric", "Value"]);
+
+        metrics_table.add_row(vec![
+            "Shards merged".to_string(),
+            self.shards.len().to_string(),
+        ]);
+        metrics_table.add_row(vec![
+            "Total instances".to_string(),
+            self.total_instances.to_string(),
+        ]);
+        metrics_table.add_row(vec!["Duplicates".to_string(), self.duplicates.to_string()]);
+        metrics_table.add_row(vec![
+            "Collision policy".to_string(),
+            self.collision_policy.clone(),
+        ]);
+        metrics_table.add_row(vec![
+            "Output directory".to_string(),
+            self.output_dir.clone(),
+        ]);
+        metrics_table.add_row(vec![
+            "Total cost USD".to_string(),
+            format!("{:.6}", self.total_cost_usd),
+        ]);
+        metrics_table.add_row(vec!["Submitted".to_string(), self.submitted.to_string()]);
+        metrics_table.add_row(vec!["Errored".to_string(), self.errored.to_string()]);
+        metrics_table.add_row(vec!["Resolved".to_string(), self.resolved.to_string()]);
+        metrics_table.add_row(vec![
+            "Pass at k".to_string(),
+            format!("{:.4}", self.pass_at_k),
+        ]);
+
+        println!("{metrics_table}");
     }
 }
 
