@@ -354,6 +354,200 @@ pub fn snapshot(sweep_dir: &Path, options: &SnapshotOptions) -> Result<TailSnaps
     })
 }
 
+/// Live state of a single instance/run-slot row in the sweep dashboard
+/// (issue #641).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InstanceStatus {
+    /// Selected for the sweep but no trajectory file has appeared yet.
+    /// Only identifiable when the sweep was launched with an explicit
+    /// `--instance-ids` filter; see [`instance_rows`].
+    Pending,
+    /// A trajectory file exists on disk with `info.partial == true`.
+    InFlight,
+    /// A trajectory file (or `results.json` entry) records a finished run.
+    Terminal,
+}
+
+/// One row of the sweep dashboard's navigable instance list (issue #641).
+#[derive(Debug, Clone, Serialize)]
+pub struct InstanceRow {
+    pub instance_id: String,
+    /// Run slot (1-based). Always 1 outside of `--reruns` sweeps.
+    pub run_index: u32,
+    pub status: InstanceStatus,
+    pub current_step: Option<u32>,
+    pub outcome: Option<String>,
+    pub failure_category: Option<FailureCategory>,
+}
+
+/// Enumerate per-instance rows for the interactive sweep dashboard.
+///
+/// Derived **only** from the same read-only snapshot layer as [`snapshot`]:
+/// `results.json`'s `instances` array and on-disk trajectory files
+/// (`<id>.traj.json` flat, or `<id>/run-N.traj.json` nested). A trajectory
+/// persisted with `info.partial == true` yields an [`InstanceStatus::InFlight`]
+/// row; anything else on disk is [`InstanceStatus::Terminal`].
+///
+/// Pending (not-yet-started) rows can only be named when the sweep was
+/// launched with an explicit `--instance-ids` filter — `results.json` then
+/// carries the full requested set in `filter_spec.instance_ids`, and any of
+/// those ids with no row yet is reported as [`InstanceStatus::Pending`]. For
+/// the common case (full dataset, `--limit`, `--sample`) the runner never
+/// records the full instance-id set anywhere in the sweep directory, so
+/// not-yet-started instances have no identity to report here; they remain
+/// reflected only in [`TailSnapshot::pending`]'s count.
+///
+/// # Errors
+/// Returns `Err` if `sweep_dir` does not exist.
+pub fn instance_rows(sweep_dir: &Path) -> Result<Vec<InstanceRow>, Error> {
+    if !sweep_dir.exists() {
+        return Err(Error::Trajectory(format!(
+            "tail: sweep directory does not exist: {}",
+            sweep_dir.display()
+        )));
+    }
+
+    let mut warnings = Vec::new();
+    let results_value = read_json_value(&sweep_dir.join("results.json"), &mut warnings)?;
+
+    let mut rows: BTreeMap<(String, u32), InstanceRow> = BTreeMap::new();
+
+    if let Some(value) = results_value.as_ref() {
+        for item in value
+            .get("instances")
+            .and_then(serde_json::Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            let Some(instance_id) = get_str(item, "instance_id") else {
+                continue;
+            };
+            rows.insert(
+                (instance_id.to_owned(), 1),
+                InstanceRow {
+                    instance_id: instance_id.to_owned(),
+                    run_index: 1,
+                    status: InstanceStatus::Terminal,
+                    current_step: get_u64(item, "steps").and_then(|v| u32::try_from(v).ok()),
+                    outcome: get_str(item, "outcome").map(ToOwned::to_owned),
+                    failure_category: parse_failure_category_value(item.get("failure_category")),
+                },
+            );
+        }
+    }
+
+    for (instance_id, run_index, traj) in scan_all_trajectories(sweep_dir) {
+        let info = traj.info;
+        let row = if info.partial {
+            InstanceRow {
+                instance_id: instance_id.clone(),
+                run_index,
+                status: InstanceStatus::InFlight,
+                current_step: info.steps,
+                outcome: None,
+                failure_category: None,
+            }
+        } else {
+            InstanceRow {
+                instance_id: instance_id.clone(),
+                run_index,
+                status: InstanceStatus::Terminal,
+                current_step: info.steps,
+                outcome: info.outcome,
+                failure_category: info.failure_category,
+            }
+        };
+        rows.insert((instance_id, run_index), row);
+    }
+
+    if let Some(ids) = results_value
+        .as_ref()
+        .and_then(|value| value.pointer("/filter_spec/instance_ids"))
+        .and_then(serde_json::Value::as_array)
+    {
+        for id_value in ids {
+            let Some(instance_id) = id_value.as_str() else {
+                continue;
+            };
+            rows.entry((instance_id.to_owned(), 1))
+                .or_insert_with(|| InstanceRow {
+                    instance_id: instance_id.to_owned(),
+                    run_index: 1,
+                    status: InstanceStatus::Pending,
+                    current_step: None,
+                    outcome: None,
+                    failure_category: None,
+                });
+        }
+    }
+
+    Ok(rows.into_values().collect())
+}
+
+/// Walk `sweep_dir` for every trajectory file (flat `<id>.traj.json` and
+/// nested `<id>/run-N.traj.json`), parsing each one. Unlike
+/// [`scan_trajectories`], partial (in-flight) trajectories are included —
+/// callers that only want terminal records should filter on
+/// `traj.info.partial`. Unreadable or invalid files are skipped silently:
+/// this feeds a best-effort live dashboard, not the authoritative snapshot.
+fn scan_all_trajectories(sweep_dir: &Path) -> Vec<(String, u32, Trajectory)> {
+    let mut out = Vec::new();
+    let Ok(entries) = std::fs::read_dir(sweep_dir) else {
+        return out;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            let Some(instance_id) = path
+                .file_name()
+                .and_then(std::ffi::OsStr::to_str)
+                .map(str::to_owned)
+            else {
+                continue;
+            };
+            let Ok(nested) = std::fs::read_dir(&path) else {
+                continue;
+            };
+            for nested_entry in nested.flatten() {
+                let nested_path = nested_entry.path();
+                let Some(name) = nested_path.file_name().and_then(std::ffi::OsStr::to_str) else {
+                    continue;
+                };
+                let Some(run_index) = name
+                    .strip_prefix("run-")
+                    .and_then(|s| s.strip_suffix(".traj.json"))
+                    .and_then(|n| n.parse::<u32>().ok())
+                else {
+                    continue;
+                };
+                if let Some(traj) = read_trajectory_lenient(&nested_path) {
+                    out.push((instance_id.clone(), run_index, traj));
+                }
+            }
+            continue;
+        }
+        if !path.is_file() {
+            continue;
+        }
+        let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        let Some(instance_id) = name.strip_suffix(".traj.json") else {
+            continue;
+        };
+        if let Some(traj) = read_trajectory_lenient(&path) {
+            out.push((instance_id.to_owned(), 1, traj));
+        }
+    }
+    out
+}
+
+fn read_trajectory_lenient(path: &Path) -> Option<Trajectory> {
+    let text = std::fs::read_to_string(path).ok()?;
+    serde_json::from_str(&text).ok()
+}
+
 fn count_partial_trajectories(sweep_dir: &Path) -> usize {
     let mut count = 0;
     let Ok(entries) = std::fs::read_dir(sweep_dir) else {

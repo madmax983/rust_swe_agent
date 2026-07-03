@@ -81,6 +81,7 @@ pub mod subset;
 pub mod suite;
 pub mod suite_check;
 pub mod swebench;
+pub mod sweep_dashboard;
 pub mod tail;
 pub mod test_progress;
 pub mod tool_ablation;
