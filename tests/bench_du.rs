@@ -295,10 +295,8 @@ fn evaluate_prune_keep_last_breaks_same_second_ties_by_nanos_not_id() {
         keep_last: Some(1),
         incomplete_only: false,
     };
-    let eval = evaluate_prune_candidates(
-        &[older_but_alpha_first, newer_but_alpha_last],
-        &selectors,
-    );
+    let eval =
+        evaluate_prune_candidates(&[older_but_alpha_first, newer_but_alpha_last], &selectors);
 
     let retained_ids: Vec<&str> = eval.retained.iter().map(|c| c.id.as_str()).collect();
     assert_eq!(
