@@ -441,9 +441,17 @@ fn sibling_patch_of_trajectory(traj_path: &Path) -> PathBuf {
         use std::os::unix::ffi::{OsStrExt, OsStringExt};
         let bytes = file_name.as_bytes();
         let base_bytes = if bytes.ends_with(b".traj.json") {
-            &bytes[..bytes.len() - 10]
+            if bytes.len() >= 10 {
+                &bytes[..bytes.len() - 10]
+            } else {
+                bytes
+            }
         } else if bytes.ends_with(b".json") {
-            &bytes[..bytes.len() - 5]
+            if bytes.len() >= 5 {
+                &bytes[..bytes.len() - 5]
+            } else {
+                bytes
+            }
         } else {
             bytes
         };
@@ -505,7 +513,11 @@ fn sibling_trajectory_of_patch(patch_path: &Path) -> Option<PathBuf> {
         use std::os::unix::ffi::{OsStrExt, OsStringExt};
         let bytes = file_name.as_bytes();
         let base = if bytes.ends_with(b".patch") {
-            &bytes[..bytes.len() - 6]
+            if bytes.len() >= 6 {
+                &bytes[..bytes.len() - 6]
+            } else {
+                bytes
+            }
         } else {
             bytes
         };
@@ -1390,5 +1402,16 @@ pub fn exit_code_for(e: &ApplyError) -> crate::exit_code::ExitCode {
         ApplyError::RedactedRefused => crate::exit_code::ExitCode::ApplyRedactedRefused,
         ApplyError::CheckFailed(_) => crate::exit_code::ExitCode::ApplyCheckFailed,
         ApplyError::Io(_) => crate::exit_code::ExitCode::InternalError,
+    }
+}
+
+#[cfg(test)]
+mod havoc_tests {
+    #[test]
+    #[should_panic(expected = "out of bounds panic")]
+    #[allow(clippy::expect_used)]
+    fn test_apply_bytes_out_of_bounds() {
+        let bytes: &[u8] = b"a.json";
+        let _ = &bytes[..bytes.len().checked_sub(10).expect("out of bounds panic")];
     }
 }
