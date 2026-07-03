@@ -774,10 +774,7 @@ fn instance_rows_reports_pending_instance_when_filter_spec_names_it() {
     );
 
     let rows = instance_rows(dir.path()).unwrap();
-    let echo = rows
-        .iter()
-        .find(|r| r.instance_id == "echo")
-        .unwrap();
+    let echo = rows.iter().find(|r| r.instance_id == "echo").unwrap();
     assert_eq!(echo.status, InstanceStatus::Pending);
     assert!(echo.outcome.is_none());
     assert!(echo.current_step.is_none());

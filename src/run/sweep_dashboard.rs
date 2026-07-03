@@ -855,6 +855,22 @@ mod tests {
     }
 
     #[test]
+    fn draw_shows_failure_counts_and_cost_vs_baseline() {
+        let mut state = state_with_rows(vec![]);
+        let mut snap = test_snapshot();
+        snap.failure_counts
+            .insert(crate::trajectory::FailureCategory::EnvSetup, 2);
+        snap.cumulative_cost_usd = 3.5;
+        snap.baseline_cumulative_cost_usd = 9.75;
+        state.snapshot = Some(snap);
+        let buf = render_to_buffer(&state, 120, 20);
+        let text = buffer_text(&buf);
+        assert!(text.contains("EnvSetup=2"), "{text}");
+        assert!(text.contains("3.5000"), "{text}");
+        assert!(text.contains("9.7500"), "{text}");
+    }
+
+    #[test]
     fn draw_shows_complete_banner_when_snapshot_is_complete() {
         let mut state = state_with_rows(vec![]);
         let mut snap = test_snapshot();
@@ -879,6 +895,25 @@ mod tests {
         assert!(text.contains("bravo-instance"), "{text}");
         assert!(text.contains("in-flight"), "{text}");
         assert!(text.contains("terminal"), "{text}");
+    }
+
+    #[test]
+    fn draw_lists_run_slot_step_and_outcome_columns() {
+        let mut state = state_with_rows(vec![InstanceRow {
+            instance_id: "charlie".into(),
+            run_index: 2,
+            status: InstanceStatus::Terminal,
+            current_step: Some(7),
+            outcome: Some("submitted".into()),
+            failure_category: None,
+        }]);
+        state.snapshot = Some(test_snapshot());
+        let buf = render_to_buffer(&state, 120, 20);
+        let text = buffer_text(&buf);
+        assert!(text.contains("charlie"), "{text}");
+        assert!(text.contains("run 2"), "{text}");
+        assert!(text.contains("step 7"), "{text}");
+        assert!(text.contains("submitted"), "{text}");
     }
 
     #[test]
