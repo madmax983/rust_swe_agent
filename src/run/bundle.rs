@@ -1572,4 +1572,12 @@ mod tests {
             "path=./file"
         );
     }
+
+    use proptest::prelude::*;
+    proptest! {
+        #[test]
+        fn test_normalize_archive_path_no_panic(path in "\\\\PC*") {
+            let _ = super::normalize_archive_path(std::path::Path::new(&path));
+        }
+    }
 }

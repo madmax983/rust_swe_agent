@@ -1254,3 +1254,15 @@ impl PolicyCounts {
         self.allowed == 0 && self.asked == 0 && self.blocked == 0 && self.yolo_bypassed == 0
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use proptest::prelude::*;
+    proptest! {
+        #[test]
+        fn test_interpreter_invokes_file_no_panic(region in "\\\\PC*", file in "\\\\PC*") {
+            let _ = interpreter_invokes_file(&region, &file);
+        }
+    }
+}

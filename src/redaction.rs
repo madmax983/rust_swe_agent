@@ -995,6 +995,17 @@ mod redaction_unsafe_tests {
     #![allow(clippy::unwrap_used)]
     use super::*;
 
+    use proptest::prelude::*;
+    proptest! {
+        #[test]
+        fn test_redact_text_no_panic(input in "\\PC*", surface in "\\PC*") {
+            let redactor = Redactor::default_enabled();
+            let _ = redactor.redact_text(&input, &surface);
+            let _ = redactor.unredact_text(&input);
+            let _ = redactor.check(&input);
+        }
+    }
+
     #[test]
     fn should_return_true_when_unsafe_allow_secret_leaks_is_true() {
         let cfg = RedactionCfg {

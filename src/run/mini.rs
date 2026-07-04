@@ -2290,6 +2290,14 @@ mod tests {
         assert_eq!(slugify("A/B/C"), "a-b-c");
     }
 
+    use proptest::prelude::*;
+    proptest! {
+        #[test]
+        fn test_slugify_no_panic(s in "\\PC*") {
+            let _ = slugify(&s);
+        }
+    }
+
     #[test]
     fn validate_git_rev_accepts_revspec_chars_and_rejects_empty_or_control() {
         assert_eq!(validate_git_rev("HEAD"), Ok("HEAD"));
