@@ -95,6 +95,14 @@ pub fn registry() -> Vec<ExportFormat> {
         render: MermaidExporter::export,
     });
 
+    #[cfg(feature = "org-export")]
+    formats.push(ExportFormat {
+        name: "org",
+        tier: StabilityTier::Experimental,
+        consumer: "Emacs Org-mode users, plain-text outliners",
+        render: OrgExporter::export,
+    });
+
     formats
 }
 
@@ -109,6 +117,7 @@ pub const FEATURE_GATED_FORMATS: &[(&str, &str)] = &[
     ("csv", "csv-export"),
     ("html", "html-export"),
     ("mermaid", "mermaid-export"),
+    ("org", "org-export"),
 ];
 
 /// Returns `true` if `name` is a trajectory export format known to this codebase,
@@ -165,6 +174,9 @@ pub struct MermaidExporter;
 
 #[cfg(feature = "html-export")]
 pub struct HtmlExporter;
+
+#[cfg(feature = "org-export")]
+pub struct OrgExporter;
 
 use std::fmt::Write;
 
@@ -452,5 +464,74 @@ mod tests {
         assert!(html.contains("submitted"));
         assert!(html.contains("Hello agent"));
         assert!(html.contains("Hello user"));
+    }
+}
+
+#[cfg(all(test, feature = "org-export"))]
+mod org_tests {
+    use super::*;
+    use crate::model::Message;
+
+    #[test]
+    fn test_org_export_format() {
+        let mut t = Trajectory::new();
+        t.info.task = Some("Add a feature".to_string());
+        t.info.outcome = Some("submitted".to_string());
+
+        t.record_message(&Message::system("System prompt"));
+        t.record_message(&Message::user("Hello agent"));
+        t.record_message(&Message::assistant("Hello user"));
+
+        let org = OrgExporter::export(&t);
+
+        assert!(org.contains("#+TITLE: Trajectory Export"));
+        assert!(org.contains("* Task"));
+        assert!(org.contains("Add a feature"));
+        assert!(org.contains("* Outcome"));
+        assert!(org.contains("submitted"));
+        assert!(org.contains("* Messages"));
+        assert!(org.contains("** System"));
+        assert!(org.contains("System prompt"));
+        assert!(org.contains("** User"));
+        assert!(org.contains("Hello agent"));
+        assert!(org.contains("** Assistant"));
+        assert!(org.contains("Hello user"));
+    }
+}
+
+#[cfg(feature = "org-export")]
+impl TrajectoryExporter for OrgExporter {
+    fn export(trajectory: &Trajectory) -> String {
+        let redactor = Redactor::default_enabled();
+        let mut org = String::new();
+
+        org.push_str("#+TITLE: Trajectory Export\n\n");
+
+        if let Some(task) = &trajectory.info.task {
+            let task = redactor.redact_text(task, surface::EXPORT).text;
+            let _ = write!(org, "* Task\n{task}\n\n");
+        }
+
+        if let Some(outcome) = &trajectory.info.outcome {
+            let outcome = redactor.redact_text(outcome, surface::EXPORT).text;
+            let _ = write!(org, "* Outcome\n{outcome}\n\n");
+        }
+
+        org.push_str("* Messages\n\n");
+
+        for msg in &trajectory.messages {
+            let role_title = match msg.role.as_str() {
+                "system" => "System",
+                "user" => "User",
+                "assistant" => "Assistant",
+                "tool" => "Tool",
+                other => other,
+            };
+
+            let content = redactor.redact_text(&msg.content, surface::EXPORT).text;
+            let _ = write!(org, "** {role_title}\n{content}\n\n");
+        }
+
+        org
     }
 }
