@@ -97,7 +97,7 @@ pub fn parse_task_file(content: &str, format: TaskFileFormat) -> Result<Vec<Suit
             Ok(tasks)
         }
         TaskFileFormat::Yaml => {
-            let specs: Vec<SuiteTaskSpec> = serde_yml::from_str(content).map_err(|e| {
+            let specs: Vec<SuiteTaskSpec> = serde_norway::from_str(content).map_err(|e| {
                 Error::Config(crate::error::ConfigError::Invalid(format!(
                     "task file YAML parse error: {e}"
                 )))
