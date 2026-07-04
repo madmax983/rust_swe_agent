@@ -18,6 +18,7 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
+use comfy_table::{Table, modifiers::UTF8_ROUND_CORNERS, presets::UTF8_FULL};
 use serde::{Deserialize, Serialize};
 
 use crate::error::Error;
@@ -79,10 +80,20 @@ impl ShardReport {
         println!("  shards          {}", self.shard_count);
         println!("  total instances {}", self.total_instances);
         println!("  balance spread  {}", self.balance_spread);
-        for (i, count) in self.per_shard_counts.iter().enumerate() {
-            println!("  shard-{i:03}        {count} instances");
-        }
         println!("  dataset sha256  {}", self.source_dataset_sha256);
+        println!();
+
+        let mut table = Table::new();
+        table
+            .load_preset(UTF8_FULL)
+            .apply_modifier(UTF8_ROUND_CORNERS)
+            .set_header(vec!["Shard", "Instances"]);
+
+        for (i, count) in self.per_shard_counts.iter().enumerate() {
+            table.add_row(vec![format!("shard-{i:03}"), count.to_string()]);
+        }
+
+        println!("{table}");
     }
 }
 

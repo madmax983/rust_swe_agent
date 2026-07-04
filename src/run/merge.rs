@@ -10,6 +10,7 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
+use comfy_table::{Table, modifiers::UTF8_ROUND_CORNERS, presets::UTF8_FULL};
 use serde::Serialize;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -261,12 +262,22 @@ pub fn run(args: &MergeCmd) -> Result<MergeReport, Error> {
 impl MergeReport {
     pub fn render_text(&self) {
         println!("Shards merged: {}", self.shards.len());
+
+        let mut shard_table = Table::new();
+        shard_table
+            .load_preset(UTF8_FULL)
+            .apply_modifier(UTF8_ROUND_CORNERS)
+            .set_header(vec!["Label", "Instances", "Path"]);
+
         for s in &self.shards {
-            println!(
-                "  {:20}  {:6} instances  {}",
-                s.label, s.instance_count, s.dir
-            );
+            shard_table.add_row(vec![
+                s.label.clone(),
+                s.instance_count.to_string(),
+                s.dir.clone(),
+            ]);
         }
+        println!("{shard_table}");
+
         println!();
         println!(
             "Total instances: {} ({} duplicates resolved via {})",
@@ -274,12 +285,27 @@ impl MergeReport {
         );
         println!("Output: {}", self.output_dir);
         println!();
+
         println!("Top-line metrics:");
-        println!("  total_cost_usd : {:.6}", self.total_cost_usd);
-        println!("  submitted      : {}", self.submitted);
-        println!("  errored        : {}", self.errored);
-        println!("  resolved       : {}", self.resolved);
-        println!("  pass_at_k      : {:.4}", self.pass_at_k);
+        let mut metrics_table = Table::new();
+        metrics_table
+            .load_preset(UTF8_FULL)
+            .apply_modifier(UTF8_ROUND_CORNERS)
+            .set_header(vec!["Metric", "Value"]);
+
+        metrics_table.add_row(vec![
+            "total_cost_usd".to_string(),
+            format!("{:.6}", self.total_cost_usd),
+        ]);
+        metrics_table.add_row(vec!["submitted".to_string(), self.submitted.to_string()]);
+        metrics_table.add_row(vec!["errored".to_string(), self.errored.to_string()]);
+        metrics_table.add_row(vec!["resolved".to_string(), self.resolved.to_string()]);
+        metrics_table.add_row(vec![
+            "pass_at_k".to_string(),
+            format!("{:.4}", self.pass_at_k),
+        ]);
+
+        println!("{metrics_table}");
     }
 }
 
