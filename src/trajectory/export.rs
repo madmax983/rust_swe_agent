@@ -95,6 +95,14 @@ pub fn registry() -> Vec<ExportFormat> {
         render: MermaidExporter::export,
     });
 
+    #[cfg(feature = "latex-export")]
+    formats.push(ExportFormat {
+        name: "latex",
+        tier: StabilityTier::Experimental,
+        consumer: "LaTeX compilers, academic researchers, PDF generators",
+        render: LatexExporter::export,
+    });
+
     formats
 }
 
@@ -109,6 +117,7 @@ pub const FEATURE_GATED_FORMATS: &[(&str, &str)] = &[
     ("csv", "csv-export"),
     ("html", "html-export"),
     ("mermaid", "mermaid-export"),
+    ("latex", "latex-export"),
 ];
 
 /// Returns `true` if `name` is a trajectory export format known to this codebase,
@@ -358,6 +367,80 @@ impl TrajectoryExporter for MermaidExporter {
     }
 }
 
+#[cfg(feature = "latex-export")]
+pub struct LatexExporter;
+
+#[cfg(feature = "latex-export")]
+impl TrajectoryExporter for LatexExporter {
+    fn export(trajectory: &Trajectory) -> String {
+        let redactor = Redactor::default_enabled();
+        let mut latex = String::new();
+
+        latex.push_str("\\documentclass{article}\n");
+        latex.push_str("\\usepackage[utf8]{inputenc}\n");
+        latex.push_str("\\usepackage{hyperref}\n");
+        latex.push_str("\\begin{document}\n\n");
+        latex.push_str("\\section*{Trajectory Export}\n\n");
+
+        let escape_latex = |s: &str| -> String {
+            let mut escaped = String::with_capacity(s.len() + 10);
+            for c in s.chars() {
+                match c {
+                    '\\' => escaped.push_str("\\textbackslash{}"),
+                    '&' => escaped.push_str("\\&"),
+                    '%' => escaped.push_str("\\%"),
+                    '$' => escaped.push_str("\\$"),
+                    '#' => escaped.push_str("\\#"),
+                    '_' => escaped.push_str("\\_"),
+                    '{' => escaped.push_str("\\{"),
+                    '}' => escaped.push_str("\\}"),
+                    '~' => escaped.push_str("\\textasciitilde{}"),
+                    '^' => escaped.push_str("\\textasciicircum{}"),
+                    _ => escaped.push(c),
+                }
+            }
+            escaped
+        };
+
+        if let Some(task) = &trajectory.info.task {
+            let task = redactor.redact_text(task, surface::EXPORT).text;
+            let safe_task = escape_latex(&task);
+            let _ = write!(latex, "\\textbf{{Task:}} {safe_task}\\\\\n\n");
+        }
+
+        if let Some(outcome) = &trajectory.info.outcome {
+            let outcome = redactor.redact_text(outcome, surface::EXPORT).text;
+            let safe_outcome = escape_latex(&outcome);
+            let _ = write!(latex, "\\textbf{{Outcome:}} {safe_outcome}\\\\\n\n");
+        }
+
+        for msg in &trajectory.messages {
+            let role_title = match msg.role.as_str() {
+                "system" => "System",
+                "user" => "User",
+                "assistant" => "Assistant",
+                "tool" => "Tool",
+                other => other,
+            };
+
+            let content = redactor.redact_text(&msg.content, surface::EXPORT).text;
+
+            // Special handling for content: use verbatim block for unescaped code,
+            // or we just escape everything. Let's use verbatim for tool output or long blocks,
+            // but for simplicity and safety, we will just escape and put it in a normal paragraph
+            // or use a verbatim block if we don't want to escape inside. Let's stick to standard escaping.
+            let safe_role = escape_latex(role_title);
+            let safe_content = escape_latex(&content);
+
+            let _ = write!(latex, "\\subsection*{{{safe_role}}}\n\n");
+            let _ = write!(latex, "{safe_content}\n\n");
+        }
+
+        latex.push_str("\\end{document}\n");
+        latex
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -452,5 +535,26 @@ mod tests {
         assert!(html.contains("submitted"));
         assert!(html.contains("Hello agent"));
         assert!(html.contains("Hello user"));
+    }
+
+    #[cfg(feature = "latex-export")]
+    #[test]
+    fn test_latex_export_format() {
+        let mut t = Trajectory::new();
+        t.info.task = Some("Add a feature % & # _".to_string());
+        t.info.outcome = Some("submitted".to_string());
+
+        t.record_message(&Message::user("Hello agent_123"));
+        t.record_message(&Message::user("Hello user $"));
+
+        let latex = LatexExporter::export(&t);
+
+        assert!(latex.starts_with("\\documentclass{article}"));
+        assert!(latex.contains("\\section*{Trajectory Export}"));
+        assert!(latex.contains("Add a feature \\% \\& \\# \\_"));
+        assert!(latex.contains("submitted"));
+        assert!(latex.contains("Hello agent\\_123"));
+        assert!(latex.contains("Hello user \\$"));
+        assert!(latex.ends_with("\\end{document}\n"));
     }
 }
