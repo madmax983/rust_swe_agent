@@ -95,6 +95,14 @@ pub fn registry() -> Vec<ExportFormat> {
         render: MermaidExporter::export,
     });
 
+    #[cfg(feature = "rss-export")]
+    formats.push(ExportFormat {
+        name: "rss",
+        tier: StabilityTier::Experimental,
+        consumer: "Feed readers, news aggregators, timeline view",
+        render: RssExporter::export,
+    });
+
     formats
 }
 
@@ -109,6 +117,7 @@ pub const FEATURE_GATED_FORMATS: &[(&str, &str)] = &[
     ("csv", "csv-export"),
     ("html", "html-export"),
     ("mermaid", "mermaid-export"),
+    ("rss", "rss-export"),
 ];
 
 /// Returns `true` if `name` is a trajectory export format known to this codebase,
@@ -165,6 +174,9 @@ pub struct MermaidExporter;
 
 #[cfg(feature = "html-export")]
 pub struct HtmlExporter;
+
+#[cfg(feature = "rss-export")]
+pub struct RssExporter;
 
 use std::fmt::Write;
 
@@ -304,6 +316,77 @@ impl TrajectoryExporter for HtmlExporter {
 
         html.push_str("</body>\n</html>");
         html
+    }
+}
+
+#[cfg(feature = "rss-export")]
+impl TrajectoryExporter for RssExporter {
+    fn export(trajectory: &Trajectory) -> String {
+        let redactor = Redactor::default_enabled();
+        let mut rss = String::new();
+        let title = if let Some(task) = &trajectory.info.task {
+            let task_redacted = redactor.redact_text(task, surface::EXPORT).text;
+            let title = task_redacted.lines().next().unwrap_or("Trajectory Export");
+            title
+                .replace('&', "&amp;")
+                .replace('<', "&lt;")
+                .replace('>', "&gt;")
+        } else {
+            "Trajectory Export".to_string()
+        };
+
+        let outcome = if let Some(out) = &trajectory.info.outcome {
+            let out_redacted = redactor.redact_text(out, surface::EXPORT).text;
+            out_redacted
+                .replace('&', "&amp;")
+                .replace('<', "&lt;")
+                .replace('>', "&gt;")
+        } else {
+            "Unknown outcome".to_string()
+        };
+
+        let pub_date = chrono::Utc::now().to_rfc2822();
+
+        let _ = writeln!(rss, "<?xml version=\"1.0\" encoding=\"UTF-8\" ?>");
+        let _ = writeln!(rss, "<rss version=\"2.0\">");
+        let _ = writeln!(rss, "  <channel>");
+        let _ = writeln!(rss, "    <title>{title}</title>");
+        let _ = writeln!(rss, "    <description>Outcome: {outcome}</description>");
+        let _ = writeln!(rss, "    <pubDate>{pub_date}</pubDate>");
+
+        for (i, msg) in trajectory.messages.iter().enumerate() {
+            let role_class = msg.role.as_str();
+            let role_title = match role_class {
+                "system" => "System",
+                "user" => "User",
+                "assistant" => "Assistant",
+                "tool" => "Tool",
+                other => other,
+            };
+
+            let content = redactor.redact_text(&msg.content, surface::EXPORT).text;
+
+            let item_title = format!("Message {}: {}", i + 1, role_title);
+
+            let _ = writeln!(rss, "    <item>");
+            let _ = writeln!(rss, "      <title>{item_title}</title>");
+            let _ = writeln!(
+                rss,
+                "      <description><![CDATA[\n{content}\n]]></description>"
+            );
+            if let Some(ts) = &msg.extra.timestamp {
+                if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(ts) {
+                    let rfc_date = dt.to_rfc2822();
+                    let _ = writeln!(rss, "      <pubDate>{rfc_date}</pubDate>");
+                }
+            }
+            let _ = writeln!(rss, "    </item>");
+        }
+
+        let _ = writeln!(rss, "  </channel>");
+        let _ = writeln!(rss, "</rss>");
+
+        rss
     }
 }
 
@@ -452,5 +535,27 @@ mod tests {
         assert!(html.contains("submitted"));
         assert!(html.contains("Hello agent"));
         assert!(html.contains("Hello user"));
+    }
+
+    #[cfg(feature = "rss-export")]
+    #[test]
+    fn test_rss_export_format() {
+        let mut t = Trajectory::new();
+        t.info.task = Some("Add a feature".to_string());
+        t.info.outcome = Some("submitted".to_string());
+
+        t.record_message(&Message::user("Hello agent"));
+        t.record_message(&Message::user("Hello user"));
+
+        let rss = RssExporter::export(&t);
+
+        assert!(rss.starts_with("<?xml version=\"1.0\""));
+        assert!(rss.contains("<rss version=\"2.0\">"));
+        assert!(rss.contains("<title>Add a feature</title>"));
+        assert!(rss.contains("Outcome: submitted"));
+        assert!(rss.contains("Hello agent"));
+        assert!(rss.contains("Hello user"));
+        assert!(rss.contains("Message 1: User"));
+        assert!(rss.contains("Message 2: User"));
     }
 }
