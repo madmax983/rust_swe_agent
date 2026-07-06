@@ -127,12 +127,6 @@ impl Model for ForkingModel {
                 _ => {}
             }
 
-            // Advance step counter only after checking fingerprint.
-            *self
-                .step
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner) = step + 1;
-
             let mut resp = self
                 .inner_deterministic
                 .query(messages, opts)
@@ -141,6 +135,12 @@ impl Model for ForkingModel {
                     ModelError::ResponsesExhausted(n) => ModelError::ScriptedResponsesExhausted(n),
                     other => other,
                 })?;
+
+            // Advance step counter only after checking fingerprint and successfully querying.
+            *self
+                .step
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = step + 1;
 
             // Strictly $0 cost attribute to the prefix.
             resp.usage = ModelUsage {

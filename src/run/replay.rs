@@ -496,19 +496,25 @@ impl Model for FingerprintCheckingModel {
             }
         }
 
-        // Advance step counter only after the fingerprint check passes.
+        // Translate the generic scripted-model exhaustion into the
+        // replay-specific variant so that `ExitCode::from_error` maps it to
+        // `ReplayResponseExhausted` (10) only in replay context.
+        let resp = self
+            .inner
+            .query(messages, opts)
+            .await
+            .map_err(|e| match e {
+                ModelError::ResponsesExhausted(n) => ModelError::ScriptedResponsesExhausted(n),
+                other => other,
+            })?;
+
+        // Advance step counter only after the fingerprint check passes and querying succeeds.
         *self
             .step
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = step + 1;
 
-        // Translate the generic scripted-model exhaustion into the
-        // replay-specific variant so that `ExitCode::from_error` maps it to
-        // `ReplayResponseExhausted` (10) only in replay context.
-        self.inner.query(messages, opts).await.map_err(|e| match e {
-            ModelError::ResponsesExhausted(n) => ModelError::ScriptedResponsesExhausted(n),
-            other => other,
-        })
+        Ok(resp)
     }
 }
 

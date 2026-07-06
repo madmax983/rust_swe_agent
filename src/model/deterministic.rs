@@ -83,30 +83,20 @@ impl Model for DeterministicModel {
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             rec.push(messages.to_vec());
         }
-        {
+        let content = {
             let mut count = self
                 .call_count
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let idx = *count;
             *count += 1;
-        }
+            drop(count);
 
-        // call_count was just incremented above; subtract 1 for 0-indexed step.
-        let step_index = {
-            let count = self
-                .call_count
+            self.responses
                 .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            count.saturating_sub(1)
-        };
-
-        let content = {
-            let mut q = self
-                .responses
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            q.pop_front()
-                .ok_or(ModelError::ResponsesExhausted(step_index))?
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .pop_front()
+                .ok_or(ModelError::ResponsesExhausted(idx))?
         };
 
         // Sentinel: "__rate_limited__:N" → ModelError::RateLimited with
