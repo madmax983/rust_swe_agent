@@ -95,6 +95,14 @@ pub fn registry() -> Vec<ExportFormat> {
         render: MermaidExporter::export,
     });
 
+    #[cfg(feature = "xml-export")]
+    formats.push(ExportFormat {
+        name: "xml",
+        tier: StabilityTier::Experimental,
+        consumer: "XML parsers, automated processing pipelines",
+        render: XmlExporter::export,
+    });
+
     formats
 }
 
@@ -109,6 +117,7 @@ pub const FEATURE_GATED_FORMATS: &[(&str, &str)] = &[
     ("csv", "csv-export"),
     ("html", "html-export"),
     ("mermaid", "mermaid-export"),
+    ("xml", "xml-export"),
 ];
 
 /// Returns `true` if `name` is a trajectory export format known to this codebase,
@@ -162,6 +171,9 @@ pub struct CsvExporter;
 
 #[cfg(feature = "mermaid-export")]
 pub struct MermaidExporter;
+
+#[cfg(feature = "xml-export")]
+pub struct XmlExporter;
 
 #[cfg(feature = "html-export")]
 pub struct HtmlExporter;
@@ -358,6 +370,48 @@ impl TrajectoryExporter for MermaidExporter {
     }
 }
 
+#[cfg(feature = "xml-export")]
+impl TrajectoryExporter for XmlExporter {
+    fn export(trajectory: &Trajectory) -> String {
+        use std::fmt::Write;
+
+        let redactor = Redactor::default_enabled();
+        let mut xml = String::new();
+
+        xml.push_str("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
+        xml.push_str("<trajectory>\n");
+
+        if let Some(task) = &trajectory.info.task {
+            let task = redactor.redact_text(task, surface::EXPORT).text;
+            let safe_task = task.replace("]]>", "]]]]><![CDATA[>");
+            let _ = writeln!(xml, "  <task><![CDATA[{safe_task}]]></task>");
+        }
+
+        if let Some(outcome) = &trajectory.info.outcome {
+            let outcome = redactor.redact_text(outcome, surface::EXPORT).text;
+            let safe_outcome = outcome.replace("]]>", "]]]]><![CDATA[>");
+            let _ = writeln!(xml, "  <outcome><![CDATA[{safe_outcome}]]></outcome>");
+        }
+
+        xml.push_str("  <messages>\n");
+        for msg in &trajectory.messages {
+            let content = redactor.redact_text(&msg.content, surface::EXPORT).text;
+            // The CDATA block natively handles escaping of <, >, &, etc.
+            // But we must ensure it doesn't contain ]]> which would end the block prematurely.
+            let safe_content = content.replace("]]>", "]]]]><![CDATA[>");
+            let _ = writeln!(
+                xml,
+                "    <message role=\"{}\">\n      <![CDATA[{}]]>\n    </message>",
+                msg.role, safe_content
+            );
+        }
+        xml.push_str("  </messages>\n");
+
+        xml.push_str("</trajectory>");
+        xml
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -452,5 +506,34 @@ mod tests {
         assert!(html.contains("submitted"));
         assert!(html.contains("Hello agent"));
         assert!(html.contains("Hello user"));
+    }
+
+    #[cfg(feature = "xml-export")]
+    #[test]
+    fn test_xml_export_format() {
+        let mut t = Trajectory::new();
+        t.info.task = Some("Add a feature".to_string());
+        t.info.outcome = Some(outcome::SUBMITTED.to_string());
+
+        t.record_message(&Message::system("System prompt; echo 1 >&2"));
+        t.record_message(&Message::user("Hello agent\nMulti-line"));
+        t.record_message(&Message::assistant("Hello \"user\""));
+
+        let xml = XmlExporter::export(&t);
+
+        assert!(xml.starts_with("<?xml version=\"1.0\" encoding=\"UTF-8\"?>"));
+        assert!(xml.contains("<trajectory>"));
+        assert!(xml.contains("<task><![CDATA[Add a feature]]></task>"));
+        assert!(xml.contains("<outcome><![CDATA[submitted]]></outcome>"));
+        assert!(xml.contains("<messages>"));
+        assert!(xml.contains("<message role=\"system\">"));
+        assert!(xml.contains("<![CDATA[System prompt; echo 1 >&2]]>"));
+        assert!(xml.contains("<message role=\"user\">"));
+        assert!(xml.contains("<![CDATA[Hello agent\nMulti-line]]>"));
+        assert!(xml.contains("<message role=\"assistant\">"));
+        assert!(xml.contains("<![CDATA[Hello \"user\"]]>"));
+        assert!(xml.contains("</message>"));
+        assert!(xml.contains("</messages>"));
+        assert!(xml.contains("</trajectory>"));
     }
 }
