@@ -532,7 +532,10 @@ mod tests {
         let Some(network_pos) = args.iter().position(|a| a == "--network") else {
             panic!("must have network flag");
         };
-        assert_eq!(args.get(network_pos + 1).map(String::as_str), Some("none"));
+        assert_eq!(
+            args.get(network_pos + 1).map(String::as_str),
+            Some("none")
+        );
     }
 
     #[test]
