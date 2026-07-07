@@ -10,7 +10,7 @@
 //! (`crate::run::inspect::build_inspect_steps_with_max`).
 //!
 //! The module is split so the state machine and rendering are pure,
-//! deterministic functions ([`handle_key`], [`draw`]) testable with
+//! deterministic functions testable with
 //! ratatui's `TestBackend` — no real terminal required — while [`run`] is
 //! the thin IO shell that owns the terminal and the poll loop.
 
