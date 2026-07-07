@@ -260,26 +260,51 @@ pub fn run(args: &MergeCmd) -> Result<MergeReport, Error> {
 
 impl MergeReport {
     pub fn render_text(&self) {
+        use comfy_table::{Table, modifiers::UTF8_ROUND_CORNERS, presets::UTF8_FULL};
+
+        println!("\n=== bench merge ===");
         println!("Shards merged: {}", self.shards.len());
-        for s in &self.shards {
-            println!(
-                "  {:20}  {:6} instances  {}",
-                s.label, s.instance_count, s.dir
-            );
-        }
-        println!();
         println!(
             "Total instances: {} ({} duplicates resolved via {})",
             self.total_instances, self.duplicates, self.collision_policy
         );
-        println!("Output: {}", self.output_dir);
-        println!();
-        println!("Top-line metrics:");
-        println!("  total_cost_usd : {:.6}", self.total_cost_usd);
-        println!("  submitted      : {}", self.submitted);
-        println!("  errored        : {}", self.errored);
-        println!("  resolved       : {}", self.resolved);
-        println!("  pass_at_k      : {:.4}", self.pass_at_k);
+        println!("Output: {}\n", self.output_dir);
+
+        if !self.shards.is_empty() {
+            let mut shard_table = Table::new();
+            shard_table
+                .load_preset(UTF8_FULL)
+                .apply_modifier(UTF8_ROUND_CORNERS)
+                .set_header(vec!["Label", "Instances", "Directory"]);
+
+            for s in &self.shards {
+                shard_table.add_row(vec![
+                    s.label.clone(),
+                    s.instance_count.to_string(),
+                    s.dir.clone(),
+                ]);
+            }
+            println!("── Shards ──");
+            println!("{shard_table}\n");
+        }
+
+        let mut metrics = Table::new();
+        metrics
+            .load_preset(UTF8_FULL)
+            .apply_modifier(UTF8_ROUND_CORNERS)
+            .set_header(vec!["Metric", "Value"]);
+
+        metrics.add_row(vec![
+            "total_cost_usd".to_string(),
+            format!("${:.6}", self.total_cost_usd),
+        ]);
+        metrics.add_row(vec!["submitted".to_string(), self.submitted.to_string()]);
+        metrics.add_row(vec!["errored".to_string(), self.errored.to_string()]);
+        metrics.add_row(vec!["resolved".to_string(), self.resolved.to_string()]);
+        metrics.add_row(vec!["pass_at_k".to_string(), format!("{:.4}", self.pass_at_k)]);
+
+        println!("── Top-line metrics ──");
+        println!("{metrics}");
     }
 }
 
