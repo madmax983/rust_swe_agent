@@ -3,7 +3,7 @@
 //! Similar to `claude_driver.rs`, this module lets an operator point the *same*
 //! run machinery at the OpenAI Codex CLI instead of the built-in bash-first loop.
 //! `codex` runs in `--full-auto --json` mode; we read its newline-delimited JSON
-//! stream and translate each event into the harness [`Trajectory`] format so that
+//! stream and translate each event into the harness [`crate::trajectory::Trajectory`] format so that
 //! patch capture, verification, `bench inspect`, and evaluation all keep working
 //! unchanged.
 //!

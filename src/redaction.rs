@@ -471,7 +471,7 @@ impl Redactor {
 
     /// Run redaction and return per-match annotations for operator verification.
     ///
-    /// Unlike [`redact_text`], this method does not update surface-level telemetry
+    /// Unlike [`Redactor::redact_text`], this method does not update surface-level telemetry
     /// counts and does not require a surface label. It is designed for the
     /// `agent redact-check` preflight command.
     #[must_use]
@@ -993,6 +993,7 @@ fn collect_env_assignment_matches(
 #[cfg(test)]
 mod redaction_unsafe_tests {
     #![allow(clippy::unwrap_used)]
+    #[allow(unused_imports)]
     use super::*;
 
     #[test]
@@ -1019,6 +1020,7 @@ mod redaction_unsafe_tests {
 mod tests {
     #![allow(clippy::unwrap_used)]
 
+    #[allow(unused_imports)]
     use super::*;
 
     #[test]
@@ -1257,4 +1259,23 @@ mod tests {
         let unredacted = redactor.unredact_text(&redacted);
         assert_eq!(original, unredacted);
     }
+}
+
+#[cfg(test)]
+mod docs_tests {
+    #[allow(unused_imports)]
+    use super::*;
+
+    /// ```rust
+    /// use maxwells_daemon::redaction::{RedactionCfg, Redactor};
+    /// let cfg = RedactionCfg {
+    ///     enabled: true,
+    ///     ..Default::default()
+    /// };
+    /// let redactor = Redactor::from_config(&cfg).unwrap();
+    /// let result = redactor.check("some text");
+    /// assert_eq!(result.redacted, "some text");
+    /// ```
+    #[test]
+    fn test_doc_example() {}
 }
