@@ -1,6 +1,6 @@
 //! `agent redact-audit <dir>` — post-hoc secret-leak detection for sweep artifacts.
 //!
-//! Issue #342. The runtime [`Redactor`](crate::redaction::Redactor) masks secrets
+//! Issue #342. The runtime [`crate::redaction::Redactor`] masks secrets
 //! *at write-time* and explicitly does not retroactively rewrite stored
 //! artifacts. Trajectories and sweep outputs are routinely shared (PRs, HTML
 //! exports, bundles), so a redaction-config bug or an unanticipated secret shape
@@ -3126,21 +3126,16 @@ mod tests {
     fn oracle_catches_ambient_env_value() {
         // A sensitive env value from the audit's own environment, appearing in
         // an artifact without its variable name, is still caught.
-        // SAFETY: single-threaded test; restored immediately after the run.
         let dir = tempfile::tempdir().unwrap();
         write(
             dir.path(),
             "x.output.txt",
-            "leaked: super-secret-ci-token-value-123\n",
+            "leaked: super-secret-ci-token-value-123
+",
         );
-        // SAFETY: set/remove a process-local var in a serial unit test.
-        unsafe {
-            std::env::set_var("DATABASE_PASSWORD", "super-secret-ci-token-value-123");
-        }
-        let report = audit(dir.path());
-        unsafe {
-            std::env::remove_var("DATABASE_PASSWORD");
-        }
+        let report = temp_env::with_var("DATABASE_PASSWORD", Some("super-secret-ci-token-value-123"), || {
+            audit(dir.path())
+        });
         assert!(
             report
                 .findings

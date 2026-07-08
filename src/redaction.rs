@@ -471,7 +471,7 @@ impl Redactor {
 
     /// Run redaction and return per-match annotations for operator verification.
     ///
-    /// Unlike [`redact_text`], this method does not update surface-level telemetry
+    /// Unlike `redact_text`, this method does not update surface-level telemetry
     /// counts and does not require a surface label. It is designed for the
     /// `agent redact-check` preflight command.
     #[must_use]
@@ -1256,5 +1256,27 @@ mod tests {
 
         let unredacted = redactor.unredact_text(&redacted);
         assert_eq!(original, unredacted);
+    }
+}
+
+#[cfg(test)]
+mod proptests {
+    use super::*;
+    use proptest::prelude::*;
+
+    proptest! {
+        #[test]
+        fn doesnt_crash_on_random_strings(s in "\\PC*") {
+            let config = crate::config::schema::RedactionCfg {
+                enabled: true,
+                unsafe_allow_secret_leaks: false,
+                secret_literals: vec!["secret1".to_string(), "foo".to_string()],
+                custom_patterns: vec!["(?i)password".to_string()],
+            };
+            let redactor = Redactor::from_config_lossy(&config);
+            let redacted = redactor.redact_text_scratch(&s);
+            // Just asserting it doesn't panic.
+            let _ = redacted.len();
+        }
     }
 }
