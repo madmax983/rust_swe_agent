@@ -6,7 +6,7 @@
 //! narrative document, complete with headers and code blocks.
 //!
 //! You can extend this module with new formats by implementing the [`crate::trajectory::export::TrajectoryExporter`] trait.
-//! Every new exporter MUST register in [`registry`] and MUST apply redaction via
+//! Every new exporter MUST register in `registry()` and MUST apply redaction via
 //! [`crate::redaction::Redactor::default_enabled`] on [`crate::redaction::surface::EXPORT`] before emitting any output.
 //! See `docs/spec-export.md` for the full governing contract.
 
