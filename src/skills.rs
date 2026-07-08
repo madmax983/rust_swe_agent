@@ -540,16 +540,26 @@ fn searchable_tokens(name: &str, description: &str) -> BTreeSet<String> {
         .collect()
 }
 
+/// Normalizes search text into lowercase alphanumeric space-delimited tokens.
+///
+/// ⚡ Bolt optimization: This function runs in a single pass without allocating
+/// intermediate `Vec` collections or triggering redundant heap allocations
+/// from `.split_whitespace().collect::<Vec<_>>().join(" ")`.
 fn normalize_search_text(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
+    let mut needs_space = false;
     for ch in text.chars() {
         if ch.is_ascii_alphanumeric() || ch == '$' || ch == '@' || ch == '/' {
+            if needs_space && !out.is_empty() {
+                out.push(' ');
+            }
             out.push(ch.to_ascii_lowercase());
+            needs_space = false;
         } else {
-            out.push(' ');
+            needs_space = true;
         }
     }
-    out.split_whitespace().collect::<Vec<_>>().join(" ")
+    out
 }
 
 fn is_stopword(token: &str) -> bool {
@@ -623,4 +633,30 @@ fn expand_skill_path(path: &String) -> PathBuf {
         }
     }
     PathBuf::from(path)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_normalize_search_text() {
+        assert_eq!(normalize_search_text(" a  b c "), "a b c");
+        assert_eq!(
+            normalize_search_text("hello-world!!test/foo@bar$"),
+            "hello world test/foo@bar$"
+        );
+        assert_eq!(normalize_search_text("   $  @  /  "), "$ @ /");
+        assert_eq!(normalize_search_text("already normal"), "already normal");
+        assert_eq!(normalize_search_text("  leading"), "leading");
+        assert_eq!(normalize_search_text("trailing  "), "trailing");
+        assert_eq!(
+            normalize_search_text("multiple   spaces   between"),
+            "multiple spaces between"
+        );
+        assert_eq!(
+            normalize_search_text("tabs\tand\nnewlines\r"),
+            "tabs and newlines"
+        );
+    }
 }
