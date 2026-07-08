@@ -4,7 +4,7 @@
 //! operator point the *same* run machinery at the Claude Code CLI instead.
 //! `claude` runs headless in `--output-format stream-json` mode; we read its
 //! newline-delimited message stream and translate each message into the
-//! harness [`Trajectory`](crate::trajectory::Trajectory) so that patch
+//! harness [crate::trajectory::Trajectory] so that patch
 //! capture, verification, `bench inspect`, and evaluation all keep working
 //! unchanged. The exploration question this answers: *can a more capable
 //! coding agent drive the loop and still leave us an inspectable receipt?*
@@ -405,10 +405,10 @@ fn record_claude_config(agent: &mut DefaultAgent, cwd: &Path, isolated: bool) {
 ///   OAuth/keychain auth, ambient `.claude` discovery (hooks, skills, plugins,
 ///   MCP, memory, `CLAUDE.md`), native session persistence, and the team's own
 ///   permission settings. The harness *records* the discovered config (see
-///   [`discover_claude_config`]) into the trajectory so the run is auditable
+///   `discover_claude_config`) into the trajectory so the run is auditable
 ///   without being sterilized. This is the enterprise-auditing case.
 /// - `true` (*isolation*): pass `--bare` (skip ambient discovery), `--tools`
-///   (restrict to [`ALLOWED_TOOLS`]), and `--no-session-persistence` for a
+///   (restrict to `ALLOWED_TOOLS`), and `--no-session-persistence` for a
 ///   reproducible measurement run. Note: `--bare` forces API-key-only auth, so
 ///   OAuth/keychain logins do not apply in this mode.
 #[allow(clippy::too_many_lines)]

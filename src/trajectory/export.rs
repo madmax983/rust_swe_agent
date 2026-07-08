@@ -6,7 +6,7 @@
 //! narrative document, complete with headers and code blocks.
 //!
 //! You can extend this module with new formats by implementing the [`crate::trajectory::export::TrajectoryExporter`] trait.
-//! Every new exporter MUST register in [`registry`] and MUST apply redaction via
+//! Every new exporter MUST register in `registry` and MUST apply redaction via
 //! [`crate::redaction::Redactor::default_enabled`] on [`crate::redaction::surface::EXPORT`] before emitting any output.
 //! See `docs/spec-export.md` for the full governing contract.
 
@@ -103,7 +103,7 @@ pub fn registry() -> Vec<ExportFormat> {
 ///
 /// Used to emit a helpful "feature not compiled in" error when an operator requests a
 /// format whose feature is disabled. Compiled-in formats (with metadata and a render fn)
-/// live in [`registry`]; a format gated *out* of this build is absent from `registry()`
+/// live in `registry`; a format gated *out* of this build is absent from `registry()`
 /// but present here so the CLI can still route it and explain how to enable it.
 pub const FEATURE_GATED_FORMATS: &[(&str, &str)] = &[
     ("csv", "csv-export"),
@@ -116,22 +116,22 @@ pub const FEATURE_GATED_FORMATS: &[(&str, &str)] = &[
 ///
 /// CLI routing uses this so a request for a gated-out format still reaches the export
 /// dispatch path (and gets a helpful "rebuild with --features" error) instead of falling
-/// through to a generic "unknown format" message. This keeps [`registry`] the single
+/// through to a generic "unknown format" message. This keeps `registry` the single
 /// source of truth for *compiled* formats while still recognizing the full catalog.
 pub fn is_export_format(name: &str) -> bool {
     registry().iter().any(|f| f.name == name)
         || FEATURE_GATED_FORMATS.iter().any(|(n, _)| *n == name)
 }
 
-/// A contract for types that can convert a [`Trajectory`] into a specialized string format.
+/// A contract for types that can convert a [crate::trajectory::Trajectory] into a specialized string format.
 ///
 /// Implement this trait to provide a new serialization layout (e.g., Markdown, CSV).
 pub trait TrajectoryExporter {
-    /// Transforms the provided [`Trajectory`] into a formatted `String`.
+    /// Transforms the provided [crate::trajectory::Trajectory] into a formatted `String`.
     fn export(trajectory: &Trajectory) -> String;
 }
 
-/// Transforms a [`Trajectory`] into a structured Markdown document.
+/// Transforms a [crate::trajectory::Trajectory] into a structured Markdown document.
 ///
 /// It renders the task, outcome, and all messages sequentially under appropriate headers.
 ///
@@ -154,7 +154,7 @@ pub trait TrajectoryExporter {
 /// ```
 pub struct MarkdownExporter;
 
-/// Transforms a [`Trajectory`] into a flat CSV file, with `role` and `content` columns.
+/// Transforms a [crate::trajectory::Trajectory] into a flat CSV file, with `role` and `content` columns.
 ///
 /// Note: This exporter properly handles and escapes embedded quotes and newlines in message content.
 #[cfg(feature = "csv-export")]

@@ -80,7 +80,7 @@ pub struct SelfCheckMetrics {
     pub brier_score: f64,
 }
 
-/// Top-level self-check report — the return value of [`run`].
+/// Top-level self-check report — the return value of `run`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SelfCheckReport {
     /// Schema identifier for machine-readable consumers.
@@ -173,7 +173,7 @@ fn load_eval_instances(sweep_dir: &Path) -> Result<Vec<serde_json::Value>, Error
     Ok(arr)
 }
 
-/// Mutable accumulator for the per-instance loop in [`run`].
+/// Mutable accumulator for the per-instance loop in `run`.
 #[derive(Default)]
 struct InstanceAccumulator {
     confusion: ConfusionCounts,

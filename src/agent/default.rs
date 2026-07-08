@@ -28,8 +28,9 @@ use crate::model::{
 };
 use crate::policy::{PolicyDecision, PolicyEngine, PolicyProfile};
 use crate::prompt_guard::{PromptGuard, UntrustedKind};
-use crate::redaction::{RedactingSink, Redactor, surface};
+use crate::redaction::{Redactor, surface};
 use crate::stagnation::StagnationDetector;
+use crate::stream::RedactingSink;
 use crate::stream::{NullSink, StreamEvent, StreamSink};
 use crate::template::Renderer;
 use crate::tool::{

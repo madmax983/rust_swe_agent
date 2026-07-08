@@ -103,7 +103,7 @@ pub struct StagnationTotals {
     pub total_usd_saved_estimate: Option<f64>,
 }
 
-/// Full stagnation report returned by [`run`].
+/// Full stagnation report returned by `run`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StagnationReport {
     pub sweep_path: String,

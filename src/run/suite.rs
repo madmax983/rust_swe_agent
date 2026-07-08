@@ -8,8 +8,8 @@
 //! `--rerun-failed` (issue #825) re-runs only the tasks whose last recorded
 //! result was non-passing, carrying every already-passing result forward
 //! unchanged (zero model calls, zero fresh cost) into a freshly merged
-//! `suite-results.json`. See [`tasks_needing_rerun`] and
-//! [`load_prior_suite_state`].
+//! `suite-results.json`. See `tasks_needing_rerun` and
+//! `load_prior_suite_state`.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -1041,7 +1041,7 @@ pub(crate) struct TaskIssue {
 /// Validate every task's `id`/`task` fields and cross-task id uniqueness,
 /// returning *all* violations found rather than stopping at the first
 /// (unlike the `agent suite` run path, which bails on the first issue via
-/// [`run`]). Used by both `agent suite` (which reports only the first issue)
+/// `run`). Used by both `agent suite` (which reports only the first issue)
 /// and `agent suite --check` (which reports every issue it can find).
 pub(crate) fn collect_task_validation_issues(tasks: &[SuiteTaskSpec]) -> Vec<TaskIssue> {
     let mut issues = Vec::new();
@@ -1080,7 +1080,7 @@ pub(crate) fn collect_task_validation_issues(tasks: &[SuiteTaskSpec]) -> Vec<Tas
 
 /// Validate a suite name for safe use as an `--output` subdirectory path
 /// segment. Shared by `agent suite` (fails fast on the first violation via
-/// [`run`]) and `agent suite --check` (reports it as a preflight check).
+/// `run`) and `agent suite --check` (reports it as a preflight check).
 pub(crate) fn validate_suite_name(name: &str) -> Result<(), String> {
     if name.contains('/') || name.contains('\\') || name.contains("..") {
         Err(format!(

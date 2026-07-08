@@ -2619,7 +2619,7 @@ fn validate_observation_head_ratio(value: f64) -> Result<(), Error> {
         Ok(())
     } else {
         Err(Error::Config(crate::error::ConfigError::Invalid(format!(
-            "--observation-head-ratio must be a finite value in [0,1], got {value}"
+            "--observation-head-ratio must be a finite value in `[0,1]`, got {value}"
         ))))
     }
 }

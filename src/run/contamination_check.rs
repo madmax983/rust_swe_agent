@@ -6,9 +6,9 @@
 //!
 //! | Signal | Description | Range |
 //! |--------|-------------|-------|
-//! | `edit_before_read_ratio` | Fraction of edited files never read before patching | [0,1] |
-//! | `patch_similarity_to_gold` | Normalised similarity between agent patch and gold patch | [0,1] |
-//! | `time_to_first_edit` | Suspicion from early first edit (step 0 → 1.0, last step → 0.0) | [0,1] |
+//! | `edit_before_read_ratio` | Fraction of edited files never read before patching | `[0,1]` |
+//! | `patch_similarity_to_gold` | Normalised similarity between agent patch and gold patch | `[0,1]` |
+//! | `time_to_first_edit` | Suspicion from early first edit (step 0 → 1.0, last step → 0.0) | `[0,1]` |
 //! | `verbatim_recall` | Whether agent message contains ≥ N tokens from gold patch surface | {0,1} |
 //!
 //! # Risk tiers
@@ -207,7 +207,7 @@ pub struct ContaminationSummary {
     pub contamination_adjusted_resolved_rate: f64,
 }
 
-/// Full contamination report returned by [`run`] and written to `contamination.json`.
+/// Full contamination report returned by `run` and written to `contamination.json`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ContaminationReport {
     /// Schema identifier for machine-readable consumers.

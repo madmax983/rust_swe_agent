@@ -90,7 +90,7 @@ impl CheckItem {
     }
 }
 
-/// Full report returned by [`run`].
+/// Full report returned by `run`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SuiteCheckReport {
     pub schema_version: u32,
@@ -121,7 +121,7 @@ pub struct SuiteCheckReport {
 
 // ── arguments ──────────────────────────────────────────────────────────────────
 
-/// Arguments for [`run`]. Deliberately has no output-directory field: a
+/// Arguments for `run`. Deliberately has no output-directory field: a
 /// preflight check makes no writes (AC: read-only except transient MCP/hook
 /// probe processes).
 pub struct SuiteCheckArgs {
@@ -639,7 +639,7 @@ fn resolve_format(path: &Path, format_override: Option<&str>) -> Result<TaskFile
 /// Build a [`CheckItem`] from a `scriptability_check` server/hook result.
 /// Only ever called for `environment.kind = local` — under `--env docker`
 /// the probe itself is skipped rather than run and downgraded (see the
-/// `is_docker` branch in [`run`]).
+/// `is_docker` branch in `run`).
 fn scriptability_check_item(
     check: String,
     target: String,

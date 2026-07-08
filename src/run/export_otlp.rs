@@ -32,7 +32,7 @@ use crate::telemetry::{
 };
 use crate::trajectory::Trajectory;
 
-/// Inputs to [`run`].
+/// Inputs to `run`.
 #[derive(Debug, Clone)]
 pub struct ExportOtlpArgs {
     /// Completed sweep directory produced by `bench swebench`.

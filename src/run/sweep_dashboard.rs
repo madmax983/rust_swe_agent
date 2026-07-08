@@ -10,8 +10,8 @@
 //! (`crate::run::inspect::build_inspect_steps_with_max`).
 //!
 //! The module is split so the state machine and rendering are pure,
-//! deterministic functions ([`handle_key`], [`draw`]) testable with
-//! ratatui's `TestBackend` — no real terminal required — while [`run`] is
+//! deterministic functions (`handle_key`, `draw`) testable with
+//! ratatui's `TestBackend` — no real terminal required — while `run` is
 //! the thin IO shell that owns the terminal and the poll loop.
 
 use std::collections::VecDeque;
@@ -86,7 +86,7 @@ impl DetailState {
     }
 }
 
-/// Full dashboard state. Pure data — no IO — so [`handle_key`] and [`draw`]
+/// Full dashboard state. Pure data — no IO — so `handle_key` and `draw`
 /// are unit-testable without a terminal.
 pub(crate) struct DashboardState {
     pub(crate) sweep_dir: PathBuf,
