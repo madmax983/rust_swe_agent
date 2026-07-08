@@ -429,37 +429,52 @@ pub fn render_text(report: &DatasetStatsReport) -> String {
     }
     let _ = writeln!(out, "{table}");
 
-    let _ = writeln!(out, "\n--- Problem-Statement Tokens Distribution ---");
-    let _ = writeln!(
-        out,
-        "  Min: {}  |  P50: {}  |  P90: {}  |  Max: {}",
-        report.problem_statement_tokens.min,
-        report.problem_statement_tokens.p50,
-        report.problem_statement_tokens.p90,
-        report.problem_statement_tokens.max,
-    );
+    let _ = writeln!(out, "\n--- Distribution Summaries ---");
+    let mut stats_table = Table::new();
+    stats_table
+        .load_preset(UTF8_FULL)
+        .apply_modifier(UTF8_ROUND_CORNERS)
+        .set_header(vec!["Metric", "Min", "P50", "P90", "Max"]);
 
-    let _ = writeln!(out, "\n--- Expected Tests Distribution ---");
-    let _ = writeln!(
-        out,
-        "  Min: {}  |  P50: {}  |  P90: {}  |  Max: {}",
-        report.expected_tests.min,
-        report.expected_tests.p50,
-        report.expected_tests.p90,
-        report.expected_tests.max,
-    );
+    stats_table.add_row(vec![
+        "Problem-Statement Tokens".to_string(),
+        report.problem_statement_tokens.min.to_string(),
+        report.problem_statement_tokens.p50.to_string(),
+        report.problem_statement_tokens.p90.to_string(),
+        report.problem_statement_tokens.max.to_string(),
+    ]);
 
-    let _ = writeln!(out, "\n--- Historical Sweep Resolved Rates ---");
+    stats_table.add_row(vec![
+        "Expected Tests".to_string(),
+        report.expected_tests.min.to_string(),
+        report.expected_tests.p50.to_string(),
+        report.expected_tests.p90.to_string(),
+        report.expected_tests.max.to_string(),
+    ]);
+
     if let Some(hist) = &report.historical_resolved_rate {
-        let _ = writeln!(
-            out,
-            "  Min: {:.4}  |  P50: {:.4}  |  Max: {:.4}",
-            hist.min, hist.p50, hist.max,
-        );
+        stats_table.add_row(vec![
+            "Hist. Resolved Rate".to_string(),
+            format!("{:.4}", hist.min),
+            format!("{:.4}", hist.p50),
+            "N/A".to_string(),
+            format!("{:.4}", hist.max),
+        ]);
     } else {
+        stats_table.add_row(vec![
+            "Hist. Resolved Rate".to_string(),
+            "N/A".to_string(),
+            "N/A".to_string(),
+            "N/A".to_string(),
+            "N/A".to_string(),
+        ]);
+    }
+
+    let _ = writeln!(out, "{stats_table}");
+    if report.historical_resolved_rate.is_none() {
         let _ = writeln!(
             out,
-            "  No prior completed sweeps found matching current dataset hash."
+            "  (No prior completed sweeps found matching current dataset hash.)"
         );
     }
 
