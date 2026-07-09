@@ -92,24 +92,114 @@ impl StreamSink for EventLogSink {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used)]
     use super::*;
 
     #[test]
-    fn includes_required_fields() {
-        let dir = tempfile::tempdir().unwrap();
+    fn reopens_file_on_request_and_writes_to_new_file() -> anyhow::Result<()> {
+        let dir = tempfile::tempdir()?;
         let path = dir.path().join("events.jsonl");
-        let sink = EventLogSink::new(&path, "mini".into()).unwrap();
+        let sink = EventLogSink::new(&path, "mini".into())?;
+
+        // Write initial event
+        sink.emit(StreamEvent::RunStarted {
+            task: "t1".into(),
+            model: "m1".into(),
+            started_at: "s1".into(),
+        });
+
+        // Rename original file, simulating logrotate
+        let rotated_path = dir.path().join("events.jsonl.1");
+        std::fs::rename(&path, &rotated_path)?;
+
+        // Request reopen and emit second event
+        sink.request_reopen();
+        sink.emit(StreamEvent::RunStarted {
+            task: "t2".into(),
+            model: "m2".into(),
+            started_at: "s2".into(),
+        });
+
+        // Assert old file has only the first event
+        let old_content = std::fs::read_to_string(&rotated_path)?;
+        assert_eq!(old_content.lines().count(), 1);
+        assert!(old_content.contains("\"task\":\"t1\""));
+
+        // Assert new file was created and has only the second event
+        let new_content = std::fs::read_to_string(&path)?;
+        assert_eq!(new_content.lines().count(), 1);
+        assert!(new_content.contains("\"task\":\"t2\""));
+
+        Ok(())
+    }
+
+    #[test]
+    fn handles_reopen_failure_gracefully() -> anyhow::Result<()> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("events.jsonl");
+        let sink = EventLogSink::new(&path, "mini".into())?;
+
+        // Remove the parent directory so creation of the new file fails
+        std::fs::remove_dir_all(dir.path())?;
+
+        sink.request_reopen();
+        sink.emit(StreamEvent::RunStarted {
+            task: "t1".into(),
+            model: "m1".into(),
+            started_at: "s1".into(),
+        });
+
+        assert_eq!(sink.dropped_reopen_failures.load(Ordering::SeqCst), 1);
+        assert!(sink.warned.load(Ordering::SeqCst));
+
+        Ok(())
+    }
+
+    #[test]
+    fn handles_poisoned_lock_gracefully() -> anyhow::Result<()> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("events.jsonl");
+        let sink = EventLogSink::new(&path, "mini".into())?;
+
+        let writer_clone = sink.writer.clone();
+        let _ = std::thread::spawn(move || {
+            let Ok(_lock) = writer_clone.lock() else {
+                panic!("Locking shouldn't fail initially");
+            };
+            panic!("Poisoning the lock");
+        })
+        .join();
+
+        // This should not panic
+        sink.emit(StreamEvent::RunStarted {
+            task: "t1".into(),
+            model: "m1".into(),
+            started_at: "s1".into(),
+        });
+
+        assert!(sink.warned.load(Ordering::SeqCst));
+
+        Ok(())
+    }
+
+    #[test]
+    fn includes_required_fields() -> anyhow::Result<()> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("events.jsonl");
+        let sink = EventLogSink::new(&path, "mini".into())?;
         sink.emit(StreamEvent::RunStarted {
             task: "t".into(),
             model: "m".into(),
             started_at: "s".into(),
         });
-        let line = std::fs::read_to_string(path).unwrap();
-        let v: Value = serde_json::from_str(line.lines().next().unwrap()).unwrap();
+        let line = std::fs::read_to_string(path)?;
+        let Some(first_line) = line.lines().next() else {
+            anyhow::bail!("log file is empty");
+        };
+        let v: Value = serde_json::from_str(first_line)?;
         assert_eq!(v["schema"], "event-log-v1");
         assert_eq!(v["event_type"], "run_started");
         assert_eq!(v["instance_id"], "mini");
         assert!(v["ts"].as_str().is_some());
+        Ok(())
     }
 }
