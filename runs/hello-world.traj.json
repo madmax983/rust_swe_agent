@@ -1,0 +1,195 @@
+{
+  "trajectory_format": "mini-swe-agent-1.3",
+  "artifact_kind": "trajectory",
+  "schema_version": {
+    "major": 1,
+    "minor": 13
+  },
+  "info": {
+    "task": "Say hello",
+    "model_name": "deterministic",
+    "exit_reason": "submitted",
+    "outcome": "submitted",
+    "final_output": "ok",
+    "total_cost_usd": 0.0,
+    "actual_cost_usd": 0.0,
+    "actual_cost_source": "rate_card_estimate",
+    "baseline_cost_usd": 0.0,
+    "baseline_cost_model": "claude-3-5-sonnet",
+    "token_usage": {
+      "prompt_tokens": 0,
+      "completion_tokens": 0
+    },
+    "duration_secs": 0.045494453,
+    "redaction": {
+      "enabled": true,
+      "redacted": false
+    },
+    "steps": 1,
+    "test_invocations": [],
+    "tests_run_before_submit": false,
+    "started_at": "2026-07-09T02:29:05.922840558+00:00",
+    "ended_at": "2026-07-09T02:29:06.561026139+00:00",
+    "policy_counts": {
+      "allowed": 1,
+      "asked": 0,
+      "blocked": 0,
+      "yolo_bypassed": 0
+    },
+    "verification_status": "unverified",
+    "context_pressure": {
+      "elision_trigger_count": 0,
+      "observations_elided": 0,
+      "bytes_elided": 0,
+      "peak_projected_tokens": 0,
+      "token_ceiling": 0,
+      "compaction_failed": false
+    },
+    "manifest": {
+      "harness_git_sha": "33594d56c80b396d30a8cd3900766312f4a9206b",
+      "harness_binary_version": "0.1.0",
+      "started_at_utc": "2026-07-09T02:29:05.884706814+00:00",
+      "ended_at_utc": "2026-07-09T02:29:06.561293613+00:00",
+      "env_kind": "local",
+      "config_sha256": "7fca9d480c15594e597cc41e9545a271f9836a5a99dbd9d8d703b7438ed970a1",
+      "config_redacted": {
+        "agent": {
+          "format_error_template": "Your response did not include a valid tool call. Respond with a single\n```bash\n# command here\n```\nblock (or another listed tool block), or the sentinel\n`COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT` on its own line followed by the final\noutput block.\n",
+          "kind": "default",
+          "observation_head_ratio": 0.5,
+          "observation_max_bytes": 16384,
+          "observation_template": "{% if tool_use_blocked %}\nTool use blocked by PreToolUse hook.\n\n{% endif %}\nExit code: {{ returncode }}\nOutput:\n{{ output }}\n{% if pre_tool_use_hooks %}\n\nPreToolUse hooks:\n{% for hook in pre_tool_use_hooks %}\n[{{ hook.name }}] exit_code={{ hook.exit_code }} timed_out={{ hook.timed_out }}\n{% if hook.stdout %}stdout:\n{{ hook.stdout }}{% endif %}\n{% if hook.stderr %}stderr:\n{{ hook.stderr }}{% endif %}\n{% endfor %}\n{% endif %}\n{% if post_tool_use_hooks %}\n\nPostToolUse hooks:\n{% for hook in post_tool_use_hooks %}\n[{{ hook.name }}] exit_code={{ hook.exit_code }} timed_out={{ hook.timed_out }}\n{% if hook.stdout %}stdout:\n{{ hook.stdout }}{% endif %}\n{% if hook.stderr %}stderr:\n{{ hook.stderr }}{% endif %}\n{% endfor %}\n{% endif %}\n",
+          "parse_error_retries": 3,
+          "step_limit": 50,
+          "tool_hook_timeout_secs": 10
+        },
+        "environment": {
+          "kind": "local",
+          "timeout_secs": 60,
+          "workdir": "/workspace"
+        },
+        "model": {
+          "max_tokens": 4096,
+          "name": "claude-opus-4-7"
+        },
+        "prompts": {
+          "instance": "Task: {{ task }}\n{% if extra_context %}\nAdditional context:\n{{ extra_context }}\n{% endif %}\n",
+          "system": "You are a skilled software engineer working at a terminal. You have\naccess to these tools:\n{% for tool in tools %}\n- `{{ tool.name }}`: {{ tool.description }}\n{% if tool.input_schema %}  Input JSON schema: {{ tool.input_schema }}\n{% endif %}\n{% endfor %}\n\nEach response must contain exactly one action:\neither a single fenced block for one listed tool, or the literal sentinel\n`COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT` on its own line followed by a\nfinal output block.\n\nDo not install dependencies unless they are strictly required to produce the\nfinal patch. Prefer inspecting code and tests already present in the repository.\nIf a local dependency problem blocks validation, explain it briefly and continue\nwith the patch. Once you have a useful patch, submit it instead of continuing\nexploratory work.\n"
+        },
+        "redaction": {
+          "enabled": true,
+          "unsafe_allow_secret_leaks": false
+        },
+        "skills": {
+          "auto_load": true,
+          "enabled": false,
+          "max_active": 4,
+          "paths": []
+        },
+        "sweep": {}
+      },
+      "cli_invocation": [
+        "target/debug/max",
+        "hello-world"
+      ],
+      "extra_context_present": false,
+      "step_limit": 50,
+      "model_name": "claude-opus-4-7",
+      "redaction_policy_id": "sha256:6ee28564ceb1b29a",
+      "deterministic_mode": true
+    },
+    "peak_memory_bytes": 4243267584,
+    "cpu_seconds": 436.406283,
+    "toolset": {
+      "tools": [
+        {
+          "description": "Run shell commands in the configured environment.",
+          "name": "bash",
+          "source": "built_in"
+        }
+      ]
+    }
+  },
+  "messages": [
+    {
+      "role": "system",
+      "content": "You are a skilled software engineer working at a terminal. You have\naccess to these tools:\n\n- `bash`: Run shell commands in the configured environment.\n\n\n\nEach response must contain exactly one action:\neither a single fenced block for one listed tool, or the literal sentinel\n`COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT` on its own line followed by a\nfinal output block.\n\nDo not install dependencies unless they are strictly required to produce the\nfinal patch. Prefer inspecting code and tests already present in the repository.\nIf a local dependency problem blocks validation, explain it briefly and continue\nwith the patch. Once you have a useful patch, submit it instead of continuing\nexploratory work."
+    },
+    {
+      "role": "user",
+      "content": "Task: <untrusted_task_text>\nSay hello\n</untrusted_task_text>\n"
+    },
+    {
+      "role": "assistant",
+      "content": "```bash\necho hello\n```",
+      "extra": {
+        "actions": [
+          "echo hello"
+        ],
+        "cost": 0.0,
+        "response": {
+          "deterministic": true
+        },
+        "timestamp": "2026-07-09T02:29:06.515789183+00:00",
+        "harness_overhead_ms": 0,
+        "sampling": {
+          "model": "deterministic",
+          "max_tokens": 4096
+        },
+        "model_call": {
+          "input_canonical": "[{\"content\":\"You are a skilled software engineer working at a terminal. You have\\naccess to these tools:\\n\\n- `bash`: Run shell commands in the configured environment.\\n\\n\\n\\nEach response must contain exactly one action:\\neither a single fenced block for one listed tool, or the literal sentinel\\n`COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT` on its own line followed by a\\nfinal output block.\\n\\nDo not install dependencies unless they are strictly required to produce the\\nfinal patch. Prefer inspecting code and tests already present in the repository.\\nIf a local dependency problem blocks validation, explain it briefly and continue\\nwith the patch. Once you have a useful patch, submit it instead of continuing\\nexploratory work.\",\"role\":\"system\"},{\"content\":\"Task: <untrusted_task_text>\\nSay hello\\n</untrusted_task_text>\\n\",\"role\":\"user\"}]",
+          "input_canonical_size": 842,
+          "input_canonical_truncated": false,
+          "input_fingerprint": "df62999cf8963d26"
+        }
+      }
+    },
+    {
+      "role": "user",
+      "content": "<untrusted_tool_output>\n\nExit code: 0\nOutput:\nhello\n\n\n\n</untrusted_tool_output>",
+      "extra": {
+        "timestamp": "2026-07-09T02:29:06.556814003+00:00",
+        "tool_latency_ms": 13,
+        "harness_overhead_ms": 28,
+        "observation_truncated": false,
+        "output_bytes_omitted": 0,
+        "post_tool_use_hooks": [],
+        "pre_tool_use_hooks": [],
+        "run_result": {
+          "exit_code": 0,
+          "stderr": "",
+          "stdout": "hello\n",
+          "timed_out": false
+        },
+        "stderr_bytes_omitted": 0,
+        "stdout_bytes_omitted": 0,
+        "tool_use_blocked": false
+      }
+    },
+    {
+      "role": "assistant",
+      "content": "COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT\n```\nok\n```",
+      "extra": {
+        "actions": [
+          "__SUBMIT__"
+        ],
+        "cost": 0.0,
+        "response": {
+          "deterministic": true
+        },
+        "timestamp": "2026-07-09T02:29:06.560265865+00:00",
+        "harness_overhead_ms": 3,
+        "sampling": {
+          "model": "deterministic",
+          "max_tokens": 4096
+        },
+        "model_call": {
+          "input_canonical": "[{\"content\":\"You are a skilled software engineer working at a terminal. You have\\naccess to these tools:\\n\\n- `bash`: Run shell commands in the configured environment.\\n\\n\\n\\nEach response must contain exactly one action:\\neither a single fenced block for one listed tool, or the literal sentinel\\n`COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT` on its own line followed by a\\nfinal output block.\\n\\nDo not install dependencies unless they are strictly required to produce the\\nfinal patch. Prefer inspecting code and tests already present in the repository.\\nIf a local dependency problem blocks validation, explain it briefly and continue\\nwith the patch. Once you have a useful patch, submit it instead of continuing\\nexploratory work.\",\"role\":\"system\"},{\"content\":\"Task: <untrusted_task_text>\\nSay hello\\n</untrusted_task_text>\\n\",\"role\":\"user\"},{\"content\":\"```bash\\necho hello\\n```\",\"role\":\"assistant\"},{\"content\":\"<untrusted_tool_output>\\n\\nExit code: 0\\nOutput:\\nhello\\n\\n\\n\\n</untrusted_tool_output>\",\"role\":\"user\"}]",
+          "input_canonical_size": 1016,
+          "input_canonical_truncated": false,
+          "input_fingerprint": "1c6f348fbf266984"
+        }
+      }
+    }
+  ]
+}
