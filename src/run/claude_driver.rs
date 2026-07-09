@@ -392,6 +392,35 @@ fn record_claude_config(agent: &mut DefaultAgent, cwd: &Path, isolated: bool) {
 /// Drive a single run through the Claude Code CLI, filling `agent.trajectory`
 /// and returning the terminal [`ExitReason`].
 ///
+/// This driver function acts as a seam, enabling headless local execution of
+/// Anthropic's Claude Code CLI inside the existing sweep runner. It allows operators
+/// to benchmark external agents using the same telemetry, redaction, and UI tools.
+///
+/// ## Examples
+///
+/// ```rust,no_run
+/// # use std::path::PathBuf;
+/// # use maxwells_daemon::agent::DefaultAgent;
+/// # use maxwells_daemon::run::claude_driver::drive;
+/// # async fn example(agent: &mut DefaultAgent) -> Result<(), maxwells_daemon::error::Error> {
+/// let task = "Fix the memory leak".to_string();
+/// let workdir = PathBuf::from("/tmp/repo");
+///
+/// // Run Claude Code in isolated mode to ensure determinism and prevent
+/// // it from reading ambient `.claude` configs or persisting sessions.
+/// let exit_reason = drive(
+///     agent,
+///     task,
+///     None, // extra_context
+///     Some(&workdir),
+///     Some(3600), // timeout_secs
+///     None, // append_system_prompt
+///     true, // isolated
+/// ).await?;
+/// # Ok(())
+/// # }
+/// ```
+///
 /// `workdir` is the directory `claude` runs in (and where edits land). When
 /// `None`, the current process directory is used — matching the built-in
 /// local environment's behavior.
@@ -405,10 +434,10 @@ fn record_claude_config(agent: &mut DefaultAgent, cwd: &Path, isolated: bool) {
 ///   OAuth/keychain auth, ambient `.claude` discovery (hooks, skills, plugins,
 ///   MCP, memory, `CLAUDE.md`), native session persistence, and the team's own
 ///   permission settings. The harness *records* the discovered config (see
-///   [`discover_claude_config`]) into the trajectory so the run is auditable
+///   `discover_claude_config`) into the trajectory so the run is auditable
 ///   without being sterilized. This is the enterprise-auditing case.
 /// - `true` (*isolation*): pass `--bare` (skip ambient discovery), `--tools`
-///   (restrict to [`ALLOWED_TOOLS`]), and `--no-session-persistence` for a
+///   (restrict to `ALLOWED_TOOLS`), and `--no-session-persistence` for a
 ///   reproducible measurement run. Note: `--bare` forces API-key-only auth, so
 ///   OAuth/keychain logins do not apply in this mode.
 #[allow(clippy::too_many_lines)]

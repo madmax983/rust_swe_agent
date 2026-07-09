@@ -39,7 +39,7 @@ pub struct InstanceEntry {
     pub traj_path: PathBuf,
 }
 
-/// Arguments forwarded from the CLI to [`run`].
+/// Arguments forwarded from the CLI to `run()`.
 pub struct UiArgs {
     pub sweep: PathBuf,
     pub port: u16,
@@ -104,6 +104,29 @@ impl Drop for UiServer {
 // ── Entry point ───────────────────────────────────────────────────────────────
 
 /// Start the UI server and block until SIGINT / Ctrl-C.
+///
+/// This serves a minimal HTTP/1.1 web server that allows users to interactively
+/// explore a directory of trajectories. It renders them as HTML using the internal
+/// exporter pipeline, applying redaction exactly as the CLI does.
+///
+/// ## Examples
+///
+/// ```rust,no_run
+/// # use std::path::PathBuf;
+/// # use maxwells_daemon::run::ui::{UiArgs, run};
+/// # async fn example() -> Result<(), maxwells_daemon::error::Error> {
+/// let args = UiArgs {
+///     sweep: PathBuf::from("/tmp/trajectories"),
+///     port: 8080,
+///     bind: "127.0.0.1".to_string(),
+///     open: false,
+/// };
+///
+/// // Start the server; blocks until interrupted by the user.
+/// run(args).await?;
+/// # Ok(())
+/// # }
+/// ```
 #[cfg(feature = "ui-server")]
 pub async fn run(args: UiArgs) -> Result<(), Error> {
     // Validate sweep directory.

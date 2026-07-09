@@ -3,7 +3,7 @@
 //! Similar to `claude_driver.rs`, this module lets an operator point the *same*
 //! run machinery at the OpenAI Codex CLI instead of the built-in bash-first loop.
 //! `codex` runs in `--full-auto --json` mode; we read its newline-delimited JSON
-//! stream and translate each event into the harness [`Trajectory`] format so that
+//! stream and translate each event into the harness [`crate::trajectory::Trajectory`] format so that
 //! patch capture, verification, `bench inspect`, and evaluation all keep working
 //! unchanged.
 //!
@@ -102,6 +102,32 @@ struct CompletedMsg {
 
 /// Drive a single run through the Codex CLI, filling `agent.trajectory` and
 /// returning the terminal [`ExitReason`].
+///
+/// Similar to the Claude driver, this function enables headless execution of
+/// OpenAI's Codex CLI, hooking it into the standard harness runner. This is
+/// critical for comparing different agent implementations on equal footing.
+///
+/// ## Examples
+///
+/// ```rust,no_run
+/// # use std::path::PathBuf;
+/// # use maxwells_daemon::agent::DefaultAgent;
+/// # use maxwells_daemon::run::codex_driver::drive;
+/// # async fn example(agent: &mut DefaultAgent) -> Result<(), maxwells_daemon::error::Error> {
+/// let task = "Implement the new endpoint".to_string();
+/// let workdir = PathBuf::from("/tmp/repo");
+///
+/// // Drive Codex to completion and record its tool usage into the agent's trajectory.
+/// let exit_reason = drive(
+///     agent,
+///     task,
+///     None, // extra_context
+///     Some(&workdir),
+///     Some(3600), // timeout_secs
+/// ).await?;
+/// # Ok(())
+/// # }
+/// ```
 ///
 /// `workdir` is the directory `codex` runs in (and where edits land). When
 /// `None`, the current process directory is used.
