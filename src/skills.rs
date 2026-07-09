@@ -540,16 +540,29 @@ fn searchable_tokens(name: &str, description: &str) -> BTreeSet<String> {
         .collect()
 }
 
+/// Normalizes search text by converting to lowercase, keeping specific characters,
+/// and collapsing multiple spaces into a single space without intermediate allocations.
+/// 💡 What: Replaced intermediate allocation `.collect::<Vec<_>>().join(" ")` with an in-place state machine.
+/// 🎯 Why: `.split_whitespace().collect::<Vec<_>>().join(" ")` allocated an intermediate Vec and String,
+///           wasting CPU and memory on a hot path during skill resolution.
+/// 📊 Impact: Removes one Vec allocation and one String allocation per call.
+/// 🔬 Measurement: Run bench `process_data` or `cargo test` to verify correctness.
 fn normalize_search_text(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
+    let mut in_space = false;
     for ch in text.chars() {
         if ch.is_ascii_alphanumeric() || ch == '$' || ch == '@' || ch == '/' {
             out.push(ch.to_ascii_lowercase());
-        } else {
+            in_space = false;
+        } else if !in_space && !out.is_empty() {
             out.push(' ');
+            in_space = true;
         }
     }
-    out.split_whitespace().collect::<Vec<_>>().join(" ")
+    if out.ends_with(' ') {
+        out.pop();
+    }
+    out
 }
 
 fn is_stopword(token: &str) -> bool {
