@@ -8,4 +8,5 @@ ignore = [
     "RUSTSEC-2025-0067", # libyml: unsound and unmaintained
     "RUSTSEC-2026-0002", # lru: Stacked Borrows violation in IterMut
     "RUSTSEC-2025-0068", # serde_yml: unsound and unmaintained
+    "RUSTSEC-2026-0190", # anyhow
 ]

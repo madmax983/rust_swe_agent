@@ -627,12 +627,12 @@ mod tests {
         // Use a uniquely-named var to avoid clobbering real provider keys.
         let model = "weirdprov/model";
         let var = expected_credential_env(model).unwrap();
-        // SAFETY: single-threaded test; restore immediately after.
-        unsafe { std::env::set_var(&var, "TOPSECRETVALUE") };
-        let check = check_credential(model);
-        unsafe { std::env::remove_var(&var) };
-        assert_eq!(check.status, CheckStatus::Pass);
-        assert!(!check.detail.contains("TOPSECRETVALUE"));
+
+        temp_env::with_var(&var, Some("TOPSECRETVALUE"), || {
+            let check = check_credential(model);
+            assert_eq!(check.status, CheckStatus::Pass);
+            assert!(!check.detail.contains("TOPSECRETVALUE"));
+        });
     }
 
     #[test]
@@ -641,12 +641,13 @@ mod tests {
         // with a remediation hint naming the variable.
         let model = "zzznoprov/model";
         let var = expected_credential_env(model).unwrap();
-        // SAFETY: single-threaded test; ensure the var is absent.
-        unsafe { std::env::remove_var(&var) };
-        let check = check_credential(model);
-        assert_eq!(check.status, CheckStatus::Fail);
-        assert!(check.detail.contains(&var));
-        assert!(check.detail.contains("export"));
+
+        temp_env::with_var(&var, None::<&str>, || {
+            let check = check_credential(model);
+            assert_eq!(check.status, CheckStatus::Fail);
+            assert!(check.detail.contains(&var));
+            assert!(check.detail.contains("export"));
+        });
     }
 
     // ── output dir failure path (AC#2d) ──────────────────────────────────
