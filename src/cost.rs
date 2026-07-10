@@ -96,3 +96,113 @@ pub fn is_free_tier_model(model: &str) -> bool {
         .is_some_and(|name| name.ends_with(":free"))
         || model.ends_with(":free")
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn should_return_correct_label_for_cost_sources() {
+        assert_eq!(CostSource::ProviderReported.label(), "provider_reported");
+        assert_eq!(CostSource::RateCardEstimate.label(), "rate_card_estimate");
+        assert_eq!(CostSource::FreeTierInferred.label(), "free_tier_inferred");
+        assert_eq!(CostSource::Unknown.label(), "unknown");
+
+        assert_eq!(
+            CostSource::ProviderReported.to_string(),
+            "provider_reported"
+        );
+        assert_eq!(
+            CostSource::RateCardEstimate.to_string(),
+            "rate_card_estimate"
+        );
+        assert_eq!(
+            CostSource::FreeTierInferred.to_string(),
+            "free_tier_inferred"
+        );
+        assert_eq!(CostSource::Unknown.to_string(), "unknown");
+    }
+
+    #[test]
+    fn should_combine_cost_sources_correctly() {
+        // Unknown contaminates everything
+        assert_eq!(
+            CostSource::Unknown.combine(CostSource::Unknown),
+            CostSource::Unknown
+        );
+        assert_eq!(
+            CostSource::Unknown.combine(CostSource::ProviderReported),
+            CostSource::Unknown
+        );
+        assert_eq!(
+            CostSource::ProviderReported.combine(CostSource::Unknown),
+            CostSource::Unknown
+        );
+        assert_eq!(
+            CostSource::Unknown.combine(CostSource::RateCardEstimate),
+            CostSource::Unknown
+        );
+        assert_eq!(
+            CostSource::RateCardEstimate.combine(CostSource::Unknown),
+            CostSource::Unknown
+        );
+
+        // RateCardEstimate overrides ProviderReported and FreeTierInferred
+        assert_eq!(
+            CostSource::RateCardEstimate.combine(CostSource::RateCardEstimate),
+            CostSource::RateCardEstimate
+        );
+        assert_eq!(
+            CostSource::RateCardEstimate.combine(CostSource::ProviderReported),
+            CostSource::RateCardEstimate
+        );
+        assert_eq!(
+            CostSource::ProviderReported.combine(CostSource::RateCardEstimate),
+            CostSource::RateCardEstimate
+        );
+        assert_eq!(
+            CostSource::RateCardEstimate.combine(CostSource::FreeTierInferred),
+            CostSource::RateCardEstimate
+        );
+        assert_eq!(
+            CostSource::FreeTierInferred.combine(CostSource::RateCardEstimate),
+            CostSource::RateCardEstimate
+        );
+
+        // ProviderReported overrides FreeTierInferred
+        assert_eq!(
+            CostSource::ProviderReported.combine(CostSource::ProviderReported),
+            CostSource::ProviderReported
+        );
+        assert_eq!(
+            CostSource::ProviderReported.combine(CostSource::FreeTierInferred),
+            CostSource::ProviderReported
+        );
+        assert_eq!(
+            CostSource::FreeTierInferred.combine(CostSource::ProviderReported),
+            CostSource::ProviderReported
+        );
+
+        // FreeTierInferred combines with itself
+        assert_eq!(
+            CostSource::FreeTierInferred.combine(CostSource::FreeTierInferred),
+            CostSource::FreeTierInferred
+        );
+    }
+
+    #[test]
+    fn should_identify_free_tier_models() {
+        assert!(is_free_tier_model("gemini-1.5-pro:free"));
+        assert!(is_free_tier_model("openrouter/google/gemini-1.5-pro:free"));
+        assert!(is_free_tier_model("google/gemini-1.5-pro:free"));
+
+        assert!(!is_free_tier_model("gemini-1.5-pro"));
+        assert!(!is_free_tier_model("openrouter/google/gemini-1.5-pro"));
+        assert!(!is_free_tier_model("google/gemini-1.5-pro"));
+
+        // Edge cases
+        assert!(!is_free_tier_model("free"));
+        assert!(!is_free_tier_model("openrouter/free"));
+        assert!(!is_free_tier_model("gemini-1.5-pro-free"));
+    }
+}
