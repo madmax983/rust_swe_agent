@@ -75,14 +75,44 @@ pub struct ShardReport {
 
 impl ShardReport {
     pub fn render_text(&self) {
-        println!("bench shard");
-        println!("  shards          {}", self.shard_count);
-        println!("  total instances {}", self.total_instances);
-        println!("  balance spread  {}", self.balance_spread);
+        use comfy_table::{Table, modifiers::UTF8_ROUND_CORNERS, presets::UTF8_FULL};
+
+        println!("=== Bench Shard Report ===");
+
+        let mut table = Table::new();
+        table
+            .load_preset(UTF8_FULL)
+            .apply_modifier(UTF8_ROUND_CORNERS)
+            .set_header(vec!["Metric", "Value"]);
+
+        table.add_row(vec!["Shards".to_string(), self.shard_count.to_string()]);
+        table.add_row(vec![
+            "Total Instances".to_string(),
+            self.total_instances.to_string(),
+        ]);
+        table.add_row(vec![
+            "Balance Spread".to_string(),
+            self.balance_spread.to_string(),
+        ]);
+        table.add_row(vec![
+            "Dataset SHA256".to_string(),
+            self.source_dataset_sha256.clone(),
+        ]);
+
+        println!("{table}");
+
+        println!("\n=== Per-Shard Distribution ===");
+        let mut shard_table = Table::new();
+        shard_table
+            .load_preset(UTF8_FULL)
+            .apply_modifier(UTF8_ROUND_CORNERS)
+            .set_header(vec!["Shard", "Instances"]);
+
         for (i, count) in self.per_shard_counts.iter().enumerate() {
-            println!("  shard-{i:03}        {count} instances");
+            shard_table.add_row(vec![format!("shard-{i:03}"), count.to_string()]);
         }
-        println!("  dataset sha256  {}", self.source_dataset_sha256);
+
+        println!("{shard_table}");
     }
 }
 
