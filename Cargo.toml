@@ -75,6 +75,7 @@ tar = "0.4"
 # dispatch behind a single `completion()` call, which is what we want.
 
 [dev-dependencies]
+temp-env = { version = "0.3.6", features = ["async_closure"] }
 proptest = "1"
 insta = { version = "1", features = ["json"] }
 pretty_assertions = "1"
