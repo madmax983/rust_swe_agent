@@ -14,8 +14,8 @@ use serde::Serialize;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
-use crate::cli::args::{MergeCmd, MergeCollisionPolicy};
 use crate::error::Error;
+use crate::run::args::{MergeCmd, MergeCollisionPolicy};
 use crate::run::swebench::{
     MergeShardProvenance, SWEEP_STATUS_COMPLETED, SweepResults, write_sweep_results_atomic,
 };

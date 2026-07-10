@@ -4238,7 +4238,7 @@ fn bench_test_progress(t: args::TestProgressCmd) -> Result<(), Error> {
     Ok(())
 }
 
-fn bench_power(p: &args::PowerCmd) -> Result<(), Error> {
+fn bench_power(p: &crate::run::args::PowerCmd) -> Result<(), Error> {
     let is_json = match p.format.as_str() {
         "text" => false,
         "json" => true,
@@ -6559,17 +6559,17 @@ fn bench_dataset_verify(s: args::DatasetVerifyCmd) -> Result<(), Error> {
     Ok(())
 }
 
-async fn bench_bisect(b: args::BisectCmd) -> Result<(), Error> {
+async fn bench_bisect(b: crate::run::args::BisectCmd) -> Result<(), Error> {
     crate::run::bisect::run(&b).await
 }
 
 #[allow(clippy::needless_pass_by_value)]
-fn bench_audit(a: args::AuditCmd) -> Result<(), Error> {
+fn bench_audit(a: crate::run::args::AuditCmd) -> Result<(), Error> {
     crate::run::audit::run(&a)
 }
 
-fn bench_merge(m: &args::MergeCmd) -> Result<(), Error> {
-    let is_json = matches!(m.format, args::MergeFormat::Json);
+fn bench_merge(m: &crate::run::args::MergeCmd) -> Result<(), Error> {
+    let is_json = matches!(m.format, crate::run::args::MergeFormat::Json);
     let report = crate::run::merge::run(m)?;
     if is_json {
         println!("{}", serde_json::to_string_pretty(&report)?);

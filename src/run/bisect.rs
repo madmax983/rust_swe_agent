@@ -10,8 +10,8 @@ use std::collections::BTreeMap;
 use std::path::Path;
 use std::process::Command;
 
-use crate::cli::args::BisectCmd;
 use crate::error::Error;
+use crate::run::args::BisectCmd;
 use crate::run::swebench::{ProvenanceManifest, SweepResults};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -11,6 +11,9 @@
 //! when there are zero subscribers, and the SSE per-connection task drops
 //! on the first write error without disturbing other clients or the agent.
 
+pub mod redacting_sink;
+pub use redacting_sink::{RedactingSink, redact_stream_event};
+
 use serde::Serialize;
 
 pub mod broadcast;
