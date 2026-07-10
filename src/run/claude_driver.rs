@@ -405,10 +405,10 @@ fn record_claude_config(agent: &mut DefaultAgent, cwd: &Path, isolated: bool) {
 ///   OAuth/keychain auth, ambient `.claude` discovery (hooks, skills, plugins,
 ///   MCP, memory, `CLAUDE.md`), native session persistence, and the team's own
 ///   permission settings. The harness *records* the discovered config (see
-///   [`discover_claude_config`]) into the trajectory so the run is auditable
+///   `discover_claude_config()`) into the trajectory so the run is auditable
 ///   without being sterilized. This is the enterprise-auditing case.
 /// - `true` (*isolation*): pass `--bare` (skip ambient discovery), `--tools`
-///   (restrict to [`ALLOWED_TOOLS`]), and `--no-session-persistence` for a
+///   (restrict to `ALLOWED_TOOLS`), and `--no-session-persistence` for a
 ///   reproducible measurement run. Note: `--bare` forces API-key-only auth, so
 ///   OAuth/keychain logins do not apply in this mode.
 #[allow(clippy::too_many_lines)]

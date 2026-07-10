@@ -263,6 +263,25 @@ impl Redactor {
         }
     }
 
+    /// Performs secret redaction on the text based on the surface configuration.
+    ///
+    /// The redaction algorithm checks for sensitive literals (e.g., tokens)
+    /// and uses regex rules to locate potentially sensitive structured keys.
+    /// Redacted bytes are replaced by deterministic markers, helping operators
+    /// debug issues. This telemetry is logged according to the provided `surface`.
+    ///
+    /// Note: if `text` is short enough that `text.len() < config.redact_length_min`,
+    /// it may be returned entirely untouched even if it looks like a secret,
+    /// depending on the exact rule structure.
+    ///
+    /// ## Examples
+    ///
+    /// ```
+    /// use maxwells_daemon::redaction::{Redactor, surface};
+    /// let redactor = Redactor::default_enabled();
+    /// let outcome = redactor.redact_text("some secret", surface::TRAJECTORY);
+    /// assert_eq!(outcome.text, "some secret");
+    /// ```
     #[must_use]
     pub fn redact_text(&self, input: &str, surface: &str) -> RedactionOutcome {
         let (text, redacted) = self.apply_redaction(input, Some(surface));
@@ -471,7 +490,7 @@ impl Redactor {
 
     /// Run redaction and return per-match annotations for operator verification.
     ///
-    /// Unlike [`redact_text`], this method does not update surface-level telemetry
+    /// Unlike [`Redactor::redact_text`], this method does not update surface-level telemetry
     /// counts and does not require a surface label. It is designed for the
     /// `agent redact-check` preflight command.
     #[must_use]

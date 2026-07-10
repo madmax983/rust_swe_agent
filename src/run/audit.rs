@@ -1,3 +1,7 @@
+//! Recomputes sweep-wide aggregates and reconciles them with `results.json` and `evaluation.json`.
+//!
+//! This ensures consistency across agent runs.
+
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, HashMap, HashSet};

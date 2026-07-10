@@ -8,8 +8,8 @@
 //! `--rerun-failed` (issue #825) re-runs only the tasks whose last recorded
 //! result was non-passing, carrying every already-passing result forward
 //! unchanged (zero model calls, zero fresh cost) into a freshly merged
-//! `suite-results.json`. See [`tasks_needing_rerun`] and
-//! [`load_prior_suite_state`].
+//! `suite-results.json`. See `tasks_needing_rerun()` and
+//! `load_prior_suite_state()`.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -1021,7 +1021,7 @@ fn write_suite_results(
     // redaction-bypass surface the spec promises not to add for a suite
     // whose operator-chosen ids happen to contain sensitive content
     // (issue #825 review finding). `--rerun-failed` selection never reads
-    // `id` back out of this file; see `load_prior_suite_state`.
+    // `id` back out of this file; see `load_prior_suite_state()`.
     let json = crate::artifact::to_string_pretty(ArtifactKind::SuiteResults, &json_val)
         .map_err(Error::Json)?;
     atomic_write(path, json.as_bytes())?;
@@ -1582,7 +1582,7 @@ mod tests {
     }
 
     /// Write a real, terminal, passing `.traj.json` for `id` into
-    /// `suite_dir`. `load_prior_suite_state` only recognizes a task as
+    /// `suite_dir`. `load_prior_suite_state()` only recognizes a task as
     /// passing via a real trajectory file on disk — never via
     /// `suite-results.json`'s own (possibly redacted) content — so any test
     /// that wants `--rerun-failed` to carry a task forward must provide one.
@@ -1600,7 +1600,7 @@ mod tests {
         .unwrap();
     }
 
-    // ── RED: `tasks_needing_rerun` (issue #825) ────────────────────────────
+    // ── RED: `tasks_needing_rerun()` (issue #825) ────────────────────────────
 
     #[test]
     fn tasks_needing_rerun_excludes_passing_includes_failing_and_unknown() {
@@ -1641,7 +1641,7 @@ mod tests {
         assert!(tasks_needing_rerun(&tasks, &prior).is_empty());
     }
 
-    // ── RED: `load_prior_suite_state` (issue #825) ─────────────────────────
+    // ── RED: `load_prior_suite_state()` (issue #825) ─────────────────────────
 
     #[test]
     fn load_prior_suite_state_ignores_suite_results_json_id_and_uses_real_trajectories() {
@@ -2379,7 +2379,7 @@ mod tests {
     /// Regression for a review finding: `write_suite_results` redacts every
     /// JSON string in the artifact, including task `id`. If a configured
     /// redaction pattern happens to match part of an id, a subsequent
-    /// `--rerun-failed` invocation's `load_prior_suite_state` would key its
+    /// `--rerun-failed` invocation's `load_prior_suite_state()` would key its
     /// map by the redacted string, fail to match the pack's real id, and
     /// silently re-run an already-passing task at full cost.
     #[tokio::test]
