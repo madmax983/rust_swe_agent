@@ -1,5 +1,5 @@
 use crate::error::Error;
-use crate::run::compare::load_sweep;
+use crate::run::load::load_sweep;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;

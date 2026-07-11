@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::Error;
 use crate::redaction::{Redactor, surface};
-use crate::run::compare::{load_run_slots, load_sweep};
+use crate::run::load::{load_run_slots, load_sweep};
 use crate::run::patch_stats::{PatchClassifiers, PatchStats, score_patch};
 use crate::run::swebench::{self, InstanceResult, TokenBreakdown, effective_runs};
 use crate::trajectory::{FailureCategory, outcome};
@@ -2718,7 +2718,7 @@ fn build_behavioral_metrics(
 /// aggregate bytes. Returns (elision_instances, bytes_elided_total, compaction_failed_count).
 fn build_elision_stats(
     sweep_dir: &Path,
-    run_slots: &[crate::run::compare::LoadedRunSlot],
+    run_slots: &[crate::run::load::LoadedRunSlot],
 ) -> (usize, u64, usize) {
     let compaction_failed = run_slots
         .iter()
@@ -2873,7 +2873,7 @@ fn missing_eval_for_result(id: &str, result: &InstanceResult) -> InstanceEvaluat
 /// counted independently; its resolution comes from the per-slot key in
 /// `resolved_by_run` (falls back to `false` when no evaluation result exists).
 fn build_model_mix_summary_from_slots(
-    slots: &[crate::run::compare::LoadedRunSlot],
+    slots: &[crate::run::load::LoadedRunSlot],
     resolved_by_run: &HashMap<RunSlotKey, bool>,
 ) -> Vec<ModelMixBucket> {
     let mut by_model: BTreeMap<String, (usize, usize, f64)> = BTreeMap::new();
@@ -2926,7 +2926,7 @@ fn build_model_mix_summary_from_slots(
 /// stay schema-clean.
 fn build_latency_summary_from_slots(
     sweep_dir: &Path,
-    slots: &[crate::run::compare::LoadedRunSlot],
+    slots: &[crate::run::load::LoadedRunSlot],
 ) -> Option<LatencySummary> {
     let mut model_totals: Vec<u64> = Vec::new();
     let mut tool_totals: Vec<u64> = Vec::new();
@@ -3201,7 +3201,7 @@ fn build_cost_attribution<S: std::hash::BuildHasher>(
 }
 
 fn build_cost_attribution_from_run_slots(
-    run_slots: &[crate::run::compare::LoadedRunSlot],
+    run_slots: &[crate::run::load::LoadedRunSlot],
     resolved_by_run: &HashMap<RunSlotKey, bool>,
     model_name: Option<&str>,
 ) -> CostAttributionReport {
@@ -4025,11 +4025,11 @@ mod tests {
         run_index: u32,
         final_model: Option<&str>,
         cost_usd: Option<f64>,
-    ) -> crate::run::compare::LoadedRunSlot {
+    ) -> crate::run::load::LoadedRunSlot {
         let mut r = submitted(instance_id);
         r.final_model = final_model.map(str::to_owned);
         r.cost_usd = cost_usd;
-        crate::run::compare::LoadedRunSlot {
+        crate::run::load::LoadedRunSlot {
             instance_id: instance_id.into(),
             run_index,
             result: r,
@@ -4436,12 +4436,12 @@ mod tests {
             cpu_seconds: None,
         };
         let run_slots = vec![
-            crate::run::compare::LoadedRunSlot {
+            crate::run::load::LoadedRunSlot {
                 instance_id: "inst-a".to_owned(),
                 run_index: 1,
                 result: make_result("inst-a", None),
             },
-            crate::run::compare::LoadedRunSlot {
+            crate::run::load::LoadedRunSlot {
                 instance_id: "inst-b".to_owned(),
                 run_index: 1,
                 result: make_result("inst-b", Some(FailureCategory::HistoryCompactionFailed)),
@@ -4675,4 +4675,39 @@ mod tests {
         assert_eq!(result.len(), 3);
         assert_eq!(result[0], "p::t1");
     }
+}
+
+use crate::artifact::{ArtifactCompatibility, ArtifactKind, classify_json_value};
+pub fn load_evaluation_results(dir: &Path) -> Result<Option<EvaluationResults>, Error> {
+    Ok(load_evaluation_results_checked(dir)?.map(|loaded| loaded.results))
+}
+
+#[derive(Debug, Clone)]
+pub struct LoadedEvaluationResults {
+    pub results: EvaluationResults,
+    pub artifact: ArtifactCompatibility,
+    pub artifact_warnings: Vec<String>,
+}
+
+pub fn load_evaluation_results_checked(
+    dir: &Path,
+) -> Result<Option<LoadedEvaluationResults>, Error> {
+    let path = evaluation_path(dir);
+    if !path.exists() {
+        return Ok(None);
+    }
+    let text = std::fs::read_to_string(&path)?;
+    let value: serde_json::Value = serde_json::from_str(&text)?;
+    let artifact = classify_json_value(
+        &value,
+        ArtifactKind::EvaluationResults,
+        path.display().to_string(),
+    )
+    .map_err(|err| Error::Trajectory(err.to_string()))?;
+    let artifact_warnings = artifact.warnings.clone();
+    Ok(Some(LoadedEvaluationResults {
+        results: serde_json::from_value(value)?,
+        artifact,
+        artifact_warnings,
+    }))
 }

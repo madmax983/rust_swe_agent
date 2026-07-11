@@ -14,7 +14,7 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 
 use crate::error::Error;
-use crate::run::compare::load_sweep;
+use crate::run::load::load_sweep;
 
 const Z95: f64 = 1.96;
 

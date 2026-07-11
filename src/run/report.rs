@@ -12,7 +12,9 @@ use std::path::{Path, PathBuf};
 
 use crate::artifact::{ArtifactKind, ArtifactSchemaVersion, classify_json_value};
 use crate::error::Error;
-use crate::run::compare::{self, CompareReport, LoadedSweep, load_sweep};
+use crate::run::compare::{self, CompareReport};
+use crate::run::load::{LoadedSweep, load_sweep};
+
 use crate::run::evaluate::{BreakdownSelection, EvaluationResults, evaluation_path};
 use crate::run::swebench::{
     InstanceResult, ProvenanceManifest, effective_runs, pass_at_1 as sweep_pass_at_1,

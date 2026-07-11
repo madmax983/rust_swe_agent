@@ -348,7 +348,7 @@ pub fn run(args: &InspectArgs) -> Result<InspectOutput, Error> {
 fn build_summary(sweep: &Path, filter: &str) -> Result<SummaryReport, Error> {
     let filter = parse_filter(filter)?;
     let mut rows: Vec<SummaryRow> = Vec::new();
-    let loaded = crate::run::compare::load_sweep(sweep)?;
+    let loaded = crate::run::load::load_sweep(sweep)?;
     let resolved = load_evaluation_overrides(sweep)?.unwrap_or_default();
     let mut chaos = ChaosSummary {
         fail_every: loaded.manifest.as_ref().map_or(0, |m| m.chaos_fail_every),
@@ -381,7 +381,7 @@ fn build_summary(sweep: &Path, filter: &str) -> Result<SummaryReport, Error> {
     }
     rows.sort_by(|a, b| a.instance_id.cmp(&b.instance_id));
     let evaluator_provenance =
-        crate::run::compare::load_evaluation_results(sweep)?.and_then(|eval| eval.provenance);
+        crate::run::evaluate::load_evaluation_results(sweep)?.and_then(|eval| eval.provenance);
     Ok(SummaryReport {
         sweep_dir: sweep.to_path_buf(),
         filter: filter.raw,

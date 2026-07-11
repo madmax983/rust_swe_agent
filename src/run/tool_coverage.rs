@@ -9,7 +9,9 @@ use serde::{Deserialize, Serialize};
 use crate::artifact::{ArtifactKind, classify_json_value};
 use crate::error::Error;
 use crate::redaction::{Redactor, surface};
-use crate::run::compare::{load_evaluation_results_checked, load_sweep};
+use crate::run::evaluate::load_evaluation_results_checked;
+use crate::run::load::load_sweep;
+
 use crate::run::swebench::InstanceResult;
 use crate::trajectory::{FailureCategory, Trajectory};
 

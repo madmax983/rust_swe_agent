@@ -387,8 +387,8 @@ fn has_evaluatable_patch(
 
 /// Run eval-parity against a real sweep by invoking both evaluator backends.
 pub fn run(args: &EvalParityArgs) -> Result<EvalParityReport, Error> {
-    use crate::run::compare::load_sweep;
     use crate::run::evaluate::{BreakdownSelection, EvaluateArgs, EvaluateBackend};
+    use crate::run::load::load_sweep;
 
     let loaded = load_sweep(&args.sweep_dir).map_err(|e| {
         Error::Trajectory(format!(

@@ -330,7 +330,7 @@ pub fn run(cmd: &PowerCmd) -> Result<PowerReport, Error> {
                 ))));
             }
             // First try evaluation.json
-            let evaluation = crate::run::compare::load_evaluation_results_checked(path)?;
+            let evaluation = crate::run::evaluate::load_evaluation_results_checked(path)?;
             if let Some(ev) = evaluation {
                 let total = ev.results.instances.len();
                 if total == 0 {
@@ -349,7 +349,7 @@ pub fn run(cmd: &PowerCmd) -> Result<PowerReport, Error> {
                         path.display()
                     ))));
                 }
-                let sweep = crate::run::compare::load_sweep(path)?;
+                let sweep = crate::run::load::load_sweep(path)?;
                 let total = sweep.instances.len();
                 if total == 0 {
                     return Err(Error::Config(crate::error::ConfigError::Usage(

@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use crate::env::RunResult;
 use crate::error::Error;
 use crate::redaction::{Redactor, surface};
-use crate::run::compare::load_sweep;
+use crate::run::load::load_sweep;
 use crate::run::swebench::InstanceResult;
 use crate::run::triage::{
     FailureSignature, TriageReport, failure_label, last_non_empty_line, load_trajectory,

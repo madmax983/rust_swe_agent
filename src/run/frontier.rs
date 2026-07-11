@@ -11,7 +11,9 @@ use std::path::{Path, PathBuf};
 use serde::Serialize;
 
 use crate::error::Error;
-use crate::run::compare::{LoadedSweep, load_evaluation_results, load_sweep};
+use crate::run::evaluate::load_evaluation_results;
+use crate::run::load::{LoadedSweep, load_sweep};
+
 use crate::run::evaluate::{EvaluationResults, pct};
 use crate::run::swebench::InstanceResult;
 

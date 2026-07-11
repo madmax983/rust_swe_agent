@@ -14,8 +14,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::artifact::{ArtifactKind, ArtifactSchemaVersion};
 use crate::error::Error;
-use crate::run::compare::load_sweep;
 use crate::run::evaluate::{BreakdownSelection, EvalExitReason, EvaluateArgs, EvaluateBackend};
+use crate::run::load::load_sweep;
 
 // ── Public types ──────────────────────────────────────────────────────────────
 

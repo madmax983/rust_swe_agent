@@ -2263,7 +2263,7 @@ pub async fn bench_swebench(s: args::SwebenchCmd) -> Result<(), Error> {
                 force: false,
             };
             let eval = crate::run::evaluate::run(&eval_args)?;
-            let loaded_sweep = crate::run::compare::load_sweep(&output_dir)?;
+            let loaded_sweep = crate::run::load::load_sweep(&output_dir)?;
             let summary = crate::run::evaluate::summarize_with_model(
                 &eval,
                 &loaded_sweep.instances,
@@ -3481,7 +3481,7 @@ fn bench_evaluate(e: args::EvaluateCmd) -> Result<(), Error> {
         force: e.force,
     };
     let eval = crate::run::evaluate::run(&args)?;
-    let loaded_sweep = crate::run::compare::load_sweep(&e.sweep)?;
+    let loaded_sweep = crate::run::load::load_sweep(&e.sweep)?;
     let summary = crate::run::evaluate::summarize_with_model(
         &eval,
         &loaded_sweep.instances,
@@ -5072,7 +5072,7 @@ fn bench_import(i: args::ImportCmd) -> Result<(), Error> {
             print!("{}", crate::run::import::format_summary_text(&summary));
             if let Some(eval) = &summary.evaluation {
                 let sweep_dir = std::path::PathBuf::from(&summary.output_path);
-                let loaded_sweep = crate::run::compare::load_sweep(&sweep_dir)?;
+                let loaded_sweep = crate::run::load::load_sweep(&sweep_dir)?;
                 let eval_summary = crate::run::evaluate::summarize_with_model(
                     eval,
                     &loaded_sweep.instances,

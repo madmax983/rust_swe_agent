@@ -53,6 +53,7 @@ pub mod inspect;
 pub mod instance_history;
 pub mod ladder;
 pub mod ledger;
+pub mod load;
 pub mod matrix;
 pub mod merge;
 pub mod mini;

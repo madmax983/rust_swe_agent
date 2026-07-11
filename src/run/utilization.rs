@@ -23,7 +23,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::error::{ConfigError, Error};
-use crate::run::compare::load_sweep;
+use crate::run::load::load_sweep;
 use crate::run::swebench::{
     DEFAULT_PARALLEL, InstanceResult, ProvenanceManifest, SWEEP_STATUS_COMPLETED, effective_runs,
 };
