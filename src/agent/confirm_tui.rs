@@ -8041,33 +8041,22 @@ mod tests {
         assert_eq!(DashboardState::default().mouse_scroll_step, 3);
     }
 
-    #[test]
+        #[test]
     fn test_mouse_scroll_step_from_env() {
-        // No env var: default of 3.
-        // SAFETY: test-only env mutation, no other thread reads this var
-        // concurrently within this process's test harness for this key.
-        unsafe {
-            std::env::remove_var("MAXWELL_MOUSE_SCROLL_STEP");
-        }
-        assert_eq!(mouse_scroll_step_from_env(), DEFAULT_MOUSE_SCROLL_STEP);
+        temp_env::with_var("MAXWELL_MOUSE_SCROLL_STEP", None::<&str>, || {
+            assert_eq!(mouse_scroll_step_from_env(), DEFAULT_MOUSE_SCROLL_STEP);
+        });
 
-        unsafe {
-            std::env::set_var("MAXWELL_MOUSE_SCROLL_STEP", "7");
-        }
-        assert_eq!(mouse_scroll_step_from_env(), 7);
+        temp_env::with_var("MAXWELL_MOUSE_SCROLL_STEP", Some("7"), || {
+            assert_eq!(mouse_scroll_step_from_env(), 7);
+        });
 
-        // Unparsable/zero falls back to the default.
-        unsafe {
-            std::env::set_var("MAXWELL_MOUSE_SCROLL_STEP", "not-a-number");
-        }
-        assert_eq!(mouse_scroll_step_from_env(), DEFAULT_MOUSE_SCROLL_STEP);
-        unsafe {
-            std::env::set_var("MAXWELL_MOUSE_SCROLL_STEP", "0");
-        }
-        assert_eq!(mouse_scroll_step_from_env(), DEFAULT_MOUSE_SCROLL_STEP);
-        unsafe {
-            std::env::remove_var("MAXWELL_MOUSE_SCROLL_STEP");
-        }
+        temp_env::with_var("MAXWELL_MOUSE_SCROLL_STEP", Some("not-a-number"), || {
+            assert_eq!(mouse_scroll_step_from_env(), DEFAULT_MOUSE_SCROLL_STEP);
+        });
+        temp_env::with_var("MAXWELL_MOUSE_SCROLL_STEP", Some("0"), || {
+            assert_eq!(mouse_scroll_step_from_env(), DEFAULT_MOUSE_SCROLL_STEP);
+        });
     }
 
     // `renderer_loop` uses `handle_mouse`'s return value to decide whether to
