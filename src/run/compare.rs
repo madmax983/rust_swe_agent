@@ -821,7 +821,27 @@ fn write_artifact_version_section(s: &mut String, mismatches: &[String], warning
 }
 
 fn write_transition_matrix(s: &mut String, transitions: &BTreeMap<TransitionKind, usize>) {
-    s.push_str("\nTransition matrix:\n");
+    use comfy_table::CellAlignment;
+    use comfy_table::{Table, modifiers::UTF8_ROUND_CORNERS, presets::UTF8_FULL};
+    s.push_str(
+        "
+Transition matrix:
+",
+    );
+
+    let mut table = Table::new();
+    table
+        .load_preset(UTF8_FULL)
+        .apply_modifier(UTF8_ROUND_CORNERS)
+        .set_header(["Transition", "Count"]);
+
+    for column in table.column_iter_mut() {
+        column.set_cell_alignment(CellAlignment::Right);
+    }
+    if let Some(col) = table.column_mut(0) {
+        col.set_cell_alignment(CellAlignment::Left);
+    }
+
     for kind in [
         TransitionKind::PassPass,
         TransitionKind::PassFail,
@@ -831,8 +851,9 @@ fn write_transition_matrix(s: &mut String, transitions: &BTreeMap<TransitionKind
         TransitionKind::PresentMissing,
     ] {
         let n = transitions.get(&kind).copied().unwrap_or(0);
-        let _ = writeln!(s, "  {:<18} {n}", kind.label());
+        table.add_row([kind.label().to_string(), n.to_string()]);
     }
+    let _ = writeln!(s, "{table}");
 }
 
 fn write_failure_delta_section(

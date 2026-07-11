@@ -145,34 +145,21 @@ pub fn render_json(report: &FrontierReport) -> String {
 
 #[must_use]
 pub fn render_text(report: &FrontierReport) -> String {
+    use comfy_table::CellAlignment;
+    use comfy_table::{Table, modifiers::UTF8_ROUND_CORNERS, presets::UTF8_FULL};
     let mut out = String::new();
-    out.push_str("\n=== bench frontier ===\n");
+    out.push_str(
+        "
+=== bench frontier ===
+",
+    );
     if report.points.is_empty() {
-        out.push_str("No sweep directories provided.\n");
+        out.push_str(
+            "No sweep directories provided.
+",
+        );
         return out;
     }
-
-    let col_width = report
-        .points
-        .iter()
-        .map(|p| p.dir.display().to_string().len())
-        .max()
-        .unwrap_or(4)
-        .max(4);
-
-    let header = format!(
-        "  {:<width$}  {:>10}  {:>14}  {:>8}  {}",
-        "dir",
-        "resolved%",
-        "$/resolved",
-        "frontier",
-        "total_cost_usd",
-        width = col_width
-    );
-    out.push_str(&header);
-    out.push('\n');
-    out.push_str(&"-".repeat(header.len()));
-    out.push('\n');
 
     let mut sorted: Vec<&FrontierPoint> = report.points.iter().collect();
     sorted.sort_by(|a, b| {
@@ -186,26 +173,42 @@ pub fn render_text(report: &FrontierReport) -> String {
             })
     });
 
+    let mut table = Table::new();
+    table
+        .load_preset(UTF8_FULL)
+        .apply_modifier(UTF8_ROUND_CORNERS)
+        .set_header([
+            "dir",
+            "resolved%",
+            "$/resolved",
+            "frontier",
+            "total_cost_usd",
+        ]);
+
+    for column in table.column_iter_mut() {
+        column.set_cell_alignment(CellAlignment::Right);
+    }
+    if let Some(col) = table.column_mut(0) {
+        col.set_cell_alignment(CellAlignment::Left);
+    } // dir should be left aligned
+
     for p in &sorted {
         let cpr = match p.cost_per_resolved_usd {
             Some(v) => format!("${v:.4}"),
             None => "NaN".to_owned(),
         };
-        let frontier_mark = if p.on_frontier { "*" } else { " " };
-        let _ = writeln!(
-            out,
-            "{} {:<width$}  {:>9.2}%  {:>14}  {:>8}  ${:.4}",
-            frontier_mark,
-            p.dir.display(),
-            p.resolved_rate * 100.0,
+        let frontier_mark = if p.on_frontier { "yes *" } else { "no" };
+        table.add_row([
+            p.dir.display().to_string(),
+            format!("{:.2}%", p.resolved_rate * 100.0),
             cpr,
-            if p.on_frontier { "yes" } else { "no" },
-            p.total_cost_usd,
-            width = col_width
-        );
+            frontier_mark.to_string(),
+            format!("${:.4}", p.total_cost_usd),
+        ]);
     }
 
-    out.push('\n');
+    let _ = writeln!(out, "{table}");
+
     let frontier_count = report.points.iter().filter(|p| p.on_frontier).count();
     let _ = writeln!(
         out,
