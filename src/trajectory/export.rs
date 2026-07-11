@@ -6,7 +6,7 @@
 //! narrative document, complete with headers and code blocks.
 //!
 //! You can extend this module with new formats by implementing the [`crate::trajectory::export::TrajectoryExporter`] trait.
-//! Every new exporter MUST register in [`registry`] and MUST apply redaction via
+//! Every new exporter MUST register in `registry()` and MUST apply redaction via
 //! [`crate::redaction::Redactor::default_enabled`] on [`crate::redaction::surface::EXPORT`] before emitting any output.
 //! See `docs/spec-export.md` for the full governing contract.
 
@@ -95,6 +95,14 @@ pub fn registry() -> Vec<ExportFormat> {
         render: MermaidExporter::export,
     });
 
+    #[cfg(feature = "rss-export")]
+    formats.push(ExportFormat {
+        name: "rss",
+        tier: StabilityTier::Experimental,
+        consumer: "RSS feed readers, aggregation pipelines",
+        render: RssExporter::export,
+    });
+
     formats
 }
 
@@ -109,6 +117,7 @@ pub const FEATURE_GATED_FORMATS: &[(&str, &str)] = &[
     ("csv", "csv-export"),
     ("html", "html-export"),
     ("mermaid", "mermaid-export"),
+    ("rss", "rss-export"),
 ];
 
 /// Returns `true` if `name` is a trajectory export format known to this codebase,
@@ -358,6 +367,71 @@ impl TrajectoryExporter for MermaidExporter {
     }
 }
 
+#[cfg(feature = "rss-export")]
+pub struct RssExporter;
+
+#[cfg(feature = "rss-export")]
+impl TrajectoryExporter for RssExporter {
+    fn export(trajectory: &Trajectory) -> String {
+        let redactor = Redactor::default_enabled();
+        let mut rss = String::new();
+
+        rss.push_str("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
+        rss.push_str("<rss version=\"2.0\">\n");
+        rss.push_str("  <channel>\n");
+
+        let safe_title = if let Some(task) = &trajectory.info.task {
+            let t = redactor.redact_text(task, surface::EXPORT).text;
+            t.replace("]]>", "]]]]><![CDATA[>")
+        } else {
+            "Agent Trajectory".to_string()
+        };
+        let _ = writeln!(rss, "    <title><![CDATA[{safe_title}]]></title>");
+
+        let safe_desc = if let Some(outcome) = &trajectory.info.outcome {
+            let o = redactor.redact_text(outcome, surface::EXPORT).text;
+            o.replace("]]>", "]]]]><![CDATA[>")
+        } else {
+            "In progress".to_string()
+        };
+        let _ = writeln!(
+            rss,
+            "    <description><![CDATA[Outcome: {safe_desc}]]></description>"
+        );
+
+        for (i, msg) in trajectory.messages.iter().enumerate() {
+            let role_title = match msg.role.as_str() {
+                "system" => "System",
+                "user" => "User",
+                "assistant" => "Assistant",
+                "tool" => "Tool",
+                other => other,
+            };
+
+            let content = redactor.redact_text(&msg.content, surface::EXPORT).text;
+            let safe_content = content.replace("]]>", "]]]]><![CDATA[>");
+            let safe_role = role_title.replace("]]>", "]]]]><![CDATA[>");
+
+            rss.push_str("    <item>\n");
+            let index = i + 1;
+            let _ = writeln!(
+                rss,
+                "      <title><![CDATA[Message {index} ({safe_role})]]></title>"
+            );
+            let _ = writeln!(
+                rss,
+                "      <description><![CDATA[{safe_content}]]></description>"
+            );
+            rss.push_str("    </item>\n");
+        }
+
+        rss.push_str("  </channel>\n");
+        rss.push_str("</rss>");
+
+        rss
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -452,5 +526,30 @@ mod tests {
         assert!(html.contains("submitted"));
         assert!(html.contains("Hello agent"));
         assert!(html.contains("Hello user"));
+    }
+
+    #[cfg(feature = "rss-export")]
+    #[test]
+    fn test_rss_export_format() {
+        let mut t = Trajectory::new();
+        t.info.task = Some("Add a feature > & <".to_string());
+        t.info.outcome = Some("submitted]]>here".to_string());
+
+        t.record_message(&Message::system("System prompt"));
+        t.record_message(&Message::user("Hello agent]]>"));
+
+        let rss = RssExporter::export(&t);
+
+        assert!(rss.starts_with("<?xml version=\"1.0\" encoding=\"UTF-8\"?>"));
+        assert!(rss.contains("<rss version=\"2.0\">"));
+        assert!(rss.contains("<channel>"));
+        assert!(rss.contains("<title><![CDATA[Add a feature > & <]]></title>"));
+        assert!(rss.contains(
+            "<description><![CDATA[Outcome: submitted]]]]><![CDATA[>here]]></description>"
+        ));
+        assert!(rss.contains("<title><![CDATA[Message 1 (System)]]></title>"));
+        assert!(rss.contains("<description><![CDATA[System prompt]]></description>"));
+        assert!(rss.contains("<title><![CDATA[Message 2 (User)]]></title>"));
+        assert!(rss.contains("<description><![CDATA[Hello agent]]]]><![CDATA[>]]></description>"));
     }
 }
