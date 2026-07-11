@@ -342,7 +342,8 @@ pub fn run_with_stub(
         })
         .collect();
 
-    let mut results: Vec<InstanceFlakeResult> = Vec::new();
+    // PERFORMANCE: Pre-allocate `results` vector with `instance_ids.len()` to avoid multiple heap re-allocations as elements are pushed.
+    let mut results: Vec<InstanceFlakeResult> = Vec::with_capacity(instance_ids.len());
     for id in &instance_ids {
         let stub_verdicts = stub.verdicts.get(id.as_str());
         let verdicts: Vec<Verdict> = (0..args.replays)
@@ -418,10 +419,12 @@ pub fn run(args: &EvalFlakeArgs) -> Result<EvalFlakeReport, Error> {
         );
     }
 
+    // PERFORMANCE: Pre-allocate the `Verdict` vectors within `all_verdicts` with capacity `args.replays`.
+    // This prevents repeated heap allocations during the evaluation replays since we know exactly how many replays will be appended.
     // Collect verdicts per instance across replays.
     let mut all_verdicts: HashMap<String, Vec<Verdict>> = patchable
         .iter()
-        .map(|id| (id.clone(), Vec::new()))
+        .map(|id| (id.clone(), Vec::with_capacity(args.replays)))
         .collect();
 
     for replay_idx in 0..args.replays {
@@ -459,14 +462,13 @@ pub fn run(args: &EvalFlakeArgs) -> Result<EvalFlakeReport, Error> {
         }
     }
 
-    let mut results: Vec<InstanceFlakeResult> = patchable
-        .iter()
-        .map(|id| {
-            let verdicts = all_verdicts.remove(id).unwrap_or_default();
-            let orig = original.get(id.as_str()).copied();
-            build_instance_result(id.clone(), verdicts, orig)
-        })
-        .collect();
+    // PERFORMANCE: Pre-allocate `results` vector with `patchable.len()` to avoid multiple heap re-allocations during iteration.
+    let mut results: Vec<InstanceFlakeResult> = Vec::with_capacity(patchable.len());
+    results.extend(patchable.iter().map(|id| {
+        let verdicts = all_verdicts.remove(id).unwrap_or_default();
+        let orig = original.get(id.as_str()).copied();
+        build_instance_result(id.clone(), verdicts, orig)
+    }));
 
     results.sort_by(|a, b| a.instance_id.cmp(&b.instance_id));
 
