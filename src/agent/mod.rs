@@ -100,6 +100,43 @@ impl ExitReason {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+    use super::*;
+    use crate::error::Error;
+    use async_trait::async_trait;
+
+    struct DummyAgent {
+        steps: u32,
+    }
+
+    #[async_trait]
+    impl Agent for DummyAgent {
+        async fn step(&mut self) -> Result<StepOutcome, Error> {
+            self.steps += 1;
+            if self.steps > 2 {
+                Ok(StepOutcome::Terminate(ExitReason::StepLimit { limit: 2 }))
+            } else {
+                Ok(StepOutcome::Continue)
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn agent_run_terminates() {
+        let mut agent = DummyAgent { steps: 0 };
+        let reason = agent.run().await.unwrap();
+
+        match reason {
+            ExitReason::StepLimit { limit } => assert_eq!(limit, 2),
+            _ => panic!("Expected StepLimit"),
+        }
+
+        assert_eq!(reason.label(), "step_limit");
+    }
+}
+
 /// The result of a single agent step, determining whether the loop should continue.
 ///
 /// By separating the state machine transitions into this enum, we avoid
