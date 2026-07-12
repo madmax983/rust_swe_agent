@@ -12,6 +12,7 @@
 //! as an event log. Non-event/garbage lines are skipped, mirroring the writer's
 //! best-effort philosophy.
 
+use comfy_table::{Table, modifiers::UTF8_ROUND_CORNERS, presets::UTF8_FULL};
 use std::collections::{BTreeMap, HashSet};
 use std::fmt::Write as _;
 use std::io::BufRead as _;
@@ -447,9 +448,28 @@ pub fn render_table(report: &EventsReport) -> String {
         return render_summary_table(report);
     }
     let mut out = String::new();
+    let _ = writeln!(
+        out,
+        "{} event(s) across {} instance(s)",
+        report.summary.total, report.summary.instances
+    );
+
+    let mut table = Table::new();
+    table
+        .load_preset(UTF8_FULL)
+        .apply_modifier(UTF8_ROUND_CORNERS)
+        .set_header(vec!["Timestamp", "Instance", "Event Type"]);
+
     for ev in &report.events {
-        let _ = writeln!(out, "{}\t{}\t{}", ev.ts, ev.instance_id, ev.event_type);
+        table.add_row(vec![
+            ev.ts.clone(),
+            ev.instance_id.clone(),
+            ev.event_type.clone(),
+        ]);
     }
+
+    out.push_str(&table.to_string());
+    out.push('\n');
     out
 }
 
@@ -462,23 +482,47 @@ pub fn render_summary_table(report: &EventsReport) -> String {
         "{} event(s) across {} instance(s)",
         report.summary.total, report.summary.instances
     );
-    out.push_str("by type:\n");
+
+    out.push_str("By Type:\n");
     if report.summary.by_type.is_empty() {
         out.push_str("  (none)\n");
     } else {
+        let mut type_table = Table::new();
+        type_table
+            .load_preset(UTF8_FULL)
+            .apply_modifier(UTF8_ROUND_CORNERS)
+            .set_header(vec!["Event Type", "Count"]);
+
         for (ty, count) in &report.summary.by_type {
-            let _ = writeln!(out, "  {ty}: {count}");
+            type_table.add_row(vec![ty.clone(), count.to_string()]);
         }
+        out.push_str(&type_table.to_string());
+        out.push('\n');
     }
+
     if report.summary.instances > 1 {
-        out.push_str("by instance:\n");
+        out.push_str("\nBy Instance:\n");
+        let mut inst_table = Table::new();
+        inst_table
+            .load_preset(UTF8_FULL)
+            .apply_modifier(UTF8_ROUND_CORNERS)
+            .set_header(vec!["Instance", "Total Events", "Type Breakdown"]);
+
         for (instance, types) in &report.summary.by_instance {
             let total: usize = types.values().sum();
-            let _ = writeln!(out, "  {instance}: {total}");
-            for (ty, count) in types {
-                let _ = writeln!(out, "    {ty}: {count}");
+
+            let mut breakdown = String::new();
+            for (i, (ty, count)) in types.iter().enumerate() {
+                if i > 0 {
+                    breakdown.push('\n');
+                }
+                let _ = write!(breakdown, "{ty}: {count}");
             }
+
+            inst_table.add_row(vec![instance.clone(), total.to_string(), breakdown]);
         }
+        out.push_str(&inst_table.to_string());
+        out.push('\n');
     }
     out
 }
