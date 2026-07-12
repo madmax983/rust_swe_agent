@@ -1003,7 +1003,7 @@ pub async fn run(args: MiniArgs) -> Result<(), Error> {
         // one from the config. The agent will build its own for trajectory/model
         // surfaces; this one covers the stream surface only.
         let redactor = crate::redaction::Redactor::from_config_lossy(&args.config.root.redaction);
-        Arc::new(crate::redaction::RedactingSink::new(ws, redactor)) as Arc<dyn StreamSink>
+        Arc::new(crate::stream::redact::RedactingSink::new(ws, redactor)) as Arc<dyn StreamSink>
     });
     let event_log_sink: Option<Arc<dyn StreamSink>> = args.event_log.as_ref().and_then(|path| {
         match EventLogSink::new(
@@ -1028,7 +1028,7 @@ pub async fn run(args: MiniArgs) -> Result<(), Error> {
                 }
                 let redactor =
                     crate::redaction::Redactor::from_config_lossy(&args.config.root.redaction);
-                Some(Arc::new(crate::redaction::RedactingSink::new(
+                Some(Arc::new(crate::stream::redact::RedactingSink::new(
                     Arc::new(sink),
                     redactor,
                 )) as Arc<dyn StreamSink>)

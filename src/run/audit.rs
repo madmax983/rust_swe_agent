@@ -5,8 +5,32 @@ use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
-use crate::cli::args::AuditCmd;
 use crate::error::Error;
+use clap::Args;
+
+/// `bench audit` — re-derive and verify sweep aggregates against trajectories.
+#[derive(Debug, Args, Clone)]
+pub struct AuditCmd {
+    /// Path to a completed sweep directory or extracted bench bundle directory.
+    #[arg(long)]
+    pub sweep: PathBuf,
+
+    /// Local dataset file to verify the recorded manifest hash.
+    #[arg(long)]
+    pub dataset_path: Option<PathBuf>,
+
+    /// USD tolerance for cost reconciliation.
+    #[arg(long, default_value_t = 0.0001)]
+    pub cost_tolerance_usd: f64,
+
+    /// Seconds tolerance for wall-clock reconciliation.
+    #[arg(long, default_value_t = 1.0)]
+    pub wallclock_tolerance_secs: f64,
+
+    /// Output format: `text` or `json`.
+    #[arg(long, default_value = "text")]
+    pub format: String,
+}
 
 /// Recompute sweep-wide aggregates and reconcile with results.json and evaluation.json.
 #[allow(clippy::too_many_lines)]

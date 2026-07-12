@@ -10,9 +10,46 @@ use std::collections::BTreeMap;
 use std::path::Path;
 use std::process::Command;
 
-use crate::cli::args::BisectCmd;
 use crate::error::Error;
 use crate::run::swebench::{ProvenanceManifest, SweepResults};
+use clap::Args;
+use std::path::PathBuf;
+
+/// `bench bisect` — identify the commit that introduced a resolved-rate regression.
+#[derive(Debug, Args, Clone)]
+pub struct BisectCmd {
+    /// Known-good sweep directory containing a results.json with manifest.
+    #[arg(long)]
+    pub good: PathBuf,
+
+    /// Known-bad sweep directory containing a results.json with manifest.
+    #[arg(long)]
+    pub bad: PathBuf,
+
+    /// Number of smoke instances to sample for the sweep.
+    #[arg(long, default_value_t = 5)]
+    pub smoke_instances: usize,
+
+    /// RNG seed for sampling candidate smoke instances (defaults to good manifest hash).
+    #[arg(long)]
+    pub smoke_seed: Option<u64>,
+
+    /// The model to run the smoke sweep against. Defaults to cheapest registered model.
+    #[arg(long)]
+    pub smoke_model: Option<String>,
+
+    /// Margin under which resolved rate is considered a regression.
+    #[arg(long, default_value_t = 0.20)]
+    pub regression_margin: f64,
+
+    /// Maximum USD cost before halting and writing partial results.
+    #[arg(long)]
+    pub max_cost_usd: Option<f64>,
+
+    /// Path to a bisect.json file to resume a previously interrupted run.
+    #[arg(long)]
+    pub resume: Option<PathBuf>,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CommitResult {

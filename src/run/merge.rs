@@ -14,11 +14,68 @@ use serde::Serialize;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
-use crate::cli::args::{MergeCmd, MergeCollisionPolicy};
 use crate::error::Error;
 use crate::run::swebench::{
     MergeShardProvenance, SWEEP_STATUS_COMPLETED, SweepResults, write_sweep_results_atomic,
 };
+use clap::Args;
+
+/// Collision policy for `bench merge` when the same instance_id appears in multiple shards.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum MergeCollisionPolicy {
+    /// Fail loudly if any instance_id appears in two or more shards (default).
+    Error,
+    /// Keep the occurrence from the earliest --shard; log duplicates in the report.
+    FirstWins,
+    /// Keep the occurrence from the latest --shard; log duplicates in the report.
+    LastWins,
+}
+
+/// Output format for `bench merge`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum MergeFormat {
+    /// Human-readable text summary (default).
+    Text,
+    /// Machine-readable JSON summary.
+    Json,
+}
+
+/// `bench merge` — combine completed sharded sweep directories into one canonical aggregate.
+///
+/// Recombines K independent sharded sweeps into a single canonical sweep directory
+/// that is a drop-in for `bench evaluate`, `bench report`, `bench triage`, and `bench audit`.
+/// Runs entirely offline with no model or network calls.
+#[derive(Debug, Args)]
+pub struct MergeCmd {
+    /// A completed sweep directory to merge. Repeat for each shard (2+ required).
+    #[arg(long = "shard", required = true, action = clap::ArgAction::Append)]
+    pub shards: Vec<std::path::PathBuf>,
+
+    /// Destination directory for the merged canonical sweep. Created if absent; must be empty otherwise.
+    #[arg(long)]
+    pub output: std::path::PathBuf,
+
+    /// Collision policy when the same instance_id appears in more than one shard.
+    /// `error` (default): fail with a clear message listing all colliding IDs.
+    /// `first-wins`: keep the occurrence from the earliest --shard.
+    /// `last-wins`: keep the occurrence from the latest --shard.
+    #[arg(long = "on-collision", value_enum, default_value_t = MergeCollisionPolicy::Error)]
+    pub on_collision: MergeCollisionPolicy,
+
+    /// Optional human-readable shard labels, positionally aligned with --shard.
+    /// Defaults to the directory name of each shard.
+    #[arg(long = "label", action = clap::ArgAction::Append)]
+    pub labels: Vec<String>,
+
+    /// Overwrite the output directory if it is non-empty.
+    #[arg(long, default_value_t = false)]
+    pub force: bool,
+
+    /// Output format: `text` (default) or `json`.
+    /// The `json` format emits a machine-readable summary to stdout.
+    #[arg(long, value_enum, default_value_t = MergeFormat::Text)]
+    pub format: MergeFormat,
+}
 
 // ── public types ──────────────────────────────────────────────────────────────
 
