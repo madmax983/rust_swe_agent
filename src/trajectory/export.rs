@@ -95,6 +95,14 @@ pub fn registry() -> Vec<ExportFormat> {
         render: MermaidExporter::export,
     });
 
+    #[cfg(feature = "xml-export")]
+    formats.push(ExportFormat {
+        name: "xml",
+        tier: StabilityTier::Experimental,
+        consumer: "XML parsers and enterprise logging systems",
+        render: XmlExporter::export,
+    });
+
     formats
 }
 
@@ -109,6 +117,7 @@ pub const FEATURE_GATED_FORMATS: &[(&str, &str)] = &[
     ("csv", "csv-export"),
     ("html", "html-export"),
     ("mermaid", "mermaid-export"),
+    ("xml", "xml-export"),
 ];
 
 /// Returns `true` if `name` is a trajectory export format known to this codebase,
@@ -165,6 +174,9 @@ pub struct MermaidExporter;
 
 #[cfg(feature = "html-export")]
 pub struct HtmlExporter;
+
+#[cfg(feature = "xml-export")]
+pub struct XmlExporter;
 
 use std::fmt::Write;
 
@@ -307,6 +319,39 @@ impl TrajectoryExporter for HtmlExporter {
     }
 }
 
+#[cfg(feature = "xml-export")]
+impl TrajectoryExporter for XmlExporter {
+    fn export(trajectory: &Trajectory) -> String {
+        let redactor = Redactor::default_enabled();
+        let mut xml = String::from("<trajectory>\n");
+
+        if let Some(task) = &trajectory.info.task {
+            let task = redactor.redact_text(task, surface::EXPORT).text;
+            let sanitized_task = task.replace("]]>", "]]]]><![CDATA[>");
+            let _ = writeln!(xml, "<task><![CDATA[{sanitized_task}]]></task>");
+        }
+
+        if let Some(outcome) = &trajectory.info.outcome {
+            let outcome = redactor.redact_text(outcome, surface::EXPORT).text;
+            let sanitized_outcome = outcome.replace("]]>", "]]]]><![CDATA[>");
+            let _ = writeln!(xml, "<outcome><![CDATA[{sanitized_outcome}]]></outcome>");
+        }
+
+        for msg in &trajectory.messages {
+            let role = msg.role.as_str();
+            let content = redactor.redact_text(&msg.content, surface::EXPORT).text;
+            let sanitized_content = content.replace("]]>", "]]]]><![CDATA[>");
+            let _ = writeln!(
+                xml,
+                "<message role=\"{role}\"><![CDATA[{sanitized_content}]]></message>"
+            );
+        }
+
+        xml.push_str("</trajectory>");
+        xml
+    }
+}
+
 #[cfg(feature = "mermaid-export")]
 impl TrajectoryExporter for MermaidExporter {
     fn export(trajectory: &Trajectory) -> String {
@@ -386,6 +431,21 @@ mod tests {
         assert!(md.contains("Hello agent"));
         assert!(md.contains("### Assistant"));
         assert!(md.contains("Hello user"));
+    }
+
+    #[cfg(feature = "xml-export")]
+    #[test]
+    fn test_xml_export_format() {
+        let mut t = Trajectory::new();
+        t.info.task = Some("Task with ]]> sequence".to_string());
+
+        t.record_message(&Message::user("Hello ]]> agent"));
+
+        let xml = XmlExporter::export(&t);
+
+        assert!(xml.contains("<trajectory>"));
+        assert!(xml.contains("]]]]><![CDATA[>"));
+        assert!(xml.contains("<message role=\"user\">"));
     }
 
     #[cfg(feature = "csv-export")]

@@ -82,6 +82,7 @@ tokio = { version = "1", features = ["full", "test-util"] }
 
 [features]
 default = ["webhook"]
+xml-export = []
 docker = []
 # Deprecated no-op: `ChaosEnvironment` and `--chaos-fail-every` are always
 # compiled in (issue #340). Retained so `--features chaos` keeps working.
