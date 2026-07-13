@@ -196,3 +196,62 @@ pub trait Agent: Send {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_exit_reason_labels() {
+        let cases = vec![
+            (
+                ExitReason::Submitted {
+                    final_output: "Done!".into(),
+                },
+                "submitted",
+            ),
+            (ExitReason::StepLimit { limit: 10 }, "step_limit"),
+            (
+                ExitReason::CostLimit {
+                    limit_usd: 1.0,
+                    spent_usd: 1.5,
+                },
+                "cost_limit",
+            ),
+            (
+                ExitReason::BudgetExhausted {
+                    limit_usd: 1.0,
+                    spent_usd: 1.5,
+                },
+                "budget_exhausted",
+            ),
+            (ExitReason::UserInterrupt, "user_interrupt"),
+            (
+                ExitReason::ModelRefusal {
+                    reason: "safety".into(),
+                },
+                "model_refusal",
+            ),
+            (
+                ExitReason::AgentStagnation {
+                    action_hash: "abc".into(),
+                    count: 3,
+                    window: 5,
+                },
+                "agent_stagnation",
+            ),
+            (
+                ExitReason::HistoryCompactionFailed,
+                "history_compaction_failed",
+            ),
+        ];
+
+        for (reason, expected_label) in cases {
+            assert_eq!(
+                reason.label(),
+                expected_label,
+                "Label mismatch for {reason:?}",
+            );
+        }
+    }
+}
