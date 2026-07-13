@@ -6,7 +6,7 @@
 //! narrative document, complete with headers and code blocks.
 //!
 //! You can extend this module with new formats by implementing the [`crate::trajectory::export::TrajectoryExporter`] trait.
-//! Every new exporter MUST register in [`registry`] and MUST apply redaction via
+//! Every new exporter MUST register in [`crate::trajectory::export::registry`] and MUST apply redaction via
 //! [`crate::redaction::Redactor::default_enabled`] on [`crate::redaction::surface::EXPORT`] before emitting any output.
 //! See `docs/spec-export.md` for the full governing contract.
 
@@ -95,6 +95,14 @@ pub fn registry() -> Vec<ExportFormat> {
         render: MermaidExporter::export,
     });
 
+    #[cfg(feature = "xml-export")]
+    formats.push(ExportFormat {
+        name: "xml",
+        tier: StabilityTier::Stable,
+        consumer: "automated parsers, legacy enterprise tools",
+        render: XmlExporter::export,
+    });
+
     formats
 }
 
@@ -109,6 +117,7 @@ pub const FEATURE_GATED_FORMATS: &[(&str, &str)] = &[
     ("csv", "csv-export"),
     ("html", "html-export"),
     ("mermaid", "mermaid-export"),
+    ("xml", "xml-export"),
 ];
 
 /// Returns `true` if `name` is a trajectory export format known to this codebase,
@@ -166,6 +175,9 @@ pub struct MermaidExporter;
 #[cfg(feature = "html-export")]
 pub struct HtmlExporter;
 
+#[cfg(feature = "xml-export")]
+pub struct XmlExporter;
+
 use std::fmt::Write;
 
 #[cfg(feature = "csv-export")]
@@ -193,6 +205,44 @@ impl TrajectoryExporter for CsvExporter {
         }
 
         csv
+    }
+}
+
+#[cfg(feature = "xml-export")]
+impl TrajectoryExporter for XmlExporter {
+    fn export(trajectory: &Trajectory) -> String {
+        let redactor = Redactor::default_enabled();
+        let mut xml = String::new();
+
+        xml.push_str("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
+        xml.push_str("<trajectory>\n");
+
+        xml.push_str("  <info>\n");
+        if let Some(task) = &trajectory.info.task {
+            let task = redactor.redact_text(task, surface::EXPORT).text;
+            let safe_task = task.replace("]]>", "]]]]><![CDATA[>");
+            let _ = writeln!(xml, "    <task><![CDATA[{safe_task}]]></task>");
+        }
+        if let Some(outcome) = &trajectory.info.outcome {
+            let outcome = redactor.redact_text(outcome, surface::EXPORT).text;
+            let safe_outcome = outcome.replace("]]>", "]]]]><![CDATA[>");
+            let _ = writeln!(xml, "    <outcome><![CDATA[{safe_outcome}]]></outcome>");
+        }
+        xml.push_str("  </info>\n");
+
+        xml.push_str("  <messages>\n");
+        for msg in &trajectory.messages {
+            let content = redactor.redact_text(&msg.content, surface::EXPORT).text;
+            let safe_content = content.replace("]]>", "]]]]><![CDATA[>");
+            let _ = writeln!(xml, "    <message role=\"{}\">", msg.role);
+            let _ = writeln!(xml, "      <content><![CDATA[{safe_content}]]></content>");
+            let _ = writeln!(xml, "    </message>");
+        }
+        xml.push_str("  </messages>\n");
+
+        xml.push_str("</trajectory>\n");
+
+        xml
     }
 }
 
@@ -386,6 +436,31 @@ mod tests {
         assert!(md.contains("Hello agent"));
         assert!(md.contains("### Assistant"));
         assert!(md.contains("Hello user"));
+    }
+
+    #[cfg(feature = "xml-export")]
+    #[test]
+    fn test_xml_export_format() {
+        let mut t = Trajectory::new();
+        t.info.task = Some("Add a feature".to_string());
+        t.info.outcome = Some(outcome::SUBMITTED.to_string());
+
+        t.record_message(&Message::system("System prompt"));
+        t.record_message(&Message::user("Hello agent\nMulti-line <![CDATA[ test ]]>"));
+        t.record_message(&Message::assistant("Hello \"user\""));
+
+        let xml = XmlExporter::export(&t);
+
+        assert!(xml.starts_with("<?xml version=\"1.0\""));
+        assert!(xml.contains("<trajectory>"));
+        assert!(xml.contains("<task><![CDATA[Add a feature]]></task>"));
+        assert!(xml.contains("<outcome><![CDATA[submitted]]></outcome>"));
+        assert!(xml.contains("<message role=\"system\">"));
+        assert!(xml.contains("<content><![CDATA[System prompt]]></content>"));
+        assert!(xml.contains("<message role=\"user\">"));
+        assert!(xml.contains(
+            "<content><![CDATA[Hello agent\nMulti-line <![CDATA[ test ]]]]><![CDATA[>]]></content>"
+        ));
     }
 
     #[cfg(feature = "csv-export")]
