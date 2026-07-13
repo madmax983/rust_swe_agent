@@ -527,7 +527,7 @@ mod tests {
     // ── Network mode RED-phase tests ─────────────────────────────────────────
 
     #[test]
-    fn build_run_args_include_network_none_when_mode_is_none() {
+    fn build_run_args_include_network_none_when_mode_is_none() -> anyhow::Result<()> {
         let args = build_run_args("my-image", "/workspace", LABEL, Some("none"));
         let network_pos = args.iter().position(|a| a == "--network");
         assert!(
@@ -535,9 +535,10 @@ mod tests {
             "expected --network flag in args: {args:?}"
         );
         assert_eq!(
-            args.get(network_pos.unwrap() + 1).map(String::as_str),
+            args.get(network_pos.ok_or_else(|| anyhow::anyhow!("missing network"))? + 1).map(String::as_str),
             Some("none")
         );
+        Ok(())
     }
 
     #[test]
@@ -550,13 +551,14 @@ mod tests {
     }
 
     #[test]
-    fn build_run_args_network_none_positioned_before_image() {
+    fn build_run_args_network_none_positioned_before_image() -> anyhow::Result<()> {
         let args = build_run_args("my-image", "/workspace", LABEL, Some("none"));
-        let network_pos = args.iter().position(|a| a == "--network").unwrap();
-        let image_pos = args.iter().position(|a| a == "my-image").unwrap();
+        let network_pos = args.iter().position(|a| a == "--network").ok_or_else(|| anyhow::anyhow!("missing network"))?;
+        let image_pos = args.iter().position(|a| a == "my-image").ok_or_else(|| anyhow::anyhow!("missing image"))?;
         assert!(
             network_pos < image_pos,
             "--network must appear before the image name"
         );
+        Ok(())
     }
 }

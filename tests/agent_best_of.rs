@@ -355,6 +355,7 @@ mod integration {
     ) -> BestOfArgs {
         let mut cfg = maxwells_daemon::config::Config::defaults().unwrap();
         cfg.root.model.name = "test-model".into();
+        cfg.root.redaction.unsafe_allow_secret_leaks = true;
         BestOfArgs {
             task: "Fix the bug".into(),
             runs,
@@ -586,6 +587,7 @@ mod integration {
         let mk = |dir: &std::path::Path| {
             let mut cfg = maxwells_daemon::config::Config::defaults().unwrap();
             cfg.root.model.name = "test-model".into();
+            cfg.root.redaction.unsafe_allow_secret_leaks = true;
             BestOfArgs {
                 task: "Fix the bug".into(),
                 runs: 2,

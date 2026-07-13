@@ -1166,32 +1166,26 @@ mod tests {
 
     #[test]
     fn resolve_endpoint_prefers_cli_flag() {
-        let _guard = env_lock();
-        // SAFETY: serialized by ENV_LOCK; no other thread mutates this var.
-        unsafe {
-            std::env::set_var("OTEL_EXPORTER_OTLP_ENDPOINT", "http://env-host:4318");
-            std::env::remove_var("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT");
-        }
-        let ep = resolve_endpoint(Some("http://cli-host:4318"));
-        unsafe {
-            std::env::remove_var("OTEL_EXPORTER_OTLP_ENDPOINT");
-        }
+        let ep = temp_env::with_vars(
+            [
+                ("OTEL_EXPORTER_OTLP_ENDPOINT", Some("http://env-host:4318")),
+                ("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", None),
+            ],
+            || resolve_endpoint(Some("http://cli-host:4318")),
+        );
         // CLI flag is a base URL; /v1/traces is appended.
         assert_eq!(ep.as_deref(), Some("http://cli-host:4318/v1/traces"));
     }
 
     #[test]
     fn resolve_endpoint_falls_back_to_env_var() {
-        let _guard = env_lock();
-        // SAFETY: serialized by ENV_LOCK; no other thread mutates this var.
-        unsafe {
-            std::env::set_var("OTEL_EXPORTER_OTLP_ENDPOINT", "http://env-host:4318");
-            std::env::remove_var("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT");
-        }
-        let ep = resolve_endpoint(None);
-        unsafe {
-            std::env::remove_var("OTEL_EXPORTER_OTLP_ENDPOINT");
-        }
+        let ep = temp_env::with_vars(
+            [
+                ("OTEL_EXPORTER_OTLP_ENDPOINT", Some("http://env-host:4318")),
+                ("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", None),
+            ],
+            || resolve_endpoint(None),
+        );
         // Generic env var is a base URL; /v1/traces is appended.
         assert_eq!(ep.as_deref(), Some("http://env-host:4318/v1/traces"));
     }
@@ -1217,13 +1211,13 @@ mod tests {
 
     #[test]
     fn resolve_endpoint_returns_none_when_unset() {
-        let _guard = env_lock();
-        // SAFETY: serialized by ENV_LOCK; no other thread mutates this var.
-        unsafe {
-            std::env::remove_var("OTEL_EXPORTER_OTLP_ENDPOINT");
-            std::env::remove_var("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT");
-        }
-        let ep = resolve_endpoint(None);
+        let ep = temp_env::with_vars(
+            [
+                ("OTEL_EXPORTER_OTLP_ENDPOINT", None::<&str>),
+                ("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", None::<&str>),
+            ],
+            || resolve_endpoint(None),
+        );
         assert!(ep.is_none());
     }
 
@@ -1247,29 +1241,25 @@ mod tests {
 
     #[test]
     fn resolve_metrics_endpoint_prefers_cli_flag() {
-        let _guard = env_lock();
-        unsafe {
-            std::env::set_var("OTEL_EXPORTER_OTLP_ENDPOINT", "http://env-host:4318");
-            std::env::remove_var("OTEL_EXPORTER_OTLP_METRICS_ENDPOINT");
-        }
-        let ep = resolve_metrics_endpoint(Some("http://cli-host:4318"));
-        unsafe {
-            std::env::remove_var("OTEL_EXPORTER_OTLP_ENDPOINT");
-        }
+        let ep = temp_env::with_vars(
+            [
+                ("OTEL_EXPORTER_OTLP_ENDPOINT", Some("http://env-host:4318")),
+                ("OTEL_EXPORTER_OTLP_METRICS_ENDPOINT", None),
+            ],
+            || resolve_metrics_endpoint(Some("http://cli-host:4318")),
+        );
         assert_eq!(ep.as_deref(), Some("http://cli-host:4318/v1/metrics"));
     }
 
     #[test]
     fn resolve_metrics_endpoint_falls_back_to_env_var() {
-        let _guard = env_lock();
-        unsafe {
-            std::env::set_var("OTEL_EXPORTER_OTLP_ENDPOINT", "http://env-host:4318");
-            std::env::remove_var("OTEL_EXPORTER_OTLP_METRICS_ENDPOINT");
-        }
-        let ep = resolve_metrics_endpoint(None);
-        unsafe {
-            std::env::remove_var("OTEL_EXPORTER_OTLP_ENDPOINT");
-        }
+        let ep = temp_env::with_vars(
+            [
+                ("OTEL_EXPORTER_OTLP_ENDPOINT", Some("http://env-host:4318")),
+                ("OTEL_EXPORTER_OTLP_METRICS_ENDPOINT", None),
+            ],
+            || resolve_metrics_endpoint(None),
+        );
         assert_eq!(ep.as_deref(), Some("http://env-host:4318/v1/metrics"));
     }
 
@@ -1292,83 +1282,65 @@ mod tests {
 
     #[test]
     fn resolve_metrics_endpoint_returns_none_when_unset() {
-        let _guard = env_lock();
-        unsafe {
-            std::env::remove_var("OTEL_EXPORTER_OTLP_ENDPOINT");
-            std::env::remove_var("OTEL_EXPORTER_OTLP_METRICS_ENDPOINT");
-        }
-        let ep = resolve_metrics_endpoint(None);
+        let ep = temp_env::with_vars(
+            [
+                ("OTEL_EXPORTER_OTLP_ENDPOINT", None::<&str>),
+                ("OTEL_EXPORTER_OTLP_METRICS_ENDPOINT", None::<&str>),
+            ],
+            || resolve_metrics_endpoint(None),
+        );
         assert!(ep.is_none());
     }
 
     #[test]
     fn resolve_metrics_interval_prefers_env_var() {
-        let _guard = env_lock();
-        unsafe {
-            std::env::set_var("OTEL_METRIC_EXPORT_INTERVAL", "30000");
-        }
-        let interval = resolve_metrics_interval(Some(10));
-        unsafe {
-            std::env::remove_var("OTEL_METRIC_EXPORT_INTERVAL");
-        }
+        let interval = temp_env::with_var("OTEL_METRIC_EXPORT_INTERVAL", Some("30000"), || {
+            resolve_metrics_interval(Some(10))
+        });
         assert_eq!(interval, std::time::Duration::from_secs(30));
     }
 
     #[test]
     fn resolve_metrics_interval_prefers_cli_secs() {
-        let _guard = env_lock();
-        unsafe {
-            std::env::remove_var("OTEL_METRIC_EXPORT_INTERVAL");
-        }
-        let interval = resolve_metrics_interval(Some(10));
+        let interval = temp_env::with_var("OTEL_METRIC_EXPORT_INTERVAL", None::<&str>, || {
+            resolve_metrics_interval(Some(10))
+        });
         assert_eq!(interval, std::time::Duration::from_secs(10));
     }
 
     #[test]
     fn resolve_metrics_interval_defaults_to_15s() {
-        let _guard = env_lock();
-        unsafe {
-            std::env::remove_var("OTEL_METRIC_EXPORT_INTERVAL");
-        }
-        let interval = resolve_metrics_interval(None);
+        let interval = temp_env::with_var("OTEL_METRIC_EXPORT_INTERVAL", None::<&str>, || {
+            resolve_metrics_interval(None)
+        });
         assert_eq!(interval, std::time::Duration::from_secs(15));
     }
 
     #[test]
     fn resolve_metrics_interval_clamps_zero_env_var_to_1s() {
-        let _guard = env_lock();
-        unsafe {
-            std::env::set_var("OTEL_METRIC_EXPORT_INTERVAL", "0");
-        }
-        let interval = resolve_metrics_interval(None);
-        unsafe {
-            std::env::remove_var("OTEL_METRIC_EXPORT_INTERVAL");
-        }
+        let interval = temp_env::with_var("OTEL_METRIC_EXPORT_INTERVAL", Some("0"), || {
+            resolve_metrics_interval(None)
+        });
         assert_eq!(interval, std::time::Duration::from_secs(1));
     }
 
     #[test]
     fn resolve_metrics_interval_clamps_zero_cli_secs_to_1s() {
-        let _guard = env_lock();
-        unsafe {
-            std::env::remove_var("OTEL_METRIC_EXPORT_INTERVAL");
-        }
-        let interval = resolve_metrics_interval(Some(0));
+        let interval = temp_env::with_var("OTEL_METRIC_EXPORT_INTERVAL", None::<&str>, || {
+            resolve_metrics_interval(Some(0))
+        });
         assert_eq!(interval, std::time::Duration::from_secs(1));
     }
 
     #[test]
     fn resolve_metrics_headers_prefers_metrics_var() {
-        let _guard = env_lock();
-        unsafe {
-            std::env::set_var("OTEL_EXPORTER_OTLP_HEADERS", "a=1,b=2");
-            std::env::set_var("OTEL_EXPORTER_OTLP_METRICS_HEADERS", "c=3");
-        }
-        let headers = resolve_metrics_headers();
-        unsafe {
-            std::env::remove_var("OTEL_EXPORTER_OTLP_HEADERS");
-            std::env::remove_var("OTEL_EXPORTER_OTLP_METRICS_HEADERS");
-        }
+        let headers = temp_env::with_vars(
+            [
+                ("OTEL_EXPORTER_OTLP_HEADERS", Some("a=1,b=2")),
+                ("OTEL_EXPORTER_OTLP_METRICS_HEADERS", Some("c=3")),
+            ],
+            resolve_metrics_headers,
+        );
         assert_eq!(headers, vec![("c".to_owned(), "3".to_owned())]);
     }
 
