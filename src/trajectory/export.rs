@@ -6,7 +6,7 @@
 //! narrative document, complete with headers and code blocks.
 //!
 //! You can extend this module with new formats by implementing the [`crate::trajectory::export::TrajectoryExporter`] trait.
-//! Every new exporter MUST register in [`registry`] and MUST apply redaction via
+//! Every new exporter MUST register in [`crate::trajectory::export::registry`] and MUST apply redaction via
 //! [`crate::redaction::Redactor::default_enabled`] on [`crate::redaction::surface::EXPORT`] before emitting any output.
 //! See `docs/spec-export.md` for the full governing contract.
 
@@ -85,6 +85,14 @@ pub fn registry() -> Vec<ExportFormat> {
         tier: StabilityTier::Stable,
         consumer: "self-contained browser view, shared notebooks",
         render: HtmlExporter::export,
+    });
+
+    #[cfg(feature = "jsonl-export")]
+    formats.push(ExportFormat {
+        name: "jsonl",
+        tier: StabilityTier::Stable,
+        consumer: "log aggregation, streaming pipelines",
+        render: JsonlExporter::export,
     });
 
     #[cfg(feature = "mermaid-export")]
@@ -166,6 +174,9 @@ pub struct MermaidExporter;
 #[cfg(feature = "html-export")]
 pub struct HtmlExporter;
 
+#[cfg(feature = "jsonl-export")]
+pub struct JsonlExporter;
+
 use std::fmt::Write;
 
 #[cfg(feature = "csv-export")]
@@ -229,6 +240,32 @@ impl TrajectoryExporter for MarkdownExporter {
         }
 
         md
+    }
+}
+
+#[cfg(feature = "jsonl-export")]
+impl TrajectoryExporter for JsonlExporter {
+    fn export(trajectory: &Trajectory) -> String {
+        let redactor = Redactor::default_enabled();
+        let mut jsonl = String::new();
+
+        for msg in &trajectory.messages {
+            let mut redacted_msg = serde_json::to_value(msg).unwrap_or(serde_json::Value::Null);
+            if let Some(obj) = redacted_msg.as_object_mut() {
+                if let Some(content) = obj.get("content").and_then(|c| c.as_str()) {
+                    let redacted_content = redactor.redact_text(content, surface::EXPORT).text;
+                    obj.insert(
+                        "content".to_string(),
+                        serde_json::Value::String(redacted_content),
+                    );
+                }
+            }
+            if let Ok(line) = serde_json::to_string(&redacted_msg) {
+                let _ = writeln!(jsonl, "{line}");
+            }
+        }
+
+        jsonl
     }
 }
 
@@ -432,6 +469,29 @@ mod tests {
         assert!(mermaid.contains("U->>A: Hello \"user\""));
 
         assert!(mermaid.contains("Note over S,T: Outcome: submitted"));
+    }
+
+    #[cfg(feature = "jsonl-export")]
+    #[test]
+    fn test_jsonl_export_format() {
+        let mut t = Trajectory::new();
+        t.info.task = Some("Add a feature".to_string());
+        t.info.outcome = Some("submitted".to_string());
+
+        t.record_message(&Message::system("System prompt"));
+        t.record_message(&Message::user("Hello agent"));
+        t.record_message(&Message::assistant("Hello \"user\""));
+
+        let jsonl = JsonlExporter::export(&t);
+        let lines: Vec<&str> = jsonl.lines().collect();
+
+        assert_eq!(lines.len(), 3);
+        assert!(lines[0].contains(r#""role":"system""#));
+        assert!(lines[0].contains(r#""content":"System prompt""#));
+        assert!(lines[1].contains(r#""role":"user""#));
+        assert!(lines[1].contains(r#""content":"Hello agent""#));
+        assert!(lines[2].contains(r#""role":"assistant""#));
+        assert!(lines[2].contains(r#""content":"Hello \"user\"""#));
     }
 
     #[cfg(feature = "html-export")]

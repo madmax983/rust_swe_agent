@@ -33,6 +33,7 @@ max bench inspect --list-formats
 | `markdown` | stable | always compiled | docs, PR review, human readers |
 | `csv` | stable | `csv-export` | spreadsheets, jq pipelines, tabular tools |
 | `html` | stable | `html-export` | self-contained browser view, shared notebooks |
+| `jsonl` | stable | `jsonl-export` | log aggregation, streaming pipelines |
 | `mermaid` | experimental | `mermaid-export` | Mermaid sequence-diagram renderers (GitLab, GitHub markdown, mermaid.live) |
 
 Feature-gated formats require rebuilding with the corresponding feature:
@@ -120,6 +121,7 @@ $ max bench inspect --list-formats
 markdown    stable        docs, PR review, human readers
 csv         stable        spreadsheets, jq pipelines, tabular tools
 html        stable        self-contained browser view, shared notebooks
+jsonl       stable        log aggregation, streaming pipelines
 mermaid     experimental  Mermaid sequence-diagram renderers (GitLab, GitHub markdown, mermaid.live)
 ```
 
