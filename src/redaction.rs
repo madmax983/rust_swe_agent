@@ -5,7 +5,9 @@
 //! with sensitive names before text reaches persisted or shareable surfaces.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, PoisonError};
+#[cfg(not(test))] use std::sync::Mutex;
+#[cfg(test)] use loom::sync::Mutex;
 
 use regex::Regex;
 use serde::{Deserialize, Serialize};
@@ -276,7 +278,7 @@ impl Redactor {
                 .inner
                 .markers
                 .lock()
-                .unwrap_or_else(PoisonError::into_inner);
+                .unwrap();
             markers
                 .iter()
                 .map(|(raw, marker)| (raw.clone(), marker.clone()))
@@ -409,7 +411,7 @@ impl Redactor {
                 .inner
                 .counts
                 .lock()
-                .unwrap_or_else(PoisonError::into_inner);
+                .unwrap();
             counts
                 .iter()
                 .map(|((surface, kind), count)| RedactionCount {
@@ -554,7 +556,7 @@ impl Redactor {
             .inner
             .markers
             .lock()
-            .unwrap_or_else(PoisonError::into_inner);
+            .unwrap();
         if let Some(marker) = markers.get(raw) {
             return marker.clone();
         }
@@ -574,7 +576,7 @@ impl Redactor {
             .inner
             .counts
             .lock()
-            .unwrap_or_else(PoisonError::into_inner);
+            .unwrap();
         let key = (surface.to_owned(), kind.to_owned());
         let value = counts.entry(key).or_insert(0);
         *value = value.saturating_add(1);

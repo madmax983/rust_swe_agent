@@ -79,6 +79,7 @@ proptest = "1"
 insta = { version = "1", features = ["json"] }
 pretty_assertions = "1"
 tokio = { version = "1", features = ["full", "test-util"] }
+loom = "0.7.2"
 
 [features]
 default = ["webhook"]
