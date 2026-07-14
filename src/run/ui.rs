@@ -376,11 +376,11 @@ fn serve_instance(entry: &InstanceEntry) -> String {
         Ok(t) => t,
         Err(e) => {
             tracing::warn!(path = ?entry.traj_path, error = %e, "ui: failed to read trajectory");
-            return http_response(
+            return serve_error_page(
                 500,
-                "Internal Server Error",
-                "text/plain",
-                "500 Internal Server Error: failed to read trajectory",
+                "500 Internal Server Error",
+                "Failed to read trajectory artifact from disk.",
+                Some(&e.to_string()),
             );
         }
     };
@@ -389,11 +389,11 @@ fn serve_instance(entry: &InstanceEntry) -> String {
         Ok(t) => t,
         Err(e) => {
             tracing::warn!(path = ?entry.traj_path, error = %e, "ui: failed to parse trajectory");
-            return http_response(
+            return serve_error_page(
                 500,
-                "Internal Server Error",
-                "text/plain",
-                "500 Internal Server Error: failed to parse trajectory",
+                "500 Internal Server Error",
+                "Failed to parse trajectory JSON artifact.",
+                Some(&e.to_string()),
             );
         }
     };
@@ -425,7 +425,12 @@ fn http_response(status: u16, reason: &str, content_type: &str, body: &str) -> S
 }
 
 fn http_404() -> String {
-    http_response(404, "Not Found", "text/plain", "404 Not Found")
+    serve_error_page(
+        404,
+        "404 Not Found",
+        "The requested trajectory or path does not exist.",
+        None,
+    )
 }
 
 fn html_escape(s: &str) -> String {
@@ -433,6 +438,30 @@ fn html_escape(s: &str) -> String {
         .replace('<', "&lt;")
         .replace('>', "&gt;")
         .replace('"', "&quot;")
+}
+
+fn serve_error_page(status: u16, title: &str, message: &str, detail: Option<&str>) -> String {
+    let safe_title = html_escape(title);
+    let safe_message = html_escape(message);
+
+    let detail_html = if let Some(d) = detail {
+        let safe_detail = html_escape(d);
+        format!("<div class=\"detail\">{safe_detail}</div>")
+    } else {
+        String::new()
+    };
+
+    let body = format!(
+        "<!DOCTYPE html>\n         <html>\n         <head>\n         <meta charset=\"UTF-8\">\n         <title>{safe_title}</title>\n         <style>\n         body{{font-family:sans-serif;margin:40px;max-width:800px;background:#fff;color:#333}}\n         .error-container{{padding:24px;border:1px solid #ff4444;border-left:6px solid #ff4444;border-radius:4px;background:#fff9f9}}\n         h1{{margin-top:0;color:#cc0000;font-size:24px}}\n         p{{font-size:16px;line-height:1.5}}\n         .detail{{margin-top:16px;padding:12px;background:#f5f5f5;border-radius:4px;font-family:monospace;font-size:14px;color:#555;white-space:pre-wrap}}\n         .actions{{margin-top:24px}}\n         a{{display:inline-block;padding:8px 16px;background:#f0f0f0;color:#333;text-decoration:none;border-radius:4px;font-weight:600;border:1px solid #ddd}}\n         a:hover{{background:#e0e0e0}}\n         </style>\n         </head>\n         <body>\n         <div class=\"error-container\">\n         <h1>{safe_title}</h1>\n         <p>{safe_message}</p>\n         {detail_html}\n         <div class=\"actions\">\n         <a href=\"/\">&larr; Return to Sweep Browser</a>\n         </div>\n         </div>\n         </body>\n         </html>"
+    );
+
+    let reason = match status {
+        404 => "Not Found",
+        500 => "Internal Server Error",
+        _ => "Error",
+    };
+
+    http_response(status, reason, "text/html; charset=UTF-8", &body)
 }
 
 // ── Request parsing ───────────────────────────────────────────────────────────
