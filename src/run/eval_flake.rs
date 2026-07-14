@@ -342,7 +342,7 @@ pub fn run_with_stub(
         })
         .collect();
 
-    let mut results: Vec<InstanceFlakeResult> = Vec::new();
+    let mut results: Vec<InstanceFlakeResult> = Vec::with_capacity(instance_ids.len());
     for id in &instance_ids {
         let stub_verdicts = stub.verdicts.get(id.as_str());
         let verdicts: Vec<Verdict> = (0..args.replays)

@@ -329,7 +329,7 @@ fn build_report(args: &LedgerArgs) -> Result<LedgerReport, Error> {
     let discovered = all_paths.len();
 
     // Load each trajectory.
-    let mut records: Vec<TrajRecord> = Vec::new();
+    let mut records: Vec<TrajRecord> = Vec::with_capacity(all_paths.len());
     for path in &all_paths {
         match load_record(path) {
             Ok(r) => records.push(r),

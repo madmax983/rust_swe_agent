@@ -213,7 +213,7 @@ fn collect_disagreements(
     canonical_map: &HashMap<String, Verdict>,
 ) -> (usize, Vec<ParityDisagreement>) {
     let mut agreed = 0usize;
-    let mut disagreements = Vec::new();
+    let mut disagreements = Vec::with_capacity(instance_ids.len());
 
     for id in instance_ids {
         let ov = offline_map

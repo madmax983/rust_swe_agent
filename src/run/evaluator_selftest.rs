@@ -296,8 +296,8 @@ fn evaluate_via_sb_cli(
         .unwrap_or_else(|e| panic!("cannot create eval scratch dir: {e}"));
 
     // Split into instances that have a gold patch and those that don't.
-    let mut missing: Vec<SelftestInstanceResult> = Vec::new();
-    let mut eval_pairs: Vec<(&SweBenchInstance, String)> = Vec::new();
+    let mut missing: Vec<SelftestInstanceResult> = Vec::with_capacity(selected.len());
+    let mut eval_pairs: Vec<(&SweBenchInstance, String)> = Vec::with_capacity(selected.len());
 
     for inst in selected {
         let patch = inst
@@ -450,8 +450,8 @@ fn evaluate_via_docker_tests(
     std::fs::create_dir_all(&scratch)
         .unwrap_or_else(|e| panic!("cannot create docker-tests scratch dir: {e}"));
 
-    let mut missing: Vec<SelftestInstanceResult> = Vec::new();
-    let mut eval_pairs: Vec<(&SweBenchInstance, String)> = Vec::new();
+    let mut missing: Vec<SelftestInstanceResult> = Vec::with_capacity(selected.len());
+    let mut eval_pairs: Vec<(&SweBenchInstance, String)> = Vec::with_capacity(selected.len());
 
     for inst in selected {
         let patch = inst
