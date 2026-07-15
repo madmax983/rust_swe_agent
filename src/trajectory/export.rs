@@ -95,6 +95,14 @@ pub fn registry() -> Vec<ExportFormat> {
         render: MermaidExporter::export,
     });
 
+    #[cfg(feature = "yaml-export")]
+    formats.push(ExportFormat {
+        name: "yaml",
+        tier: StabilityTier::Experimental,
+        consumer: "data pipelines, CI/CD integrations, human-readable structured logs",
+        render: YamlExporter::export,
+    });
+
     formats
 }
 
@@ -108,6 +116,7 @@ pub fn registry() -> Vec<ExportFormat> {
 pub const FEATURE_GATED_FORMATS: &[(&str, &str)] = &[
     ("csv", "csv-export"),
     ("html", "html-export"),
+    ("yaml", "yaml-export"),
     ("mermaid", "mermaid-export"),
 ];
 
@@ -163,10 +172,54 @@ pub struct CsvExporter;
 #[cfg(feature = "mermaid-export")]
 pub struct MermaidExporter;
 
+/// Formats the trajectory as YAML.
+#[cfg(feature = "yaml-export")]
+pub struct YamlExporter;
+
 #[cfg(feature = "html-export")]
 pub struct HtmlExporter;
 
 use std::fmt::Write;
+
+#[cfg(feature = "yaml-export")]
+#[derive(serde::Serialize)]
+struct YamlTrajectory<'a> {
+    task: Option<String>,
+    outcome: Option<String>,
+    messages: Vec<YamlMessage<'a>>,
+}
+
+#[cfg(feature = "yaml-export")]
+#[derive(serde::Serialize)]
+struct YamlMessage<'a> {
+    role: &'a str,
+    content: String,
+}
+
+#[cfg(feature = "yaml-export")]
+impl TrajectoryExporter for YamlExporter {
+    fn export(trajectory: &Trajectory) -> String {
+        let redactor = Redactor::default_enabled();
+
+        let task = trajectory.info.task.as_ref().map(|t| redactor.redact_text(t, surface::EXPORT).text);
+        let outcome = trajectory.info.outcome.as_ref().map(|o| redactor.redact_text(o, surface::EXPORT).text);
+
+        let messages = trajectory.messages.iter().map(|msg| {
+            YamlMessage {
+                role: &msg.role,
+                content: redactor.redact_text(&msg.content, surface::EXPORT).text,
+            }
+        }).collect();
+
+        let out = YamlTrajectory {
+            task,
+            outcome,
+            messages,
+        };
+
+        serde_yml::to_string(&out).unwrap_or_default()
+    }
+}
 
 #[cfg(feature = "csv-export")]
 impl TrajectoryExporter for CsvExporter {
@@ -386,6 +439,30 @@ mod tests {
         assert!(md.contains("Hello agent"));
         assert!(md.contains("### Assistant"));
         assert!(md.contains("Hello user"));
+    }
+
+    #[cfg(feature = "yaml-export")]
+    #[test]
+    fn test_yaml_export_format() {
+        let mut t = Trajectory::new();
+        t.info.task = Some("Add a feature".to_string());
+        t.info.outcome = Some(outcome::SUBMITTED.to_string());
+
+        t.record_message(&Message::system("System prompt"));
+        t.record_message(&Message::user("Hello agent\nMulti-line"));
+        t.record_message(&Message::assistant("Hello \"user\""));
+
+        let yaml = YamlExporter::export(&t);
+
+        assert!(yaml.contains("task: Add a feature"));
+        assert!(yaml.contains("outcome: submitted"));
+        assert!(yaml.contains("role: system"));
+        assert!(yaml.contains("content: System prompt"));
+        assert!(yaml.contains("role: user"));
+        assert!(yaml.contains("Hello agent"));
+        assert!(yaml.contains("Multi-line"));
+        assert!(yaml.contains("role: assistant"));
+        assert!(yaml.contains("Hello \"user\""));
     }
 
     #[cfg(feature = "csv-export")]
