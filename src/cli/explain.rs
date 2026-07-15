@@ -66,18 +66,24 @@ fn print_entry_json(entry: &ExplainEntry) -> Result<(), Error> {
 
 fn print_entry_text(entry: &ExplainEntry) {
     if let Some(code) = entry.code {
-        println!("Exit code:     {code}");
+        println!("\x1b[1m\x1b[36mExit code:\x1b[0m     {code}");
     }
-    println!("Outcome class: {}", entry.outcome_class);
-    println!("Family:        {}", families_label(entry));
+    println!(
+        "\x1b[1m\x1b[36mOutcome class:\x1b[0m {}",
+        entry.outcome_class
+    );
+    println!(
+        "\x1b[1m\x1b[36mFamily:\x1b[0m        {}",
+        families_label(entry)
+    );
     println!();
-    println!("Meaning:");
+    println!("\x1b[1m\x1b[33mMeaning:\x1b[0m");
     println!("  {}", entry.meaning);
     println!();
-    println!("Remediation:");
+    println!("\x1b[1m\x1b[32mRemediation:\x1b[0m");
     println!("  {}", entry.remediation);
     println!();
-    println!("Docs: {}", entry.docs_ref);
+    println!("\x1b[1m\x1b[34mDocs:\x1b[0m {}", entry.docs_ref);
 }
 
 fn print_index_json() -> Result<(), Error> {
