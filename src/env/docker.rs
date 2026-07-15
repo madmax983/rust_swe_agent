@@ -535,7 +535,7 @@ mod tests {
             "expected --network flag in args: {args:?}"
         );
         assert_eq!(
-            args.get(network_pos.unwrap() + 1).map(String::as_str),
+            network_pos.and_then(|pos| args.get(pos + 1)).map(String::as_str),
             Some("none")
         );
     }
@@ -550,10 +550,11 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::expect_used)]
     fn build_run_args_network_none_positioned_before_image() {
         let args = build_run_args("my-image", "/workspace", LABEL, Some("none"));
-        let network_pos = args.iter().position(|a| a == "--network").unwrap();
-        let image_pos = args.iter().position(|a| a == "my-image").unwrap();
+        let network_pos = args.iter().position(|a| a == "--network").expect("should have network flag");
+        let image_pos = args.iter().position(|a| a == "my-image").expect("should have image");
         assert!(
             network_pos < image_pos,
             "--network must appear before the image name"

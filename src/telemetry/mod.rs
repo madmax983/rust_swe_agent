@@ -1124,16 +1124,6 @@ pub(crate) mod build {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::float_cmp)]
 mod tests {
     use super::*;
-    use std::sync::{Mutex, OnceLock};
-
-    static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-
-    fn env_lock() -> std::sync::MutexGuard<'static, ()> {
-        ENV_LOCK
-            .get_or_init(Mutex::default)
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-    }
 
     #[test]
     fn trace_id_is_32_hex_chars() {
@@ -1166,23 +1156,19 @@ mod tests {
 
     #[test]
     fn resolve_endpoint_prefers_cli_flag() {
-        let _guard = env_lock();
-        // SAFETY: serialized by ENV_LOCK; no other thread mutates this var.
-        unsafe {
-            std::env::set_var("OTEL_EXPORTER_OTLP_ENDPOINT", "http://env-host:4318");
-            std::env::remove_var("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT");
-        }
-        let ep = resolve_endpoint(Some("http://cli-host:4318"));
-        unsafe {
-            std::env::remove_var("OTEL_EXPORTER_OTLP_ENDPOINT");
-        }
+        let ep = temp_env::with_vars(
+            [
+                ("OTEL_EXPORTER_OTLP_ENDPOINT", Some("http://env-host:4318")),
+                ("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", None::<&str>),
+            ],
+            || resolve_endpoint(Some("http://cli-host:4318")),
+        );
         // CLI flag is a base URL; /v1/traces is appended.
         assert_eq!(ep.as_deref(), Some("http://cli-host:4318/v1/traces"));
     }
 
     #[test]
     fn resolve_endpoint_falls_back_to_env_var() {
-        let _guard = env_lock();
         // SAFETY: serialized by ENV_LOCK; no other thread mutates this var.
         unsafe {
             std::env::set_var("OTEL_EXPORTER_OTLP_ENDPOINT", "http://env-host:4318");
@@ -1198,7 +1184,6 @@ mod tests {
 
     #[test]
     fn resolve_endpoint_traces_env_var_used_as_full_url() {
-        let _guard = env_lock();
         // SAFETY: serialized by ENV_LOCK; no other thread mutates this var.
         unsafe {
             std::env::remove_var("OTEL_EXPORTER_OTLP_ENDPOINT");
@@ -1217,7 +1202,6 @@ mod tests {
 
     #[test]
     fn resolve_endpoint_returns_none_when_unset() {
-        let _guard = env_lock();
         // SAFETY: serialized by ENV_LOCK; no other thread mutates this var.
         unsafe {
             std::env::remove_var("OTEL_EXPORTER_OTLP_ENDPOINT");
@@ -1247,7 +1231,6 @@ mod tests {
 
     #[test]
     fn resolve_metrics_endpoint_prefers_cli_flag() {
-        let _guard = env_lock();
         unsafe {
             std::env::set_var("OTEL_EXPORTER_OTLP_ENDPOINT", "http://env-host:4318");
             std::env::remove_var("OTEL_EXPORTER_OTLP_METRICS_ENDPOINT");
@@ -1261,7 +1244,6 @@ mod tests {
 
     #[test]
     fn resolve_metrics_endpoint_falls_back_to_env_var() {
-        let _guard = env_lock();
         unsafe {
             std::env::set_var("OTEL_EXPORTER_OTLP_ENDPOINT", "http://env-host:4318");
             std::env::remove_var("OTEL_EXPORTER_OTLP_METRICS_ENDPOINT");
@@ -1275,7 +1257,6 @@ mod tests {
 
     #[test]
     fn resolve_metrics_endpoint_metrics_env_var_used_as_full_url() {
-        let _guard = env_lock();
         unsafe {
             std::env::remove_var("OTEL_EXPORTER_OTLP_ENDPOINT");
             std::env::set_var(
@@ -1292,7 +1273,6 @@ mod tests {
 
     #[test]
     fn resolve_metrics_endpoint_returns_none_when_unset() {
-        let _guard = env_lock();
         unsafe {
             std::env::remove_var("OTEL_EXPORTER_OTLP_ENDPOINT");
             std::env::remove_var("OTEL_EXPORTER_OTLP_METRICS_ENDPOINT");
@@ -1303,7 +1283,6 @@ mod tests {
 
     #[test]
     fn resolve_metrics_interval_prefers_env_var() {
-        let _guard = env_lock();
         unsafe {
             std::env::set_var("OTEL_METRIC_EXPORT_INTERVAL", "30000");
         }
@@ -1316,7 +1295,6 @@ mod tests {
 
     #[test]
     fn resolve_metrics_interval_prefers_cli_secs() {
-        let _guard = env_lock();
         unsafe {
             std::env::remove_var("OTEL_METRIC_EXPORT_INTERVAL");
         }
@@ -1326,7 +1304,6 @@ mod tests {
 
     #[test]
     fn resolve_metrics_interval_defaults_to_15s() {
-        let _guard = env_lock();
         unsafe {
             std::env::remove_var("OTEL_METRIC_EXPORT_INTERVAL");
         }
@@ -1336,7 +1313,6 @@ mod tests {
 
     #[test]
     fn resolve_metrics_interval_clamps_zero_env_var_to_1s() {
-        let _guard = env_lock();
         unsafe {
             std::env::set_var("OTEL_METRIC_EXPORT_INTERVAL", "0");
         }
@@ -1349,7 +1325,6 @@ mod tests {
 
     #[test]
     fn resolve_metrics_interval_clamps_zero_cli_secs_to_1s() {
-        let _guard = env_lock();
         unsafe {
             std::env::remove_var("OTEL_METRIC_EXPORT_INTERVAL");
         }
@@ -1359,7 +1334,6 @@ mod tests {
 
     #[test]
     fn resolve_metrics_headers_prefers_metrics_var() {
-        let _guard = env_lock();
         unsafe {
             std::env::set_var("OTEL_EXPORTER_OTLP_HEADERS", "a=1,b=2");
             std::env::set_var("OTEL_EXPORTER_OTLP_METRICS_HEADERS", "c=3");
