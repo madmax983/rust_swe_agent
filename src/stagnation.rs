@@ -113,7 +113,7 @@ impl StagnationDetector {
         Self {
             window,
             threshold,
-            buffer: VecDeque::with_capacity(window as usize),
+            buffer: VecDeque::new(),
         }
     }
 
@@ -226,5 +226,25 @@ mod tests {
         assert!(det.observe(1, "ls").is_none());
         assert!(det.observe(2, "ls").is_none());
         assert!(det.observe(3, "ls").is_some());
+    }
+}
+
+#[cfg(test)]
+mod havoc_tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    proptest! {
+        #[test]
+        fn havoc_stagnation_fuzzing(window in 0..=u32::MAX, threshold in 0..10_000u32, steps in 0..100u32) {
+            if window >= threshold {
+                let mut det = StagnationDetector::new(threshold, window);
+                for i in 0..steps {
+                    det.observe(i, "ls");
+                    // buffer should never exceed window size unless window is 0
+                    assert!(det.buffer.len() <= std::cmp::max(1, window as usize), "Buffer size exceeded window!");
+                }
+            }
+        }
     }
 }
