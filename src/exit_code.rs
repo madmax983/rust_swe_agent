@@ -680,7 +680,9 @@ mod tests {
             ExitCode::from_error(&Error::Github("foo".into())),
             ExitCode::InternalError
         );
-        let Err(json_err) = serde_json::from_str::<serde_json::Value>("") else { panic!("expected err") };
+        let Err(json_err) = serde_json::from_str::<serde_json::Value>("") else {
+            panic!("expected err")
+        };
         assert_eq!(
             ExitCode::from_error(&Error::Json(json_err)),
             ExitCode::InternalError
