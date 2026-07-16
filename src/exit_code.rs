@@ -634,4 +634,84 @@ mod tests {
             "disk_usage_prune_blocked"
         );
     }
+
+    #[test]
+    fn from_error_agent_stagnation_is_agent_stagnation() {
+        assert_eq!(
+            ExitCode::from_error(&Error::AgentStagnation {
+                count: 0,
+                window: 0
+            }),
+            ExitCode::AgentStagnation
+        );
+    }
+
+    #[test]
+    fn from_error_bisect_budget_exhausted_is_bisect_budget_exhausted() {
+        assert_eq!(
+            ExitCode::from_error(&Error::BisectBudgetExhausted),
+            ExitCode::BisectBudgetExhausted
+        );
+    }
+
+    #[test]
+    fn from_error_bisect_schema_break_is_bisect_schema_break() {
+        assert_eq!(
+            ExitCode::from_error(&Error::BisectSchemaBreak),
+            ExitCode::BisectSchemaBreak
+        );
+    }
+
+    #[test]
+    fn from_error_audit_is_audit_failure() {
+        assert_eq!(
+            ExitCode::from_error(&Error::Audit("foo".into())),
+            ExitCode::AuditFailure
+        );
+    }
+
+    #[test]
+    fn from_error_internal_errors_is_internal_error() {
+        assert_eq!(
+            ExitCode::from_error(&Error::Trajectory("foo".into())),
+            ExitCode::InternalError
+        );
+        assert_eq!(
+            ExitCode::from_error(&Error::Github("foo".into())),
+            ExitCode::InternalError
+        );
+        let Err(json_err) = serde_json::from_str::<serde_json::Value>("") else { panic!("expected err") };
+        assert_eq!(
+            ExitCode::from_error(&Error::Json(json_err)),
+            ExitCode::InternalError
+        );
+    }
+
+    #[test]
+    fn from_error_github_issue_is_mapped_correctly() {
+        assert_eq!(
+            ExitCode::from_error(&Error::GithubIssue(
+                crate::error::GithubIssueError::MissingToken("foo".into())
+            )),
+            ExitCode::GithubIssueMissingToken
+        );
+        assert_eq!(
+            ExitCode::from_error(&Error::GithubIssue(
+                crate::error::GithubIssueError::NotFound("foo".into())
+            )),
+            ExitCode::GithubIssueNotFound
+        );
+        assert_eq!(
+            ExitCode::from_error(&Error::GithubIssue(
+                crate::error::GithubIssueError::RateLimited("foo".into())
+            )),
+            ExitCode::GithubIssueRateLimited
+        );
+        assert_eq!(
+            ExitCode::from_error(&Error::GithubIssue(
+                crate::error::GithubIssueError::RequestFailed("foo".into())
+            )),
+            ExitCode::TaskUnsuccessful
+        );
+    }
 }
