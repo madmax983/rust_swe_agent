@@ -3462,7 +3462,7 @@ pub struct InspectCmd {
     pub show_noise: bool,
 
     /// Output format: `text` (default), `json`, or `unified` in diff mode.
-    /// In instance mode, also accepts `markdown`, `html`, `csv`, and `mermaid`
+    /// In instance mode, also accepts `markdown`, `html`, `csv`, `jupyter`, and `mermaid`
     /// (each maps to the corresponding trajectory exporter; feature-gated
     /// formats require the matching Cargo feature at build time).
     /// Use `--list-formats` to enumerate all formats compiled into this build

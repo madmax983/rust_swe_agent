@@ -6,7 +6,7 @@
 //! narrative document, complete with headers and code blocks.
 //!
 //! You can extend this module with new formats by implementing the [`crate::trajectory::export::TrajectoryExporter`] trait.
-//! Every new exporter MUST register in [`registry`] and MUST apply redaction via
+//! Every new exporter MUST register in [`crate::trajectory::export::registry`] and MUST apply redaction via
 //! [`crate::redaction::Redactor::default_enabled`] on [`crate::redaction::surface::EXPORT`] before emitting any output.
 //! See `docs/spec-export.md` for the full governing contract.
 
@@ -95,6 +95,14 @@ pub fn registry() -> Vec<ExportFormat> {
         render: MermaidExporter::export,
     });
 
+    #[cfg(feature = "jupyter-export")]
+    formats.push(ExportFormat {
+        name: "jupyter",
+        tier: StabilityTier::Experimental,
+        consumer: "Jupyter notebooks for interactive analysis",
+        render: JupyterExporter::export,
+    });
+
     formats
 }
 
@@ -103,11 +111,12 @@ pub fn registry() -> Vec<ExportFormat> {
 ///
 /// Used to emit a helpful "feature not compiled in" error when an operator requests a
 /// format whose feature is disabled. Compiled-in formats (with metadata and a render fn)
-/// live in [`registry`]; a format gated *out* of this build is absent from `registry()`
+/// live in [`crate::trajectory::export::registry`]; a format gated *out* of this build is absent from `registry()`
 /// but present here so the CLI can still route it and explain how to enable it.
 pub const FEATURE_GATED_FORMATS: &[(&str, &str)] = &[
     ("csv", "csv-export"),
     ("html", "html-export"),
+    ("jupyter", "jupyter-export"),
     ("mermaid", "mermaid-export"),
 ];
 
@@ -116,7 +125,7 @@ pub const FEATURE_GATED_FORMATS: &[(&str, &str)] = &[
 ///
 /// CLI routing uses this so a request for a gated-out format still reaches the export
 /// dispatch path (and gets a helpful "rebuild with --features" error) instead of falling
-/// through to a generic "unknown format" message. This keeps [`registry`] the single
+/// through to a generic "unknown format" message. This keeps [`crate::trajectory::export::registry`] the single
 /// source of truth for *compiled* formats while still recognizing the full catalog.
 pub fn is_export_format(name: &str) -> bool {
     registry().iter().any(|f| f.name == name)
@@ -165,6 +174,9 @@ pub struct MermaidExporter;
 
 #[cfg(feature = "html-export")]
 pub struct HtmlExporter;
+
+#[cfg(feature = "jupyter-export")]
+pub struct JupyterExporter;
 
 use std::fmt::Write;
 
@@ -358,6 +370,58 @@ impl TrajectoryExporter for MermaidExporter {
     }
 }
 
+#[cfg(feature = "jupyter-export")]
+impl TrajectoryExporter for JupyterExporter {
+    fn export(trajectory: &Trajectory) -> String {
+        let redactor = Redactor::default_enabled();
+
+        let mut cells = Vec::new();
+
+        let mut header = String::new();
+        header.push_str("# Trajectory Export\n\n");
+        if let Some(task) = &trajectory.info.task {
+            let task = redactor.redact_text(task, surface::EXPORT).text;
+            let _ = write!(header, "**Task:** {task}\n\n");
+        }
+        if let Some(outcome) = &trajectory.info.outcome {
+            let outcome = redactor.redact_text(outcome, surface::EXPORT).text;
+            let _ = write!(header, "**Outcome:** {outcome}\n\n");
+        }
+        cells.push(serde_json::json!({
+            "cell_type": "markdown",
+            "metadata": {},
+            "source": [header]
+        }));
+
+        for msg in &trajectory.messages {
+            let role_title = match msg.role.as_str() {
+                "system" => "System",
+                "user" => "User",
+                "assistant" => "Assistant",
+                "tool" => "Tool",
+                other => other,
+            };
+
+            let content = redactor.redact_text(&msg.content, surface::EXPORT).text;
+            let source = format!("### {role_title}\n\n{content}");
+            cells.push(serde_json::json!({
+                "cell_type": "markdown",
+                "metadata": {},
+                "source": [source]
+            }));
+        }
+
+        let notebook = serde_json::json!({
+            "cells": cells,
+            "metadata": {},
+            "nbformat": 4,
+            "nbformat_minor": 5
+        });
+
+        serde_json::to_string_pretty(&notebook).unwrap_or_default()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -452,5 +516,43 @@ mod tests {
         assert!(html.contains("submitted"));
         assert!(html.contains("Hello agent"));
         assert!(html.contains("Hello user"));
+    }
+
+    #[cfg(feature = "jupyter-export")]
+    #[test]
+    #[allow(clippy::unwrap_used)]
+    fn test_jupyter_export_format() {
+        let mut t = Trajectory::new();
+        t.info.task = Some("Add a feature".to_string());
+        t.info.outcome = Some(crate::trajectory::outcome::SUBMITTED.to_string());
+
+        t.record_message(&Message::system("System prompt; echo 1 >&2"));
+        t.record_message(&Message::user("Hello agent\nMulti-line"));
+        t.record_message(&Message::assistant("Hello \"user\""));
+
+        let ipynb = JupyterExporter::export(&t);
+        let parsed: serde_json::Value = serde_json::from_str(&ipynb).unwrap();
+
+        assert_eq!(parsed["nbformat"], 4);
+        let cells = parsed["cells"].as_array().unwrap();
+        assert_eq!(cells.len(), 4);
+
+        assert_eq!(cells[0]["cell_type"], "markdown");
+        let source0 = cells[0]["source"].as_array().unwrap()[0].as_str().unwrap();
+        assert!(source0.contains("Trajectory Export"));
+        assert!(source0.contains("Add a feature"));
+        assert!(source0.contains("submitted"));
+
+        assert_eq!(cells[1]["cell_type"], "markdown");
+        let source1 = cells[1]["source"].as_array().unwrap()[0].as_str().unwrap();
+        assert!(source1.contains("System prompt; echo 1 >&2"));
+
+        assert_eq!(cells[2]["cell_type"], "markdown");
+        let source2 = cells[2]["source"].as_array().unwrap()[0].as_str().unwrap();
+        assert!(source2.contains("Hello agent\nMulti-line"));
+
+        assert_eq!(cells[3]["cell_type"], "markdown");
+        let source3 = cells[3]["source"].as_array().unwrap()[0].as_str().unwrap();
+        assert!(source3.contains("Hello \"user\""));
     }
 }
