@@ -120,7 +120,6 @@ fn collect_executable_paths(cmd: &clap::Command, current_path: &[String], paths:
     }
 }
 
-
 #[test]
 fn test_run_catalog_outputs_table() {
     use maxwells_daemon::cli::args::CatalogCmd;
