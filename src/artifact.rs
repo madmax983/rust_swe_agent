@@ -345,3 +345,168 @@ where
     #[serde(flatten)]
     payload: &'a T,
 }
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn schema_version_constants_and_methods() {
+        assert_eq!(ArtifactSchemaVersion::CURRENT.major, 1);
+        assert_eq!(ArtifactSchemaVersion::CURRENT.minor, 13);
+        assert_eq!(ArtifactSchemaVersion::LEGACY_PRE_VERSIONING.major, 0);
+
+        let v = ArtifactSchemaVersion::new(2, 5);
+        assert_eq!(v.major, 2);
+        assert_eq!(v.minor, 5);
+
+        let def = ArtifactSchemaVersion::default();
+        assert_eq!(def, ArtifactSchemaVersion::CURRENT);
+
+        assert_eq!(v.to_string(), "2.5");
+        assert!(ArtifactSchemaVersion::CURRENT > ArtifactSchemaVersion::LEGACY_PRE_VERSIONING);
+    }
+
+    #[test]
+    fn artifact_kind_labels() {
+        assert_eq!(ArtifactKind::Trajectory.label(), "trajectory");
+        assert_eq!(ArtifactKind::SweepResults.label(), "sweep_results");
+    }
+
+    #[test]
+    fn artifact_header_current() {
+        let header = ArtifactHeader::current(ArtifactKind::Trajectory);
+        assert_eq!(header.artifact_kind, ArtifactKind::Trajectory);
+        assert_eq!(header.schema_version, ArtifactSchemaVersion::CURRENT);
+    }
+
+    #[test]
+    fn compatibility_class_labels() {
+        assert_eq!(
+            CompatibilityClass::SupportedCurrent.label(),
+            "supported-current"
+        );
+        assert_eq!(
+            CompatibilityClass::SupportedLegacy.label(),
+            "supported-legacy"
+        );
+    }
+
+    #[test]
+    fn compatibility_identity_label() {
+        let c = ArtifactCompatibility {
+            kind: ArtifactKind::Trajectory,
+            version: Some(ArtifactSchemaVersion::new(1, 2)),
+            class: CompatibilityClass::SupportedCurrent,
+            warnings: vec![],
+        };
+        assert_eq!(c.identity_label(), "trajectory@1.2");
+
+        let c2 = ArtifactCompatibility {
+            kind: ArtifactKind::Trajectory,
+            version: None,
+            class: CompatibilityClass::SupportedLegacy,
+            warnings: vec![],
+        };
+        assert_eq!(c2.identity_label(), "trajectory@legacy-pre-versioning");
+    }
+
+    #[test]
+    fn classify_legacy() {
+        let val = json!({"some_data": 42});
+        let res = classify_json_value(&val, ArtifactKind::Trajectory, "path").unwrap();
+        assert_eq!(res.kind, ArtifactKind::Trajectory);
+        assert!(res.version.is_none());
+        assert_eq!(res.class, CompatibilityClass::SupportedLegacy);
+        assert_eq!(res.warnings.len(), 1);
+        assert!(res.warnings[0].contains("supported-legacy"));
+    }
+
+    #[test]
+    fn classify_current() {
+        let val = json!({
+            "artifact_kind": "trajectory",
+            "schema_version": {"major": 1, "minor": 13}
+        });
+        let res = classify_json_value(&val, ArtifactKind::Trajectory, "path").unwrap();
+        assert_eq!(res.kind, ArtifactKind::Trajectory);
+        assert_eq!(res.version, Some(ArtifactSchemaVersion::new(1, 13)));
+        assert_eq!(res.class, CompatibilityClass::SupportedCurrent);
+        assert!(res.warnings.is_empty());
+    }
+
+    #[test]
+    fn classify_kind_mismatch() {
+        let val = json!({
+            "artifact_kind": "trajectory",
+            "schema_version": {"major": 1, "minor": 13}
+        });
+        let err = classify_json_value(&val, ArtifactKind::SweepResults, "path").unwrap_err();
+        match err {
+            ArtifactSchemaError::KindMismatch {
+                expected, found, ..
+            } => {
+                assert_eq!(expected, ArtifactKind::SweepResults);
+                assert_eq!(found, ArtifactKind::Trajectory);
+            }
+            _ => panic!("Expected KindMismatch"),
+        }
+    }
+
+    #[test]
+    fn classify_unsupported_future() {
+        let val = json!({
+            "artifact_kind": "trajectory",
+            "schema_version": {"major": 99, "minor": 0}
+        });
+        let err = classify_json_value(&val, ArtifactKind::Trajectory, "path").unwrap_err();
+        match err {
+            ArtifactSchemaError::UnsupportedFuture {
+                version,
+                supported_major,
+                ..
+            } => {
+                assert_eq!(version.major, 99);
+                assert_eq!(supported_major, 1);
+            }
+            _ => panic!("Expected UnsupportedFuture"),
+        }
+    }
+
+    #[test]
+    fn classify_newer_minor_is_current_with_warning() {
+        let val = json!({
+            "artifact_kind": "trajectory",
+            "schema_version": {"major": 1, "minor": 99}
+        });
+        let res = classify_json_value(&val, ArtifactKind::Trajectory, "path").unwrap();
+        assert_eq!(res.class, CompatibilityClass::SupportedCurrent);
+        assert_eq!(res.warnings.len(), 1);
+        assert!(res.warnings[0].contains("newer additive minor"));
+    }
+
+    #[test]
+    fn serialize_pretty() {
+        let payload = json!({"foo": "bar"});
+        let s = to_string_pretty(ArtifactKind::Trajectory, &payload).unwrap();
+        assert!(s.contains("\"artifact_kind\": \"trajectory\""));
+        assert!(s.contains("\"major\": 1"));
+        assert!(s.contains("\"minor\": 13"));
+        assert!(s.contains("\"foo\": \"bar\""));
+    }
+
+    #[test]
+    fn serialize_writer_pretty() {
+        let payload = json!({"foo": "bar"});
+        let mut buf = Vec::new();
+        to_writer_pretty(&mut buf, ArtifactKind::Trajectory, &payload).unwrap();
+        let s = String::from_utf8(buf).unwrap();
+        assert!(s.contains("\"artifact_kind\": \"trajectory\""));
+        assert!(s.contains("\"major\": 1"));
+        assert!(s.contains("\"minor\": 13"));
+        assert!(s.contains("\"foo\": \"bar\""));
+    }
+}
