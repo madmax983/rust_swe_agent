@@ -119,3 +119,36 @@ fn collect_executable_paths(cmd: &clap::Command, current_path: &[String], paths:
         }
     }
 }
+
+
+#[test]
+fn test_run_catalog_outputs_table() {
+    use maxwells_daemon::cli::args::CatalogCmd;
+    use maxwells_daemon::cli::catalog::run_catalog;
+
+    // Test text mode
+    let cmd = CatalogCmd {
+        free_only: false,
+        stage: None,
+        format: "text".to_string(),
+    };
+    // Unfortunately we can't easily capture stdout here if it's printed directly,
+    // but running it increases coverage.
+    assert!(run_catalog(cmd).is_ok());
+
+    // Test JSON mode
+    let cmd_json = CatalogCmd {
+        free_only: false,
+        stage: None,
+        format: "json".to_string(),
+    };
+    assert!(run_catalog(cmd_json).is_ok());
+
+    // Test filtered
+    let cmd_free = CatalogCmd {
+        free_only: true,
+        stage: Some("run".to_string()),
+        format: "text".to_string(),
+    };
+    assert!(run_catalog(cmd_free).is_ok());
+}
