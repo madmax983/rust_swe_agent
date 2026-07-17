@@ -38,6 +38,32 @@ impl CostSource {
         }
     }
 
+    /// Combines two `CostSource` values, returning the most accurate or pessimistic provenance.
+    ///
+    /// When aggregating costs from multiple steps in a trajectory, we need a single `CostSource`
+    /// to describe the final total. This function acts as a merge operator, downgrading the trust
+    /// level if any part of the calculation came from a less reliable source.
+    ///
+    /// The precedence (from least to most reliable) is:
+    /// `Unknown` > `RateCardEstimate` > `ProviderReported` > `FreeTierInferred`
+    ///
+    /// ## Examples
+    ///
+    /// ```
+    /// use maxwells_daemon::cost::CostSource;
+    ///
+    /// // A known cost mixed with an unknown cost becomes unknown.
+    /// assert_eq!(
+    ///     CostSource::ProviderReported.combine(CostSource::Unknown),
+    ///     CostSource::Unknown
+    /// );
+    ///
+    /// // Estimates downgrade reported costs.
+    /// assert_eq!(
+    ///     CostSource::ProviderReported.combine(CostSource::RateCardEstimate),
+    ///     CostSource::RateCardEstimate
+    /// );
+    /// ```
     #[must_use]
     pub const fn combine(self, next: Self) -> Self {
         match (self, next) {
@@ -56,6 +82,27 @@ impl fmt::Display for CostSource {
     }
 }
 
+/// Estimates the cost of an LLM completion in USD based on token usage.
+///
+/// This provides a baseline cost metric for counterfactual reporting (e.g., "what would this run
+/// have cost on a different model?"). It uses standard pricing for `claude-3-5-sonnet` as the
+/// baseline, applying specific multipliers if the model is identified as an Anthropic model
+/// (which supports explicit caching token charges).
+///
+/// ## Examples
+///
+/// ```
+/// use maxwells_daemon::cost::estimate_cost_usd;
+///
+/// // A basic completion without caching.
+/// let cost = estimate_cost_usd(1000, 0, 0, 500, "gpt-4o");
+/// // Use a small epsilon for floating point comparison
+/// assert!((cost - 0.0105).abs() < f64::EPSILON); // (1000 * 3.0 / 1M) + (500 * 15.0 / 1M)
+///
+/// // Caching applies different multipliers for Anthropic models.
+/// let anthropic_cost = estimate_cost_usd(1000, 500, 200, 500, "claude-3-5-sonnet-20241022");
+/// assert!(anthropic_cost > 0.0);
+/// ```
 #[must_use]
 pub fn estimate_cost_usd(
     prompt_tokens: u64,
@@ -88,6 +135,21 @@ pub fn estimate_cost_usd(
     input_cost + cache_read_cost + cache_creation_cost + completion_cost
 }
 
+/// Determines if a model string indicates a free-tier inference provider.
+///
+/// We use this to correctly attribute `CostSource::FreeTierInferred` when the cost is zero,
+/// rather than reporting it as an unknown or missing value. It checks for standard suffixes
+/// like `:free` often used by OpenAI/Anthropic proxies or platforms like OpenRouter.
+///
+/// ## Examples
+///
+/// ```
+/// use maxwells_daemon::cost::is_free_tier_model;
+///
+/// assert!(is_free_tier_model("google/gemini-pro:free"));
+/// assert!(is_free_tier_model("meta-llama/llama-3-8b-instruct:free"));
+/// assert!(!is_free_tier_model("claude-3-5-sonnet"));
+/// ```
 #[must_use]
 pub fn is_free_tier_model(model: &str) -> bool {
     model
