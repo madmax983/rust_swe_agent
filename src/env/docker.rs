@@ -534,10 +534,9 @@ mod tests {
             network_pos.is_some(),
             "expected --network flag in args: {args:?}"
         );
-        assert_eq!(
-            args.get(network_pos.unwrap() + 1).map(String::as_str),
-            Some("none")
-        );
+        if let Some(pos) = network_pos {
+            assert_eq!(args.get(pos + 1).map(String::as_str), Some("none"));
+        }
     }
 
     #[test]
@@ -552,11 +551,15 @@ mod tests {
     #[test]
     fn build_run_args_network_none_positioned_before_image() {
         let args = build_run_args("my-image", "/workspace", LABEL, Some("none"));
-        let network_pos = args.iter().position(|a| a == "--network").unwrap();
-        let image_pos = args.iter().position(|a| a == "my-image").unwrap();
-        assert!(
-            network_pos < image_pos,
-            "--network must appear before the image name"
-        );
+        let network_pos = args.iter().position(|a| a == "--network");
+        let image_pos = args.iter().position(|a| a == "my-image");
+        assert!(network_pos.is_some());
+        assert!(image_pos.is_some());
+        if let (Some(n_pos), Some(i_pos)) = (network_pos, image_pos) {
+            assert!(
+                n_pos < i_pos,
+                "--network must appear before the image name"
+            );
+        }
     }
 }
