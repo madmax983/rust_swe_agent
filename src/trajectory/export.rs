@@ -178,11 +178,10 @@ pub struct HtmlExporter;
 #[cfg(feature = "jsonl-export")]
 pub struct JsonlExporter;
 
-use serde::Serialize;
 use std::fmt::Write;
 
 #[cfg(feature = "jsonl-export")]
-#[derive(Serialize)]
+#[derive(serde::Serialize)]
 struct JsonlMessage<'a> {
     role: &'a str,
     content: String,
