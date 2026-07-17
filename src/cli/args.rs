@@ -3462,7 +3462,7 @@ pub struct InspectCmd {
     pub show_noise: bool,
 
     /// Output format: `text` (default), `json`, or `unified` in diff mode.
-    /// In instance mode, also accepts `markdown`, `html`, `csv`, and `mermaid`
+    /// In instance mode, also accepts `markdown`, `html`, `csv`, `mermaid`, and `jsonl`
     /// (each maps to the corresponding trajectory exporter; feature-gated
     /// formats require the matching Cargo feature at build time).
     /// Use `--list-formats` to enumerate all formats compiled into this build
@@ -3477,7 +3477,7 @@ pub struct InspectCmd {
     pub list_formats: bool,
 
     /// Write output to a file instead of stdout. Supported with `markdown`,
-    /// `html`, `csv`, and `mermaid` formats in instance mode.
+    /// `html`, `csv`, `mermaid`, and `jsonl` formats in instance mode.
     #[arg(long, value_name = "PATH")]
     pub output: Option<PathBuf>,
 
