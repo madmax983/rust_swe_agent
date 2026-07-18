@@ -527,6 +527,7 @@ mod tests {
     // ── Network mode RED-phase tests ─────────────────────────────────────────
 
     #[test]
+    #[allow(clippy::unwrap_used)]
     fn build_run_args_include_network_none_when_mode_is_none() {
         let args = build_run_args("my-image", "/workspace", LABEL, Some("none"));
         let network_pos = args.iter().position(|a| a == "--network");
@@ -541,6 +542,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::unwrap_used)]
     fn build_run_args_unchanged_for_unrestricted_mode() {
         let args_unrestricted = build_run_args("my-image", "/workspace", LABEL, None);
         assert!(
@@ -550,6 +552,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::unwrap_used)]
     fn build_run_args_network_none_positioned_before_image() {
         let args = build_run_args("my-image", "/workspace", LABEL, Some("none"));
         let network_pos = args.iter().position(|a| a == "--network").unwrap();
