@@ -449,20 +449,7 @@ fn build_mini_manifest(
 }
 
 #[allow(clippy::too_many_lines)]
-pub async fn run(args: MiniArgs) -> Result<(), Error> {
-    let mut args = args;
-    let mut cancel_tx = None;
-    if args.cancellation.is_none()
-        && matches!(
-            args.interactive_mode,
-            InteractiveMode::Ratatui | InteractiveMode::RatatuiMonitor
-        )
-    {
-        let (tx, rx) = tokio::sync::watch::channel(false);
-        cancel_tx = Some(tx);
-        args.cancellation = Some(crate::env::CancellationToken::new(rx));
-    }
-
+fn validate_driver_contracts(args: &MiniArgs) -> Result<(), Error> {
     // The Claude Code driver shells out to the host `claude` binary and edits
     // the host working tree directly. It cannot honor several safety contracts
     // the built-in loop enforces inside `DefaultAgent::step`, so reject the
@@ -737,6 +724,26 @@ pub async fn run(args: MiniArgs) -> Result<(), Error> {
             )));
         }
     }
+
+    Ok(())
+}
+
+#[allow(clippy::too_many_lines)]
+pub async fn run(args: MiniArgs) -> Result<(), Error> {
+    let mut args = args;
+    let mut cancel_tx = None;
+    if args.cancellation.is_none()
+        && matches!(
+            args.interactive_mode,
+            InteractiveMode::Ratatui | InteractiveMode::RatatuiMonitor
+        )
+    {
+        let (tx, rx) = tokio::sync::watch::channel(false);
+        cancel_tx = Some(tx);
+        args.cancellation = Some(crate::env::CancellationToken::new(rx));
+    }
+
+    validate_driver_contracts(&args)?;
 
     std::fs::create_dir_all(&args.output_dir)?;
 
