@@ -79,6 +79,14 @@ pub fn registry() -> Vec<ExportFormat> {
         render: CsvExporter::export,
     });
 
+    #[cfg(feature = "jsonl-export")]
+    formats.push(ExportFormat {
+        name: "jsonl",
+        tier: StabilityTier::Stable,
+        consumer: "programmatic stream processing, data warehouse loading",
+        render: JsonlExporter::export,
+    });
+
     #[cfg(feature = "html-export")]
     formats.push(ExportFormat {
         name: "html",
@@ -109,6 +117,7 @@ pub const FEATURE_GATED_FORMATS: &[(&str, &str)] = &[
     ("csv", "csv-export"),
     ("html", "html-export"),
     ("mermaid", "mermaid-export"),
+    ("jsonl", "jsonl-export"),
 ];
 
 /// Returns `true` if `name` is a trajectory export format known to this codebase,
@@ -160,6 +169,9 @@ pub struct MarkdownExporter;
 #[cfg(feature = "csv-export")]
 pub struct CsvExporter;
 
+#[cfg(feature = "jsonl-export")]
+pub struct JsonlExporter;
+
 #[cfg(feature = "mermaid-export")]
 pub struct MermaidExporter;
 
@@ -167,6 +179,29 @@ pub struct MermaidExporter;
 pub struct HtmlExporter;
 
 use std::fmt::Write;
+
+#[cfg(feature = "jsonl-export")]
+impl TrajectoryExporter for JsonlExporter {
+    fn export(trajectory: &Trajectory) -> String {
+        let redactor = Redactor::default_enabled();
+        let mut jsonl = String::new();
+        for msg in &trajectory.messages {
+            let redacted_content = redactor.redact_text(&msg.content, surface::EXPORT).text;
+            let mut map = serde_json::Map::new();
+            map.insert(
+                "role".to_string(),
+                serde_json::Value::String(msg.role.clone()),
+            );
+            map.insert(
+                "content".to_string(),
+                serde_json::Value::String(redacted_content),
+            );
+            let value = serde_json::Value::Object(map);
+            let _ = writeln!(jsonl, "{value}");
+        }
+        jsonl
+    }
+}
 
 #[cfg(feature = "csv-export")]
 impl TrajectoryExporter for CsvExporter {
@@ -386,6 +421,24 @@ mod tests {
         assert!(md.contains("Hello agent"));
         assert!(md.contains("### Assistant"));
         assert!(md.contains("Hello user"));
+    }
+
+    #[cfg(feature = "jsonl-export")]
+    #[test]
+    fn test_jsonl_export_format() {
+        let mut t = Trajectory::new();
+        t.info.task = Some("Add a feature".to_string());
+        t.info.outcome = Some(outcome::SUBMITTED.to_string());
+
+        t.record_message(&Message::system("System prompt"));
+        t.record_message(&Message::user("Hello agent\nMulti-line"));
+        t.record_message(&Message::assistant("Hello \"user\""));
+
+        let jsonl = JsonlExporter::export(&t);
+
+        assert!(jsonl.contains(r#"{"content":"System prompt","role":"system"}"#));
+        assert!(jsonl.contains(r#"{"content":"Hello agent\nMulti-line","role":"user"}"#));
+        assert!(jsonl.contains(r#"{"content":"Hello \"user\"","role":"assistant"}"#));
     }
 
     #[cfg(feature = "csv-export")]
