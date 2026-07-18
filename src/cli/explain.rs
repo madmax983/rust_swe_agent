@@ -7,7 +7,7 @@
 use super::args::ExplainCmd;
 use crate::error::{ConfigError, Error};
 use crate::explain::{self, EXPLAIN_SCHEMA_VERSION, ExplainEntry};
-use comfy_table::{Table, modifiers::UTF8_ROUND_CORNERS, presets::UTF8_FULL};
+use comfy_table::{Color, Table, modifiers::UTF8_ROUND_CORNERS, presets::UTF8_FULL};
 
 /// Run `max explain`. With a selector, explain that code/class/category; without
 /// one, print the full index. An unknown selector returns a usage error (exit 2).
@@ -65,19 +65,29 @@ fn print_entry_json(entry: &ExplainEntry) -> Result<(), Error> {
 }
 
 fn print_entry_text(entry: &ExplainEntry) {
+    use crossterm::style::Stylize;
+
     if let Some(code) = entry.code {
-        println!("Exit code:     {code}");
+        println!("{:<14} {}", "Exit code:".bold(), code.to_string().red());
     }
-    println!("Outcome class: {}", entry.outcome_class);
-    println!("Family:        {}", families_label(entry));
+    println!(
+        "{:<14} {}",
+        "Outcome class:".bold(),
+        entry.outcome_class.yellow()
+    );
+    println!("{:<14} {}", "Family:".bold(), families_label(entry).cyan());
     println!();
-    println!("Meaning:");
+    println!("{}", "Meaning:".bold().underlined());
     println!("  {}", entry.meaning);
     println!();
-    println!("Remediation:");
-    println!("  {}", entry.remediation);
+    println!("{}", "Remediation:".bold().underlined());
+    println!("  {}", entry.remediation.green());
     println!();
-    println!("Docs: {}", entry.docs_ref);
+    println!(
+        "{:<14} {}",
+        "Docs:".bold(),
+        entry.docs_ref.blue().underlined()
+    );
 }
 
 fn print_index_json() -> Result<(), Error> {
@@ -94,26 +104,34 @@ fn print_index_json() -> Result<(), Error> {
 }
 
 fn print_index_text() {
+    use crossterm::style::Stylize;
+
     let mut table = Table::new();
     table
         .load_preset(UTF8_FULL)
         .apply_modifier(UTF8_ROUND_CORNERS)
-        .set_header(["Code", "Outcome Class", "Family", "Meaning"]);
+        .set_header([
+            comfy_table::Cell::new("Code").fg(Color::Cyan),
+            comfy_table::Cell::new("Outcome Class").fg(Color::Yellow),
+            comfy_table::Cell::new("Family").fg(Color::Magenta),
+            comfy_table::Cell::new("Meaning").fg(Color::Green),
+        ]);
     for entry in explain::entries() {
         let code = entry
             .code
             .map_or_else(|| "-".to_string(), |c| c.to_string());
         table.add_row([
-            comfy_table::Cell::from(code),
-            comfy_table::Cell::from(entry.outcome_class),
-            comfy_table::Cell::from(families_label(entry)),
-            comfy_table::Cell::from(entry.meaning),
+            comfy_table::Cell::new(code).fg(Color::Red),
+            comfy_table::Cell::new(entry.outcome_class).fg(Color::Yellow),
+            comfy_table::Cell::new(families_label(entry)).fg(Color::Cyan),
+            comfy_table::Cell::new(entry.meaning),
         ]);
     }
     println!("{table}");
     println!(
-        "\nRun `max explain <selector>` to explain one entry by exit code, \
-         outcome class, or failure category."
+        "\nRun {} to explain one entry by exit code, \
+         outcome class, or failure category.",
+        "`max explain <selector>`".magenta().bold()
     );
 }
 
