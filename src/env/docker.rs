@@ -556,10 +556,7 @@ mod tests {
         assert!(network_pos.is_some());
         assert!(image_pos.is_some());
         if let (Some(n_pos), Some(i_pos)) = (network_pos, image_pos) {
-            assert!(
-                n_pos < i_pos,
-                "--network must appear before the image name"
-            );
+            assert!(n_pos < i_pos, "--network must appear before the image name");
         }
     }
 }
