@@ -34,6 +34,7 @@ max bench inspect --list-formats
 | `csv` | stable | `csv-export` | spreadsheets, jq pipelines, tabular tools |
 | `html` | stable | `html-export` | self-contained browser view, shared notebooks |
 | `mermaid` | experimental | `mermaid-export` | Mermaid sequence-diagram renderers (GitLab, GitHub markdown, mermaid.live) |
+| `jupyter` | experimental | `jupyter-export` | Jupyter Notebook viewers (JupyterLab, VS Code, Google Colab) |
 
 Feature-gated formats require rebuilding with the corresponding feature:
 
@@ -121,6 +122,7 @@ markdown    stable        docs, PR review, human readers
 csv         stable        spreadsheets, jq pipelines, tabular tools
 html        stable        self-contained browser view, shared notebooks
 mermaid     experimental  Mermaid sequence-diagram renderers (GitLab, GitHub markdown, mermaid.live)
+jupyter     experimental  Jupyter Notebook viewers (JupyterLab, VS Code, Google Colab)
 ```
 
 The output lists only formats compiled into the running binary (feature-gated formats
