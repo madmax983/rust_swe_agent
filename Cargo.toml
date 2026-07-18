@@ -79,6 +79,7 @@ proptest = "1"
 insta = { version = "1", features = ["json"] }
 pretty_assertions = "1"
 tokio = { version = "1", features = ["full", "test-util"] }
+temp-env = { version = "0.3.6", features = ["async_closure"] }
 
 [features]
 default = ["webhook"]
@@ -126,3 +127,8 @@ debug = 0
 
 [profile.test.package.litellm-rs]
 debug = 0
+
+[profile.test]
+debug = 0
+split-debuginfo = "unpacked"
+strip = "debuginfo"
