@@ -127,3 +127,8 @@ debug = 0
 
 [profile.test.package.litellm-rs]
 debug = 0
+
+[profile.test]
+debug = 0
+split-debuginfo = "unpacked"
+strip = "debuginfo"
