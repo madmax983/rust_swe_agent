@@ -3133,14 +3133,12 @@ mod tests {
             "x.output.txt",
             "leaked: super-secret-ci-token-value-123\n",
         );
-        // SAFETY: set/remove a process-local var in a serial unit test.
-        unsafe {
-            std::env::set_var("DATABASE_PASSWORD", "super-secret-ci-token-value-123");
-        }
-        let report = audit(dir.path());
-        unsafe {
-            std::env::remove_var("DATABASE_PASSWORD");
-        }
+        let report = temp_env::with_var(
+            "DATABASE_PASSWORD",
+            Some("super-secret-ci-token-value-123"),
+            || audit(dir.path()),
+        );
+
         assert!(
             report
                 .findings
