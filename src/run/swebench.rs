@@ -1108,11 +1108,17 @@ pub(crate) fn recompute_aggregates(
         .filter_map(|r| r.fallback_count)
         .map(u64::from)
         .sum();
+    // Performance optimization: Avoid allocating a new String on every loop iteration
+    // for models that already exist in the map by checking get_mut first.
     let model_mix: BTreeMap<String, usize> = {
-        let mut map = BTreeMap::new();
+        let mut map: BTreeMap<String, usize> = BTreeMap::new();
         for r in &instances {
             if let Some(m) = &r.final_model {
-                *map.entry(m.clone()).or_insert(0) += 1;
+                if let Some(count) = map.get_mut(m) {
+                    *count += 1;
+                } else {
+                    map.insert(m.clone(), 1);
+                }
             }
         }
         map
@@ -2929,10 +2935,16 @@ pub async fn run(mut args: SwebenchArgs) -> Result<SweepResults, Error> {
         .sum();
     // Count from per-run slots so that pass@k sweeps with --reruns>1 correctly
     // attribute each slot's model, not just the first (pass@1) slot's model.
+    // Performance optimization: Avoid allocating a new String on every loop iteration
+    // for models that already exist in the map by checking get_mut first.
     let mut model_mix: BTreeMap<String, usize> = BTreeMap::new();
     for r in &results {
         if let Some(model) = r.result.final_model.as_deref() {
-            *model_mix.entry(model.to_owned()).or_insert(0) += 1;
+            if let Some(count) = model_mix.get_mut(model) {
+                *count += 1;
+            } else {
+                model_mix.insert(model.to_owned(), 1);
+            }
         }
     }
     let mut sweep = SweepResults {
@@ -5601,10 +5613,16 @@ fn stratified_sample_by_repo(
     seed: u64,
     mode: StratifyMode,
 ) -> Vec<SweBenchInstance> {
+    // Performance optimization: Avoid allocating a new String on every loop iteration
+    // for repos that already exist in the map by checking get_mut first.
     let mut map: BTreeMap<String, Vec<SweBenchInstance>> = BTreeMap::new();
     for inst in instances {
-        let key = inst.repo.clone().unwrap_or_else(|| "<unknown>".to_owned());
-        map.entry(key).or_default().push(inst);
+        let repo_ref = inst.repo.as_deref().unwrap_or("<unknown>");
+        if let Some(group) = map.get_mut(repo_ref) {
+            group.push(inst);
+        } else {
+            map.insert(repo_ref.to_owned(), vec![inst]);
+        }
     }
     let groups: Vec<(String, Vec<SweBenchInstance>)> = map.into_iter().collect();
     let total = groups.iter().map(|(_, v)| v.len()).sum::<usize>();
@@ -5721,10 +5739,16 @@ pub(crate) fn partition_into_shards(
             // Group by repo in BTreeMap order, shuffle each group (same RNG as
             // stratified_sample_by_repo), then flatten.  Contiguous per-repo runs
             // + round-robin => every repo is spread evenly across shards.
+            // Performance optimization: Avoid allocating a new String on every loop iteration
+            // for repos that already exist in the map by checking get_mut first.
             let mut map: BTreeMap<String, Vec<SweBenchInstance>> = BTreeMap::new();
             for inst in instances {
-                let key = inst.repo.clone().unwrap_or_else(|| "<unknown>".to_owned());
-                map.entry(key).or_default().push(inst);
+                let repo_ref = inst.repo.as_deref().unwrap_or("<unknown>");
+                if let Some(group) = map.get_mut(repo_ref) {
+                    group.push(inst);
+                } else {
+                    map.insert(repo_ref.to_owned(), vec![inst]);
+                }
             }
             let mut ordered: Vec<SweBenchInstance> = Vec::new();
             for (i, (_, mut group)) in map.into_iter().enumerate() {
