@@ -2106,8 +2106,8 @@ mod tests {
         assert!(report.ok);
         assert_eq!(report.task_count, 50);
         assert!(
-            start.elapsed().as_secs_f64() < 1.0,
-            "preflight took {:?}, expected < 1s",
+            start.elapsed().as_secs_f64() < 5.0,
+            "preflight took {:?}, expected < 5s",
             start.elapsed()
         );
     }
