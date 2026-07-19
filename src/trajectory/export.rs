@@ -488,9 +488,26 @@ mod tests {
         let header_source = parsed["cells"][0]["source"].as_array().unwrap();
         assert_eq!(header_source[0], "# Trajectory Export\n");
         assert_eq!(header_source[1], "**Task:** Add a feature\n");
+        assert_eq!(header_source[2], "**Outcome:** submitted\n");
         let sys_source = parsed["cells"][1]["source"].as_array().unwrap();
         assert_eq!(sys_source[0], "### System\n\n");
         assert_eq!(sys_source[1], "System prompt");
+        let user_source = parsed["cells"][2]["source"].as_array().unwrap();
+        assert_eq!(user_source[0], "### User\n\n");
+        assert_eq!(user_source[1], "Hello agent\nMulti-line");
+    }
+
+    #[cfg(feature = "jupyter-export")]
+    #[test]
+    #[allow(clippy::unwrap_used)]
+    fn test_jupyter_export_format_no_info() {
+        let mut t = Trajectory::new();
+        t.record_message(&Message::assistant("Hello user"));
+        let out = JupyterExporter::export(&t);
+        let parsed: serde_json::Value = serde_json::from_str(&out).unwrap();
+        let header_source = parsed["cells"][0]["source"].as_array().unwrap();
+        assert_eq!(header_source.len(), 1);
+        assert_eq!(header_source[0], "# Trajectory Export\n");
     }
 
     #[cfg(feature = "mermaid-export")]
