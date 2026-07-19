@@ -552,8 +552,12 @@ mod tests {
     #[test]
     fn build_run_args_network_none_positioned_before_image() {
         let args = build_run_args("my-image", "/workspace", LABEL, Some("none"));
-        let Some(network_pos) = args.iter().position(|a| a == "--network") else { panic!("network flag should exist") };
-        let Some(image_pos) = args.iter().position(|a| a == "my-image") else { panic!("image should exist") };
+        let Some(network_pos) = args.iter().position(|a| a == "--network") else {
+            panic!("network flag should exist")
+        };
+        let Some(image_pos) = args.iter().position(|a| a == "my-image") else {
+            panic!("image should exist")
+        };
         assert!(
             network_pos < image_pos,
             "--network must appear before the image name"
