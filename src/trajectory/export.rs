@@ -95,6 +95,14 @@ pub fn registry() -> Vec<ExportFormat> {
         render: MermaidExporter::export,
     });
 
+    #[cfg(feature = "jupyter-export")]
+    formats.push(ExportFormat {
+        name: "jupyter",
+        tier: StabilityTier::Experimental,
+        consumer: "Jupyter notebooks for interactive data science and analysis",
+        render: JupyterExporter::export,
+    });
+
     formats
 }
 
@@ -109,6 +117,7 @@ pub const FEATURE_GATED_FORMATS: &[(&str, &str)] = &[
     ("csv", "csv-export"),
     ("html", "html-export"),
     ("mermaid", "mermaid-export"),
+    ("jupyter", "jupyter-export"),
 ];
 
 /// Returns `true` if `name` is a trajectory export format known to this codebase,
@@ -163,6 +172,9 @@ pub struct CsvExporter;
 #[cfg(feature = "mermaid-export")]
 pub struct MermaidExporter;
 
+#[cfg(feature = "jupyter-export")]
+pub struct JupyterExporter;
+
 #[cfg(feature = "html-export")]
 pub struct HtmlExporter;
 
@@ -193,6 +205,58 @@ impl TrajectoryExporter for CsvExporter {
         }
 
         csv
+    }
+}
+
+#[cfg(feature = "jupyter-export")]
+impl TrajectoryExporter for JupyterExporter {
+    fn export(trajectory: &Trajectory) -> String {
+        use serde_json::json;
+        let redactor = Redactor::default_enabled();
+        let mut cells = Vec::new();
+
+        let mut header_lines = vec!["# Trajectory Export\n".to_string()];
+        if let Some(task) = &trajectory.info.task {
+            let task = redactor.redact_text(task, surface::EXPORT).text;
+            header_lines.push(format!("**Task:** {task}\n"));
+        }
+        if let Some(outcome) = &trajectory.info.outcome {
+            let outcome = redactor.redact_text(outcome, surface::EXPORT).text;
+            header_lines.push(format!("**Outcome:** {outcome}\n"));
+        }
+        cells.push(json!({
+            "cell_type": "markdown",
+            "metadata": {},
+            "source": header_lines
+        }));
+
+        for msg in &trajectory.messages {
+            let role_title = match msg.role.as_str() {
+                "system" => "System",
+                "user" => "User",
+                "assistant" => "Assistant",
+                "tool" => "Tool",
+                other => other,
+            };
+            let content = redactor.redact_text(&msg.content, surface::EXPORT).text;
+            cells.push(json!({
+                "cell_type": "markdown",
+                "metadata": {},
+                "source": [
+                    format!("### {role_title}\n\n"),
+                    content
+                ]
+            }));
+        }
+
+        let notebook = json!({
+            "cells": cells,
+            "metadata": {},
+            "nbformat": 4,
+            "nbformat_minor": 5
+        });
+
+        serde_json::to_string_pretty(&notebook).unwrap_or_default()
     }
 }
 
@@ -405,6 +469,45 @@ mod tests {
         assert!(csv.contains("system,System prompt"));
         assert!(csv.contains("user,\"Hello agent\nMulti-line\""));
         assert!(csv.contains("assistant,\"Hello \"\"user\"\"\""));
+    }
+
+    #[cfg(feature = "jupyter-export")]
+    #[test]
+    #[allow(clippy::unwrap_used)]
+    fn test_jupyter_export_format() {
+        let mut t = Trajectory::new();
+        t.info.task = Some("Add a feature".to_string());
+        t.info.outcome = Some(outcome::SUBMITTED.to_string());
+        t.record_message(&Message::system("System prompt"));
+        t.record_message(&Message::user("Hello agent\nMulti-line"));
+
+        let out = JupyterExporter::export(&t);
+        let parsed: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(parsed["nbformat"], 4);
+        assert_eq!(parsed["cells"].as_array().unwrap().len(), 3);
+        let header_source = parsed["cells"][0]["source"].as_array().unwrap();
+        assert_eq!(header_source[0], "# Trajectory Export\n");
+        assert_eq!(header_source[1], "**Task:** Add a feature\n");
+        assert_eq!(header_source[2], "**Outcome:** submitted\n");
+        let sys_source = parsed["cells"][1]["source"].as_array().unwrap();
+        assert_eq!(sys_source[0], "### System\n\n");
+        assert_eq!(sys_source[1], "System prompt");
+        let user_source = parsed["cells"][2]["source"].as_array().unwrap();
+        assert_eq!(user_source[0], "### User\n\n");
+        assert_eq!(user_source[1], "Hello agent\nMulti-line");
+    }
+
+    #[cfg(feature = "jupyter-export")]
+    #[test]
+    #[allow(clippy::unwrap_used)]
+    fn test_jupyter_export_format_no_info() {
+        let mut t = Trajectory::new();
+        t.record_message(&Message::assistant("Hello user"));
+        let out = JupyterExporter::export(&t);
+        let parsed: serde_json::Value = serde_json::from_str(&out).unwrap();
+        let header_source = parsed["cells"][0]["source"].as_array().unwrap();
+        assert_eq!(header_source.len(), 1);
+        assert_eq!(header_source[0], "# Trajectory Export\n");
     }
 
     #[cfg(feature = "mermaid-export")]
